@@ -87,11 +87,20 @@ def read_device_tree_list(root: str, path: str) -> list[str] | None:
 
 
 def parse_cuda_version(text: str) -> str | None:
+    # Valid JSON of the wrong *shape* (null, a list, a string, a `cuda` that
+    # is not an object) is an absent fact, not an exception: raising here
+    # aborted detection of the whole platform block.
     try:
         data = json.loads(text)
     except (json.JSONDecodeError, ValueError):
         return None
-    return data.get("cuda", {}).get("version")
+    if not isinstance(data, dict):
+        return None
+    cuda = data.get("cuda")
+    if not isinstance(cuda, dict):
+        return None
+    version = cuda.get("version")
+    return version if isinstance(version, str) else None
 
 
 # --- /proc/driver/nvidia/version --------------------------------------------
@@ -140,6 +149,8 @@ def parse_docker_default_runtime(text: str) -> str | None:
     try:
         data = json.loads(text)
     except (json.JSONDecodeError, ValueError):
+        return None
+    if not isinstance(data, dict):
         return None
     runtime = data.get("default-runtime")
     return runtime if isinstance(runtime, str) else None

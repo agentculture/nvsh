@@ -121,3 +121,20 @@ def test_approve_list_text(capsys):
     assert rc == 0
     out = capsys.readouterr().out
     assert "nvsh *" in out
+
+
+def test_approve_remove_reports_a_missing_pattern(capsys):
+    rc = main(["approve", "remove", "not-approved *", "--json"])
+    out = json.loads(capsys.readouterr().out)
+    assert rc == 0
+    assert out["found"] is False
+
+
+def test_approve_remove_reports_a_real_removal(capsys):
+    rc = main(["approve", "remove", "nvidia-smi  *", "--json"])
+    out = json.loads(capsys.readouterr().out)
+    assert rc == 0
+    assert out["found"] is True
+    main(["approve", "list", "--json"])
+    listed = json.loads(capsys.readouterr().out)
+    assert "nvidia-smi *" not in listed["user"]

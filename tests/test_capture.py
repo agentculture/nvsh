@@ -358,3 +358,59 @@ def test_slice_has_expected_fields():
     assert s.source == "script"
     assert s.redaction_rules == []
     assert s.bytes_total == 2
+
+
+# --- PR #8 review: injection-proof pipe command, honest byte cap ------------
+
+
+def test_tmux_pipe_command_escapes_a_quote_in_the_path(tmp_path):
+    """A log path with an apostrophe must not break out of the quoted target.
+
+    ``XDG_RUNTIME_DIR`` is operator-controlled, so the rendered line has to
+    survive a path that closes the quote and appends shell syntax.
+    """
+    log = tmp_path / "nvsh'; touch pwned; '" / "42.log"
+    cmd = capture.tmux_pipe_command(log)
+    assert "touch pwned" in cmd  # the path is still there, verbatim...
+    # ...but every apostrophe in it is escaped, so nothing is a new word.
+    inner = cmd[len('tmux pipe-pane -o "cat >> ') : -len('"')]
+    assert inner.startswith("'") and inner.endswith("'")
+    assert "'\\''" in inner
+    # bash agrees: the whole path is one word.
+    import subprocess  # noqa: PLC0415 - local to this assertion
+
+    out = subprocess.run(  # noqa: S603
+        ["bash", "-c", f"printf '%s\\n' {inner}"], capture_output=True, text=True, check=True
+    )
+    assert out.stdout == f"{log}\n"
+
+
+def test_bound_never_exceeds_the_limit():
+    raw = b"x" * 10_000
+    for limit in (10, 40, 64, 100, 512, 9_999):
+        bounded, truncated = capture._bound(raw, limit)
+        assert truncated is True
+        assert len(bounded) <= limit, (limit, len(bounded))
+
+
+def test_bound_keeps_head_and_tail_and_a_marker():
+    raw = b"A" * 500 + b"B" * 500
+    bounded, truncated = capture._bound(raw, 200)
+    assert truncated is True
+    assert len(bounded) <= 200
+    assert bounded.startswith(b"A")
+    assert bounded.endswith(b"B")
+    assert b"truncated" in bounded
+
+
+def test_bound_under_the_limit_is_untouched():
+    raw = b"short"
+    assert capture._bound(raw, 100) == (raw, False)
+
+
+def test_last_slice_respects_a_small_limit(tmp_path):
+    log = tmp_path / "s.log"
+    log.write_bytes(b"\x1b]133;C\x07" + b"z" * 5_000 + b"\x1b]133;D;1\x07")
+    sliced = capture.last_slice(log, limit=120)
+    assert sliced.status == "truncated"
+    assert len(sliced.text.encode("utf-8")) <= 120

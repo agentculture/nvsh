@@ -765,9 +765,15 @@ class Daemon:
             )
 
     def cancel_shell(self, shell: str) -> None:
-        """Cancel whatever the agent serving *shell* is streaming."""
+        """Cancel whatever the agent serving *shell* is streaming.
+
+        Strictly per-shell: a shell that holds no slot has nothing to cancel.
+        Falling back to every slot meant a terminal queued behind another
+        terminal's turn cancelled *that* terminal's agent the moment its own
+        operator interrupted the panel.
+        """
         with self._lock:
-            slots = [slot for slot in self._slots if slot.shell == shell] or list(self._slots)
+            slots = [slot for slot in self._slots if slot.shell == shell]
         for slot in slots:
             try:
                 slot.agent.cancel()
@@ -984,13 +990,17 @@ class Daemon:
         (or a shell with no turn running) answers ``False``, which comes
         back as an ``error`` -- the client then sends the text as the next
         request rather than believing it landed.
+
+        Only the requesting shell's own slot is consulted: an idle, stale or
+        mis-identified shell used to fall back to *every* slot and inject its
+        text into another operator's running conversation.
         """
         text = str(message.get("text", "") or "")
         if not text:
             yield AgentEvent(kind=EventKind.ERROR, error="steer needs text")
             return
         with self._lock:
-            slots = [slot for slot in self._slots if slot.shell == shell] or list(self._slots)
+            slots = [slot for slot in self._slots if slot.shell == shell]
         delivered = False
         for slot in slots:
             send_steer = getattr(slot.agent, "steer", None)
@@ -1010,11 +1020,12 @@ class Daemon:
     def _handle_ui_response(
         self, shell: str, message: Mapping[str, object]
     ) -> Iterator[AgentEvent]:
+        """Answer this shell's own pending dialog (same isolation as steer)."""
         request_id = str(message.get("request_id", "") or "")
         raw_fields = message.get("fields")
         fields = dict(raw_fields) if isinstance(raw_fields, Mapping) else {}
         with self._lock:
-            slots = [slot for slot in self._slots if slot.shell == shell] or list(self._slots)
+            slots = [slot for slot in self._slots if slot.shell == shell]
         delivered = False
         for slot in slots:
             respond = getattr(slot.agent, "respond_ui", None)

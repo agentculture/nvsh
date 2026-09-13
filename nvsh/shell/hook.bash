@@ -47,6 +47,60 @@ __NVSH_INTERACTIVE_PROGRAMS_DEFAULT='docker htop jtop kubectl less screen ssh su
 
 __nvsh_capture_cleanup() {
     [[ -n ${NVSH_LOG:-} && -f ${NVSH_LOG} ]] && rm -f -- "${NVSH_LOG}"
+    # Whatever EXIT handler was already installed runs after ours: taking the
+    # trap must not silently drop the operator's own.
+    [[ -n ${__NVSH_PREV_EXIT_TRAP:-} ]] && eval "${__NVSH_PREV_EXIT_TRAP}"
+    return 0
+}
+
+# Install the cleanup EXIT trap, chaining any handler already in place.
+# Called only once capture is really running, never speculatively.
+__nvsh_capture_trap() {
+    local __nvsh_prev
+    __nvsh_prev=$(trap -p EXIT 2>/dev/null)
+    case ${__nvsh_prev} in
+    *__nvsh_capture_cleanup*) return 0 ;; # already ours
+    esac
+    __NVSH_PREV_EXIT_TRAP=''
+    if [[ -n ${__nvsh_prev} ]]; then
+        __nvsh_prev=${__nvsh_prev#trap -- }
+        __nvsh_prev=${__nvsh_prev% EXIT}
+        eval "__NVSH_PREV_EXIT_TRAP=${__nvsh_prev}" 2>/dev/null || __NVSH_PREV_EXIT_TRAP=''
+    fi
+    trap '__nvsh_capture_cleanup' EXIT
+    return 0
+}
+
+# Give up on capture for this shell: drop the log just created (an empty file
+# nothing will ever write to) and stop advertising it.
+__nvsh_capture_abandon() {
+    [[ -n ${NVSH_LOG:-} && -f ${NVSH_LOG} ]] && rm -f -- "${NVSH_LOG}"
+    unset NVSH_LOG
+    return 0
+}
+
+# Single-quote $1 for a shell word, escaping embedded apostrophes; renders
+# the identical string as nvsh.capture.shell_single_quote. NVSH_LOG derives
+# from XDG_RUNTIME_DIR, which is environment-controlled, and `tmux pipe-pane`
+# runs its argument through a shell - so an apostrophe in the path must not
+# be able to close the quoting and run commands as the operator.
+__NVSH_QUOTED=''
+__nvsh_shquote() {
+    __NVSH_QUOTED="'${1//\'/\'\\\'\'}'"
+    return 0
+}
+
+# Where this session's log lives. Mirrors nvsh.capture._runtime_dir exactly:
+# $XDG_RUNTIME_DIR/nvsh when it is set, else a *per-uid* directory. A shared
+# /tmp/nvsh let whichever user got there first own a 0700 directory that
+# locked every other user out of capture, and made the log names predictable
+# to anyone who pre-created it. ${UID} is a bash builtin variable: no fork.
+__nvsh_capture_dir() {
+    if [[ -n ${XDG_RUNTIME_DIR:-} ]]; then
+        __NVSH_CAPTURE_DIR=${XDG_RUNTIME_DIR}/nvsh
+    else
+        __NVSH_CAPTURE_DIR=${TMPDIR:-/tmp}/nvsh-${UID}
+    fi
     return 0
 }
 
@@ -55,13 +109,19 @@ __nvsh_capture_cleanup() {
 # when script(1) is missing we simply continue without capture.
 __nvsh_capture_start() {
     [[ ${NVSH_CAPTURE:-1} == 0 ]] && return 0
-    [[ -n ${NVSH_WRAPPED:-} ]] && return 0
+
+    # The shell *inside* the capture wrapper. The outer shell's EXIT trap died
+    # with its `exec`, so this shell - the one the operator actually exits -
+    # is the only one that can remove the typescript. Without this every
+    # non-tmux session left its log behind on disk.
+    if [[ -n ${NVSH_WRAPPED:-} ]]; then
+        [[ -n ${NVSH_LOG:-} ]] && __nvsh_capture_trap
+        return 0
+    fi
     [[ -n ${NVSH_LOG:-} ]] && return 0
 
-    # Per-uid fallback, never a shared ${TMPDIR}/nvsh another user could
-    # create first; matches nvsh.runtimedir.fallback_dir().
-    local __nvsh_dir=${XDG_RUNTIME_DIR:+${XDG_RUNTIME_DIR}/nvsh}
-    __nvsh_dir=${__nvsh_dir:-${TMPDIR:-/tmp}/nvsh-${UID}}
+    __nvsh_capture_dir
+    local __nvsh_dir=${__NVSH_CAPTURE_DIR}
     (umask 077 && mkdir -p "${__nvsh_dir}") || return 0
     # Refuse a directory that is not ours (a symlink, or another user's):
     # nvsh.runtimedir.ensure_private() refuses exactly the same things.
@@ -69,17 +129,28 @@ __nvsh_capture_start() {
     local __nvsh_log=${__nvsh_dir}/$$.log
     (umask 077 && : >"${__nvsh_log}") || return 0
     export NVSH_LOG=${__nvsh_log}
-    trap '__nvsh_capture_cleanup' EXIT
 
     if [[ -n ${TMUX:-} ]]; then
-        command -v tmux >/dev/null 2>&1 || return 0
-        tmux pipe-pane -o "cat >> '${NVSH_LOG}'" >/dev/null 2>&1
+        if command -v tmux >/dev/null 2>&1; then
+            __nvsh_shquote "${NVSH_LOG}"
+            if tmux pipe-pane -o "cat >> ${__NVSH_QUOTED}" >/dev/null 2>&1; then
+                __nvsh_capture_trap
+                return 0
+            fi
+        fi
+        __nvsh_capture_abandon
         return 0
     fi
 
-    command -v script >/dev/null 2>&1 || return 0
+    if ! command -v script >/dev/null 2>&1; then
+        __nvsh_capture_abandon
+        return 0
+    fi
     export NVSH_WRAPPED=1
     exec script -qfc "${BASH}" "${NVSH_LOG}"
+    # Only reached when the exec itself failed: there is no capture.
+    unset NVSH_WRAPPED
+    __nvsh_capture_abandon
     return 0
 }
 
@@ -113,6 +184,13 @@ __nvsh_hook() {
     # and PIPESTATUS. One `local` command, so both expansions still see the
     # user's command's values.
     local __nvsh_status=$? __nvsh_pipe=("${PIPESTATUS[@]}")
+
+    # The kill switch, honoured at *run* time as well as at source time: an
+    # already-installed hook that could not be removed from PROMPT_COMMAND
+    # (an integration rewrote it, or `nvsh off` ran in a shell where it is a
+    # read-only scalar) must still stop working when NVSH_DISABLE is set.
+    # One string test, no fork - the success path stays free.
+    [[ -n ${NVSH_DISABLE:-} && ${NVSH_DISABLE} != 0 ]] && return 0
 
     # bash-preexec (loaded by Ghostty's own integration on bash < 5.3, and by
     # kiro-cli / fig / amazon-q on any bash) rewrites PROMPT_COMMAND on its first prompt so that its
@@ -254,13 +332,22 @@ __nvsh_hook_install() {
 __nvsh_hook_unload() {
     local -a __nvsh_rest=()
     local __nvsh_e
-    if [[ -n ${PROMPT_COMMAND+x} && ${PROMPT_COMMAND@a} == *a* ]]; then
-        for __nvsh_e in "${PROMPT_COMMAND[@]}"; do
-            __nvsh_strip_hook "${__nvsh_e}"
-            [[ -z ${__NVSH_STRIPPED} ]] && continue
-            __nvsh_rest+=("${__NVSH_STRIPPED}")
-        done
-        PROMPT_COMMAND=("${__nvsh_rest[@]}")
+    if [[ -n ${PROMPT_COMMAND+x} ]]; then
+        if [[ ${PROMPT_COMMAND@a} == *a* ]]; then
+            for __nvsh_e in "${PROMPT_COMMAND[@]}"; do
+                __nvsh_strip_hook "${__nvsh_e}"
+                [[ -z ${__NVSH_STRIPPED} ]] && continue
+                __nvsh_rest+=("${__NVSH_STRIPPED}")
+            done
+            PROMPT_COMMAND=("${__nvsh_rest[@]}")
+        else
+            # bash-preexec converts the array into one newline-joined string
+            # (the install path already handles that form). Only unloading
+            # ignored it, so `nvsh off` left the hook running in exactly the
+            # shells the install notes call out.
+            __nvsh_strip_hook "${PROMPT_COMMAND}"
+            PROMPT_COMMAND=${__NVSH_STRIPPED}
+        fi
     fi
     unset __NVSH_HOOK_LOADED __NVSH_OSC133_OWNED __NVSH_LAST_HISTCMD __NVSH_SLASH_DISPATCH
     return 0

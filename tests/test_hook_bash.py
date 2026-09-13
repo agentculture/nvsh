@@ -16,6 +16,7 @@ import os
 import pty
 import re
 import select
+import shlex
 import shutil
 import statistics
 import subprocess
@@ -627,3 +628,117 @@ def test_capture_is_skipped_when_disabled(tmp_path, fake_nvsh):
     env = fake_nvsh.env(tmp_path, NVSH_CAPTURE="0")
     out = _run_bash([_source(), 'echo "WRAPPED=${NVSH_WRAPPED:-none}"'], env)
     assert "WRAPPED=none" in out
+
+
+# --------------------------------------------------------------------------
+# PR #8 review
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(shutil.which("script") is None, reason="util-linux script(1) not installed")
+def test_capture_log_is_removed_when_the_wrapped_shell_exits(tmp_path, fake_nvsh):
+    """The typescript must not outlive the session that wrote it.
+
+    The outer shell's EXIT trap dies with its ``exec``, so the *inner*
+    shell -- the one the operator exits -- owns the cleanup. Its rc file is
+    what re-sources the hook, so that is what this test gives it.
+    """
+    rc = tmp_path / ".bashrc"
+    rc.write_text(f"source {HOOK}\n")
+    env = fake_nvsh.env(tmp_path, NVSH_CAPTURE="1")
+    env.pop("TMUX", None)
+    out = _run_bash([_source(), 'echo "LOG=${NVSH_LOG:-none}"'], env)
+    log = Path(_tagged(out, "LOG=")[len("LOG=") :].strip())
+    assert log.name.endswith(".log"), out
+    assert not log.exists(), f"{log} survived the session"
+
+
+@pytest.mark.skipif(shutil.which("script") is None, reason="util-linux script(1) not installed")
+def test_capture_chains_an_existing_exit_trap(tmp_path, fake_nvsh):
+    """An EXIT handler the operator already had still runs."""
+    marker = tmp_path / "their-exit-ran"
+    rc = tmp_path / ".bashrc"
+    rc.write_text(f"trap 'touch {marker}' EXIT\nsource {HOOK}\n")
+    env = fake_nvsh.env(tmp_path, NVSH_CAPTURE="1")
+    env.pop("TMUX", None)
+    out = _run_bash([_source(), 'echo "LOG=${NVSH_LOG:-none}"'], env)
+    log = Path(_tagged(out, "LOG=")[len("LOG=") :].strip())
+    assert marker.exists(), f"the pre-existing EXIT trap was dropped\n{out}"
+    assert not log.exists()
+
+
+def test_capture_dir_without_xdg_runtime_is_per_uid(tmp_path, fake_nvsh):
+    """A shared /tmp/nvsh let the first user lock everyone else out."""
+    env = fake_nvsh.env(tmp_path, NVSH_CAPTURE="0")
+    env.pop("XDG_RUNTIME_DIR", None)
+    out = _run_bash(
+        [_source(), "__nvsh_capture_dir", 'echo "DIR=${__NVSH_CAPTURE_DIR}"'],
+        env,
+    )
+    assert f"DIR=/tmp/nvsh-{os.getuid()}" in _tagged(out, "DIR=")
+
+
+def test_capture_dir_prefers_xdg_runtime(tmp_path, fake_nvsh):
+    env = fake_nvsh.env(tmp_path, NVSH_CAPTURE="0")
+    out = _run_bash(
+        [_source(), "__nvsh_capture_dir", 'echo "DIR=${__NVSH_CAPTURE_DIR}"'],
+        env,
+    )
+    assert f"DIR={tmp_path / 'run' / 'nvsh'}" in _tagged(out, "DIR=")
+
+
+def test_shquote_escapes_apostrophes_for_the_tmux_pipe(tmp_path, fake_nvsh):
+    """`tmux pipe-pane` runs its argument through a shell: quote the path."""
+    env = fake_nvsh.env(tmp_path, NVSH_CAPTURE="0")
+    evil = "/tmp/nvsh'; touch /tmp/nvsh-pwned; '/x.log"
+    out = _run_bash(
+        [
+            _source(),
+            f"__nvsh_shquote {shlex.quote(evil)}",
+            "eval \"printf 'ONEWORD:%s\\n' ${__NVSH_QUOTED}\"",
+        ],
+        env,
+    )
+    line = _tagged(out, "ONEWORD:")
+    assert line.strip() == f"ONEWORD:{evil}"
+    assert not Path("/tmp/nvsh-pwned").exists()  # noqa: S108 - asserting absence
+
+
+def test_unload_removes_the_hook_from_a_scalar_prompt_command(tmp_path, fake_nvsh):
+    """`nvsh off` must work after an integration joined PROMPT_COMMAND."""
+    env = fake_nvsh.env(tmp_path)
+    out = _run_bash(
+        [
+            _source(),
+            "unset PROMPT_COMMAND",
+            "PROMPT_COMMAND=$'__nvsh_hook\\necho legacy >/dev/null'",
+            "__nvsh_hook_unload",
+            "declare -p PROMPT_COMMAND | tr -d '\\n' | sed 's/^/PC:/'",
+        ],
+        env,
+    )
+    line = _tagged(out, "PC:")
+    assert "__nvsh_hook" not in line, line
+    assert "echo legacy" in line
+
+
+def test_a_disabled_hook_still_in_prompt_command_does_nothing(tmp_path, fake_nvsh):
+    """`nvsh off` exports NVSH_DISABLE=1; a surviving hook must honour it."""
+    env = fake_nvsh.env(tmp_path)
+    _run_bash(
+        [
+            _source(),
+            "export NVSH_DISABLE=1",
+            "false",
+            "ls /definitely-not-here",
+        ],
+        env,
+    )
+    assert fake_nvsh.count == 0
+
+
+def test_disable_zero_keeps_the_hook_working(tmp_path, fake_nvsh):
+    """`0` means the off switch is off: the hook still fires."""
+    env = fake_nvsh.env(tmp_path, NVSH_DISABLE="0")
+    _run_bash([_source(), "ls /definitely-not-here"], env)
+    assert fake_nvsh.count >= 1

@@ -102,5 +102,7 @@ def parse_spark_status(stdout: str) -> bool | None:
         data = json.loads(stdout)
     except (json.JSONDecodeError, ValueError):
         return None
+    if not isinstance(data, dict):
+        return None
     available = data.get("available")
     return available if isinstance(available, bool) else None

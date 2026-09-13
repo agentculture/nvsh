@@ -11,7 +11,9 @@ idempotent close) so each concrete adapter only supplies ``_argv`` and
 from __future__ import annotations
 
 import subprocess  # nosec B404 - fixed argv lists below, no shell=True
-from typing import Iterator
+import threading
+from collections import deque
+from typing import IO, Iterator
 
 from .base import AgentContext, AgentEvent, AgentRequest, EventKind, NvshAgent
 from .prompt import build_full_prompt as _build_full_prompt
@@ -30,6 +32,23 @@ build_prompt = _build_prompt
 #: the head of the prompt where none does.
 build_system_prompt = _build_system_prompt
 build_full_prompt = _build_full_prompt
+
+
+#: How many stderr lines are kept for a non-zero exit. Enough to explain a
+#: failure, bounded so a chatty backend cannot grow the daemon's memory.
+_STDERR_TAIL_LINES = 200
+
+#: How long the drain thread is given to finish once the child is gone.
+_STDERR_JOIN_TIMEOUT = 2.0
+
+
+def _drain(stream: IO[str], sink: deque[str]) -> None:
+    """Read ``stream`` to EOF into ``sink`` (bounded). Never raises."""
+    try:
+        for line in stream:
+            sink.append(line)
+    except (OSError, ValueError):  # closed underneath us by cancel/terminate
+        pass
 
 
 class SubprocessAgent(NvshAgent):
@@ -75,6 +94,18 @@ class SubprocessAgent(NvshAgent):
             yield AgentEvent(kind=EventKind.ERROR, error=f"failed to start {argv[0]}: {exc}")
             return
 
+        # Drain stderr concurrently. Reading it only once stdout hits EOF
+        # deadlocks any backend that writes more than a pipe buffer's worth
+        # of warnings while it is still running: the child blocks on stderr,
+        # so it never closes stdout, so the hook waits out the daemon's turn
+        # timeout instead of showing the diagnosis. Only a bounded tail is
+        # kept -- that is all a non-zero exit needs to be explainable.
+        tail: deque[str] = deque(maxlen=_STDERR_TAIL_LINES)
+        drain: threading.Thread | None = None
+        if self._proc.stderr is not None:
+            drain = threading.Thread(target=_drain, args=(self._proc.stderr, tail), daemon=True)
+            drain.start()
+
         try:
             assert self._proc.stdout is not None
             for raw_line in self._proc.stdout:
@@ -90,14 +121,21 @@ class SubprocessAgent(NvshAgent):
                 return
             rc = self._proc.wait()
             if rc != 0:
-                stderr = self._proc.stderr.read() if self._proc.stderr else ""
+                if drain is not None:
+                    drain.join(timeout=_STDERR_JOIN_TIMEOUT)
+                stderr = "".join(tail)
                 yield AgentEvent(
                     kind=EventKind.ERROR, error=stderr.strip() or f"{argv[0]} exited {rc}"
                 )
             else:
                 yield AgentEvent(kind=EventKind.DONE)
         finally:
+            # Terminating closes the child's end of the pipe, so the drain
+            # thread sees EOF and returns; join it so no reader outlives the
+            # turn (cancellation included).
             self._terminate_if_running()
+            if drain is not None:
+                drain.join(timeout=_STDERR_JOIN_TIMEOUT)
 
     def cancel(self) -> None:
         self._cancelled = True

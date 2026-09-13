@@ -1,7 +1,7 @@
 # Delivery Summary — nvsh bash hook + agent on error
 
 plan: `nvsh-bash-hook-agent-on-error` · run: `complete` · date: `2026-09-13`
-baseline: `devague summary skeleton`
+baseline: `devague summary` (the eight-section delivery skeleton it renders)
 
 ## Intent
 
@@ -62,7 +62,7 @@ After: After 'nvsh setup', the operator's own bash is unchanged on success; a qu
 - `d1` — nvsh setup also detects missing helper tools (uv, tmux; pi via npm) and offers to install them; on confirmation setup runs the install itself (apt/snap/npm), so orin gets uv and tmux from the setup flow instead of manual steps — operator request during wave 5 (2026-09-13): orin has no uv and no tmux; thor has npm but no pi; the plan's setup only printed the pi offer
 - pending approval (not yet a decision): `d2`, `d3`, `d4`, `d5`, `d6`, `d7`, `d8`, `d9`, `d10`, `d11`, `d12`, `d13`, `d14`, `d15`, `d16`, `d17`, `d18`, `d19`, `d20`, `d21`, `d22`, `d23`
 
-- `d2`..`d23` — twenty-two further departures were recorded the moment they surfaced (proposed, LLM-origin, awaiting `devague deviate --confirm`): d2-d9 from the t19 hardware verification, d10-d23 from the operator's live sessions on spark and orin during the run. Each is quoted in Drift From Plan below.
+- `d2`..`d23` — twenty-two further departures were recorded the moment they surfaced (proposed, LLM-origin, awaiting `devague deviate --confirm <id>`, run once per deviation id): d2-d9 from the t19 hardware verification, d10-d23 from the operator's live sessions on spark and orin during the run. Each is quoted in Drift From Plan below.
 - Merge discipline not in the plan: every task merged through a TDD gate script (tests before, `git merge --no-ff`, tests after, lint); `uv run --frozen` throughout because `uv run` rewrites uv.lock; recurring additive conflicts in nvsh/cli/__init__.py, nvsh/explain/catalog.py and pyproject.toml resolved by keeping both sides.
 - Verification was done on the real installs: the wheel was rebuilt and `uv tool install --force`d on spark, thor and orin after each fix wave, and the operator tested live while the run continued. The operator's real rc files were never edited by agents (setup/uninstall rows ran against throwaway HOMEs).
 - validate-delivery first pass filed e2-e52 as fail on an empty pytest run (l28); superseded by e53-e104 from a verified run. e2-e52 await the user's `--reject`.

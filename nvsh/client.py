@@ -42,6 +42,8 @@ Stdlib only.
 
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import json
 import os
 import re
@@ -261,25 +263,70 @@ def _rate_window(config) -> float:
         return DEFAULT_RATE_WINDOW
 
 
+def rate_lock_path(env: Mapping[str, str] | None = None) -> Path:
+    """The per-user lock that makes the rate decision atomic across shells."""
+    return state_dir(env) / "rate.lock"
+
+
+@contextlib.contextmanager
+def _rate_lock(env: Mapping[str, str] | None):
+    """Hold an exclusive ``flock`` over the load-decide-save transaction.
+
+    Two shells failing at the same moment used to read the same stale
+    timestamp and *both* call the agent, so "one automatic call per window"
+    was not actually enforced. The critical section is two small file
+    operations, and ``flock`` is released by the kernel when the holder
+    exits, so a crashed hook cannot wedge anyone's prompt. If the lock
+    cannot be taken at all (a read-only or exotic filesystem), the decision
+    still happens -- unsynchronized, as before -- rather than the prompt
+    losing its diagnosis.
+    """
+    fd: int | None = None
+    try:
+        path = rate_lock_path(env)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+    except OSError:
+        if fd is not None:
+            with contextlib.suppress(OSError):
+                os.close(fd)
+            fd = None
+    try:
+        yield
+    finally:
+        if fd is not None:
+            with contextlib.suppress(OSError):
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            with contextlib.suppress(OSError):
+                os.close(fd)
+
+
 def _rate_limited(args: Any, config, env: Mapping[str, str] | None) -> bool:
-    """Re-run the trigger decision against the *persisted* rate state."""
+    """Re-run the trigger decision against the *persisted* rate state.
+
+    The whole load-decide-save transaction runs under :func:`_rate_lock`, so
+    concurrent failures in different terminals cannot each authorize a call
+    from the same stale state.
+    """
     from .triggers import TriggerEvent, decide
 
     try:
         pipestatus = tuple(int(x) for x in str(getattr(args, "pipestatus", "") or "").split())
     except ValueError:
         pipestatus = ()
-    decision = decide(
-        TriggerEvent(
-            command=str(getattr(args, "line", "") or ""),
-            exit_code=int(getattr(args, "exit", 0) or 0),
-            pipestatus=pipestatus,
-            now=time.time(),
-            rate_window=_rate_window(config),
-            rate_state=_load_rate_state(env),
+    with _rate_lock(env):
+        decision = decide(
+            TriggerEvent(
+                command=str(getattr(args, "line", "") or ""),
+                exit_code=int(getattr(args, "exit", 0) or 0),
+                pipestatus=pipestatus,
+                now=time.time(),
+                rate_window=_rate_window(config),
+                rate_state=_load_rate_state(env),
+            )
         )
-    )
-    _save_rate_state(decision.rate_state, env)
+        _save_rate_state(decision.rate_state, env)
     return decision.action != "ask"
 
 
@@ -1218,6 +1265,26 @@ def verify(command: str, exit_code: int, panel: Panel) -> int:
     return exit_code
 
 
+def _run_in(directory: str, action):
+    """Run ``action()`` with the process cwd set to ``directory``.
+
+    An empty ``directory`` (an old state file with no recorded cwd) runs
+    ``action`` where we are. The previous directory is always restored, so a
+    failed run never leaves the client somewhere unexpected. This client is
+    a short-lived, single-threaded process: one chdir and back is honest
+    here, and it keeps the ``_run_command`` argv contract untouched.
+    """
+    if not directory:
+        return action()
+    previous = os.getcwd()
+    os.chdir(directory)
+    try:
+        return action()
+    finally:
+        with contextlib.suppress(OSError):
+            os.chdir(previous)
+
+
 def retry(
     last: Mapping[str, Any] | None = None,
     *,
@@ -1228,7 +1295,11 @@ def retry(
 
     The command is shown exactly as it was typed, confirmed through the
     panel, re-run with ``bash -lc`` (so the login environment matches an
-    interactive shell), and its new status is reported by :func:`verify`.
+    interactive shell) **in the directory it failed in**, and its new status
+    is reported by :func:`verify`. Re-running a command with relative paths
+    somewhere else is a different command: if the operator has since ``cd``'d
+    and the recorded directory is gone or unusable, nvsh says so and runs
+    nothing rather than guessing.
     """
     resolved = dict(os.environ if env is None else env)
     panel = _panel_for(panel, resolved)
@@ -1237,6 +1308,10 @@ def retry(
         panel.line("nvsh: no recorded failure to retry")
         return 1
     command = str(state["line"])
+    recorded_cwd = str(state.get("cwd") or "")
+    if recorded_cwd and not os.path.isdir(recorded_cwd):
+        panel.line(f"nvsh: not re-run: the directory it failed in is gone ({recorded_cwd})")
+        return 1
     proposal = Proposal(
         command=command,
         rationale=f"re-run the command that failed (exit {state.get('exit')})",
@@ -1248,7 +1323,11 @@ def retry(
         return 0
     if choice in _SCOPE_CHOICES:
         _approve_scope(panel, _load_approvals(), command, choice)
-    result = _run_approved(proposal, choice, login=True)
+    try:
+        result = _run_in(recorded_cwd, lambda: _run_approved(proposal, choice, login=True))
+    except OSError as exc:
+        panel.line(f"nvsh: not re-run: cannot enter the directory it failed in ({exc})")
+        return 1
     if result.stdout:
         panel.write(result.stdout)
     if result.stderr:

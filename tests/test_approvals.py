@@ -195,3 +195,65 @@ def test_decide_returns_pattern_via_matches_helper(xdg_home):
     scope, pattern = approvals.matches("nvidia-smi -q")
     assert scope == "user"
     assert pattern == "nvidia-smi *"
+
+
+# --- PR #8 review: a wildcard must not smuggle sudo/rm past the policy ------
+
+
+@pytest.mark.parametrize(
+    "pattern",
+    ["sudo*", "sudo *", "su[d]o *", "rm*", "r?", "*", "* -rf /", "?udo *"],
+)
+def test_add_refuses_globbed_privileged_patterns(xdg_home, pattern):
+    """A pattern whose executable token can *match* sudo/rm is refused too.
+
+    ``refusal_reason`` used to compare the first word literally, so ``sudo*``
+    slipped through and then auto-approved ``sudo rm -rf /`` at match time.
+    """
+    from nvsh.approvals import ApprovalError
+
+    approvals = Approvals.default()
+    with pytest.raises(ApprovalError):
+        approvals.add(pattern, scope="user")
+
+
+def test_stored_wildcard_never_auto_approves_sudo(xdg_home):
+    """Defence in depth: even a pattern already on disk cannot approve sudo."""
+    approvals = Approvals.default()
+    approvals.user_patterns.append("sudo*")  # as if hand-edited into approved.toml
+    assert approvals.decide("sudo rm -rf /") == "ask"
+    assert approvals.matches("sudo rm -rf /") == ("ask", None)
+
+
+def test_stored_wildcard_never_auto_approves_rm(xdg_home):
+    approvals = Approvals.default()
+    approvals.session_patterns.append("*")
+    assert approvals.decide("rm -rf /etc") == "ask"
+
+
+def test_ordinary_commands_still_match_their_patterns(xdg_home):
+    approvals = Approvals.default()
+    assert approvals.decide("nvidia-smi -q") == "user"
+
+
+def test_default_patterns_are_all_acceptable(xdg_home):
+    from nvsh.approvals import refusal_reason
+
+    for pattern in DEFAULT_PATTERNS:
+        assert refusal_reason(pattern) is None, pattern
+
+
+# --- PR #8 review: removal normalizes the way add() does -------------------
+
+
+def test_remove_normalizes_whitespace(xdg_home):
+    approvals = Approvals.default()
+    approvals.add("kubectl   get *", scope="user")
+    assert approvals.remove("kubectl get  *") is True
+    assert not [p for p in approvals.user_patterns if p.startswith("kubectl")]
+
+
+def test_remove_reports_whether_anything_went(xdg_home):
+    approvals = Approvals.default()
+    assert approvals.remove("nothing like this *") is False
+    assert approvals.remove("nvidia-smi *") is True

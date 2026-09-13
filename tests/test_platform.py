@@ -12,8 +12,11 @@ from __future__ import annotations
 
 import os
 
+import pytest
+
 from nvsh.platform import Platform, Value, detect
-from nvsh.platform._subprocess import DEFAULT_TIMEOUT
+from nvsh.platform._files import parse_cuda_version, parse_docker_default_runtime
+from nvsh.platform._subprocess import DEFAULT_TIMEOUT, parse_spark_status
 
 FIXTURES = os.path.join(os.path.dirname(__file__), "fixtures", "platform")
 
@@ -322,3 +325,25 @@ def test_platform_render_block_lists_every_value_with_source():
     for value in platform.values:
         assert value.name in block
         assert value.source in block
+
+
+# --- PR #8 review: wrong-shaped JSON is an absent fact, not an exception ----
+
+
+@pytest.mark.parametrize("text", ["null", "[1, 2]", '"a string"', "3", '{"cuda": "13.0"}'])
+def test_parse_cuda_version_survives_wrong_shaped_json(text):
+    assert parse_cuda_version(text) is None
+
+
+@pytest.mark.parametrize("text", ["null", "[1, 2]", '"a string"', "3"])
+def test_parse_docker_default_runtime_survives_wrong_shaped_json(text):
+    assert parse_docker_default_runtime(text) is None
+
+
+@pytest.mark.parametrize("text", ["null", "[1, 2]", '"a string"', "3"])
+def test_parse_spark_status_survives_wrong_shaped_json(text):
+    assert parse_spark_status(text) is None
+
+
+def test_parse_cuda_version_still_reads_a_well_shaped_file():
+    assert parse_cuda_version('{"cuda": {"version": "13.0.2"}}') == "13.0.2"
