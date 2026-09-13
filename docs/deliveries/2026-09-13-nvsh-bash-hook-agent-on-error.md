@@ -97,10 +97,10 @@ After: After 'nvsh setup', the operator's own bash is unchanged on success; a qu
 
 ## Evidence
 
-- tests: `uv run --frozen pytest -n auto -q` — 989 passed, 3 skipped at `ce05cfa` (coverage 90 %, fail_under 60); the 135 obligation-mapped node ids ran green in the validate-delivery pass (`e53`..`e104`, one per obligation `o1`..`o52`; `o1`, `o18`, `o30`, `o32` carry manual/observation evidence)
-- lint: `black --check`, `isort --check-only`, `flake8`, `bandit -c pyproject.toml -r nvsh`, `markdownlint-cli2 "**/*.md" …`, `python3 scripts/scan-secrets.py`, `teken cli doctor . --strict`, `scripts/harness-smoke.py --stage config --require config` — all green at `ce05cfa`
+- tests: `uv run --frozen pytest -n auto -q` — 989 passed, 3 skipped at `8397e7e` (coverage 90 %, fail_under 60); the 135 obligation-mapped node ids ran green in the validate-delivery pass (`e53`..`e104`, one per obligation `o1`..`o52`; `o1`, `o18`, `o30`, `o32` carry manual/observation evidence)
+- lint: `black --check`, `isort --check-only`, `flake8`, `bandit -c pyproject.toml -r nvsh`, `markdownlint-cli2 "**/*.md" …`, `python3 scripts/scan-secrets.py`, `teken cli doctor . --strict`, `scripts/harness-smoke.py --stage config --require config` — all green at `8397e7e`
 - hardware: docs/verification.md (spark Ghostty, thor ssh with/without tmux, orin ssh; first pass + re-verification after d2-d8), docs/demos/spark-cuda-oom.cast, docs/demos/orin-missing-package.cast, tests/test_timing.py (success path +0.055 ms vs 5 ms target; first fake-agent text 37 ms vs 2 s); live through the daemon after d14: first text 1.6-2.7 s on spark (agent), about 5 s end to end (operator)
-- commits: `b19a871` (main) .. `ce05cfa` on `spec/bash-hook-agent-on-error`, 23 task merges `merge agent/t*` and 21 deviation merges `merge agent/d*`
+- commits: `b19a871` (main) .. `8397e7e` on `spec/bash-hook-agent-on-error`, 23 task merges `merge agent/t*` and 21 deviation merges `merge agent/d*`
 - PRs / issues: PR opened from this branch (see below); issues #1, #2 (spec), #7 (machine-level undo, out of scope)
 
 ## Delivery Claims
