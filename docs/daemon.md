@@ -50,17 +50,63 @@ The daemon never writes to a terminal.
 
 ## Timeouts
 
-Three different waits, deliberately kept apart — conflating the first two is
-what made every cold session pay a timeout and answer one-shot:
+Several different waits, deliberately kept apart — conflating the first two
+is what made every cold session pay a timeout and answer one-shot:
 
 | Wait | Default | Override |
 | --- | --- | --- |
 | `connect()` on an existing socket | 5 s | — |
 | Autostart: daemon accepts *and answers* a `ping` | 10 s | `$NVSH_DAEMON_START_TIMEOUT` |
 | One read while streaming a request's events | 120 s | `send(..., timeout=…)` |
+| One agent turn, wall clock, before the daemon aborts it | 300 s | `$NVSH_TURN_TIMEOUT`, `Daemon(turn_timeout=…)` |
+| A queued request re-announces that it is still waiting | every 15 s | — |
 
 The stream timeout has to cover a **cold** backend's first token (pi loading
-node, a model warming up), which is far longer than any connect.
+node, a model warming up), which is far longer than any connect. The turn
+cap is longer again, and deliberately finite — see "Busy daemon" below.
+Junk or non-positive values of `$NVSH_TURN_TIMEOUT` fall back to the
+default rather than disabling the cap.
+
+## Busy daemon
+
+Requests are served **one at a time** (pi steers one-at-a-time, and one
+shared process must never interleave two conversations), so a turn that
+never ends is a turn that blocks every other shell. Deviation d12 is what
+that looks like in the field: one shell's `/ask` turn became the active
+conversation and stayed active for nineteen minutes, and four other shells
+— including the operator's — each sat on the run lock until their *stream*
+timeout fired and answered one-shot, printing `daemon connection lost:
+timed out`. Three behaviors make that impossible:
+
+- **A turn whose client is gone is aborted.** While a turn runs, the daemon
+  watches the owning client's socket (with `MSG_PEEK`, so nothing is taken
+  off the stream) from a separate thread — the thread that owns the turn is
+  parked inside `agent.run()` and cannot notice. On EOF or reset it answers
+  any approval dialog the turn is parked on with a cancel, calls the
+  adapter's `cancel()`, leaves the conversation idle, and releases the
+  agent to the next queued request.
+- **A turn is capped in wall-clock time.** Past `turn_timeout` (default
+  300 s) the turn is aborted the same way and its client receives an
+  `error` event saying so and naming `$NVSH_TURN_TIMEOUT`.
+- **Waiting is visible.** A request that has to wait receives a `status`
+  event *before* it blocks — `waiting for the agent (busy with shell
+  3422579)` — and another every 15 s, so a queued client keeps receiving
+  bytes instead of hitting its stream timeout in silence. `nvsh daemon
+  status --json` reports `active_turn` (`{shell, started, elapsed}`, or
+  `null`) and `queued` (`[{shell, started, waiting}]`), and the text form
+  prints both.
+
+**Control messages never queue behind a turn.** `status`, `ping`,
+`register`, `unregister`, `cancel`, `undo`, `ui_response` and `stop` are
+answered without taking the run lock, so `nvsh daemon status` answers
+instantly on a busy daemon and an approval dialog can always be answered
+while the turn that raised it is still open. (This already held during d12
+— it is what let the wedge be diagnosed at all — and is now pinned by a
+test.)
+
+An abort is only as good as the adapter's `cancel()`: `NvshAgent.run()`
+must respect a pending `cancel()` (the conformance suite checks this), and
+an adapter that ignored it would still hold the agent.
 
 ## Wire protocol
 
@@ -123,7 +169,8 @@ many agent **processes** may exist:
   `max`, the least recently used process is re-targeted.
 
 Requests are served one at a time (pi steers one-at-a-time, and one shared
-process must never interleave two conversations).
+process must never interleave two conversations) — see "Busy daemon" above
+for what happens to the requests that have to wait.
 
 An adapter without `new_session`/`switch_session` (the stateless
 `openai-compat` client, for instance) is simply used as-is; nothing is
