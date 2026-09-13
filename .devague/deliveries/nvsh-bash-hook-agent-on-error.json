@@ -2,7 +2,7 @@
   "plan_slug": "nvsh-bash-hook-agent-on-error",
   "schema_version": 2,
   "created": "2026-09-13T13:17:31Z",
-  "updated": "2026-09-13T15:45:42Z",
+  "updated": "2026-09-13T16:02:54Z",
   "deviations": [
     {
       "id": "d1",
@@ -247,6 +247,21 @@
       "status": "proposed",
       "classification": "needs-follow-up",
       "seq": 16
+    },
+    {
+      "id": "d17",
+      "what": "operator on spark: [e] explain printed 'why: (no rationale given)' and re-showed the proposal; with pi the bash tool call has no reason field so rationale is always empty. Fix: the pi adapter uses the assistant text streamed just before the tool call as the proposal's rationale, and when that is empty [e] asks the agent mid-turn ('explain this proposal in two sentences', same channel as steer) and streams the answer with a waiting indicator before re-showing the proposal",
+      "task_ref": "t19",
+      "reason": "operator on 2026-09-13: 'I chose explain and got no explanation (or indication one coming)'; bundled with d16 steer since both use the mid-turn prompt",
+      "affects": [
+        "t13",
+        "t9",
+        "c48"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "classification": "needs-follow-up",
+      "seq": 17
     }
   ],
   "evidence": [],
