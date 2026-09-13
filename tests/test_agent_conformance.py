@@ -1,16 +1,32 @@
 """Shared conformance suite, run against every registered NvshAgent adapter.
 
-How to add an adapter (for t9/t10 and later backends): append a zero-arg
+How to add an adapter (for t10 and later backends): append a zero-arg
 factory to ``ADAPTERS`` below. Each factory takes a ``script`` (a list of
 ``AgentEvent`` -- or, for adapters that support it, raised exceptions -- to
-replay) and returns a fresh, unstarted ``NvshAgent`` instance. Today
-``ADAPTERS`` holds only a ``FakeAgent`` factory; a real adapter (PiAgent,
-a stdlib-HTTP adapter, ...) should be wrapped the same way, e.g. with a
-fixture backend/record-replay mode so the suite stays offline. Every
-adapter in ``ADAPTERS`` must pass every test in this module.
+replay) and returns a fresh, unstarted ``NvshAgent`` instance. ``ADAPTERS``
+holds a ``FakeAgent`` factory and a ``PiAgent`` factory (``_pi_agent_factory``
+below); a real adapter (a stdlib-HTTP adapter, ...) should be wrapped the
+same way, e.g. with a fixture backend/record-replay mode so the suite stays
+offline. Every adapter in ``ADAPTERS`` must pass every test in this module.
+
+``_pi_agent_factory`` drives ``PiAgent`` against ``tests/fakes/pi_scripted``,
+a fake ``pi --mode rpc`` that replays an arbitrary caller-supplied event
+script (unlike ``tests/fakes/pi``, whose canned responses are fixed and are
+instead exercised directly by ``tests/test_pi_agent.py``). This suite only
+ever scripts ``STATUS``, ``TEXT_DELTA``, ``ERROR`` and ``DONE`` events, so
+``_agent_event_to_wire`` only needs to cover those four kinds -- the wire
+shapes it produces are exactly what ``PiAgent._map_event`` (see
+``nvsh/agent/pi.py``) maps back to the original ``AgentEvent``: an
+unrecognized wire ``"type"`` maps to ``STATUS`` with that type as its text,
+which is what lets a plain ``{"type": "one"}`` line stand in for
+``AgentEvent(kind=STATUS, text="one")`` without a bespoke wire vocabulary.
 """
 
 from __future__ import annotations
+
+import json
+import os
+import tempfile
 
 import pytest
 
@@ -21,9 +37,43 @@ from nvsh.agent import (
     Capabilities,
     EventKind,
     FakeAgent,
+    PiAgent,
     RequestKind,
 )
 from tests._fake_adapters import ClaudeAgentViaFake, CodexAgentViaFake, QwenAgentViaFake
+
+FAKES_DIR = os.path.join(os.path.dirname(__file__), "fakes")
+
+
+def _agent_event_to_wire(event: AgentEvent) -> dict:
+    """Inverse of ``PiAgent._map_event`` for the event kinds this suite scripts."""
+    if event.kind == EventKind.STATUS:
+        return {"type": event.text}
+    if event.kind == EventKind.TEXT_DELTA:
+        return {
+            "type": "message_update",
+            "assistantMessageEvent": {"type": "text_delta", "delta": event.text},
+        }
+    if event.kind == EventKind.DONE:
+        return {"type": "agent_end"}
+    if event.kind == EventKind.ERROR:
+        return {"type": "error", "error": event.error}
+    raise NotImplementedError(f"no conformance wire mapping for {event.kind}")
+
+
+def _pi_agent_factory(script):
+    """Build a ``PiAgent`` that replays ``script`` via ``tests/fakes/pi_scripted``."""
+    tmp_home = tempfile.mkdtemp(prefix="nvsh-pi-conformance-")
+    env = dict(os.environ)
+    env["PATH"] = FAKES_DIR + os.pathsep + env.get("PATH", "")
+    env["HOME"] = tmp_home
+    env["XDG_STATE_HOME"] = os.path.join(tmp_home, "state")
+    wire = [_agent_event_to_wire(e) for e in script]
+    env["NVSH_TEST_PI_SCRIPT"] = json.dumps(wire)
+    return PiAgent(pi_path="pi_scripted", env=env)
+
+
+_pi_agent_factory.__name__ = "PiAgent"
 
 # Registry of adapter factories. Append here to bring a new backend under the
 # same conformance suite.
@@ -32,6 +82,7 @@ ADAPTERS = [
     ClaudeAgentViaFake,
     CodexAgentViaFake,
     QwenAgentViaFake,
+    _pi_agent_factory,
 ]
 
 

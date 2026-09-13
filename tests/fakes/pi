@@ -1,0 +1,154 @@
+#!/usr/bin/env python3
+"""Fake ``pi --mode rpc`` used by tests so CI never needs node/pi installed.
+
+Speaks a small, deliberately incomplete subset of the protocol documented in
+``docs/pi-rpc.md`` (itself summarizing the real
+``@earendil-works/pi-coding-agent`` ``docs/rpc.md``):
+
+* Reads JSONL commands from stdin, one per line.
+* On ``prompt``: replies with a ``response`` ack, then streams a
+  ``message_update`` text-delta event (two when the prompt contains
+  "TWODELTA"), optionally a ``tool_execution_start``/``tool_execution_end``
+  pair when the prompt contains "TOOL", an ``extension_ui_request`` when the
+  prompt contains "PROPOSE", and finally an ``agent_end`` event.
+* On ``abort``: replies with a ``response`` ack, then emits ``agent_end``
+  with ``aborted: true``.
+* On any other/unknown command type: emits an ``{"type": "error", ...}``
+  event.
+
+Set ``FAKE_PI_CRASH=1`` to make this process ``exit(1)`` partway through
+streaming a prompt's events (after the text delta, before ``agent_end``),
+simulating a crashed backend that a real caller must not hang waiting on.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+
+
+def emit(obj: dict) -> None:
+    sys.stdout.write(json.dumps(obj) + "\n")
+    sys.stdout.flush()
+
+
+def handle_prompt(cmd: dict) -> None:
+    message = cmd.get("message", "")
+    emit({"id": cmd.get("id"), "type": "response", "command": "prompt", "success": True})
+
+    emit(
+        {
+            "type": "message_update",
+            "assistantMessageEvent": {"type": "text_delta", "delta": "looking at the failure"},
+        }
+    )
+    if "TWODELTA" in message:
+        emit(
+            {
+                "type": "message_update",
+                "assistantMessageEvent": {"type": "text_delta", "delta": " and one more thing"},
+            }
+        )
+
+    if os.environ.get("FAKE_PI_CRASH") == "1":
+        sys.exit(1)
+
+    if "TOOL" in message:
+        emit(
+            {
+                "type": "tool_execution_start",
+                "toolCallId": "call_1",
+                "toolName": "bash",
+                "args": {"command": "nvidia-smi"},
+            }
+        )
+        emit(
+            {
+                "type": "tool_execution_end",
+                "toolCallId": "call_1",
+                "toolName": "bash",
+                "result": {"content": [{"type": "text", "text": "ok"}]},
+                "isError": False,
+            }
+        )
+
+    if "PROPOSE" in message:
+        emit(
+            {
+                "type": "extension_ui_request",
+                "id": "ui-1",
+                "method": "confirm",
+                "title": "Apply fix?",
+                "command": "sudo nvidia-smi -pm 1",
+                "message": "Run: sudo nvidia-smi -pm 1",
+            }
+        )
+        # A real pi blocks here for an extension_ui_response before
+        # continuing. This fake does not implement that round trip (it is
+        # only used to exercise the extension_ui_request -> PROPOSAL
+        # mapping); it always finishes the turn regardless.
+
+    emit({"type": "agent_end", "messages": [], "willRetry": False})
+
+
+def handle_abort(cmd: dict) -> None:
+    emit({"id": cmd.get("id"), "type": "response", "command": "abort", "success": True})
+    emit({"type": "agent_end", "messages": [], "willRetry": False, "aborted": True})
+
+
+def handle_unknown(cmd: dict) -> None:
+    emit(
+        {
+            "id": cmd.get("id"),
+            "type": "response",
+            "command": cmd.get("type", "unknown"),
+            "success": False,
+            "error": f"unknown command: {cmd.get('type')}",
+        }
+    )
+    emit({"type": "error", "error": f"unknown command: {cmd.get('type')}"})
+
+
+def main() -> None:
+    for raw_line in sys.stdin:
+        line = raw_line.strip()
+        if not line:
+            continue
+        try:
+            cmd = json.loads(line)
+        except json.JSONDecodeError:
+            emit({"type": "response", "command": "parse", "success": False, "error": "bad json"})
+            continue
+
+        cmd_type = cmd.get("type")
+        if cmd_type == "prompt":
+            handle_prompt(cmd)
+        elif cmd_type == "abort":
+            handle_abort(cmd)
+        elif cmd_type in ("new_session", "switch_session"):
+            emit(
+                {
+                    "id": cmd.get("id"),
+                    "type": "response",
+                    "command": cmd_type,
+                    "success": True,
+                    "data": {"cancelled": False},
+                }
+            )
+        elif cmd_type == "get_state":
+            emit(
+                {
+                    "id": cmd.get("id"),
+                    "type": "response",
+                    "command": "get_state",
+                    "success": True,
+                    "data": {"isStreaming": False},
+                }
+            )
+        else:
+            handle_unknown(cmd)
+
+
+if __name__ == "__main__":
+    main()

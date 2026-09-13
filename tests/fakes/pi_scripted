@@ -1,0 +1,65 @@
+#!/usr/bin/env python3
+"""Fake ``pi --mode rpc`` driven by an externally supplied event script.
+
+Used only by the shared ``tests/test_agent_conformance.py`` suite to make
+``PiAgent`` replay an arbitrary, test-supplied sequence of already-wire-shaped
+JSON events (built by ``_agent_event_to_wire`` in that test module) -- the
+same trick the generic ``tests/fakes/pi`` cannot do, since its canned
+responses are fixed.
+
+Protocol: reads ``NVSH_TEST_PI_SCRIPT`` (a JSON array of wire-event dicts,
+each with a ``"type"`` field) from the environment. On the first ``prompt``
+command received on stdin, acks it, then emits each scripted event in order.
+An ``abort`` command is acked but otherwise ignored -- ``PiAgent`` itself is
+responsible for not yielding further events after ``cancel()``, per the same
+contract ``FakeAgent`` honours.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+
+
+def emit(obj: dict) -> None:
+    sys.stdout.write(json.dumps(obj) + "\n")
+    sys.stdout.flush()
+
+
+def main() -> None:
+    script = json.loads(os.environ.get("NVSH_TEST_PI_SCRIPT", "[]"))
+    sent = False
+
+    for raw_line in sys.stdin:
+        line = raw_line.strip()
+        if not line:
+            continue
+        try:
+            cmd = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+
+        cmd_type = cmd.get("type")
+        if cmd_type == "prompt":
+            emit({"id": cmd.get("id"), "type": "response", "command": "prompt", "success": True})
+            if not sent:
+                sent = True
+                for event in script:
+                    emit(event)
+        elif cmd_type == "abort":
+            emit({"id": cmd.get("id"), "type": "response", "command": "abort", "success": True})
+        else:
+            emit(
+                {
+                    "id": cmd.get("id"),
+                    "type": "response",
+                    "command": cmd_type,
+                    "success": True,
+                    "data": {},
+                }
+            )
+
+
+if __name__ == "__main__":
+    main()
