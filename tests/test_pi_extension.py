@@ -76,6 +76,34 @@ def test_extension_offers_the_four_choices():
         assert f'"{choice}"' in text, f"missing choice {choice!r}"
 
 
+def test_extension_select_lists_the_four_choices_in_order():
+    """d15: the panel's keys map onto these, so the order is part of the contract."""
+    text = _read_extension()
+    start = text.index("await ctx.ui.select(")
+    options = text[text.index("[", start) : text.index("]", start) + 1]
+    found = [c for c in ("once", "session", "user", "deny") if f'"{c}"' in options]
+    assert found == ["once", "session", "user", "deny"], options
+    order = [options.index(f'"{c}"') for c in found]
+    assert order == sorted(order), options
+
+
+def test_extension_widens_the_user_scope_to_first_word_star():
+    """d15: `user` approves the command *class*, not just this exact line."""
+    text = _read_extension()
+    assert "command.trim().split(" in text
+    assert "`${firstWord} *`" in text
+
+
+def test_extension_adds_the_exact_line_for_the_session_scope():
+    """Session scope approves the line the model actually proposed, unwidened."""
+    text = _read_extension()
+    branch = text[text.index('if (choice === "session")') :]
+    branch = branch[: branch.index('audit(command, "session")')]
+    assert '"--session"' in branch
+    assert "command," in branch
+    assert "firstWord" not in branch
+
+
 def test_extension_blocks_with_reason_shape():
     text = _read_extension()
     assert "block: true" in text
@@ -183,6 +211,9 @@ def policy_env(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     monkeypatch.delenv("HOME", raising=False)
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    runtime = tmp_path / "run"
+    runtime.mkdir()
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime))
     return tmp_path
 
 
@@ -199,7 +230,9 @@ def test_scenario_nvidia_smi_is_user_approved(policy_env, capsys):
     assert payload["decision"] == "user"
 
 
-def test_scenario_apt_install_asks_then_session_then_fresh_daemon_asks_again(policy_env, capsys):
+def test_scenario_apt_install_asks_then_session_then_a_fresh_runtime_dir_asks_again(
+    policy_env, capsys, monkeypatch
+):
     rc = _run(["approve", "check", "apt install foo", "--json"])
     assert rc == 0
     assert json.loads(capsys.readouterr().out)["decision"] == "ask"
@@ -208,20 +241,22 @@ def test_scenario_apt_install_asks_then_session_then_fresh_daemon_asks_again(pol
     assert rc == 0
     capsys.readouterr()
 
-    # Same process (same daemon) now sees it as... still "ask", because
-    # session_patterns live in memory on one Approvals instance and every
-    # CLI invocation constructs a fresh Approvals() -- exactly why the spec
-    # says a "new daemon" (a fresh long-lived process holding one
-    # in-memory Approvals) is what actually remembers a session approval.
-    # Model that directly against the Approvals object instead of the CLI.
+    # d15: `nvsh approve add --session` runs in a throwaway subprocess, so
+    # the pattern is written to the login session's runtime dir. A later
+    # `nvsh approve check` -- another process entirely -- must see it.
+    rc = _run(["approve", "check", "apt install foo", "--json"])
+    assert rc == 0
+    assert json.loads(capsys.readouterr().out)["decision"] == "session"
+
     from nvsh.approvals import Approvals
 
-    approvals = Approvals.load()
-    approvals.add("apt install foo", scope="session")
-    assert approvals.decide("apt install foo") == "session"
+    assert Approvals.load().decide("apt install foo") == "session"
 
-    fresh = Approvals.load()  # a new daemon: session list is gone
-    assert fresh.decide("apt install foo") == "ask"
+    # ... and it dies with the runtime dir (logout, or a wiped /run/user).
+    fresh_runtime = policy_env / "run2"
+    fresh_runtime.mkdir()
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(fresh_runtime))
+    assert Approvals.load().decide("apt install foo") == "ask"
 
 
 def test_scenario_sudo_rm_always_asks_even_after_user_attempt(policy_env, capsys):

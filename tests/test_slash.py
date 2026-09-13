@@ -279,16 +279,25 @@ def test_approve_add_list_remove_roundtrip(xdg):
     assert "kubectl get *" not in p4.out.getvalue()
 
 
-def test_approve_add_session_scope_is_in_memory_only(xdg):
+def test_approve_add_session_scope_is_listed_under_session_not_user(xdg):
+    """d15: a session approval survives into the next process, under its own scope.
+
+    It used to live in one ``Approvals`` instance's memory, so the very next
+    ``/approve list`` -- a fresh ``Approvals.load()`` -- had already
+    forgotten it, and the operator was asked again immediately. It now lives
+    in the login session's runtime dir, so it is listed; what must still
+    never happen is it reaching ``approved.toml``.
+    """
     p1 = _panel()
     slash_mod.dispatch(
         "/approve add 'apt install *' --session", platform_kind="dgx-spark", panel=p1
     )
-    # A fresh Approvals.load() (what the next /approve list call does) never
-    # sees a session-scoped pattern -- it is never written to disk.
     p2 = _panel()
     slash_mod.dispatch("/approve list", platform_kind="dgx-spark", panel=p2)
-    assert "apt install *" not in p2.out.getvalue()
+    user_block, session_block = p2.out.getvalue().split("session:", 1)
+    assert "apt install *" not in user_block
+    assert "apt install *" in session_block
+    assert not (xdg.config / "nvsh" / "approved.toml").exists()
 
 
 def test_approve_add_refuses_dangerous_pattern(xdg):

@@ -27,10 +27,19 @@ entry, and CLAUDE.md's headless-over-SSH constraint):
   choice. It never pre-types anything and never touches ``READLINE_LINE``:
   the panel reports a decision, the caller (``nvsh.client``) acts on it.
   It does print one acknowledgement line the instant a key is pressed
-  (``nvsh: running ...`` / ``explaining`` / ``details`` / ``ignored``), so a
-  keypress is never followed by silence while the backend reacts. That ack
-  is the *first* line; the caller's own outcome lines (``nvsh: not run``,
-  ``nvsh: <cmd> -> exit N``) still follow it and are worded differently.
+  (``nvsh: running ...`` / ``running (approved for this session) ...`` /
+  ``running (approved for this user) ...`` / ``explaining`` / ``details`` /
+  ``ignored``), so a keypress is never followed by silence while the
+  backend reacts. That ack is the *first* line; the caller's own outcome
+  lines (``nvsh: not run``, ``nvsh: <cmd> -> exit N``) still follow it and
+  are worded differently.
+* **Approving a class is a decision, so it is guarded.** ``[s]`` and ``[u]``
+  run the command *and* approve it for the login session / for this user
+  (deviation d15, after an operator re-approved the same command class on
+  every failure). The panel owns neither the policy nor the store: it hands
+  the scope to the caller's ``guard``, prints the one-line reason a refused
+  scope comes back with (``sudo``, ``rm``, a bare ``*``), and returns
+  ``refused`` so the caller asks again with run-once still available.
 * **A fallback is news, not noise.** A ``status`` event announcing that the
   daemon could not be used (``one-shot ...``, ``daemon did not start`` /
   ``refused`` / ``connection lost``) is rendered as a visible
@@ -83,14 +92,32 @@ _FALLBACK_MARKERS = (
 
 #: What :meth:`Panel.show_proposal` can return.
 APPROVE = "approve"
+#: Run *and* approve this command class for the rest of the login session /
+#: for this user. These two are deliberately spelled with the same tokens
+#: the pi approval extension's ``ctx.ui.select`` offers
+#: ("once"/"session"/"user"/"deny"), so the client can forward the
+#: operator's answer verbatim as ``{"value": choice}``.
+APPROVE_SESSION = "session"
+APPROVE_USER = "user"
 EXPLAIN = "explain"
 DETAILS = "details"
 IGNORE = "ignore"
+#: A scope key the caller's ``guard`` refused. The caller re-asks; run-once
+#: stays available.
+REFUSED = "refused"
+
+#: The one-line key legend. Kept under 80 columns so it never wraps on a
+#: bare ssh into a Jetson, where a wrapped legend costs the panel a line and
+#: reads as two half-legends. ``+session``/``+user`` are the abbreviation
+#: that buys the room, and still say which scope each key approves for.
+LEGEND = "[Enter] run  [s] +session  [u] +user  [e] explain  [d] details  [Esc] ignore"
 
 #: What the panel prints the instant a proposal key is pressed. Worded so it
 #: never collides with the caller's own outcome lines (``nvsh: not run``).
 _ACK = {
     APPROVE: "nvsh: running ...",
+    APPROVE_SESSION: "nvsh: running (approved for this session) ...",
+    APPROVE_USER: "nvsh: running (approved for this user) ...",
     EXPLAIN: "nvsh: explaining ...",
     DETAILS: "nvsh: details ...",
     IGNORE: "nvsh: ignored",
@@ -423,17 +450,37 @@ class Panel:
         self.line(f"command: {proposal.command}")
         self.line(f"rationale: {proposal.rationale}")
 
-    def show_proposal(self, proposal: Proposal) -> str:
-        """Show ``proposal`` and return ``approve``/``explain``/``details``/``ignore``.
+    def show_proposal(
+        self,
+        proposal: Proposal,
+        guard: Callable[[str], str | None] | None = None,
+    ) -> str:
+        """Show ``proposal`` and return the operator's one keypress.
 
-        The command is never pre-typed anywhere: the operator sees it and
-        presses a key. Enter approves, ``e`` explains, ``d`` shows details,
-        Esc (or Ctrl+C, or anything else) ignores. Re-asking after ``e``/``d``
+        Returns ``approve`` / ``session`` / ``user`` / ``explain`` /
+        ``details`` / ``ignore`` / ``refused``. The command is never
+        pre-typed anywhere: the operator sees it and presses a key. Enter
+        runs it once, ``s`` runs it and approves it for this login session,
+        ``u`` runs it and approves it for this user, ``e`` explains, ``d``
+        shows details, Esc (or Ctrl+C, or anything else) ignores.
+
+        ``guard`` is consulted only for ``s``/``u`` -- the panel does not
+        know the approval policy, the caller does. It is handed the scope
+        (``"session"``/``"user"``) and returns a one-line reason why that
+        scope may not be approved, or ``None`` to allow it. A refusal is
+        printed as one line, the keypress is *not* acknowledged as a run,
+        and ``refused`` comes back so the caller can ask again with
+        run-once still on the table. Re-asking after ``e``/``d``/``refused``
         is the caller's job -- this method reports one keypress and returns.
         """
         self.render_proposal(proposal)
-        self.line("[Enter] run   [e] explain   [d] details   [Esc] ignore")
+        self.line(LEGEND)
         choice = self._read_choice()
+        if choice in (APPROVE_SESSION, APPROVE_USER) and guard is not None:
+            reason = guard(choice)
+            if reason:
+                self.line(f"nvsh: cannot approve for this {choice}: {reason}")
+                return REFUSED
         self.acknowledge(choice)
         return choice
 
@@ -453,6 +500,10 @@ class Panel:
             key = _read_line_key(self.in_)
         if key in ("\r", "\n"):
             return APPROVE
+        if key in ("s", "S"):
+            return APPROVE_SESSION
+        if key in ("u", "U"):
+            return APPROVE_USER
         if key in ("e", "E"):
             return EXPLAIN
         if key in ("d", "D"):

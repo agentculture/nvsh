@@ -257,6 +257,148 @@ def test_ignored_pi_proposal_answers_deny(xdg, monkeypatch):
     assert answered == [("req-9", {"value": "deny"})]
 
 
+# --- d15: approve for this session / for this user ------------------------
+
+
+def _approvals():
+    from nvsh.approvals import Approvals
+
+    return Approvals.load()
+
+
+def _decisions(entries):
+    return [e["decision"] for e in entries if e["event"] == "decision"]
+
+
+def _audit_entries():
+    from nvsh.agent.audit import AuditLog
+
+    return AuditLog().read_all()
+
+
+def test_session_key_on_a_pi_dialog_answers_session_and_never_runs_locally(xdg, monkeypatch):
+    proposal = Proposal(command="apt install foo", rationale="install", kind=ProposalKind.FIX)
+    events = [
+        AgentEvent(kind=EventKind.PROPOSAL, proposal=proposal, args={"request_id": "req-s"}),
+        AgentEvent(kind=EventKind.DONE),
+    ]
+    monkeypatch.setattr(client_transport, "send", _stub_send([], events))
+    answered = []
+    monkeypatch.setattr(
+        client_transport, "respond_ui", lambda rid, fields, **kw: answered.append((rid, fields))
+    )
+    executed = []
+    monkeypatch.setattr(client_mod, "_run_command", lambda cmd, **kw: executed.append(cmd))
+    client_mod.handle_failure(_args(xdg.tmp), panel=_panel("s\n"))
+    assert answered == [("req-s", {"value": "session"})]
+    assert executed == [], "the extension widens and runs it; nvsh must not double-run"
+    assert "session" in _decisions(_audit_entries())
+
+
+def test_user_key_on_a_pi_dialog_answers_user(xdg, monkeypatch):
+    proposal = Proposal(command="apt install foo", rationale="install", kind=ProposalKind.FIX)
+    events = [
+        AgentEvent(kind=EventKind.PROPOSAL, proposal=proposal, args={"request_id": "req-u"}),
+        AgentEvent(kind=EventKind.DONE),
+    ]
+    monkeypatch.setattr(client_transport, "send", _stub_send([], events))
+    answered = []
+    monkeypatch.setattr(
+        client_transport, "respond_ui", lambda rid, fields, **kw: answered.append((rid, fields))
+    )
+    client_mod.handle_failure(_args(xdg.tmp), panel=_panel("u\n"))
+    assert answered == [("req-u", {"value": "user"})]
+    assert "user" in _decisions(_audit_entries())
+
+
+def test_session_key_without_a_dialog_adds_the_exact_line_and_runs_it(xdg, monkeypatch):
+    marker = xdg.tmp / "ran-session"
+    command = f"touch {marker}"
+    proposal = Proposal(command=command, rationale="fix it", kind=ProposalKind.FIX)
+    monkeypatch.setattr(client_transport, "send", _stub_send([], _proposal_events(proposal)))
+    assert client_mod.handle_failure(_args(xdg.tmp), panel=_panel("s\n")) == 0
+    assert marker.exists(), "the run-once behaviour must still happen"
+    approvals = _approvals()
+    assert command in approvals.session_patterns
+    assert command not in approvals.user_patterns
+    assert approvals.decide(command) == "session"
+    assert "session" in _decisions(_audit_entries())
+
+
+def test_user_key_without_a_dialog_widens_to_first_word_and_persists(xdg, monkeypatch):
+    marker = xdg.tmp / "ran-user"
+    command = f"touch {marker}"
+    proposal = Proposal(command=command, rationale="fix it", kind=ProposalKind.FIX)
+    monkeypatch.setattr(client_transport, "send", _stub_send([], _proposal_events(proposal)))
+    assert client_mod.handle_failure(_args(xdg.tmp), panel=_panel("u\n")) == 0
+    assert marker.exists()
+    saved = (xdg.config / "nvsh" / "approved.toml").read_text(encoding="utf-8")
+    assert "touch *" in saved, saved
+    assert _approvals().decide("touch /somewhere/else") == "user"
+    assert "user" in _decisions(_audit_entries())
+
+
+def test_a_session_approval_is_honoured_by_the_next_client_process(xdg, monkeypatch):
+    """Two hook invocations are two processes; the second must not re-ask."""
+    command = "echo from-a-previous-process"
+    proposal = Proposal(command=command, rationale="look", kind=ProposalKind.INSPECT)
+    monkeypatch.setattr(client_transport, "send", _stub_send([], _proposal_events(proposal)))
+    client_mod.handle_failure(_args(xdg.tmp), panel=_panel("s\n"))
+    client_mod.rate_state_path(os.environ).unlink()  # a later window, not a burst
+
+    calls = []
+    streams = [
+        _proposal_events(proposal),
+        [AgentEvent(kind=EventKind.TEXT_DELTA, text="done"), AgentEvent(kind=EventKind.DONE)],
+    ]
+
+    def send(request, context=None, **kwargs):
+        calls.append((request, context, kwargs))
+        yield from streams[min(len(calls) - 1, len(streams) - 1)]
+
+    monkeypatch.setattr(client_transport, "send", send)
+    p = _panel("")  # EOF: nothing typed, so nothing may be asked
+    assert client_mod.handle_failure(_args(xdg.tmp), panel=p) == 0
+    assert len(calls) == 2, "the approved inspection must auto-run and feed back"
+    assert "from-a-previous-process" in calls[1][0].prompt
+
+
+@pytest.mark.parametrize("typed", ["s\n", "u\n"])
+def test_privileged_command_refuses_the_scope_keys_and_re_asks(xdg, monkeypatch, typed):
+    command = "sudo nvpmodel -m 0"
+    proposal = Proposal(command=command, rationale="power mode", kind=ProposalKind.FIX)
+    monkeypatch.setattr(client_transport, "send", _stub_send([], _proposal_events(proposal)))
+    executed = []
+    monkeypatch.setattr(client_mod, "_run_command", lambda cmd, **kw: executed.append(cmd) or _ok())
+    p = _panel(typed + "\n")  # refused, then Enter -> run once
+    assert client_mod.handle_failure(_args(xdg.tmp), panel=p) == 0
+    text = p.out.getvalue()
+    assert "cannot approve" in text, text
+    assert executed == [command], "run-once must stay available after the refusal"
+    approvals = _approvals()
+    assert approvals.session_patterns == []
+    assert approvals.decide(command) == "ask"
+
+
+def test_destructive_command_refuses_the_user_key(xdg, monkeypatch):
+    command = "rm -rf /var/tmp/x"
+    proposal = Proposal(command=command, rationale="clean", kind=ProposalKind.FIX)
+    monkeypatch.setattr(client_transport, "send", _stub_send([], _proposal_events(proposal)))
+    executed = []
+    monkeypatch.setattr(client_mod, "_run_command", lambda cmd, **kw: executed.append(cmd) or _ok())
+    p = _panel("u\nq\n")  # refused, then ignore
+    client_mod.handle_failure(_args(xdg.tmp), panel=p)
+    text = p.out.getvalue()
+    assert "cannot approve" in text, text
+    assert "rm" in text
+    assert executed == []
+    assert _approvals().decide(command) == "ask"
+
+
+def _ok():
+    return client_mod.RunResult(exit_code=0)
+
+
 # --- d11: a one-shot proposal must reach the in-process agent -------------
 #
 # On the DGX Spark the daemon was unreachable, so the client fell back to

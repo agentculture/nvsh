@@ -174,9 +174,18 @@ whitespace normalization — not just the program name. `add()` refuses
 
 Two scopes:
 
-- `user` — persisted to `$XDG_CONFIG_HOME/nvsh/approved.toml` (mode 0600).
-- `session` — held in memory only for the current process; never written to
-  disk and gone once the process exits.
+- `user` — persisted to `$XDG_CONFIG_HOME/nvsh/approved.toml` (mode 0600),
+  so it survives logout and reboot.
+- `session` — persisted to `$XDG_RUNTIME_DIR/nvsh/session-approvals.toml`
+  (mode 0600), the directory the system creates at login and removes at
+  logout. It is therefore in force for every later nvsh process in this
+  login session, and gone at the next one. It never reaches
+  `approved.toml`.
+
+The panel's proposal keys write into the same store: `[s]` runs the command
+and adds the exact line for this session, `[u]` runs it and adds the widened
+`<first word> *` for this user. Both are refused for a command that
+escalates privilege, and for any pattern `add` itself refuses.
 
 ## Usage
 

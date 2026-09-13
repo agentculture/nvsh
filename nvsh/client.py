@@ -23,8 +23,16 @@ between that hand-off and the operator's prompt coming back:
    operator has already approved (:mod:`nvsh.approvals`) is run here, with a
    10 s timeout, and its redacted output is fed back as one follow-up
    prompt. Everything else goes to the panel and runs only if the operator
-   pressed Enter on that exact command. A ``sudo`` command is never
-   auto-run, whatever the approval patterns say.
+   pressed Enter (run once), ``s`` (run and approve for this login session)
+   or ``u`` (run and approve for this user) on that exact command. A
+   ``sudo`` command is never auto-run, whatever the approval patterns say,
+   and ``s``/``u`` are refused for it with a one-line reason -- only the
+   run-once path is ever open to a privileged or destructive command
+   (deviation d15). With a backend dialog (pi's approval extension, i.e. a
+   proposal carrying a ``request_id``) the answer is forwarded verbatim as
+   ``{"value": "once"|"session"|"user"|"deny"}`` and the extension owns
+   both the widening and the store write; without one, this module writes
+   the pattern through :mod:`nvsh.approvals` and runs the command itself.
 
 Nothing here writes into readline's buffer: nvsh never pre-types a command
 into the operator's shell, it only ever prints one.
@@ -46,7 +54,22 @@ from typing import Any, Iterable, Mapping
 
 from . import client_transport
 from .agent.base import AgentContext, AgentEvent, AgentRequest, Proposal, ProposalKind, RequestKind
-from .panel import APPROVE, DETAILS, EXPLAIN, Panel, StreamResult
+from .panel import (
+    APPROVE,
+    APPROVE_SESSION,
+    APPROVE_USER,
+    DETAILS,
+    EXPLAIN,
+    REFUSED,
+    Panel,
+    StreamResult,
+)
+
+#: The panel choices that mean "run it, and stop asking me about this class".
+_SCOPE_CHOICES = (APPROVE_SESSION, APPROVE_USER)
+
+#: Every choice that means the operator wants the command to run now.
+_RUN_CHOICES = (APPROVE,) + _SCOPE_CHOICES
 
 #: How long an auto-run read-only inspector may take before it is killed.
 INSPECT_TIMEOUT = 10.0
@@ -405,15 +428,54 @@ def _audit(env: Mapping[str, str]):
         return None
 
 
+def scope_pattern(command: str, scope: str) -> str:
+    """The glob ``scope`` would approve for ``command``.
+
+    ``user`` widens to ``"<first word> *"`` -- the operator is saying "this
+    kind of command is fine on this machine", and the same widening the pi
+    approval extension applies, so both paths persist the same thing. A
+    ``session`` approval stays the exact command line: it only has to stop
+    nvsh re-asking about *this* command for the rest of the login session,
+    and a narrow pattern is the cheaper mistake.
+    """
+    if scope != APPROVE_USER:
+        return command.strip()
+    first_word = command.strip().split(None, 1)[0] if command.strip() else command
+    return f"{first_word} *"
+
+
+def scope_refusal(command: str, scope: str) -> str | None:
+    """Why ``command`` may not be approved for ``scope``, or ``None``.
+
+    Two independent rules, both of which have to hold: a command that
+    escalates privilege is never approved in advance whatever the pattern
+    would look like, and the resulting pattern still has to survive
+    :func:`nvsh.approvals.refusal_reason` (no ``sudo``, no ``rm``, no bare
+    ``*``). The run-once path is unaffected -- the operator can still press
+    Enter and watch it happen.
+    """
+    from .approvals import refusal_reason
+
+    if _is_privileged(command):
+        return "a command that escalates privilege is only ever run once, never pre-approved"
+    return refusal_reason(scope_pattern(command, scope))
+
+
 def _decide_proposal(panel: Panel, proposal: Proposal) -> str:
-    """Ask the operator, re-showing the proposal after ``e``/``d``."""
+    """Ask the operator, re-showing the proposal after ``e``/``d``/a refusal."""
+
+    def guard(scope: str) -> str | None:
+        return scope_refusal(proposal.command, scope)
+
     for _ in range(_MAX_PROPOSAL_ROUNDS):
-        choice = panel.show_proposal(proposal)
+        choice = panel.show_proposal(proposal, guard=guard)
         if choice == EXPLAIN:
             panel.explain_proposal(proposal)
             continue
         if choice == DETAILS:
             panel.detail_proposal(proposal)
+            continue
+        if choice == REFUSED:
             continue
         return choice
     return "ignore"
@@ -461,7 +523,7 @@ def _proposal_handler(
         choice = _decide_proposal(panel, proposal)
         if audit is not None:
             audit.record(event="decision", proposal=proposal, decision=choice)
-        if choice != APPROVE:
+        if choice not in _RUN_CHOICES:
             if request_id:
                 responder.respond(request_id, {"value": "deny"})
             panel.note("nvsh: not run")
@@ -469,8 +531,17 @@ def _proposal_handler(
         if request_id:
             # The backend owns execution (pi's approval extension); nvsh only
             # relays the operator's answer, and must not run it a second time.
-            responder.respond(request_id, {"value": "once"})
+            # "session"/"user" are the extension's own choice tokens, so the
+            # widening and the store write happen there, once.
+            responder.respond(request_id, {"value": "once" if choice == APPROVE else choice})
             return
+        if choice in _SCOPE_CHOICES:
+            # No dialog: this adapter (openai-compat and friends) has nvsh run
+            # the command itself, so nvsh also owns the store write. The guard
+            # in _decide_proposal has already cleared the pattern, but add()
+            # is the authority and may still refuse -- a refusal must cost the
+            # operator the approval, never the command they asked for.
+            _approve_scope(panel, approvals, command, choice)
         result = _run_command(command)
         if audit is not None:
             audit.record(
@@ -479,6 +550,25 @@ def _proposal_handler(
         _print_run(panel, command, result)
 
     return handle
+
+
+def _approve_scope(panel: Panel, approvals, command: str, scope: str) -> None:
+    """Persist the operator's ``[s]``/``[u]`` choice into the approval store."""
+    from .approvals import ApprovalError
+
+    pattern = scope_pattern(command, scope)
+    try:
+        approvals.add(pattern, scope=scope)
+    except ApprovalError as exc:
+        panel.note(f"nvsh: not approved for this {scope}: {exc}")
+        return
+    if scope == APPROVE_USER:
+        try:
+            approvals.save()
+        except OSError as exc:  # pragma: no cover - unwritable config dir
+            panel.note(f"nvsh: could not save the approval: {exc}")
+            return
+    panel.note(f"nvsh: approved for this {scope}: {pattern}")
 
 
 def _print_run(panel: Panel, command: str, result: RunResult) -> None:
@@ -695,9 +785,12 @@ def retry(
         rationale=f"re-run the command that failed (exit {state.get('exit')})",
         kind=ProposalKind.RETRY,
     )
-    if _decide_proposal(panel, proposal) != APPROVE:
+    choice = _decide_proposal(panel, proposal)
+    if choice not in _RUN_CHOICES:
         panel.note("nvsh: not re-run")
         return 0
+    if choice in _SCOPE_CHOICES:
+        _approve_scope(panel, _load_approvals(), command, choice)
     result = _run_command(command, login=True)
     if result.stdout:
         panel.write(result.stdout)

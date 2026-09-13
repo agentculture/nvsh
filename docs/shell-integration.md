@@ -218,7 +218,10 @@ the DGX Spark reported "I don't see proper indications things run"):
   with the agent's text, and `Ctrl+C` still ends the stream within a second
   while waiting.
 - **Keypress acknowledgement.** The instant a key is pressed at a proposal,
-  the panel prints `nvsh: running ...` (Enter), `nvsh: explaining ...`
+  the panel prints `nvsh: running ...` (Enter),
+  `nvsh: running (approved for this session) ...` (`s`),
+  `nvsh: running (approved for this user) ...` (`u`),
+  `nvsh: explaining ...`
   (`e`), `nvsh: details ...` (`d`) or `nvsh: ignored` (Esc or anything
   else) — before anything else happens. Whatever follows can take seconds,
   and the operator must never wonder whether the key registered. This ack
@@ -233,7 +236,63 @@ the DGX Spark reported "I don't see proper indications things run"):
   slower turn that follows. Every other status stays a dim `... text` line,
   and a status with empty text prints nothing at all.
 
-See `tests/test_panel.py`.
+### Approving from the proposal keys (deviation d15)
+
+The legend under a proposal is one line, kept under 80 columns so it never
+wraps on a bare ssh into a Jetson:
+
+```text
+[Enter] run  [s] +session  [u] +user  [e] explain  [d] details  [Esc] ignore
+```
+
+`Enter` runs the command once and changes nothing. `s` and `u` run it *and*
+stop nvsh asking about that class of command again — the operator used to
+re-approve the same `docker logs …` on every failure:
+
+| key | pattern stored | scope | where |
+|-----|----------------|-------|-------|
+| `s` | the exact command line | this login session | `$XDG_RUNTIME_DIR/nvsh/session-approvals.toml` (0600) |
+| `u` | `<first word> *` | this user, until removed | `$XDG_CONFIG_HOME/nvsh/approved.toml` (0600) |
+
+**Where a session approval lives, and why.** "Session" used to mean one
+Python process's memory — and since every writer of a session approval is a
+throwaway process (`nvsh approve add <cmd> --session`, which the pi approval
+extension shells out to; one `nvsh hook` run), the pattern died before
+anything could match it and the operator was asked again on the very next
+command. It is now written to `$XDG_RUNTIME_DIR/nvsh/session-approvals.toml`,
+which is the lifetime the word promises: the runtime dir is per-user tmpfs
+that the system creates at login and removes at logout, so a session
+approval outlives the process that made it, is shared by the daemon and
+every hook invocation of that login, and is gone at the next login — never
+at reboot-surviving rest. With `XDG_RUNTIME_DIR` unset nvsh falls back to
+`/run/user/<uid>` when that exists and otherwise to a per-uid directory
+under the system temp dir; it never falls back to a persistent location, so
+a missing environment variable can't quietly promote a session approval into
+a permanent one. `nvsh approve list` and `/approve list` print both stores
+under their scope headings (`user:` / `session:`), and
+`nvsh approve remove <pattern>` drops a pattern from both.
+
+**Two paths, one answer.** When the proposal carries a `request_id` it came
+from a backend dialog (pi's approval extension), and that backend is blocked
+waiting: nvsh forwards the operator's answer verbatim as
+`{"value": "once"|"session"|"user"|"deny"}` and the extension does the
+widening, the store write and the run — nvsh must not run the command a
+second time. Without a `request_id` (the openai-compat adapter and the other
+non-dialog backends) nvsh owns execution, so it writes the pattern through
+`nvsh.approvals` itself and then runs the command. Either way the decision
+is audited as `decision: once | session | user | deny`.
+
+**`s`/`u` are refused for privileged and destructive commands.** A command
+containing `sudo`/`doas`/`pkexec`, and any pattern `Approvals.add` refuses
+(`sudo …`, `rm …`, a bare `*`), cannot be pre-approved at any scope: the
+panel prints one line —
+`nvsh: cannot approve for this user: patterns starting with 'rm' are never
+approved` — and asks again with `[Enter] run` still on the table. Approving
+a *class* of privileged command is exactly the blanket authorization
+"propose, don't run" exists to prevent; running one once, in front of the
+operator who just read it, is not.
+
+See `tests/test_panel.py`, `tests/test_client.py`, `tests/test_approvals.py`.
 
 ## The slash-command registry (`nvsh/slash.py`)
 
