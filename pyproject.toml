@@ -28,10 +28,12 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["nvsh"]
-include = ["nvsh/shell/*.bash"]
-# The bash integration is data, not Python: name it explicitly or hatchling
-# leaves nvsh/shell/*.bash out of the wheel.
-artifacts = ["nvsh/shell/*.bash"]
+include = ["nvsh/shell/*.bash", "nvsh/agent/pi_ext/*.ts"]
+# The bash integration and the pi extension shim are data, not Python: name
+# them explicitly or hatchling leaves them out of the wheel. pi_ext/*.ts does
+# not exist in this checkout yet (a parallel task adds it); the pattern is
+# harmless when it matches nothing.
+artifacts = ["nvsh/shell/*.bash", "nvsh/agent/pi_ext/*.ts"]
 
 [dependency-groups]
 dev = [

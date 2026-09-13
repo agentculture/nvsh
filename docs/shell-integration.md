@@ -147,3 +147,64 @@ a pty and feeds CR (`\r`) keystrokes: a terminal sends CR for Enter and that
 is what `\C-m` binds, so feeding LF would bypass the whole layer. Tab tests
 set `show-all-if-ambiguous` so a single Tab prints the candidate list. The
 suite skips when no pty is available.
+
+## Installation: `nvsh setup` and the rc block
+
+`nvsh setup` (`nvsh/cli/_commands/setup.py`, rc editing logic in
+`nvsh/rcfile.py`) is what actually wires `hook.bash` and `readline.bash`
+into an operator's shell. It does two things:
+
+1. **Renders** both files from package resources (`importlib.resources`, so
+   this works from a wheel install with no `nvsh/shell` source directory on
+   disk) into `$XDG_DATA_HOME/nvsh/shell/` (default
+   `~/.local/share/nvsh/shell/`), each prefixed with a two-line stamp naming
+   the nvsh version that rendered it (`nvsh/shell/render.py`).
+2. **Inserts** one small marked block into the rc file (default the user's
+   bash rc file; override with `--rc`), immediately after the distro's
+   interactive guard (`# If not running interactively, don't do anything`
+   plus its `case $- in ... esac`, or a single-line test on `$-`) — never at
+   the end of the file, so the rest of the rc is never sourced twice. A
+   timestamped backup (`<rc>.nvsh-backup-<YYYYmmdd-HHMMSS>`) is written
+   before the first change.
+
+The block itself stays under ten lines:
+
+```bash
+# >>> nvsh setup >>> sha256:<content hash>
+export NVSH_HOOK_VERSION="<version>"
+export NVSH_BIN="<absolute path to the nvsh entrypoint>"
+[[ -n $NVSH_DISABLE ]] || { source "<data>/shell/hook.bash"; source "<data>/shell/readline.bash"; }
+nvsh() { case $1 in on|off) eval "$(command nvsh "$@" --shell)";; *) command nvsh "$@";; esac; }
+# <<< nvsh setup <<<
+```
+
+Every path in it is `$HOME`-relative or absolute — never a literal `~/` —
+because it runs before any alias or function expansion that might redefine
+`~`. `NVSH_BIN` is resolved once at `setup` time
+(`render.resolve_nvsh_bin()`: `shutil.which("nvsh")` first, `sys.argv[0]`
+resolved as a fallback) so a `uv tool install` works without a `PATH` edit.
+The rc-defined `nvsh()` function is what makes typing `nvsh off` / `nvsh on`
+at the prompt actually rebind readline in *that* shell: a subprocess cannot
+rebind its parent's bindings, so the function re-invokes `command nvsh "$@"
+--shell` (which prints raw bash instead of JSON/text) and `eval`s the
+result — exactly what `eval "$(nvsh off)"` / `eval "$(nvsh on)"` do directly.
+
+`nvsh setup` is idempotent: a second run against an rc that already has the
+identical block writes nothing at all (same bytes in, same bytes out). The
+opening marker carries a short content hash of the block's body, so
+`nvsh uninstall` can tell whether the block was hand-edited since `setup`
+wrote it — if not, it strips exactly the marked span (the exact inverse of
+the insertion); if so, it restores the newest backup instead.
+
+`nvsh hook` is the thin verb `__nvsh_hook` in `hook.bash` calls on a
+qualifying failure (never invoked by the operator directly): it rebuilds a
+`nvsh.triggers.TriggerEvent` from its flags, calls `decide()`, and on
+`"skip"` exits 0 silently. On `"ask"` it hands off to the failure client
+(`nvsh.client.handle_failure`, task t13) behind a lazy, `ImportError`-guarded
+import; until that lands it prints a one-line placeholder instead. It also
+compares the rc block's exported `NVSH_HOOK_VERSION` against the running
+package's own version and prints a one-time-per-session refresh notice when
+they differ (state file under `$XDG_RUNTIME_DIR/nvsh/<shell-pid>.notice`).
+
+See `tests/test_rcfile.py`, `tests/test_shell_render.py`,
+`tests/test_cli_setup.py` and `tests/test_setup_timing.py`.

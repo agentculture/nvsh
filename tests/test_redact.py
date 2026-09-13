@@ -279,13 +279,22 @@ def test_redact_report_never_raises_on_arbitrary_bytes() -> None:
 
 _RC_FILE_NAMES = (".bashrc", ".bash_profile", ".profile", ".zshrc")
 
+#: The sanctioned rc *editor* (task t21: `nvsh setup`/`uninstall`, and its
+#: pure-function half in nvsh/rcfile.py) legitimately names ".bashrc" as its
+#: default target -- inserting/removing the marked hook block is the whole
+#: point of it, and it is not the device-context collector this invariant
+#: guards against. Everything else under nvsh/ still must never reference a
+#: shell rc file, so a future collector module trips this the moment it does.
+_RC_EDITOR_FILES = frozenset({"nvsh/rcfile.py", "nvsh/cli/_commands/setup.py"})
+
 
 def test_no_source_reads_shell_rc_files() -> None:
     """The device-context collector (added in a later task, t9/t8) must never
     open or read shell rc files — the collector reads process/proc/sysfs
     state, not the user's shell configuration. Since the collector module
-    does not exist yet, this scans all of nvsh/ so the invariant is caught
-    the moment it lands, rather than only once a collector module exists.
+    does not exist yet, this scans all of nvsh/ (excluding the sanctioned rc
+    *editor*, see `_RC_EDITOR_FILES`) so the invariant is caught the moment
+    it lands, rather than only once a collector module exists.
     """
     repo_root = Path(__file__).parent.parent
     nvsh_src = repo_root / "nvsh"
@@ -293,9 +302,21 @@ def test_no_source_reads_shell_rc_files() -> None:
 
     offenders: list[str] = []
     for path in nvsh_src.rglob("*.py"):
+        rel = path.relative_to(repo_root).as_posix()
+        if rel in _RC_EDITOR_FILES:
+            continue
         text = path.read_text(encoding="utf-8")
         for rc_name in _RC_FILE_NAMES:
             if rc_name in text:
-                offenders.append(f"{path.relative_to(repo_root)}: references {rc_name!r}")
+                offenders.append(f"{rel}: references {rc_name!r}")
 
     assert not offenders, "nvsh/ source references a shell rc file:\n" + "\n".join(offenders)
+
+
+def test_rc_editor_exemption_list_still_matches_real_files() -> None:
+    """Guard the exemption itself: it must name real files, not a typo that
+    silently exempts nothing (or everything, if too broad).
+    """
+    repo_root = Path(__file__).parent.parent
+    for rel in _RC_EDITOR_FILES:
+        assert (repo_root / rel).is_file(), f"exempted path does not exist: {rel}"

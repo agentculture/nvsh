@@ -296,6 +296,92 @@ runs anything on its own.
     nvsh agent install pi --yes
 """
 
+_SETUP = """\
+# nvsh setup
+
+Installs the bash hook: renders `nvsh/shell/hook.bash` and `readline.bash`
+(via `importlib.resources`, so this works from a wheel install) into
+`$XDG_DATA_HOME/nvsh/shell/`, each version-stamped, and inserts one small
+marked block into the rc file (default the user's bash rc file, override
+with `--rc`)
+immediately after the distro's interactive guard (`nvsh.rcfile`). A
+timestamped backup of the rc is written before any change, and a second run
+is idempotent: an unchanged rc after the first run makes `setup` write
+nothing at all. Also picks and reports the agent backend
+(`nvsh.agent.registry.choose()`), and prints the pi-install offer text when
+`pi` is missing and `npm` is on PATH — it never runs `npm` itself.
+
+## Usage
+
+    nvsh setup
+    nvsh setup --rc /path/to/bashrc --json
+"""
+
+_UNINSTALL = """\
+# nvsh uninstall
+
+Reverses `nvsh setup`: removes the marked rc block (restoring the newest
+timestamped backup instead, if the block was hand-edited since `setup` wrote
+it), deletes the rendered `$XDG_DATA_HOME/nvsh/shell/*.bash` files, removes
+`$XDG_RUNTIME_DIR/nvsh/*.log`, `*.notice` and `daemon.sock`, and stops a
+running daemon if a (parallel-task) `nvsh.daemon` module is present —
+detected with `importlib.util.find_spec`, never imported directly. A no-op
+(exit 0) when nothing was installed.
+
+## Usage
+
+    nvsh uninstall
+    nvsh uninstall --rc /path/to/bashrc --json
+"""
+
+_OFF = """\
+# nvsh off
+
+Prints the bash that unbinds the hook and the readline layer in the
+*current* shell and sets `NVSH_DISABLE=1`, meant for
+`eval "$(nvsh off)"`. The marked rc block's `nvsh()` shell function makes
+plain `nvsh off` typed at the prompt do exactly this, via `--shell` (which
+prints the raw bash with no JSON/text wrapper). Without `--shell`, prints the
+same snippet inside a `{action, eval}` payload instead of running it.
+
+## Usage
+
+    nvsh off --shell    # meant for: eval "$(nvsh off)"
+    nvsh off --json
+"""
+
+_ON = """\
+# nvsh on
+
+The reverse of `nvsh off`: prints `unset NVSH_DISABLE` plus the `source`
+lines for the rendered `hook.bash` / `readline.bash`, meant for
+`eval "$(nvsh on)"`. Same `--shell` / `--json` shape as `nvsh off`.
+
+## Usage
+
+    nvsh on --shell    # meant for: eval "$(nvsh on)"
+    nvsh on --json
+"""
+
+_HOOK = """\
+# nvsh hook
+
+Internal: the bash hook (`__nvsh_hook` in `hook.bash`) calls this on every
+qualifying failure, never the operator directly. Builds a
+`nvsh.triggers.TriggerEvent` from its flags and calls `decide()`; on
+`"skip"` it exits 0 silently. On `"ask"` it hands off to the failure client
+(`nvsh.client.handle_failure`, task t13) via a lazy, `ImportError`-guarded
+import — until that lands, it prints a one-line placeholder instead. Also
+compares the `NVSH_HOOK_VERSION` the rc block exported against this
+package's own version and prints a one-line refresh notice the first time
+they differ in a given shell session (state file under
+`$XDG_RUNTIME_DIR/nvsh/<shell-pid>.notice`).
+
+## Usage
+
+    nvsh hook --exit 2 --pipestatus "2" --line "ls /nope" --cwd "$PWD" --log ""
+"""
+
 
 ENTRIES: dict[tuple[str, ...], str] = {
     (): _ROOT,
@@ -318,4 +404,9 @@ ENTRIES: dict[tuple[str, ...], str] = {
     ("agent", "list"): _AGENT_LIST,
     ("agent", "use"): _AGENT_USE,
     ("agent", "install"): _AGENT_INSTALL,
+    ("setup",): _SETUP,
+    ("uninstall",): _UNINSTALL,
+    ("off",): _OFF,
+    ("on",): _ON,
+    ("hook",): _HOOK,
 }
