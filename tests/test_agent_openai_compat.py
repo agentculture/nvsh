@@ -167,3 +167,103 @@ def test_connect_timeout_is_five_seconds():
 
     source = inspect.getsource(mod)
     assert "timeout=5" in source
+
+
+# --- bearer resolution order (deviation d10) --------------------------------
+
+
+@pytest.fixture(autouse=True)
+def isolated_config_home(tmp_path, monkeypatch):
+    """No stray default key file from the developer's real home leaks in."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg-config"))
+    return tmp_path
+
+
+def _key_file(path, value: str, mode: int = 0o600):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(value + "\n", encoding="utf-8")
+    path.chmod(mode)
+    return path
+
+
+def _run(agent):
+    agent.start()
+    try:
+        return list(agent.run(_request(), _context()))
+    finally:
+        agent.close()
+
+
+def test_bearer_comes_from_api_key_file_when_env_var_is_unset(fake_server, tmp_path, monkeypatch):
+    monkeypatch.delenv("NVSH_TEST_API_KEY_UNSET", raising=False)
+    key_file = _key_file(tmp_path / "keys" / "api_key", "file-bearer-value")
+    agent = OpenAICompatAgent(
+        {
+            "base_url": f"http://127.0.0.1:{fake_server.server_port}",
+            "api_key_env": "NVSH_TEST_API_KEY_UNSET",
+            "api_key_file": str(key_file),
+        }
+    )
+    _run(agent)
+    assert fake_server.last_auth_header == "Bearer file-bearer-value"
+
+
+def test_env_var_wins_over_api_key_file(fake_server, tmp_path, monkeypatch):
+    monkeypatch.setenv("NVSH_TEST_API_KEY", "env-bearer-value")
+    key_file = _key_file(tmp_path / "keys" / "api_key", "file-bearer-value")
+    agent = OpenAICompatAgent(
+        {
+            "base_url": f"http://127.0.0.1:{fake_server.server_port}",
+            "api_key_env": "NVSH_TEST_API_KEY",
+            "api_key_file": str(key_file),
+        }
+    )
+    _run(agent)
+    assert fake_server.last_auth_header == "Bearer env-bearer-value"
+
+
+def test_default_key_file_is_used_when_nothing_is_configured(fake_server, tmp_path):
+    from nvsh.config import default_key_file
+
+    _key_file(default_key_file(), "default-file-bearer")
+    agent = OpenAICompatAgent({"base_url": f"http://127.0.0.1:{fake_server.server_port}"})
+    _run(agent)
+    assert fake_server.last_auth_header == "Bearer default-file-bearer"
+    assert default_key_file().parent.name == "nvsh"
+
+
+def test_no_authorization_header_when_no_bearer_source_exists(fake_server):
+    agent = OpenAICompatAgent({"base_url": f"http://127.0.0.1:{fake_server.server_port}"})
+    _run(agent)
+    assert fake_server.last_auth_header == ""
+
+
+def test_group_readable_key_file_is_refused_with_a_status_event(fake_server, tmp_path):
+    key_file = _key_file(tmp_path / "keys" / "api_key", "too-open-bearer", mode=0o644)
+    agent = OpenAICompatAgent(
+        {
+            "base_url": f"http://127.0.0.1:{fake_server.server_port}",
+            "api_key_file": str(key_file),
+        }
+    )
+    events = _run(agent)
+    assert fake_server.last_auth_header == ""
+    notes = [e.text for e in events if e.kind is EventKind.STATUS and e.text]
+    assert notes, "a refused key file must say so"
+    joined = " ".join(notes)
+    assert "0644" in joined
+    assert "too-open-bearer" not in joined
+    assert str(tmp_path) not in joined
+
+
+def test_a_resolved_key_never_appears_in_any_event(fake_server, tmp_path):
+    key_file = _key_file(tmp_path / "keys" / "api_key", "file-bearer-value")
+    agent = OpenAICompatAgent(
+        {
+            "base_url": f"http://127.0.0.1:{fake_server.server_port}/unauthorized",
+            "api_key_file": str(key_file),
+        }
+    )
+    events = _run(agent)
+    text = " ".join(f"{e.text or ''} {e.error or ''}" for e in events)
+    assert "file-bearer-value" not in text

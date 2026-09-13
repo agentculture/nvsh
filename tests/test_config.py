@@ -185,3 +185,149 @@ def test_default_toml_is_parseable_and_localhost_only():
     assert '"sk-' not in text
     assert "https://" not in text
     assert "http://" not in text or "localhost" in text
+
+
+# --- api_key_file: a bearer source that survives a real interactive shell (d10)
+
+
+def test_api_key_file_is_a_valid_backend_key(xdg_home):
+    cfg_dir = xdg_home / "nvsh"
+    cfg_dir.mkdir(parents=True)
+    (cfg_dir / "config.toml").write_text(
+        '[agents.openai-compat]\napi_key_file = "$XDG_CONFIG_HOME/nvsh/api_key"\n',
+        encoding="utf-8",
+    )
+    cfg = load()
+    assert cfg.agents["openai-compat"]["api_key_file"] == "$XDG_CONFIG_HOME/nvsh/api_key"
+
+
+def test_literal_api_key_still_rejected_alongside_api_key_file(xdg_home):
+    cfg_dir = xdg_home / "nvsh"
+    cfg_dir.mkdir(parents=True)
+    (cfg_dir / "config.toml").write_text(
+        '[agents.openai-compat]\napi_key_file = "/tmp/k"\n'
+        'api_key = "example-placeholder-value-here"\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(ConfigError) as exc:
+        load()
+    assert "api_key" in str(exc.value)
+
+
+def _write_key(path, value: str = "file-bearer-value", mode: int = 0o600):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(value + "\n", encoding="utf-8")
+    path.chmod(mode)
+    return path
+
+
+def test_resolve_bearer_prefers_a_set_env_var_over_the_file(tmp_path):
+    from nvsh.config import resolve_bearer
+
+    key_file = _write_key(tmp_path / "api_key")
+    env = {"NVSH_API_KEY": "env-bearer-value", "HOME": str(tmp_path)}
+    got = resolve_bearer({"api_key_env": "NVSH_API_KEY", "api_key_file": str(key_file)}, env=env)
+    assert got.bearer == "env-bearer-value"
+    assert got.source == "$NVSH_API_KEY"
+
+
+def test_resolve_bearer_falls_through_an_empty_env_var_to_the_file(tmp_path):
+    from nvsh.config import KEY_SOURCE_FILE, resolve_bearer
+
+    key_file = _write_key(tmp_path / "api_key")
+    env = {"NVSH_API_KEY": "", "HOME": str(tmp_path)}
+    got = resolve_bearer({"api_key_env": "NVSH_API_KEY", "api_key_file": str(key_file)}, env=env)
+    assert got.bearer == "file-bearer-value"
+    assert got.source == KEY_SOURCE_FILE
+    assert got.diagnostic is None
+
+
+def test_resolve_bearer_expands_tilde_and_xdg_config_home(tmp_path):
+    from nvsh.config import resolve_bearer
+
+    _write_key(tmp_path / "conf" / "nvsh" / "api_key", "xdg-bearer")
+    env = {"XDG_CONFIG_HOME": str(tmp_path / "conf"), "HOME": str(tmp_path)}
+    got = resolve_bearer({"api_key_file": "$XDG_CONFIG_HOME/nvsh/api_key"}, env=env)
+    assert got.bearer == "xdg-bearer"
+
+    _write_key(tmp_path / "keys" / "api_key", "home-bearer")
+    got = resolve_bearer({"api_key_file": "~/keys/api_key"}, env=env)
+    assert got.bearer == "home-bearer"
+
+
+def test_resolve_bearer_uses_the_default_key_file_when_nothing_is_configured(tmp_path):
+    from nvsh.config import KEY_SOURCE_DEFAULT_FILE, default_key_file, resolve_bearer
+
+    env = {"XDG_CONFIG_HOME": str(tmp_path / "conf"), "HOME": str(tmp_path)}
+    _write_key(default_key_file(env), "default-file-bearer")
+    got = resolve_bearer({}, env=env)
+    assert got.bearer == "default-file-bearer"
+    assert got.source == KEY_SOURCE_DEFAULT_FILE
+
+
+def test_resolve_bearer_default_key_file_falls_back_to_home_config(tmp_path):
+    from nvsh.config import default_key_file
+
+    env = {"HOME": str(tmp_path)}
+    assert default_key_file(env) == tmp_path / ".config" / "nvsh" / "api_key"
+
+
+def test_resolve_bearer_is_empty_when_no_source_exists(tmp_path):
+    from nvsh.config import resolve_bearer
+
+    env = {"XDG_CONFIG_HOME": str(tmp_path / "conf"), "HOME": str(tmp_path)}
+    got = resolve_bearer({"api_key_env": "NVSH_UNSET_KEY"}, env=env)
+    assert got.bearer is None
+    assert got.source is None
+    assert got.diagnostic is None
+
+
+def test_resolve_bearer_refuses_a_group_or_world_readable_key_file(tmp_path):
+    from nvsh.config import resolve_bearer
+
+    key_file = _write_key(tmp_path / "api_key", "too-open-bearer", mode=0o640)
+    env = {"HOME": str(tmp_path)}
+    got = resolve_bearer({"api_key_file": str(key_file)}, env=env)
+    assert got.bearer is None
+    assert got.diagnostic is not None
+    # The mode is reported; the key never is, and neither is its directory.
+    assert "0640" in got.diagnostic
+    assert "too-open-bearer" not in got.diagnostic
+    assert str(tmp_path) not in got.diagnostic
+    assert "api_key" in got.diagnostic
+
+
+def test_resolve_bearer_reports_a_missing_configured_key_file(tmp_path):
+    from nvsh.config import resolve_bearer
+
+    env = {"HOME": str(tmp_path)}
+    got = resolve_bearer({"api_key_file": str(tmp_path / "nope" / "api_key")}, env=env)
+    assert got.bearer is None
+    assert got.diagnostic is not None
+    assert "api_key" in got.diagnostic
+
+
+def test_resolve_bearer_strips_surrounding_whitespace(tmp_path):
+    from nvsh.config import resolve_bearer
+
+    key_file = tmp_path / "api_key"
+    key_file.write_text("  padded-bearer \n\n", encoding="utf-8")
+    key_file.chmod(0o600)
+    got = resolve_bearer({"api_key_file": str(key_file)}, env={"HOME": str(tmp_path)})
+    assert got.bearer == "padded-bearer"
+
+
+def test_default_toml_documents_the_key_file():
+    text = default_toml()
+    assert "api_key_file" in text
+
+
+def test_config_example_documents_the_key_file():
+    from pathlib import Path
+
+    example = Path(__file__).resolve().parents[1] / "docs" / "config.example.toml"
+    if not example.is_file():  # pragma: no cover - wheel install, no docs tree
+        pytest.skip("docs/config.example.toml not present")
+    text = example.read_text(encoding="utf-8")
+    assert "api_key_file" in text
+    assert "0600" in text

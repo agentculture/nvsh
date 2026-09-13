@@ -9,7 +9,10 @@ key configure ``api_key_env`` — the *name* of an environment variable the
 caller reads at call time — never a value. A ``config.toml`` that sets a
 literal ``api_key`` is rejected outright (:class:`ConfigError`), so a key
 pasted into the file by mistake fails loudly instead of being silently
-absorbed and later leaked.
+absorbed and later leaked. A key may also live in a *file* --
+``api_key_file``, or the default ``$XDG_CONFIG_HOME/nvsh/api_key`` -- which
+:func:`resolve_bearer` reads at call time, refusing any file another user
+can read.
 
 Unknown keys — at the top level or inside a known table — are rejected with
 a :class:`ConfigError` that lists the valid keys, so a typo in the config
@@ -19,9 +22,12 @@ file is a loud failure instead of a silently ignored setting.
 from __future__ import annotations
 
 import os
+import re
+import stat
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Mapping
 
 #: Top-level tables this config format recognizes.
 _VALID_TOP_KEYS = {"agent", "agents", "sessions", "triggers"}
@@ -34,7 +40,7 @@ _VALID_AGENT_KEYS = {"provider"}
 #: sets ``base_url``). ``api_key`` is deliberately NOT in this set: it is
 #: rejected explicitly below with a dedicated message, not silently allowed
 #: through as "unknown".
-_VALID_AGENT_BACKEND_KEYS = {"provider", "model", "base_url", "api_key_env"}
+_VALID_AGENT_BACKEND_KEYS = {"provider", "model", "base_url", "api_key_env", "api_key_file"}
 
 #: Keys recognized inside ``[sessions]``.
 _VALID_SESSIONS_KEYS = {"max"}
@@ -83,6 +89,9 @@ model = "associate"
 [agents.openai-compat]
 base_url = "http://localhost:8000/v1"
 api_key_env = "NVSH_API_KEY"
+# Or keep the key in a file nvsh reads at call time (mode 0600). Unset, nvsh
+# still falls back to the default key file below.
+# api_key_file = "$XDG_CONFIG_HOME/nvsh/api_key"
 
 [sessions]
 max = 1
@@ -156,9 +165,14 @@ def set_provider(name: str, path: Path | None = None) -> Config:
     return cfg
 
 
-def _config_dir() -> Path:
-    xdg = os.environ.get("XDG_CONFIG_HOME")
-    base = Path(xdg) if xdg else Path.home() / ".config"
+def _config_dir(env: Mapping[str, str] | None = None) -> Path:
+    resolved = os.environ if env is None else env
+    xdg = resolved.get("XDG_CONFIG_HOME")
+    if xdg:
+        base = Path(xdg)
+    else:
+        home = resolved.get("HOME")
+        base = (Path(home) if home else Path.home()) / ".config"
     return base / "nvsh"
 
 
@@ -236,3 +250,118 @@ def load(path: Path | None = None) -> Config:
     cfg.triggers = dict(triggers_table)
 
     return cfg
+
+
+# ---------------------------------------------------------------------------
+# bearer resolution (deviation d10)
+# ---------------------------------------------------------------------------
+
+#: Name of the key file nvsh reads when nothing else is configured.
+DEFAULT_KEY_FILENAME = "api_key"
+
+#: Placeholder spelling of that file, for messages. Never a resolved path:
+#: an operator may paste a doctor line anywhere, and the directory is
+#: machine-identifying (see the d4 rule for endpoint URLs).
+DEFAULT_KEY_FILE_DISPLAY = "$XDG_CONFIG_HOME/nvsh/" + DEFAULT_KEY_FILENAME
+
+#: Generic source labels. They name *where* a bearer came from and never
+#: carry the key, nor any prefix of it, nor the directory it lives in.
+KEY_SOURCE_FILE = "api_key_file"
+KEY_SOURCE_DEFAULT_FILE = "the default key file"
+NO_BEARER_NOTE = "no bearer configured"
+
+_VAR_REF_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)")
+
+
+@dataclass(frozen=True)
+class BearerResolution:
+    """The outcome of looking for an API bearer, with no key in any label.
+
+    ``bearer`` is the key itself (or ``None``); ``source`` is a generic
+    label for a message; ``diagnostic`` explains a *refused* source (a key
+    file another user can read, or one that is not there) in a line safe to
+    print -- it reports the file's name and mode, never its content.
+    """
+
+    bearer: str | None = None
+    source: str | None = None
+    diagnostic: str | None = None
+
+
+def default_key_file(env: Mapping[str, str] | None = None) -> Path:
+    """``$XDG_CONFIG_HOME/nvsh/api_key``, falling back to ``$HOME/.config/...``."""
+    return _config_dir(env) / DEFAULT_KEY_FILENAME
+
+
+def expand_path(raw: str, env: Mapping[str, str] | None = None) -> Path:
+    """Expand ``~`` and ``$VAR``/``${VAR}`` in a configured path against *env*."""
+    resolved = os.environ if env is None else env
+
+    def _sub(match: re.Match) -> str:
+        name = match.group(1) or match.group(2)
+        return resolved.get(name, match.group(0))
+
+    text = _VAR_REF_RE.sub(_sub, raw.strip())
+    if text.startswith("~"):
+        home = resolved.get("HOME") or str(Path.home())
+        text = home + text[1:].lstrip("/") if text == "~" else home + text[1:]
+    return Path(text)
+
+
+def _read_key_file(path: Path) -> BearerResolution:
+    """Read one key file, refusing it when anyone but the owner can read it."""
+    name = path.name
+    try:
+        mode = stat.S_IMODE(path.stat().st_mode)
+    except OSError:
+        return BearerResolution(diagnostic=f"key file {name} is not readable")
+    if mode & 0o077:
+        return BearerResolution(
+            diagnostic=(
+                f"ignoring key file {name}: mode {mode:04o} lets other users read it "
+                f"(chmod 600 it)"
+            )
+        )
+    try:
+        text = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return BearerResolution(diagnostic=f"key file {name} is not readable")
+    if not text:
+        return BearerResolution(diagnostic=f"key file {name} is empty")
+    return BearerResolution(bearer=text, source=KEY_SOURCE_FILE)
+
+
+def resolve_bearer(
+    settings: Mapping[str, object], env: Mapping[str, str] | None = None
+) -> BearerResolution:
+    """Find the bearer for one ``[agents.<name>]`` table, in a fixed order.
+
+    1. ``api_key_env``, when that variable is set and non-empty in *env*.
+    2. ``api_key_file``, when configured (a configured-but-unusable file is
+       reported and stops the search -- nvsh does not silently reach for a
+       different key than the one the operator pointed at).
+    3. the default key file, when it exists.
+    4. nothing: the caller sends no ``Authorization`` header at all.
+
+    The key itself only ever travels in :attr:`BearerResolution.bearer`.
+    """
+    resolved = os.environ if env is None else env
+
+    env_name = settings.get("api_key_env")
+    if env_name:
+        value = (resolved.get(str(env_name)) or "").strip()
+        if value:
+            return BearerResolution(bearer=value, source=f"${env_name}")
+
+    configured = settings.get("api_key_file")
+    if configured:
+        return _read_key_file(expand_path(str(configured), resolved))
+
+    fallback = default_key_file(resolved)
+    if fallback.exists():
+        outcome = _read_key_file(fallback)
+        if outcome.source is not None:
+            return BearerResolution(bearer=outcome.bearer, source=KEY_SOURCE_DEFAULT_FILE)
+        return outcome
+
+    return BearerResolution()

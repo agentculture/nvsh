@@ -38,7 +38,13 @@ from typing import Callable, Mapping
 from nvsh import capture as capture_mod
 from nvsh import daemon as daemon_mod
 from nvsh.agent import registry as agent_registry
-from nvsh.config import Config
+from nvsh.config import (
+    DEFAULT_KEY_FILE_DISPLAY,
+    NO_BEARER_NOTE,
+    BearerResolution,
+    Config,
+    resolve_bearer,
+)
 from nvsh.platform import Platform
 from nvsh.platform._subprocess import Runner, Which, default_run, default_which
 
@@ -244,7 +250,7 @@ def _probe_endpoint(
     base_url: str,
     base_url_source: str,
     bearer: str | None,
-    bearer_source: str | None,
+    bearer_note: str | None,
     timeout: float,
     *,
     remediation_401: str,
@@ -254,12 +260,14 @@ def _probe_endpoint(
     Deviation d4b: the endpoint's host is machine-identifying and has no
     place in a doctor line an operator may paste anywhere. Every message and
     remediation below names only *where* the URL was configured
-    (``base_url_source``) and where the bearer came from (an env var name or
-    ``pi models.json``) -- never the URL, host or port themselves.
+    (``base_url_source``) and where the bearer came from (``bearer_note``: an
+    env var name, ``api_key_file``, the default key file, or "no bearer
+    configured") -- never the URL, host or port themselves, and never the
+    key or the directory a key file lives in.
     """
     source_note = f"base_url from {base_url_source}"
-    if bearer_source:
-        source_note += f", bearer from {bearer_source}"
+    if bearer_note:
+        source_note += f", {bearer_note}"
 
     url = base_url.rstrip("/") + "/models"
     scheme = urllib.parse.urlsplit(url).scheme
@@ -313,6 +321,24 @@ def _probe_endpoint(
     )
 
 
+def _openai_compat_401_remediation(outcome: BearerResolution) -> str:
+    """What to do about a 401, naming a key *location* and never a key.
+
+    ``DEFAULT_KEY_FILE_DISPLAY`` is the placeholder spelling of the default
+    key file, not a resolved path -- the same rule the endpoint URL follows
+    (d4): a doctor line an operator pastes anywhere carries no machine- or
+    user-identifying path.
+    """
+    if outcome.source and outcome.source.startswith("$"):
+        return f"set {outcome.source[1:]} to a valid API key"
+    if outcome.source or outcome.diagnostic:
+        return "put a valid API key in the configured key file (mode 0600)"
+    return (
+        f"put the gateway's key in {DEFAULT_KEY_FILE_DISPLAY} (mode 0600), "
+        "or point api_key_file/api_key_env at one in config.toml"
+    )
+
+
 def check_agent_reachable(
     config: Config,
     which: Which = default_which,
@@ -334,6 +360,7 @@ def check_agent_reachable(
         base_url, base_url_source, bearer, bearer_source, provider_name = _pi_endpoint_info(
             config, home
         )
+        bearer_note = f"bearer from {bearer_source}" if bearer_source else None
         provider_label = provider_name or "the configured provider"
         if bearer:
             remediation_401 = f"update apiKey for provider {provider_label} in {_PI_MODELS_JSON}"
@@ -344,14 +371,12 @@ def check_agent_reachable(
         base_url_raw = settings.get("base_url")
         base_url = str(base_url_raw) if base_url_raw else None
         base_url_source = "[agents.openai-compat]"
-        api_key_env = settings.get("api_key_env")
-        bearer = os.environ.get(api_key_env) if api_key_env else None
-        bearer_source = f"${api_key_env}" if bearer else None
-        remediation_401 = (
-            f"set {api_key_env} to a valid API key"
-            if api_key_env
-            else "configure api_key_env in config.toml with a valid key's env var name"
-        )
+        outcome = resolve_bearer(settings)
+        bearer = outcome.bearer
+        bearer_note = f"bearer from {outcome.source}" if outcome.source else NO_BEARER_NOTE
+        if outcome.diagnostic:
+            bearer_note = outcome.diagnostic
+        remediation_401 = _openai_compat_401_remediation(outcome)
     else:
         return _check(
             "agent_reachable",
@@ -371,7 +396,7 @@ def check_agent_reachable(
         )
 
     return _probe_endpoint(
-        base_url, base_url_source, bearer, bearer_source, timeout, remediation_401=remediation_401
+        base_url, base_url_source, bearer, bearer_note, timeout, remediation_401=remediation_401
     )
 
 

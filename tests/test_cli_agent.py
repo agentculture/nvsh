@@ -110,3 +110,42 @@ def test_agent_install_unknown_target_is_user_error(capsys):
     assert rc == 1
     err = capsys.readouterr().err
     assert err.startswith("error:")
+
+
+# --- where to put the gateway key (deviation d10) --------------------------
+
+
+def test_agent_use_openai_compat_says_where_to_put_the_key(capsys, xdg_home):
+    rc = main(["agent", "use", "openai-compat"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "api_key" in out
+
+
+def test_agent_use_openai_compat_json_reports_the_bearer_source(capsys, xdg_home):
+    rc = main(["agent", "use", "openai-compat", "--json"])
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["provider"] == "openai-compat"
+    assert payload["bearer_source"] is None
+    assert "api_key" in payload["note"]
+
+
+def test_agent_use_openai_compat_with_a_key_file_reports_its_source(capsys, xdg_home):
+    key_file = xdg_home / "nvsh" / "api_key"
+    key_file.parent.mkdir(parents=True, exist_ok=True)
+    key_file.write_text("a-bearer-value\n", encoding="utf-8")
+    key_file.chmod(0o600)
+    rc = main(["agent", "use", "openai-compat", "--json"])
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["bearer_source"] == "the default key file"
+    assert payload["note"] is None
+    assert "a-bearer-value" not in json.dumps(payload)
+
+
+def test_agent_use_other_backend_has_no_bearer_fields(capsys, xdg_home):
+    rc = main(["agent", "use", "claude", "--json"])
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert "bearer_source" not in payload

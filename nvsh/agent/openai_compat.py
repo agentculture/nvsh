@@ -5,21 +5,25 @@ is on PATH -- see ``nvsh.agent.registry.choose``. Talks plain
 ``POST {base_url}/chat/completions`` with ``"stream": true`` using only
 ``urllib.request`` (no third-party HTTP client; ``dependencies = []`` holds).
 
-The bearer token, if any, is read at call time from the environment variable
-*named* by ``api_key_env`` in config -- never a literal key. A missing env
-var simply omits the ``Authorization`` header rather than sending an empty
-or fabricated one.
+The bearer token, if any, is resolved at call time by
+:func:`nvsh.config.resolve_bearer` -- from the environment variable *named*
+by ``api_key_env``, from the file *named* by ``api_key_file``, or from the
+default key file ``$XDG_CONFIG_HOME/nvsh/api_key`` -- never from a literal
+key in config. With no source at all the ``Authorization`` header is simply
+omitted rather than sent empty or fabricated. A refused source (a key file
+other users can read, or one that is not there) is reported as a STATUS
+event naming the file and its mode, never its content.
 """
 
 from __future__ import annotations
 
 import json
-import os
 import urllib.error
 import urllib.request
 from typing import Iterator
 from urllib.parse import urlsplit
 
+from ..config import resolve_bearer
 from ._subprocess import build_prompt
 from .base import AgentContext, AgentEvent, AgentRequest, Capabilities, EventKind, NvshAgent
 
@@ -30,7 +34,6 @@ class OpenAICompatAgent(NvshAgent):
     def __init__(self, config: dict | None = None) -> None:
         self._config = dict(config or {})
         self._base_url = str(self._config.get("base_url", "")).rstrip("/")
-        self._api_key_env = self._config.get("api_key_env")
         self._model = self._config.get("model", "default")
         self._cancelled = False
         self._closed = False
@@ -40,13 +43,13 @@ class OpenAICompatAgent(NvshAgent):
         self._cancelled = False
         self._closed = False
 
-    def _headers(self) -> dict[str, str]:
+    def _headers(self) -> tuple[dict[str, str], str | None]:
+        """Return ``(headers, diagnostic)`` -- the key lives only in the header."""
         headers = {"Content-Type": "application/json"}
-        if self._api_key_env:
-            key = os.environ.get(self._api_key_env)
-            if key:
-                headers["Authorization"] = f"Bearer {key}"
-        return headers
+        outcome = resolve_bearer(self._config)
+        if outcome.bearer:
+            headers["Authorization"] = f"Bearer {outcome.bearer}"
+        return headers, outcome.diagnostic
 
     def run(self, request: AgentRequest, context: AgentContext) -> Iterator[AgentEvent]:
         url = f"{self._base_url}/chat/completions"
@@ -54,6 +57,10 @@ class OpenAICompatAgent(NvshAgent):
         if scheme not in ("http", "https"):
             yield AgentEvent(kind=EventKind.ERROR, error=f"unsupported URL scheme: {scheme!r}")
             return
+
+        headers, key_diagnostic = self._headers()
+        if key_diagnostic:
+            yield AgentEvent(kind=EventKind.STATUS, text=key_diagnostic)
 
         prompt = build_prompt(request, context)
         payload = json.dumps(
@@ -63,7 +70,7 @@ class OpenAICompatAgent(NvshAgent):
                 "stream": True,
             }
         ).encode("utf-8")
-        req = urllib.request.Request(url, data=payload, headers=self._headers(), method="POST")
+        req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
 
         try:
             # url's scheme is validated above (http/https only); base_url is

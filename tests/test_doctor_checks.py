@@ -17,9 +17,17 @@ import threading
 from pathlib import Path
 from urllib.parse import urlsplit
 
+import pytest
+
 from nvsh import doctor_checks
 from nvsh.config import Config
 from nvsh.platform import Platform, Value
+
+
+@pytest.fixture(autouse=True)
+def _isolated_config_home(tmp_path, monkeypatch):
+    """Keep a real ``$XDG_CONFIG_HOME/nvsh/api_key`` out of these checks (d10)."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg-config"))
 
 
 def _check(checks, check_id):
@@ -210,7 +218,9 @@ def test_agent_reachable_200_never_prints_the_endpoint_url():
         )
         check = doctor_checks.check_agent_reachable(cfg)
         assert check["passed"] is True
-        assert check["message"] == "endpoint reachable (base_url from [agents.openai-compat])"
+        assert check["message"] == (
+            "endpoint reachable (base_url from [agents.openai-compat], no bearer configured)"
+        )
         _assert_no_endpoint_in_check(check, base_url)
     finally:
         server.shutdown()
@@ -719,3 +729,89 @@ def test_collect_checks_returns_every_new_check_id():
     for check in checks:
         assert set(check) == {"id", "passed", "severity", "message", "remediation"}
         assert check["severity"] in ("error", "warning", "info")
+
+
+# --- agent_reachable: where the bearer came from (deviation d10) -------------
+
+
+def _bearer_key_file(path, value: str = "doctor-bearer-value", mode: int = 0o600):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(value + "\n", encoding="utf-8")
+    path.chmod(mode)
+    return path
+
+
+def test_agent_reachable_names_api_key_file_as_the_bearer_source(tmp_path):
+    server, thread, base_url = _serve(200)
+    try:
+        key_file = _bearer_key_file(tmp_path / "keys" / "api_key")
+        cfg = Config(
+            agent_provider="openai-compat",
+            agents={"openai-compat": {"base_url": base_url, "api_key_file": str(key_file)}},
+        )
+        check = doctor_checks.check_agent_reachable(cfg)
+        assert check["message"] == (
+            "endpoint reachable (base_url from [agents.openai-compat], " "bearer from api_key_file)"
+        )
+        _assert_no_endpoint_in_check(check, base_url)
+        text = _all_check_text(check)
+        assert "doctor-bearer-value" not in text
+        assert str(tmp_path) not in text
+    finally:
+        server.shutdown()
+        thread.join()
+
+
+def test_agent_reachable_names_the_default_key_file_as_the_bearer_source(tmp_path):
+    from nvsh.config import default_key_file
+
+    server, thread, base_url = _serve(200)
+    try:
+        _bearer_key_file(default_key_file())
+        cfg = Config(
+            agent_provider="openai-compat", agents={"openai-compat": {"base_url": base_url}}
+        )
+        check = doctor_checks.check_agent_reachable(cfg)
+        assert check["message"] == (
+            "endpoint reachable (base_url from [agents.openai-compat], "
+            "bearer from the default key file)"
+        )
+        _assert_no_endpoint_in_check(check, base_url)
+        assert str(tmp_path) not in _all_check_text(check)
+    finally:
+        server.shutdown()
+        thread.join()
+
+
+def test_agent_reachable_says_no_bearer_configured_when_there_is_none():
+    server, thread, base_url = _serve(401)
+    try:
+        cfg = Config(
+            agent_provider="openai-compat", agents={"openai-compat": {"base_url": base_url}}
+        )
+        check = doctor_checks.check_agent_reachable(cfg)
+        assert "no bearer configured" in check["message"]
+        # The remediation says where to put a key, in placeholder form only.
+        assert "api_key" in check["remediation"]
+        _assert_no_endpoint_in_check(check, base_url)
+    finally:
+        server.shutdown()
+        thread.join()
+
+
+def test_agent_reachable_reports_a_refused_key_file_without_the_key(tmp_path):
+    server, thread, base_url = _serve(401)
+    try:
+        key_file = _bearer_key_file(tmp_path / "keys" / "api_key", mode=0o644)
+        cfg = Config(
+            agent_provider="openai-compat",
+            agents={"openai-compat": {"base_url": base_url, "api_key_file": str(key_file)}},
+        )
+        check = doctor_checks.check_agent_reachable(cfg)
+        text = _all_check_text(check)
+        assert "0644" in text
+        assert "doctor-bearer-value" not in text
+        assert str(tmp_path) not in text
+    finally:
+        server.shutdown()
+        thread.join()
