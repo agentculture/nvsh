@@ -59,14 +59,15 @@ def cmd_daemon_run(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_daemon_status(args: argparse.Namespace) -> int:
+def cmd_daemon_status(args: argparse.Namespace) -> None:
+    """Print the daemon's state; every path is success, so nothing is returned."""
     state = client_transport.status()
     if _json(args):
         emit_result(state, json_mode=True)
-        return 0
+        return
     if not state.get("running"):
         emit_result(f"daemon: not running ({state.get('socket', '')})", json_mode=False)
-        return 0
+        return
     lines = [
         f"daemon: running (pid {state.get('pid')})",
         f"socket: {state.get('socket')}",
@@ -90,7 +91,6 @@ def cmd_daemon_status(args: argparse.Namespace) -> int:
     if notice:
         lines.append(f"note: {notice}")
     emit_result("\n".join(lines), json_mode=False)
-    return 0
 
 
 def cmd_daemon_stop(args: argparse.Namespace) -> int:
