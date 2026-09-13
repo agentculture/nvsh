@@ -185,7 +185,7 @@ class Panel:
                     if event.text:
                         self.note(f"... {event.text}")
                 elif event.kind is EventKind.TOOL_CALL:
-                    self.note(f"... tool {event.tool}")
+                    self.note(f"... running tool: {event.tool}")
                 elif event.kind is EventKind.TOOL_RESULT:
                     self.note(f"... tool {event.tool} finished")
                 elif event.kind is EventKind.PROPOSAL and event.proposal is not None:

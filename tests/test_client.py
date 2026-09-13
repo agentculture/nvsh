@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import stat
 import types
 
@@ -256,6 +257,110 @@ def test_ignored_pi_proposal_answers_deny(xdg, monkeypatch):
     assert answered == [("req-9", {"value": "deny"})]
 
 
+# --- d11: a one-shot proposal must reach the in-process agent -------------
+#
+# On the DGX Spark the daemon was unreachable, so the client fell back to
+# one-shot pi. pi proposed a command through its approval extension, the
+# panel offered "[Enter] run", and Enter did nothing: the answer went out as
+# a `ui_response` control message to a daemon socket nobody was listening
+# on, while the in-process PiAgent sat waiting for its `extension_ui_response`.
+# These tests drive the *real* one-shot path (PiAgent over the scripted fake
+# pi) and assert the dialog is answered by the agent that raised it.
+
+
+def _one_shot_pi(monkeypatch, tmp_path, script, responses):
+    """Make the one-shot path build a PiAgent talking to ``tests/fakes/pi_scripted``."""
+    import dataclasses
+    from pathlib import Path
+
+    from nvsh.agent import registry
+    from nvsh.agent.pi import PiAgent
+
+    fakes = Path(__file__).resolve().parent / "fakes"
+    pi_env = dict(os.environ)
+    pi_env["PATH"] = str(fakes) + os.pathsep + pi_env.get("PATH", "")
+    pi_env["HOME"] = str(tmp_path / "pi-home")
+    pi_env["XDG_STATE_HOME"] = str(tmp_path / "pi-state")
+    pi_env["NVSH_TEST_PI_SCRIPT"] = json.dumps(script)
+    pi_env["NVSH_TEST_PI_AWAIT_UI"] = "1"
+    pi_env["NVSH_TEST_PI_RESPONSES"] = str(responses)
+
+    spec = dataclasses.replace(
+        registry.ADAPTERS["pi"],
+        binary=None,
+        factory=lambda cfg: PiAgent(pi_path="pi_scripted", env=pi_env),
+    )
+    monkeypatch.setitem(registry.ADAPTERS, "pi", spec)
+
+
+def _approval_request(command: str, reason: str = "", request_id: str = "ui-11") -> dict:
+    title = json.dumps(
+        {"nvsh": "approval", "v": 1, "tool": "bash", "command": command, "reason": reason}
+    )
+    return {
+        "type": "extension_ui_request",
+        "id": request_id,
+        "method": "select",
+        "title": title,
+        "options": ["once", "session", "user", "deny"],
+    }
+
+
+def _dialog_script(command: str):
+    return [
+        {
+            "type": "message_update",
+            "assistantMessageEvent": {"type": "text_delta", "delta": "let me check the GPU. "},
+        },
+        _approval_request(command, reason="see whether nvidia-smi is installed"),
+        {"type": "tool_execution_start", "toolName": "bash", "args": {"command": command}},
+        {"type": "tool_execution_end", "toolName": "bash", "result": {"output": "GPU 0: ok"}},
+        {
+            "type": "message_update",
+            "assistantMessageEvent": {"type": "text_delta", "delta": "the driver is fine."},
+        },
+        {"type": "agent_end"},
+    ]
+
+
+def _responses(path):
+    if not path.exists():
+        return []
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
+
+
+def test_one_shot_proposal_is_answered_by_the_in_process_agent(xdg, monkeypatch):
+    responses = xdg.tmp / "ui-responses.jsonl"
+    _one_shot_pi(monkeypatch, xdg.tmp, _dialog_script("which nvidia-smi"), responses)
+
+    def no_daemon(*a, **kw):
+        raise AssertionError("the one-shot path must not answer through the daemon socket")
+
+    monkeypatch.setattr(client_transport, "respond_ui", no_daemon)
+
+    p = _panel("\n")  # Enter -> run
+    assert client_mod.handle_failure(_args(xdg.tmp), panel=p) == 0
+
+    assert _responses(responses) == [
+        {"type": "extension_ui_response", "id": "ui-11", "value": "once"}
+    ]
+    text = p.out.getvalue()
+    assert "which nvidia-smi" in text
+    assert "the driver is fine." in text, "the turn must continue after the dialog is answered"
+
+
+def test_one_shot_ignored_proposal_denies_through_the_in_process_agent(xdg, monkeypatch):
+    responses = xdg.tmp / "ui-responses.jsonl"
+    _one_shot_pi(monkeypatch, xdg.tmp, _dialog_script("which nvidia-smi"), responses)
+
+    p = _panel("q\n")  # anything but Enter -> ignore
+    assert client_mod.handle_failure(_args(xdg.tmp), panel=p) == 0
+
+    assert _responses(responses) == [
+        {"type": "extension_ui_response", "id": "ui-11", "value": "deny"}
+    ]
+
+
 def test_client_never_writes_readline_line(xdg):
     source = client_mod.__file__
     text = open(source, encoding="utf-8").read()
@@ -266,7 +371,6 @@ def test_client_never_writes_readline_line(xdg):
 
 
 def test_interrupted_stream_returns_130_and_keeps_the_last_failure(xdg, monkeypatch):
-    import os
     import signal
 
     def send(request, context=None, **kwargs):
