@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-09-13T10:08:02Z",
-  "updated": "2026-09-13T13:12:55Z",
+  "updated": "2026-09-13T13:26:10Z",
   "claims": [
     {
       "id": "c1",
@@ -1507,6 +1507,18 @@
       "refs": [
         "t13",
         "h31"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l14",
+      "code": "control-absent",
+      "what": "d1/t21b: one test run invoked real 'sudo apt-get' and 'sudo snap' on the dev box because subprocess.run was bound as a def-time default and the monkeypatch did not take; no install happened (sudo needs a tty), fixed by resolving at call time",
+      "skipped_check": "hermetic run-spy in the first test run",
+      "refs": [
+        "t21",
+        "d1"
       ],
       "origin": "llm",
       "status": "proposed"
