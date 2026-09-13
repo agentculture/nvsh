@@ -23,6 +23,9 @@ from nvsh.agent import registry
 from nvsh.cli._errors import EXIT_USER_ERROR, CliError
 from nvsh.cli._output import emit_result
 
+#: Help text every ``--json`` flag in this verb group shares.
+_JSON_HELP = "Emit structured JSON."
+
 #: Where a gateway key goes when nothing exports one. The placeholder
 #: spelling, never a resolved path (d10).
 KEY_HINT = (
@@ -122,17 +125,17 @@ def register(sub: argparse._SubParsersAction) -> None:
         "agent",
         help="List, choose, or install NvshAgent harness backends (see 'nvsh explain agent').",
     )
-    p.add_argument("--json", action="store_true", help="Emit structured JSON.")
+    p.add_argument("--json", action="store_true", help=_JSON_HELP)
     p.set_defaults(func=_no_verb, json=False)
     noun_sub = p.add_subparsers(dest="agent_command", parser_class=type(p))
 
     lst = noun_sub.add_parser("list", help="List known harness backends and their PATH status.")
-    lst.add_argument("--json", action="store_true", help="Emit structured JSON.")
+    lst.add_argument("--json", action="store_true", help=_JSON_HELP)
     lst.set_defaults(func=cmd_agent_list)
 
     use = noun_sub.add_parser("use", help="Set the configured harness backend.")
     use.add_argument("name", help="One of: pi, qwen, claude, codex, openai-compat.")
-    use.add_argument("--json", action="store_true", help="Emit structured JSON.")
+    use.add_argument("--json", action="store_true", help=_JSON_HELP)
     use.set_defaults(func=cmd_agent_use)
 
     install = noun_sub.add_parser("install", help="Print (and optionally run) an install command.")
@@ -140,5 +143,5 @@ def register(sub: argparse._SubParsersAction) -> None:
     install.add_argument(
         "--yes", action="store_true", help="Run the install command without prompting."
     )
-    install.add_argument("--json", action="store_true", help="Emit structured JSON.")
+    install.add_argument("--json", action="store_true", help=_JSON_HELP)
     install.set_defaults(func=cmd_agent_install)

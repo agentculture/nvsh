@@ -20,7 +20,7 @@ from nvsh import rcfile
 from nvsh.cli import main as cli_main
 
 
-@pytest.fixture()
+@pytest.fixture
 def home(tmp_path, monkeypatch):
     h = tmp_path / "home"
     h.mkdir()

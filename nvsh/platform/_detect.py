@@ -29,11 +29,11 @@ _DOCKER_DAEMON_JSON = "/etc/docker/daemon.json"
 
 
 def _absent(name: str, source: str, method: str) -> Value:
-    return Value(name=name, value=None, source=source, method=method, present=False)
+    return Value(name=name, text=None, source=source, method=method, present=False)
 
 
-def _present(name: str, value: str, source: str, method: str) -> Value:
-    return Value(name=name, value=value, source=source, method=method, present=True)
+def _present(name: str, text: str, source: str, method: str) -> Value:
+    return Value(name=name, text=text, source=source, method=method, present=True)
 
 
 def _value_from_file(name: str, root: str, path: str, parse) -> Value:
@@ -55,57 +55,60 @@ def _value_from_which(name: str, which, tool: str) -> Value:
     return _absent(name, source, PATH)
 
 
-def detect(
-    root: str = "/",
-    run: subp.Runner = subp.default_run,
-    which: subp.Which = subp.default_which,
-) -> Platform:
-    """Detect the machine nvsh is running on.
+def _maybe(name: str, text: str | None, source: str, method: str) -> Value:
+    """``_present`` when *text* is truthy, ``_absent`` otherwise."""
+    if text:
+        return _present(name, text, source, method)
+    return _absent(name, source, method)
 
-    Args:
-        root: filesystem root to read files under (``/`` in production; a
-            fixture tree in tests).
-        run: ``(argv, timeout) -> (returncode, stdout, stderr)``, injectable
-            so tests replay captured subprocess output.
-        which: ``name -> path or None``, injectable for the same reason.
+
+def _run_and_parse(run, which, tool: str, argv_tail: list[str], parse):
+    """Run ``<tool> <argv_tail>`` if *tool* is on PATH; parse stdout on exit 0.
+
+    ``None`` when the tool is absent, exits non-zero, or its output does not
+    parse -- the three ways a subprocess-only fact comes back absent.
     """
+    found = which(tool)
+    if not found:
+        return None
+    code, out, _err = run([found, *argv_tail], subp.DEFAULT_TIMEOUT)
+    if code != 0:
+        return None
+    return parse(out)
+
+
+def _file_values(root: str) -> list[Value]:
+    """Every fact a file exposes, in report order."""
     values: list[Value] = []
 
     dgx = files.read_text(root, _DGX_RELEASE)
     dgx_fields = files.parse_dgx_release(dgx) if dgx is not None else {}
-    if dgx is not None and dgx_fields.get("DGX_NAME"):
-        values.append(_present("dgx_name", dgx_fields["DGX_NAME"], _DGX_RELEASE, FILE))
-    else:
-        values.append(_absent("dgx_name", _DGX_RELEASE, FILE))
-    if dgx is not None and dgx_fields.get("DGX_SWBUILD_VERSION"):
-        values.append(
-            _present("dgx_swbuild_version", dgx_fields["DGX_SWBUILD_VERSION"], _DGX_RELEASE, FILE)
+    values.append(_maybe("dgx_name", dgx_fields.get("DGX_NAME"), _DGX_RELEASE, FILE))
+    values.append(
+        _maybe(
+            "dgx_swbuild_version",
+            dgx_fields.get("DGX_SWBUILD_VERSION"),
+            _DGX_RELEASE,
+            FILE,
         )
-    else:
-        values.append(_absent("dgx_swbuild_version", _DGX_RELEASE, FILE))
+    )
 
     nv_tegra = files.read_text(root, _NV_TEGRA_RELEASE)
     l4t_release = files.parse_nv_tegra_release(nv_tegra) if nv_tegra is not None else None
-    if l4t_release:
-        values.append(_present("l4t_release", l4t_release, _NV_TEGRA_RELEASE, FILE))
-    else:
-        values.append(_absent("l4t_release", _NV_TEGRA_RELEASE, FILE))
+    values.append(_maybe("l4t_release", l4t_release, _NV_TEGRA_RELEASE, FILE))
 
     dt_model = files.read_device_tree_string(root, _DEVICE_TREE_MODEL)
-    if dt_model:
-        values.append(_present("device_tree_model", dt_model, _DEVICE_TREE_MODEL, FILE))
-    else:
-        values.append(_absent("device_tree_model", _DEVICE_TREE_MODEL, FILE))
+    values.append(_maybe("device_tree_model", dt_model, _DEVICE_TREE_MODEL, FILE))
 
     dt_compatible = files.read_device_tree_list(root, _DEVICE_TREE_COMPATIBLE)
-    if dt_compatible:
-        values.append(
-            _present(
-                "device_tree_compatible", ",".join(dt_compatible), _DEVICE_TREE_COMPATIBLE, FILE
-            )
+    values.append(
+        _maybe(
+            "device_tree_compatible",
+            ",".join(dt_compatible) if dt_compatible else None,
+            _DEVICE_TREE_COMPATIBLE,
+            FILE,
         )
-    else:
-        values.append(_absent("device_tree_compatible", _DEVICE_TREE_COMPATIBLE, FILE))
+    )
 
     values.append(
         _value_from_file("dmi_product_name", root, _DMI_PRODUCT_NAME, files.parse_dmi_product_name)
@@ -124,14 +127,8 @@ def detect(
 
     meminfo_text = files.read_text(root, _MEMINFO)
     meminfo = files.parse_meminfo(meminfo_text) if meminfo_text is not None else {}
-    if meminfo.get("MemTotal"):
-        values.append(_present("mem_total", meminfo["MemTotal"], _MEMINFO, FILE))
-    else:
-        values.append(_absent("mem_total", _MEMINFO, FILE))
-    if meminfo.get("MemAvailable"):
-        values.append(_present("mem_available", meminfo["MemAvailable"], _MEMINFO, FILE))
-    else:
-        values.append(_absent("mem_available", _MEMINFO, FILE))
+    values.append(_maybe("mem_total", meminfo.get("MemTotal"), _MEMINFO, FILE))
+    values.append(_maybe("mem_available", meminfo.get("MemAvailable"), _MEMINFO, FILE))
 
     values.append(_value_from_file("cudnn_version", root, _CUDNN_HEADER, files.parse_cudnn_version))
     values.append(
@@ -142,83 +139,70 @@ def detect(
             files.parse_docker_default_runtime,
         )
     )
+    return values
 
-    # --- subprocess-only facts --------------------------------------------
 
-    nvidia_smi_path = which("nvidia-smi")
-    nvidia_smi_cmd = (
-        "nvidia-smi --query-gpu=name,memory.total,memory.used,driver_version --format=csv"
+def _nvidia_smi_values(run: subp.Runner, which: subp.Which) -> list[Value]:
+    """GPU name, driver version and the unified-memory flag, from nvidia-smi."""
+    cmd = "nvidia-smi --query-gpu=name,memory.total,memory.used,driver_version --format=csv"
+    gpu = _run_and_parse(
+        run,
+        which,
+        "nvidia-smi",
+        ["--query-gpu=name,memory.total,memory.used,driver_version", "--format=csv"],
+        subp.parse_nvidia_smi_csv,
     )
-    gpu = None
-    if nvidia_smi_path:
-        code, out, _err = run(
-            [
-                nvidia_smi_path,
-                "--query-gpu=name,memory.total,memory.used,driver_version",
-                "--format=csv",
-            ],
-            subp.DEFAULT_TIMEOUT,
-        )
-        if code == 0:
-            gpu = subp.parse_nvidia_smi_csv(out)
-    if gpu:
-        values.append(_present("nvidia_smi_gpu_name", gpu["name"], nvidia_smi_cmd, SUBPROCESS))
-        values.append(
-            _present("nvidia_smi_driver_version", gpu["driver_version"], nvidia_smi_cmd, SUBPROCESS)
-        )
-        values.append(
-            _present(
-                "unified_memory",
-                "true" if subp.is_unified_memory(gpu) else "false",
-                nvidia_smi_cmd,
-                SUBPROCESS,
-            )
-        )
-    else:
-        values.append(_absent("nvidia_smi_gpu_name", nvidia_smi_cmd, SUBPROCESS))
-        values.append(_absent("nvidia_smi_driver_version", nvidia_smi_cmd, SUBPROCESS))
-        values.append(_absent("unified_memory", nvidia_smi_cmd, SUBPROCESS))
+    if not gpu:
+        return [
+            _absent("nvidia_smi_gpu_name", cmd, SUBPROCESS),
+            _absent("nvidia_smi_driver_version", cmd, SUBPROCESS),
+            _absent("unified_memory", cmd, SUBPROCESS),
+        ]
+    return [
+        _present("nvidia_smi_gpu_name", gpu["name"], cmd, SUBPROCESS),
+        _present("nvidia_smi_driver_version", gpu["driver_version"], cmd, SUBPROCESS),
+        _present(
+            "unified_memory",
+            "true" if subp.is_unified_memory(gpu) else "false",
+            cmd,
+            SUBPROCESS,
+        ),
+    ]
 
-    nvpmodel_path = which("nvpmodel")
-    nvpmodel_cmd = "nvpmodel -q"
-    power_mode = None
-    if nvpmodel_path:
-        code, out, _err = run([nvpmodel_path, "-q"], subp.DEFAULT_TIMEOUT)
-        if code == 0:
-            power_mode = subp.parse_nvpmodel(out)
-    if power_mode:
-        values.append(_present("nvpmodel_power_mode", power_mode, nvpmodel_cmd, SUBPROCESS))
-    else:
-        values.append(_absent("nvpmodel_power_mode", nvpmodel_cmd, SUBPROCESS))
 
-    dpkg_path = which("dpkg-query")
-    dpkg_cmd = "dpkg-query -W"
-    tensorrt_version = None
-    if dpkg_path:
-        code, out, _err = run([dpkg_path, "-W"], subp.DEFAULT_TIMEOUT)
-        if code == 0:
-            tensorrt_version = subp.parse_dpkg_query(out, "libnvinfer10") or subp.parse_dpkg_query(
-                out, "tensorrt"
-            )
-    if tensorrt_version:
-        values.append(_present("tensorrt_version", tensorrt_version, dpkg_cmd, SUBPROCESS))
-    else:
-        values.append(_absent("tensorrt_version", dpkg_cmd, SUBPROCESS))
+def _subprocess_values(run: subp.Runner, which: subp.Which) -> list[Value]:
+    """Facts no file exposes: nvidia-smi, nvpmodel -q and dpkg-query -W."""
+    values = _nvidia_smi_values(run, which)
 
-    # --- PATH-only presence checks ----------------------------------------
+    power_mode = _run_and_parse(run, which, "nvpmodel", ["-q"], subp.parse_nvpmodel)
+    values.append(_maybe("nvpmodel_power_mode", power_mode, "nvpmodel -q", SUBPROCESS))
 
-    values.append(_value_from_which("tmux", which, "tmux"))
-    values.append(_value_from_which("pi", which, "pi"))
+    def _tensorrt(out: str) -> str | None:
+        return subp.parse_dpkg_query(out, "libnvinfer10") or subp.parse_dpkg_query(out, "tensorrt")
+
+    tensorrt_version = _run_and_parse(run, which, "dpkg-query", ["-W"], _tensorrt)
+    values.append(_maybe("tensorrt_version", tensorrt_version, "dpkg-query -W", SUBPROCESS))
+    return values
+
+
+def _path_values(run: subp.Runner, which: subp.Which) -> list[Value]:
+    """PATH presence checks, plus the ``spark status --json`` merge they gate."""
+    values = [
+        _value_from_which("tmux", which, "tmux"),
+        _value_from_which("pi", which, "pi"),
+    ]
     spark_value = _value_from_which("spark_cli", which, "spark")
     values.append(spark_value)
 
     spark_status_cmd = "spark status --json"
     spark_available = None
     if spark_value.present:
-        code, out, _err = run([spark_value.value, "status", "--json"], subp.DEFAULT_TIMEOUT)
+        code, out, _err = run([spark_value.text, "status", "--json"], subp.DEFAULT_TIMEOUT)
         if code == 0:
             spark_available = subp.parse_spark_status(out)
-    if spark_available is not None:
+    if spark_available is None:
+        values.append(_absent("spark_status_available", spark_status_cmd, SUBPROCESS))
+    else:
         values.append(
             _present(
                 "spark_status_available",
@@ -227,11 +211,27 @@ def detect(
                 SUBPROCESS,
             )
         )
-    else:
-        values.append(_absent("spark_status_available", spark_status_cmd, SUBPROCESS))
+    return values
 
-    kind = _classify(values)
-    return Platform(kind=kind, values=tuple(values))
+
+def detect(
+    root: str = "/",
+    run: subp.Runner = subp.default_run,
+    which: subp.Which = subp.default_which,
+) -> Platform:
+    """Detect the machine nvsh is running on.
+
+    Args:
+        root: filesystem root to read files under (``/`` in production; a
+            fixture tree in tests).
+        run: ``(argv, timeout) -> (returncode, stdout, stderr)``, injectable
+            so tests replay captured subprocess output.
+        which: ``name -> path or None``, injectable for the same reason.
+    """
+    values = _file_values(root)
+    values.extend(_subprocess_values(run, which))
+    values.extend(_path_values(run, which))
+    return Platform(kind=_classify(values), values=tuple(values))
 
 
 def _classify(values: list[Value]) -> str:
@@ -241,6 +241,6 @@ def _classify(values: list[Value]) -> str:
     if by_name["l4t_release"].present:
         return "jetson"
     dmi = by_name["dmi_product_name"]
-    if dmi.present and dmi.value and "rtx" in dmi.value.lower():
+    if dmi.present and dmi.text and "rtx" in dmi.text.lower():
         return "rtx"
     return "generic"

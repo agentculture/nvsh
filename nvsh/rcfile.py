@@ -19,9 +19,9 @@ never hand-edited.
 Validating ``--rc``
 -------------------
 
-``--rc PATH`` is operator input that ends up in ``open()``/``write_text()``,
-so it is validated once, in one place, before any filesystem call sees it
-(SonarCloud ``pythonsecurity:S2083``). :meth:`RcPath.validate` refuses:
+``--rc PATH`` is operator input that ends up in an ``open()``, so it is
+validated once, in one place, before any filesystem call sees it (SonarCloud
+``pythonsecurity:S2083``). :meth:`RcPath.validate` refuses:
 
 * an empty path, or one containing a ``NUL`` byte;
 * any ``..`` component (no traversal, lexically, before resolution);
@@ -35,7 +35,11 @@ so it is validated once, in one place, before any filesystem call sees it
 
 Everything that survives is handed back as an :class:`RcPath`, and the
 ``read``/``write``/``backup`` methods on that object are the only way the rc
-file is touched.
+file is touched. Those methods never hand a path to the filesystem at all:
+they open the validated home directory and then open the file *relative to
+that descriptor* by its bare name (:func:`_open_in_dir`), so no directory
+component an operator typed ever reaches an ``open()`` and no parent can be
+swapped in between the validation and the write.
 """
 
 from __future__ import annotations
@@ -188,6 +192,42 @@ def _require_caller_owns(target: Path) -> None:
         raise RcPathError(f"refusing to edit {target}: its directory is world-writable")
 
 
+#: Flags for the rc/backup writes below: create or truncate, write-only.
+_WRITE_FLAGS = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+
+
+def _open_in_dir(directory: Path, name: str, flags: int, mode: int = 0o666) -> int:
+    """Open the file *name* **inside** *directory*, by name only.
+
+    *directory* is opened first and the file is then opened relative to that
+    descriptor, so the only thing the kernel resolves for the file itself is
+    a bare name with no directory component in it: nothing an operator typed
+    can steer the open somewhere else, and the parent cannot be swapped
+    between :meth:`RcPath.validate` and the write. *name* is rejected
+    outright if it is not a bare name (this is belt and braces --
+    :meth:`RcPath.validate` has already reduced the path to one).
+    """
+    if not name or os.sep in name or name in (os.curdir, os.pardir):
+        raise RcPathError(f"refusing to use {name!r} as an rc file name")
+    dir_fd = os.open(os.fspath(directory), os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        return os.open(name, flags, mode, dir_fd=dir_fd)
+    finally:
+        os.close(dir_fd)
+
+
+def _read_in_dir(directory: Path, name: str) -> str:
+    """Read ``<directory>/<name>`` through :func:`_open_in_dir`."""
+    with os.fdopen(_open_in_dir(directory, name, os.O_RDONLY), "r", encoding="utf-8") as handle:
+        return handle.read()
+
+
+def _write_in_dir(directory: Path, name: str, text: str) -> None:
+    """Write *text* to ``<directory>/<name>`` through :func:`_open_in_dir`."""
+    with os.fdopen(_open_in_dir(directory, name, _WRITE_FLAGS), "w", encoding="utf-8") as handle:
+        handle.write(text)
+
+
 @dataclass(frozen=True)
 class RcPath:
     """A ``--rc`` path that has passed :meth:`validate`, plus the I/O nvsh does on it.
@@ -195,11 +235,13 @@ class RcPath:
     Construct it only through :meth:`validate`. ``path`` is the lexical
     (``..``-free, absolute) path so diagnostics quote what the operator
     typed; ``real`` is the fully symlink-resolved path the checks ran
-    against.
+    against; ``root`` is the validated home directory every read and write
+    is performed *inside* (see :func:`_open_in_dir`).
     """
 
     path: Path
     real: Path
+    root: Path
 
     # -- construction ------------------------------------------------------
 
@@ -243,7 +285,7 @@ class RcPath:
         elif real.parent.exists() and not real.parent.is_dir():
             raise RcPathError(f"cannot create {lexical}: {real.parent} is not a directory")
 
-        return cls(path=lexical, real=real)
+        return cls(path=lexical, real=real, root=root)
 
     # -- I/O ---------------------------------------------------------------
 
@@ -255,21 +297,21 @@ class RcPath:
         """The rc file's current text, or ``""`` when it does not exist yet."""
         if not self.exists():
             return ""
-        return self.real.read_text(encoding="utf-8")
+        return _read_in_dir(self.root, self.real.name)
 
     def write_text(self, text: str) -> None:
-        """Write *text*, creating the (validated) parent directory if needed."""
-        self.real.parent.mkdir(parents=True, exist_ok=True)
-        self.real.write_text(text, encoding="utf-8")
+        """Write *text* inside the validated root, addressed by file name only."""
+        self.root.mkdir(parents=True, exist_ok=True)
+        _write_in_dir(self.root, self.real.name, text)
 
     def write_backup(self, text: str) -> Path:
         """Timestamped backup of *text* next to the rc file. See :func:`write_backup`."""
-        return _write_backup(self.real, text)
+        return _write_backup(self.root, self.real.name, text)
 
     def newest_backup(self) -> Path | None:
         """The most recently written backup for this rc file, or ``None``."""
         pattern = f"{self.real.name}.nvsh-backup-*"
-        candidates = sorted(self.real.parent.glob(pattern))
+        candidates = sorted(self.root.glob(pattern))
         return candidates[-1] if candidates else None
 
     def __str__(self) -> str:
@@ -281,21 +323,25 @@ class RcPath:
 # --------------------------------------------------------------------------
 
 
-def _write_backup(rc_path: Path, text: str) -> Path:
-    """Write *text* beside an **already validated** *rc_path*.
+def _write_backup(root: Path, rc_name: str, text: str) -> Path:
+    """Write *text* beside an **already validated** rc file.
+
+    Takes the validated *root* and the rc file's bare *name*, never a whole
+    path, and writes through :func:`_write_in_dir` — the backup lands inside
+    the same directory the rc file was validated against, by construction.
 
     Private on purpose: the only callers are :meth:`RcPath.write_backup` and
     the thin :func:`write_backup` shim below, both of which have run
     :meth:`RcPath.validate` first.
     """
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    backup_path = rc_path.with_name(f"{rc_path.name}.nvsh-backup-{timestamp}")
+    name = f"{rc_name}.nvsh-backup-{timestamp}"
     suffix = 1
-    while backup_path.exists():
-        backup_path = rc_path.with_name(f"{rc_path.name}.nvsh-backup-{timestamp}-{suffix}")
+    while (root / name).exists():
+        name = f"{rc_name}.nvsh-backup-{timestamp}-{suffix}"
         suffix += 1
-    backup_path.write_text(text, encoding="utf-8")
-    return backup_path
+    _write_in_dir(root, name, text)
+    return root / name
 
 
 def write_backup(rc_path: "RcPath | Path | str", text: str) -> Path:

@@ -60,6 +60,7 @@ __nvsh_capture_trap() {
     __nvsh_prev=$(trap -p EXIT 2>/dev/null)
     case ${__nvsh_prev} in
     *__nvsh_capture_cleanup*) return 0 ;; # already ours
+    *) ;;                                 # any other handler: chain it below
     esac
     __NVSH_PREV_EXIT_TRAP=''
     if [[ -n ${__nvsh_prev} ]]; then
@@ -238,6 +239,7 @@ __nvsh_hook() {
     # only on a failure, so a successful command pays one function call.
     case ${__nvsh_status} in
     0 | 130 | 141) return 0 ;;
+    *) ;; # a real failure: fall through to the rest of the pre-filter
     esac
     [[ ${NVSH_AUTO:-1} == 0 ]] && return 0
 
@@ -288,6 +290,7 @@ __nvsh_hook() {
 # install/unload time only, never on the prompt path.
 __NVSH_STRIPPED=''
 __nvsh_strip_hook() {
+    local __nvsh_input=$1
     local __nvsh_line __nvsh_t
     __NVSH_STRIPPED=''
     while IFS= read -r __nvsh_line || [[ -n ${__nvsh_line} ]]; do
@@ -296,7 +299,7 @@ __nvsh_strip_hook() {
         __nvsh_t=${__nvsh_t%;}
         [[ -z ${__nvsh_t} || ${__nvsh_t} == __nvsh_hook ]] && continue
         __NVSH_STRIPPED+=${__NVSH_STRIPPED:+$'\n'}${__nvsh_line}
-    done <<<"$1"
+    done <<<"${__nvsh_input}"
     return 0
 }
 

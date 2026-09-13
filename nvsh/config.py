@@ -188,6 +188,63 @@ def _reject_unknown(table: dict, valid: set[str], where: str) -> None:
         raise ConfigError(f"unknown key(s) in {where}: {bad} (valid keys: {allowed})")
 
 
+def _table(raw: dict, name: str, what: str) -> dict:
+    """``raw[name]`` as a table (``{}`` when absent), or a :class:`ConfigError`."""
+    table = raw.get(name, {})
+    if not isinstance(table, dict):
+        raise ConfigError(what)
+    return table
+
+
+def _apply_agent(raw: dict, cfg: Config) -> None:
+    agent_table = _table(raw, "agent", "[agent] must be a table")
+    _reject_unknown(agent_table, _VALID_AGENT_KEYS, "[agent]")
+    if "provider" in agent_table:
+        cfg.agent_provider = agent_table["provider"]
+
+
+def _apply_agents(raw: dict, cfg: Config) -> None:
+    agents_table = _table(raw, "agents", "[agents] must be a table of tables")
+    if not agents_table:
+        return
+    merged: dict[str, dict[str, object]] = {k: dict(v) for k, v in _DEFAULT_AGENTS.items()}
+    for name, backend_table in agents_table.items():
+        if not isinstance(backend_table, dict):
+            raise ConfigError(f"[agents.{name}] must be a table")
+        if "api_key" in backend_table:
+            raise ConfigError(
+                f"[agents.{name}] sets 'api_key' directly — nvsh never reads or "
+                "stores literal API keys; use 'api_key_env' to name an "
+                "environment variable instead"
+            )
+        _reject_unknown(backend_table, _VALID_AGENT_BACKEND_KEYS, f"[agents.{name}]")
+        merged.setdefault(name, {})
+        merged[name].update(backend_table)
+    cfg.agents = merged
+
+
+def _apply_sessions(raw: dict, cfg: Config) -> None:
+    sessions_table = _table(raw, "sessions", "[sessions] must be a table")
+    _reject_unknown(sessions_table, _VALID_SESSIONS_KEYS, "[sessions]")
+    if "max" in sessions_table:
+        cfg.sessions_max = sessions_table["max"]
+
+
+def _apply_triggers(raw: dict, cfg: Config) -> None:
+    triggers_table = _table(raw, "triggers", "[triggers] must be a table")
+    _reject_unknown(triggers_table, _VALID_TRIGGERS_KEYS, "[triggers]")
+    cfg.triggers = dict(triggers_table)
+
+
+def _read_toml(target: Path) -> dict:
+    try:
+        return tomllib.loads(target.read_text(encoding="utf-8"))
+    except tomllib.TOMLDecodeError as exc:
+        raise ConfigError(f"malformed TOML in {target}: {exc}") from exc
+    except OSError as exc:
+        raise ConfigError(f"could not read {target}: {exc}") from exc
+
+
 def load(path: Path | None = None) -> Config:
     """Load config from ``path`` (default ``$XDG_CONFIG_HOME/nvsh/config.toml``).
 
@@ -199,56 +256,14 @@ def load(path: Path | None = None) -> Config:
     if not target.is_file():
         return Config()
 
-    try:
-        raw = tomllib.loads(target.read_text(encoding="utf-8"))
-    except tomllib.TOMLDecodeError as exc:
-        raise ConfigError(f"malformed TOML in {target}: {exc}") from exc
-    except OSError as exc:
-        raise ConfigError(f"could not read {target}: {exc}") from exc
-
+    raw = _read_toml(target)
     _reject_unknown(raw, _VALID_TOP_KEYS, "top level")
 
     cfg = Config()
-
-    agent_table = raw.get("agent", {})
-    if not isinstance(agent_table, dict):
-        raise ConfigError("[agent] must be a table")
-    _reject_unknown(agent_table, _VALID_AGENT_KEYS, "[agent]")
-    if "provider" in agent_table:
-        cfg.agent_provider = agent_table["provider"]
-
-    agents_table = raw.get("agents", {})
-    if not isinstance(agents_table, dict):
-        raise ConfigError("[agents] must be a table of tables")
-    if agents_table:
-        merged: dict[str, dict[str, object]] = {k: dict(v) for k, v in _DEFAULT_AGENTS.items()}
-        for name, backend_table in agents_table.items():
-            if not isinstance(backend_table, dict):
-                raise ConfigError(f"[agents.{name}] must be a table")
-            if "api_key" in backend_table:
-                raise ConfigError(
-                    f"[agents.{name}] sets 'api_key' directly — nvsh never reads or "
-                    "stores literal API keys; use 'api_key_env' to name an "
-                    "environment variable instead"
-                )
-            _reject_unknown(backend_table, _VALID_AGENT_BACKEND_KEYS, f"[agents.{name}]")
-            merged.setdefault(name, {})
-            merged[name].update(backend_table)
-        cfg.agents = merged
-
-    sessions_table = raw.get("sessions", {})
-    if not isinstance(sessions_table, dict):
-        raise ConfigError("[sessions] must be a table")
-    _reject_unknown(sessions_table, _VALID_SESSIONS_KEYS, "[sessions]")
-    if "max" in sessions_table:
-        cfg.sessions_max = sessions_table["max"]
-
-    triggers_table = raw.get("triggers", {})
-    if not isinstance(triggers_table, dict):
-        raise ConfigError("[triggers] must be a table")
-    _reject_unknown(triggers_table, _VALID_TRIGGERS_KEYS, "[triggers]")
-    cfg.triggers = dict(triggers_table)
-
+    _apply_agent(raw, cfg)
+    _apply_agents(raw, cfg)
+    _apply_sessions(raw, cfg)
+    _apply_triggers(raw, cfg)
     return cfg
 
 
@@ -270,7 +285,9 @@ KEY_SOURCE_FILE = "api_key_file"
 KEY_SOURCE_DEFAULT_FILE = "the default key file"
 NO_BEARER_NOTE = "no bearer configured"
 
-_VAR_REF_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)")
+#: ``$VAR`` / ``${VAR}``. ``re.ASCII`` keeps ``\w`` to ``[A-Za-z0-9_]``, the
+#: shell's own variable-name alphabet.
+_VAR_REF_RE = re.compile(r"\$\{([A-Za-z_]\w*)\}|\$([A-Za-z_]\w*)", re.ASCII)
 
 
 @dataclass(frozen=True)

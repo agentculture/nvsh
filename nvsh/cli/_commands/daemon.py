@@ -20,6 +20,9 @@ from nvsh import daemon as daemon_mod
 from nvsh.cli._errors import EXIT_ENV_ERROR, CliError
 from nvsh.cli._output import emit_result
 
+#: Help text every ``--json`` flag in this verb group shares.
+_JSON_HELP = "Emit structured JSON."
+
 
 def _json(args: argparse.Namespace) -> bool:
     return bool(getattr(args, "json", False))
@@ -114,9 +117,9 @@ def cmd_daemon_unregister(args: argparse.Namespace) -> int:
 def register(sub: argparse._SubParsersAction) -> None:
     p = sub.add_parser(
         "daemon",
-        help="Run, inspect or stop the per-user session daemon " "(see 'nvsh explain daemon').",
+        help="Run, inspect or stop the per-user session daemon (see 'nvsh explain daemon').",
     )
-    p.add_argument("--json", action="store_true", help="Emit structured JSON.")
+    p.add_argument("--json", action="store_true", help=_JSON_HELP)
     p.set_defaults(func=cmd_daemon_status, json=False)
     noun_sub = p.add_subparsers(dest="daemon_command", parser_class=type(p))
 
@@ -130,20 +133,20 @@ def register(sub: argparse._SubParsersAction) -> None:
         default=daemon_mod.DEFAULT_IDLE_TIMEOUT,
         help="Seconds of inactivity after which the daemon exits.",
     )
-    run.add_argument("--json", action="store_true", help="Emit structured JSON.")
+    run.add_argument("--json", action="store_true", help=_JSON_HELP)
     run.set_defaults(func=cmd_daemon_run)
 
     status = noun_sub.add_parser("status", help="Report the daemon's shells, agents and backend.")
-    status.add_argument("--json", action="store_true", help="Emit structured JSON.")
+    status.add_argument("--json", action="store_true", help=_JSON_HELP)
     status.set_defaults(func=cmd_daemon_status)
 
     stop = noun_sub.add_parser("stop", help="Stop a running daemon (idempotent).")
-    stop.add_argument("--json", action="store_true", help="Emit structured JSON.")
+    stop.add_argument("--json", action="store_true", help=_JSON_HELP)
     stop.set_defaults(func=cmd_daemon_stop)
 
     unregister = noun_sub.add_parser(
         "unregister", help="Tell the daemon a shell exited; the last one stops it."
     )
     unregister.add_argument("--shell", required=True, help="The shell's pid (bash's $$).")
-    unregister.add_argument("--json", action="store_true", help="Emit structured JSON.")
+    unregister.add_argument("--json", action="store_true", help=_JSON_HELP)
     unregister.set_defaults(func=cmd_daemon_unregister)

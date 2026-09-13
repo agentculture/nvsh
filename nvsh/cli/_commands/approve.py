@@ -42,6 +42,9 @@ from nvsh.approvals import (
 from nvsh.cli._errors import EXIT_USER_ERROR, CliError
 from nvsh.cli._output import emit_result
 
+#: Help text every ``--json`` flag in this verb group shares.
+_JSON_HELP = "Emit structured JSON."
+
 
 def cmd_approve_check(args: argparse.Namespace) -> int:
     approvals = Approvals.load()
@@ -61,6 +64,57 @@ def cmd_approve_check(args: argparse.Namespace) -> int:
             text += f"\nstage: {stage}"
         emit_result(text, json_mode=False)
     return 0
+
+
+def _scoped_patterns(args: argparse.Namespace, requested: str, picked: str | None) -> tuple:
+    """Derive ``(scope, patterns, chosen_stages)`` for a ``--scope`` approval.
+
+    The positional is a *command line* here, not a glob: it is refused
+    outright when no scope may pre-approve it, split into stages, narrowed
+    to the ``--stages`` the operator picked (d26), and widened into one
+    pattern per surviving stage (d24).
+    """
+    reason = command_refusal_reason(args.pattern)
+    if reason is not None:
+        raise CliError(
+            code=EXIT_USER_ERROR,
+            message=f"refusing to approve {args.pattern!r}: {reason}",
+            remediation="run it once instead; no scope pre-approves this command",
+        )
+    scope = base_scope(requested)
+    chosen: list[int] | None = None
+    if picked:
+        count = len(stages(args.pattern))
+        chosen = parse_stages(picked, count)
+        if chosen is None:
+            raise CliError(
+                code=EXIT_USER_ERROR,
+                message=f"unreadable --stages {picked!r}: this line has {count} stage(s)",
+                remediation=f"pass 'all' or stage numbers 1-{count}, comma- or space-separated",
+            )
+    patterns = patterns_for(args.pattern, requested, chosen)
+    if not patterns:
+        raise CliError(
+            code=EXIT_USER_ERROR,
+            message="nothing to approve: the command line is empty",
+            remediation="pass the command line you want approved",
+        )
+    return scope, patterns, chosen
+
+
+def _store_patterns(approvals: Approvals, patterns: list[str], scope: str) -> None:
+    """Add every pattern under *scope*, persisting a ``user`` approval to disk."""
+    for pattern in patterns:
+        try:
+            approvals.add(pattern, scope=scope)
+        except ApprovalError as exc:
+            raise CliError(
+                code=EXIT_USER_ERROR,
+                message=str(exc),
+                remediation="choose a narrower pattern; 'sudo *', 'rm *' and bare '*' are refused",
+            ) from exc
+    if scope == "user":
+        approvals.save()
 
 
 def cmd_approve_add(args: argparse.Namespace) -> int:
@@ -83,7 +137,6 @@ def cmd_approve_add(args: argparse.Namespace) -> int:
     approvals = Approvals.load()
     requested = getattr(args, "scope", None)
     picked = getattr(args, "stages", None)
-    chosen: list[int] | None = None
     if picked and not requested:
         raise CliError(
             code=EXIT_USER_ERROR,
@@ -91,47 +144,15 @@ def cmd_approve_add(args: argparse.Namespace) -> int:
             remediation="pass --scope session|session-specific|user|user-specific as well",
         )
     if requested:
-        reason = command_refusal_reason(args.pattern)
-        if reason is not None:
-            raise CliError(
-                code=EXIT_USER_ERROR,
-                message=f"refusing to approve {args.pattern!r}: {reason}",
-                remediation="run it once instead; no scope pre-approves this command",
-            )
-        scope = base_scope(requested)
-        count = len(stages(args.pattern))
-        if picked:
-            chosen = parse_stages(picked, count)
-            if chosen is None:
-                raise CliError(
-                    code=EXIT_USER_ERROR,
-                    message=f"unreadable --stages {picked!r}: this line has {count} stage(s)",
-                    remediation=f"pass 'all' or stage numbers 1-{count}, comma- or space-separated",
-                )
-        patterns = patterns_for(args.pattern, requested, chosen)
-        if not patterns:
-            raise CliError(
-                code=EXIT_USER_ERROR,
-                message="nothing to approve: the command line is empty",
-                remediation="pass the command line you want approved",
-            )
+        scope, patterns, chosen = _scoped_patterns(args, requested, picked)
     else:
         scope = "session" if getattr(args, "session", False) else "user"
-        patterns = [args.pattern]
-    for pattern in patterns:
-        try:
-            approvals.add(pattern, scope=scope)
-        except ApprovalError as exc:
-            raise CliError(
-                code=EXIT_USER_ERROR,
-                message=str(exc),
-                remediation="choose a narrower pattern; 'sudo *', 'rm *' and bare '*' are refused",
-            ) from exc
-    if scope == "user":
-        approvals.save()
-    json_mode = bool(getattr(args, "json", False))
+        patterns, chosen = [args.pattern], None
+
+    _store_patterns(approvals, patterns, scope)
+
     result = {"added": args.pattern, "scope": scope, "patterns": patterns, "stages": chosen}
-    if json_mode:
+    if bool(getattr(args, "json", False)):
         emit_result(result, json_mode=True)
     else:
         emit_result(f"approved ({scope}): {' '.join(patterns)}", json_mode=False)
@@ -200,13 +221,13 @@ def register(sub: argparse._SubParsersAction) -> None:
         "approve",
         help="Check or manage the approved-command pattern store (see 'nvsh explain approve').",
     )
-    p.add_argument("--json", action="store_true", help="Emit structured JSON.")
+    p.add_argument("--json", action="store_true", help=_JSON_HELP)
     p.set_defaults(func=_no_verb, json=False)
     noun_sub = p.add_subparsers(dest="approve_command", parser_class=type(p))
 
     check = noun_sub.add_parser("check", help="Decide whether a command is already approved.")
     check.add_argument("cmd", help="The full command line to check.")
-    check.add_argument("--json", action="store_true", help="Emit structured JSON.")
+    check.add_argument("--json", action="store_true", help=_JSON_HELP)
     check.set_defaults(func=cmd_approve_check)
 
     add = noun_sub.add_parser("add", help="Approve a glob pattern.")
@@ -231,16 +252,16 @@ def register(sub: argparse._SubParsersAction) -> None:
             "'all' (the default) or numbers like '2' or '1,2'."
         ),
     )
-    add.add_argument("--json", action="store_true", help="Emit structured JSON.")
+    add.add_argument("--json", action="store_true", help=_JSON_HELP)
     add.set_defaults(func=cmd_approve_add, stages=None)
 
     lst = noun_sub.add_parser("list", help="List approved patterns.")
-    lst.add_argument("--json", action="store_true", help="Emit structured JSON.")
+    lst.add_argument("--json", action="store_true", help=_JSON_HELP)
     lst.set_defaults(func=cmd_approve_list)
 
     rm = noun_sub.add_parser("remove", help="Remove a pattern from both lists.")
     rm.add_argument("pattern", help="The pattern to remove.")
-    rm.add_argument("--json", action="store_true", help="Emit structured JSON.")
+    rm.add_argument("--json", action="store_true", help=_JSON_HELP)
     rm.set_defaults(func=cmd_approve_remove)
 
     audit = noun_sub.add_parser("audit", help="Append one tool-call decision to the audit log.")
@@ -261,5 +282,5 @@ def register(sub: argparse._SubParsersAction) -> None:
         ),
         help="The decision reached for this command.",
     )
-    audit.add_argument("--json", action="store_true", help="Emit structured JSON.")
+    audit.add_argument("--json", action="store_true", help=_JSON_HELP)
     audit.set_defaults(func=cmd_approve_audit)
