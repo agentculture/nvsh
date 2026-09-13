@@ -1,0 +1,5 @@
+source /usr/share/ghostty/shell-integration/bash/ghostty.bash
+[?2004l]133;A;redraw=last;cl=line;aid=2836432]7;kitty-shell-cwd://host-xxxx/tmp/example/scratchpad[?2004h]133;P;k=ibash-5.2$ ]133;B[5 q]2;/tmp/example/scratchpadecho hello-out; ls /nope; false
+[?2004l]2;echo hello-out; ls /nope; false]133;C;[0 qhello-out
+ls: cannot access '/nope': No such file or directory
+]133;D;0;aid=2836432]133;A;redraw=last;cl=line;aid=2836432[?2004h]133;P;k=ibash-5.2$ ]133;B[5 q]2;/tmp/example/scratchpad

@@ -63,6 +63,7 @@ def _argv_has_json(argv: list[str] | None) -> bool:
 
 def _build_parser() -> argparse.ArgumentParser:
     from nvsh.cli._commands import approve as _approve_group
+    from nvsh.cli._commands import capture as _capture_cmd
     from nvsh.cli._commands import cli as _cli_group
     from nvsh.cli._commands import doctor as _doctor_cmd
     from nvsh.cli._commands import explain as _explain_cmd
@@ -90,6 +91,7 @@ def _build_parser() -> argparse.ArgumentParser:
     _doctor_cmd.register(sub)
     _cli_group.register(sub)
     _approve_group.register(sub)
+    _capture_cmd.register(sub)
     # Register your own noun groups here:
     #   from nvsh.cli._commands import my_noun as _my_noun_group
     #   _my_noun_group.register(sub)

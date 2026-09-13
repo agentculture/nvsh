@@ -1,0 +1,9 @@
+Script started on 2026-09-13 13:43:08+03:00 [COMMAND="bash --norc -i" <not executed on terminal>]
+[?2004hbash-5.2$ source /usr/share/ghostty/shell-integration/bash/ghostty.bash
+[?2004l]133;A;redraw=last;cl=line;aid=2836418]7;kitty-shell-cwd://host-xxxx/tmp/example/scratchpad[?2004h]133;P;k=ibash-5.2$ ]133;B[5 q]2;/tmp/example/scratchpadecho hello-out; ls /nope; false
+[?2004l]2;echo hello-out; ls /nope; false]133;C;[0 qhello-out
+ls: cannot access '/nope': No such file or directory
+]133;D;0;aid=2836418]133;A;redraw=last;cl=line;aid=2836418[?2004h]133;P;k=ibash-5.2$ ]133;B[5 q]2;/tmp/example/scratchpadexit
+[?2004l]2;exit]133;C;[0 qexit
+
+Script done on 2026-09-13 13:43:11+03:00 [COMMAND_EXIT_CODE="1"]

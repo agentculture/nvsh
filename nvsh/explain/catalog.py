@@ -30,6 +30,7 @@ planned (GitHub issues #1 and #2). nvsh is also an AgentCulture mesh agent
 - `nvsh doctor` — check the agent-identity invariants.
 - `nvsh cli overview` — describe the CLI surface.
 - `nvsh approve check <cmd>` — check whether a command is already approved.
+- `nvsh capture --show` — print the last captured-output slice for this shell.
 
 ## Exit-code policy
 
@@ -207,6 +208,37 @@ Removes a pattern from both the persisted `user_patterns` and the in-memory
     nvsh approve remove "docker logs *"
 """
 
+_CAPTURE = """\
+# nvsh capture
+
+Prints the last captured-output slice for the current shell session
+(`nvsh.capture.last_slice`), backing `--show-context`.
+
+Each interactive session the bash hook installs runs under a per-session
+typescript (`script -qfc "$BASH" "$log"`), or, inside tmux, under
+`tmux pipe-pane -o` writing to the same log path. Ghostty's OSC 133 `C`
+(command start) / `D` (command end) markers let nvsh slice out exactly the
+last command's real output without ever re-running it. The slice is capped
+at 64 KB (head + tail with a truncation marker), has escape sequences
+stripped, invalid UTF-8 replaced, and is redacted (`nvsh.redact`) before it
+is ever printed or sent to an agent. **The session log's own path never
+appears in the output.**
+
+`status` is one of `ok`, `partial` (the command was still running, or
+`script(1)` was killed mid-command), `truncated` (the region exceeded the
+64 KB cap), or `no capture` (no session log, or no OSC 133 markers found).
+
+## Usage
+
+    nvsh capture --show
+    nvsh capture --show --json
+    nvsh capture --show --pid 12345
+
+## See also
+
+- `nvsh explain doctor`
+"""
+
 
 ENTRIES: dict[tuple[str, ...], str] = {
     (): _ROOT,
@@ -223,4 +255,6 @@ ENTRIES: dict[tuple[str, ...], str] = {
     ("approve", "add"): _APPROVE_ADD,
     ("approve", "list"): _APPROVE_LIST,
     ("approve", "remove"): _APPROVE_REMOVE,
+    ("capture",): _CAPTURE,
+    ("capture", "show"): _CAPTURE,
 }
