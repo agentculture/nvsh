@@ -29,6 +29,7 @@ planned (GitHub issues #1 and #2). nvsh is also an AgentCulture mesh agent
 - `nvsh overview` — descriptive snapshot of the agent.
 - `nvsh doctor` — check the agent-identity invariants.
 - `nvsh cli overview` — describe the CLI surface.
+- `nvsh approve check <cmd>` — check whether a command is already approved.
 
 ## Exit-code policy
 
@@ -124,6 +125,88 @@ itself (distinct from the global `overview`, which describes the agent).
     nvsh cli overview --json
 """
 
+_APPROVE = """\
+# nvsh approve
+
+Checks or manages the approved-command pattern store (`nvsh.approvals`).
+Backs the "propose, don't run" contract: an agent-proposed fix is never
+executed without operator approval, and this is the single shared decision
+point other components (the bash hook, the daemon client) call into.
+
+Patterns are `fnmatch` globs matched against the *full* command line, after
+whitespace normalization — not just the program name. `add()` refuses
+`sudo *`, `rm *`, a bare `*`, and any pattern starting with `sudo` or `rm`.
+
+Two scopes:
+
+- `user` — persisted to `$XDG_CONFIG_HOME/nvsh/approved.toml` (mode 0600).
+- `session` — held in memory only for the current process; never written to
+  disk and gone once the process exits.
+
+## Usage
+
+    nvsh approve check "nvidia-smi -q"
+    nvsh approve check "nvidia-smi -q" --json
+    nvsh approve add "docker logs *"
+    nvsh approve add "docker logs *" --session
+    nvsh approve list --json
+    nvsh approve remove "docker logs *"
+"""
+
+_APPROVE_CHECK = """\
+# nvsh approve check <cmd>
+
+Returns the approval decision for a command line: `{decision, pattern}` where
+`decision` is `user`, `session`, or `ask`, and `pattern` is the matching glob
+(or `null`/absent when nothing matched). User patterns are checked before
+session patterns.
+
+## Usage
+
+    nvsh approve check "docker ps -a"
+    nvsh approve check "docker ps -a" --json
+"""
+
+_APPROVE_ADD = """\
+# nvsh approve add <pattern>
+
+Approves an `fnmatch` glob pattern, matched against the full command line.
+Persists to `user_patterns` by default; pass `--session` to hold it in memory
+only for the current process.
+
+Refused outright (raises a user error, nothing is written): `sudo *`, `rm *`,
+a bare `*`, and any pattern starting with `sudo` or `rm`.
+
+## Usage
+
+    nvsh approve add "docker logs *"
+    nvsh approve add "docker logs *" --session
+"""
+
+_APPROVE_LIST = """\
+# nvsh approve list
+
+Lists both pattern lists: `{user: [...], session: [...]}`. `user` is loaded
+from `approved.toml`; `session` reflects only the current process (always
+empty in a freshly started process).
+
+## Usage
+
+    nvsh approve list
+    nvsh approve list --json
+"""
+
+_APPROVE_REMOVE = """\
+# nvsh approve remove <pattern>
+
+Removes a pattern from both the persisted `user_patterns` and the in-memory
+`session_patterns` lists, if present. Idempotent.
+
+## Usage
+
+    nvsh approve remove "docker logs *"
+"""
+
 
 ENTRIES: dict[tuple[str, ...], str] = {
     (): _ROOT,
@@ -135,4 +218,9 @@ ENTRIES: dict[tuple[str, ...], str] = {
     ("doctor",): _DOCTOR,
     ("cli",): _CLI,
     ("cli", "overview"): _CLI,
+    ("approve",): _APPROVE,
+    ("approve", "check"): _APPROVE_CHECK,
+    ("approve", "add"): _APPROVE_ADD,
+    ("approve", "list"): _APPROVE_LIST,
+    ("approve", "remove"): _APPROVE_REMOVE,
 }
