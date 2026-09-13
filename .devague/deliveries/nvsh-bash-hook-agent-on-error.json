@@ -2,7 +2,7 @@
   "plan_slug": "nvsh-bash-hook-agent-on-error",
   "schema_version": 2,
   "created": "2026-09-13T13:17:31Z",
-  "updated": "2026-09-13T15:37:50Z",
+  "updated": "2026-09-13T15:44:55Z",
   "deviations": [
     {
       "id": "d1",
@@ -215,6 +215,22 @@
       "status": "proposed",
       "classification": "risky",
       "seq": 14
+    },
+    {
+      "id": "d15",
+      "what": "operator request: the proposal panel only offers run-once; add 'approve for this session' and 'approve for this user' keys so the operator does not re-approve the same command class. The stores already exist (nvsh/approvals.py user/session patterns, nvsh approve add --session, the pi extension's once/session/user choices); the panel and client never expose them",
+      "task_ref": "t19",
+      "reason": "operator on 2026-09-13: 'We also need an approve for this session and approve for this user, so I won't have to repeat approve'; spec claims c25 and c50 already require the three choices",
+      "affects": [
+        "t13",
+        "t11",
+        "c25",
+        "c50"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "classification": "needs-follow-up",
+      "seq": 15
     }
   ],
   "evidence": [],
