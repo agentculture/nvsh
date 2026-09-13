@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-09-13T10:08:02Z",
-  "updated": "2026-09-13T13:26:10Z",
+  "updated": "2026-09-13T13:28:50Z",
   "claims": [
     {
       "id": "c1",
@@ -1519,6 +1519,17 @@
       "refs": [
         "t21",
         "d1"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l15",
+      "code": "grader-unverified",
+      "what": "t14: implementation and tests written together and run green first (no red phase); daemon-level /undo tests added afterwards to close a gap",
+      "skipped_check": "red phase of TDD",
+      "refs": [
+        "t14"
       ],
       "origin": "llm",
       "status": "proposed"
