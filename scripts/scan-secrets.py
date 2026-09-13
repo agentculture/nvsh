@@ -41,7 +41,16 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # patterns/regexes in comments), its own test fixtures (deliberately planted
 # fake secrets used to prove the scanner works), and lockfiles (vendored
 # hashes, not secrets).
-SELF_EXCLUDE = {"scripts/scan-secrets.py", "tests/test_scan_secrets.py"}
+SELF_EXCLUDE = {
+    "scripts/scan-secrets.py",
+    "tests/test_scan_secrets.py",
+    # nvsh.redact's planted corpus and its test (t3): both are full of
+    # deliberately fake secret-shaped strings (EXAMPLE-suffixed, never real
+    # credentials) used to exercise the redactor, the same rationale as
+    # test_scan_secrets.py above.
+    "tests/fixtures/redact_corpus.txt",
+    "tests/test_redact.py",
+}
 EXCLUDE_SUFFIXES = (".lock",)
 
 # ---------------------------------------------------------------------------
