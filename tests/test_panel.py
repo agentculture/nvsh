@@ -49,8 +49,11 @@ def test_style_enabled_only_on_a_tty_without_no_color():
 def test_style_is_hard_coded_sgr_and_empty_when_disabled():
     on = panel_mod.style({"TERM": "xterm"}, True)
     off = panel_mod.style({"TERM": "dumb"}, True)
-    assert on.bold.startswith("\x1b[") and on.reset == "\x1b[0m"
-    assert off.bold == "" and off.reset == "" and off.red == ""
+    assert on.bold.startswith("\x1b[")
+    assert on.reset == "\x1b[0m"
+    assert off.bold == ""
+    assert off.reset == ""
+    assert off.red == ""
 
 
 def test_panel_module_never_imports_curses_or_calls_tput():
@@ -76,7 +79,8 @@ def test_first_text_delta_is_on_screen_before_the_second_arrives():
         yield AgentEvent(kind=EventKind.DONE)
 
     result = p.stream(events())
-    assert seen and "first" in seen[0]
+    assert seen
+    assert "first" in seen[0]
     assert "second" not in seen[0]
     assert result.text == "first second"
     assert result.done is True
@@ -270,6 +274,24 @@ def test_show_proposal_reads_single_keys_on_a_tty(key, expected):
     finally:
         typist.cancel()
         os.close(master)
+
+
+def test_a_proposal_event_without_a_proposal_renders_nothing_and_keeps_going():
+    """A malformed event must never end the stream or reach ``on_proposal``."""
+    out = io.StringIO()
+    p = _panel(out=out)
+    seen: list[Proposal] = []
+
+    def events():
+        yield AgentEvent(kind=EventKind.PROPOSAL, proposal=None)
+        yield AgentEvent(kind=EventKind.TEXT_DELTA, text="still here")
+        yield AgentEvent(kind=EventKind.DONE)
+
+    result = p.stream(events(), on_proposal=lambda proposal, event: seen.append(proposal))
+    assert seen == []
+    assert result.proposals == []
+    assert result.text == "still here"
+    assert result.done is True
 
 
 # --- Ctrl+C --------------------------------------------------------------
@@ -495,7 +517,8 @@ def test_legend_offers_session_and_user_keys_on_one_80_column_line():
     assert len(legend) <= 80, f"legend is {len(legend)} columns: {legend!r}"
     for token in ("[Enter] run", "[s/S]", "[u/U]", "[d] details", "[t] tell", "[Esc] ignore"):
         assert token in legend, legend
-    assert "session" in legend and "user" in legend
+    assert "session" in legend
+    assert "user" in legend
     # order: run, session, user, explain, details, tell, ignore
     positions = [
         legend.index(t) for t in ("[Enter]", "[s/S]", "[u/U]", "[e]", "[d]", "[t]", "[Esc]")

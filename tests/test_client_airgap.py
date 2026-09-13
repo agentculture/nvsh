@@ -45,7 +45,7 @@ class _Handler(BaseHTTPRequestHandler):
         self.wfile.flush()
 
 
-@pytest.fixture()
+@pytest.fixture
 def local_model():
     server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
     server.last_body = None
@@ -58,7 +58,7 @@ def local_model():
         thread.join(timeout=5)
 
 
-@pytest.fixture()
+@pytest.fixture
 def no_network(monkeypatch):
     """Refuse every connection that is not loopback or an AF_UNIX socket."""
     real_create_connection = socket.create_connection

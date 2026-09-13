@@ -812,30 +812,53 @@ def _decide_proposal(
             stage_patterns=per_stage,
         )
         if choice == TELL:
-            text = panel.read_tell()
-            if not text:
-                continue  # Ctrl+C or an empty line: back to the proposal
-            if inject is None:
-                panel.note("nvsh: no conversation to steer; ignoring it instead")
-                return IGNORE
-            inject(text)
-            return STEERED
-        if choice == EXPLAIN:
-            if proposal.rationale or inject is None:
-                panel.explain_proposal(proposal)
-                continue
-            # d17: never print "(no rationale given)" when the agent that
-            # made the proposal is right there and can be asked.
-            panel.note("... asking the agent why")
-            inject(EXPLAIN_PROPOSAL_PROMPT.format(command=proposal.command))
-            return STEERED
-        if choice == DETAILS:
+            decided = _tell_decision(panel, inject)
+        elif choice == EXPLAIN:
+            decided = _explain_decision(panel, proposal, inject)
+        elif choice == DETAILS:
             panel.detail_proposal(proposal, details)
-            continue
-        if choice == REFUSED:
-            continue
-        return choice
+            decided = None
+        elif choice == REFUSED:
+            # The panel already printed the guard's reason; ask again with
+            # run-once still on the table.
+            decided = None
+        else:
+            decided = choice
+        if decided is not None:
+            return decided
     return IGNORE
+
+
+def _tell_decision(panel: Panel, inject) -> str | None:
+    """``[t]``: one line at the ``nvsh> `` prompt, into this conversation (d16).
+
+    Returns the decision, or ``None`` to re-show the proposal -- an empty
+    line or a Ctrl+C at that prompt has decided nothing.
+    """
+    text = panel.read_tell()
+    if not text:
+        return None
+    if inject is None:
+        panel.note("nvsh: no conversation to steer; ignoring it instead")
+        return IGNORE
+    inject(text)
+    return STEERED
+
+
+def _explain_decision(panel: Panel, proposal: Proposal, inject) -> str | None:
+    """``[e]``: the rationale, or the agent's own answer when there is none.
+
+    Returns ``None`` (re-show the proposal) once the rationale has been
+    printed. d17: never print "(no rationale given)" when the agent that
+    made the proposal is right there and can be asked -- then the question
+    goes into the conversation and the decision is ``STEERED``.
+    """
+    if proposal.rationale or inject is None:
+        panel.explain_proposal(proposal)
+        return None
+    panel.note("... asking the agent why")
+    inject(EXPLAIN_PROPOSAL_PROMPT.format(command=proposal.command))
+    return STEERED
 
 
 def backend_label(config) -> str:
@@ -978,55 +1001,22 @@ def _proposal_handler(
     resolved_env = dict(os.environ if env is None else env)
 
     def handle(proposal: Proposal, event: AgentEvent) -> None:
-        command = proposal.command
         request_id = (event.args or {}).get("request_id")
         if audit is not None:
             audit.record(event="proposal", proposal=proposal)
 
-        auto = (
-            proposal.kind is ProposalKind.INSPECT
-            and not _is_privileged(command)
-            and approvals.decide(command) in ("user", "session")
-        )
-        if auto:
-            panel.running(command)
-            result = _run_approved(proposal, AUTO_INSPECT, timeout=INSPECT_TIMEOUT)
-            panel.finished(result.exit_code)
-            inspections.append((command, result))
-            if audit is not None:
-                audit.record(event="decision", proposal=proposal, decision=AUTO_INSPECT)
-                audit.record(event="outcome", proposal=proposal, outcome=result.exit_code)
-            if request_id:
-                responder.respond(request_id, {"value": "once"})
+        if _auto_inspected(
+            panel,
+            proposal,
+            approvals=approvals,
+            inspections=inspections,
+            responder=responder,
+            audit=audit,
+            request_id=request_id,
+        ):
             return
 
-        def inject(text: str) -> None:
-            """Put ``text`` into *this* conversation (deviation d16).
-
-            The steer goes out first and the deny second, in that order for
-            two reasons: while the dialog is open the backend is provably
-            still streaming (so a mid-turn steer is accepted rather than
-            starting a fresh turn), and the deny is an unacknowledged write
-            -- writing it first would leave a command in flight behind an
-            un-acked one, which is exactly what d14 forbids.
-
-            The reason rides on the deny as well as in the steer. pi 0.85.1
-            reduces an ``extension_ui_response`` to its ``value`` before the
-            extension sees it (``docs/pi-rpc.md``), so today only the steer
-            reaches the model -- but a backend that does pass the whole
-            response gets the operator's words as the block reason for free.
-            """
-            delivered = responder.steer(text)
-            if request_id:
-                responder.respond(request_id, {"value": "deny", "reason": text})
-            if delivered:
-                panel.note("nvsh: steering the agent ...")
-            elif steers is not None:
-                steers.append(text)
-                panel.note("nvsh: no mid-turn channel; asking next instead ...")
-            else:
-                panel.note("nvsh: the agent could not be steered")
-
+        inject = _injector(panel, responder, steers, request_id)
         details = None
         if context is not None:
             details = proposal_details(
@@ -1040,40 +1030,131 @@ def _proposal_handler(
         choice = _decide_proposal(panel, proposal, details=details, inject=inject)
         if audit is not None:
             audit.record(event="decision", proposal=proposal, decision=choice)
-        if choice == STEERED:
-            # The dialog is already answered and the conversation carries the
-            # operator's words; nothing to run and nothing more to say.
-            return
-        if choice not in _RUN_CHOICES:
-            if request_id:
-                responder.respond(request_id, {"value": "deny"})
-            panel.note("nvsh: not run")
-            return
-        if request_id:
-            # The backend owns execution (pi's approval extension); nvsh only
-            # relays the operator's answer, and must not run it a second time.
-            # "session"/"user" are the extension's own choice tokens, so the
-            # widening and the store write happen there, once.
-            answer = "once" if choice == APPROVE else choice
-            if choice in _SCOPE_CHOICES:
-                answer = encode_choice(choice, getattr(panel, "stage_choice", None), command)
-            responder.respond(request_id, {"value": answer})
-            return
-        if choice in _SCOPE_CHOICES:
-            # No dialog: this adapter (openai-compat and friends) has nvsh run
-            # the command itself, so nvsh also owns the store write. The guard
-            # in _decide_proposal has already cleared the pattern, but add()
-            # is the authority and may still refuse -- a refusal must cost the
-            # operator the approval, never the command they asked for.
-            _approve_scope(panel, approvals, command, choice, getattr(panel, "stage_choice", None))
-        result = _run_approved(proposal, choice)
-        if audit is not None:
-            audit.record(
-                event="outcome", proposal=proposal, decision=choice, outcome=result.exit_code
-            )
-        _print_run(panel, command, result)
+        _apply_decision(
+            panel,
+            proposal,
+            choice,
+            approvals=approvals,
+            responder=responder,
+            audit=audit,
+            request_id=request_id,
+        )
 
     return handle
+
+
+def _auto_inspected(
+    panel: Panel,
+    proposal: Proposal,
+    *,
+    approvals,
+    inspections: list[tuple[str, RunResult]],
+    responder,
+    audit,
+    request_id,
+) -> bool:
+    """Run an already-approved, unprivileged inspection without asking.
+
+    Returns ``True`` when it did (the proposal is then fully handled: the
+    output is queued for the follow-up prompt and the backend's dialog, if
+    there was one, is answered ``once``), ``False`` when the operator still
+    has to decide.
+    """
+    command = proposal.command
+    auto = (
+        proposal.kind is ProposalKind.INSPECT
+        and not _is_privileged(command)
+        and approvals.decide(command) in ("user", "session")
+    )
+    if not auto:
+        return False
+    panel.running(command)
+    result = _run_approved(proposal, AUTO_INSPECT, timeout=INSPECT_TIMEOUT)
+    panel.finished(result.exit_code)
+    inspections.append((command, result))
+    if audit is not None:
+        audit.record(event="decision", proposal=proposal, decision=AUTO_INSPECT)
+        audit.record(event="outcome", proposal=proposal, outcome=result.exit_code)
+    if request_id:
+        responder.respond(request_id, {"value": "once"})
+    return True
+
+
+def _injector(panel: Panel, responder, steers: list[str] | None, request_id):
+    """Build the ``inject`` callback ``_decide_proposal`` steers with.
+
+    The steer goes out first and the deny second, in that order for two
+    reasons: while the dialog is open the backend is provably still
+    streaming (so a mid-turn steer is accepted rather than starting a fresh
+    turn), and the deny is an unacknowledged write -- writing it first
+    would leave a command in flight behind an un-acked one, which is
+    exactly what d14 forbids.
+
+    The reason rides on the deny as well as in the steer. pi 0.85.1 reduces
+    an ``extension_ui_response`` to its ``value`` before the extension sees
+    it (``docs/pi-rpc.md``), so today only the steer reaches the model --
+    but a backend that does pass the whole response gets the operator's
+    words as the block reason for free.
+    """
+
+    def inject(text: str) -> None:
+        """Put ``text`` into *this* conversation (deviation d16)."""
+        delivered = responder.steer(text)
+        if request_id:
+            responder.respond(request_id, {"value": "deny", "reason": text})
+        if delivered:
+            panel.note("nvsh: steering the agent ...")
+        elif steers is not None:
+            steers.append(text)
+            panel.note("nvsh: no mid-turn channel; asking next instead ...")
+        else:
+            panel.note("nvsh: the agent could not be steered")
+
+    return inject
+
+
+def _apply_decision(
+    panel: Panel,
+    proposal: Proposal,
+    choice: str,
+    *,
+    approvals,
+    responder,
+    audit,
+    request_id,
+) -> None:
+    """Act on the operator's answer: relay it, run it, or say it was not run."""
+    command = proposal.command
+    if choice == STEERED:
+        # The dialog is already answered and the conversation carries the
+        # operator's words; nothing to run and nothing more to say.
+        return
+    if choice not in _RUN_CHOICES:
+        if request_id:
+            responder.respond(request_id, {"value": "deny"})
+        panel.note("nvsh: not run")
+        return
+    if request_id:
+        # The backend owns execution (pi's approval extension); nvsh only
+        # relays the operator's answer, and must not run it a second time.
+        # "session"/"user" are the extension's own choice tokens, so the
+        # widening and the store write happen there, once.
+        answer = "once" if choice == APPROVE else choice
+        if choice in _SCOPE_CHOICES:
+            answer = encode_choice(choice, getattr(panel, "stage_choice", None), command)
+        responder.respond(request_id, {"value": answer})
+        return
+    if choice in _SCOPE_CHOICES:
+        # No dialog: this adapter (openai-compat and friends) has nvsh run
+        # the command itself, so nvsh also owns the store write. The guard
+        # in _decide_proposal has already cleared the pattern, but add()
+        # is the authority and may still refuse -- a refusal must cost the
+        # operator the approval, never the command they asked for.
+        _approve_scope(panel, approvals, command, choice, getattr(panel, "stage_choice", None))
+    result = _run_approved(proposal, choice)
+    if audit is not None:
+        audit.record(event="outcome", proposal=proposal, decision=choice, outcome=result.exit_code)
+    _print_run(panel, command, result)
 
 
 def encode_choice(choice: str, chosen: Sequence[int] | None, command: str) -> str:
@@ -1226,6 +1307,47 @@ def _panel_for(panel: Panel | None, env: Mapping[str, str]) -> Panel:
     return panel if panel is not None else Panel(env=env)
 
 
+def _failed_line(state: Mapping[str, Any]) -> tuple[str, int]:
+    """The failed line and its status, as :func:`prose_request` wants them.
+
+    The state file is written by the hook and read back as JSON, so both
+    fields may be missing, ``null`` or the wrong type; neither may reach
+    the classifier as anything but a string and an int.
+    """
+    return str(state.get("line", "") or ""), int(state.get("exit", 0) or 0)
+
+
+def _apply_agent_mark(panel: Panel, config, marked) -> tuple[Any, bool]:
+    """Apply an ``@name`` mark's one-request harness override (d23).
+
+    Returns ``(config, one_shot)``. A refused override (an unknown or
+    uninstalled harness) returns ``(None, False)`` having printed the
+    one-line refusal: the caller must then do nothing else at all.
+    """
+    if marked is None or not marked.agent:
+        return config, False
+    config, refusal = agent_override(config, marked.agent)
+    if config is None:
+        panel.line(refusal)
+        return None, False
+    return config, True
+
+
+def _opening_request(panel: Panel, state: Mapping[str, Any], marked, config) -> AgentRequest:
+    """Print the panel's first line and build the turn's first request.
+
+    A marked or guessed question (d20/d23) goes out under the "asking"
+    header carrying the operator's own words; anything else is an ordinary
+    failure under the "failed (exit N)" header.
+    """
+    label = backend_label(config)
+    if marked is not None:
+        panel.header(state["line"], state["exit"], backend_label=label, ask=marked.question)
+        return _prose_request(state, marked.question)
+    panel.header(state["line"], state["exit"], backend_label=label)
+    return _failure_request(state)
+
+
 def handle_failure(
     args: Any, *, panel: Panel | None = None, env: Mapping[str, str] | None = None
 ) -> int:
@@ -1250,31 +1372,21 @@ def handle_failure(
     # window, and never consumes it either. Only an unmarked line (an
     # ordinary failure, or the d20 guess) is rate-limited, so the check has
     # to come after the classification rather than before it.
-    marked = prose_request(str(state.get("line", "") or ""), int(state.get("exit", 0) or 0))
+    line, exit_code = _failed_line(state)
+    marked = prose_request(line, exit_code)
     explicit = marked is not None and marked.explicit
     if not explicit and _rate_limited(args, config, resolved):
         _note_held_back(config, resolved, time.time())
         return 0
 
-    one_shot = False
-    if marked is not None and marked.agent:
-        config, refusal = agent_override(config, marked.agent)
-        if config is None:
-            panel.line(refusal)
-            return 0
-        one_shot = True
+    config, one_shot = _apply_agent_mark(panel, config, marked)
+    if config is None:
+        return 0
 
     shell_id = _shell_pid(resolved)
     context = build_context(args, resolved)
 
-    if marked is not None:
-        request = _prose_request(state, marked.question)
-        panel.header(
-            state["line"], state["exit"], backend_label=backend_label(config), ask=marked.question
-        )
-    else:
-        request = _failure_request(state)
-        panel.header(state["line"], state["exit"], backend_label=backend_label(config))
+    request = _opening_request(panel, state, marked, config)
     approvals = _load_approvals()
     inspections: list[tuple[str, RunResult]] = []
     steers: list[str] = []

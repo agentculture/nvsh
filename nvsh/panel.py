@@ -284,10 +284,6 @@ class StreamResult:
     proposals: list[Proposal] = field(default_factory=list)
 
 
-class _Interrupted(BaseException):
-    """Raised inside the SIGINT handler to break out of a blocking read."""
-
-
 class Panel:
     """Renders one failure panel onto ``out``, reading keys from ``in_``."""
 
@@ -510,39 +506,13 @@ class Panel:
                 # line erased first, and stay off until the event is handled
                 # (``on_proposal`` blocks on a keypress).
                 self._pause_waiting()
-                if event.kind is EventKind.TEXT_DELTA:
-                    started_text = True
-                    result.text += event.text
-                    self.write(event.text)
-                elif event.kind is EventKind.STATUS:
-                    if event.text:
-                        if started_text:
-                            self.line()
-                            started_text = False
-                        self.status(event.text)
-                elif event.kind is EventKind.TOOL_CALL:
-                    self.tool_call(event.tool, (event.args or {}).get("command"))
-                elif event.kind is EventKind.TOOL_RESULT:
-                    self.tool_result(event.tool, tool_exit_code(event.result))
-                elif event.kind is EventKind.PROPOSAL and event.proposal is not None:
-                    if started_text:
-                        self.line()
-                        started_text = False
-                    result.proposals.append(event.proposal)
-                    if on_proposal is not None:
-                        on_proposal(event.proposal, event)
-                elif event.kind is EventKind.ERROR:
-                    result.error = event.error
-                    if started_text:
-                        self.line()
-                        started_text = False
-                    self.line(f"{self.style.red}nvsh: {event.error}{self.style.reset}")
-                    break
-                elif event.kind is EventKind.DONE:
-                    result.done = True
+                started_text, last = self._render_event(
+                    event, result, started_text, on_proposal=on_proposal
+                )
+                if last:
                     break
                 self._arm_waiting()
-        except (KeyboardInterrupt, _Interrupted):
+        except KeyboardInterrupt:
             result.interrupted = True
         finally:
             stop_waiting.set()
@@ -550,18 +520,81 @@ class Panel:
                 _quiet(ticker.join, 2.0)
             self._pause_waiting()
             _restore_sigint(previous)
-            _restore_termios(self.in_, saved_attrs)
+            _restore_termios(saved_attrs)
             if started_text:
                 self.line()
             if result.interrupted:
                 self.line(f"{self.style.dim}nvsh: interrupted{self.style.reset}")
         return result
 
+    def _end_text_run(self, started_text: bool) -> bool:
+        """Close an open run of ``text_delta`` output with a newline.
+
+        Text arrives in fragments and is written without one, so anything
+        that is *not* more text (a status, a proposal, an error) has to
+        break the line first or it lands mid-sentence. Returns the new
+        ``started_text`` (always ``False``: the run is over).
+        """
+        if started_text:
+            self.line()
+        return False
+
+    def _render_event(
+        self,
+        event: AgentEvent,
+        result: StreamResult,
+        started_text: bool,
+        *,
+        on_proposal: Callable[[Proposal, AgentEvent], object] | None,
+    ) -> tuple[bool, bool]:
+        """Render one streamed event onto the panel and record it.
+
+        Returns ``(started_text, last)`` -- whether a run of text is still
+        open on the current line, and whether this event ends the stream
+        (``error`` and ``done`` do; every other kind does not, including an
+        event whose kind carries nothing this panel renders).
+        """
+        kind = event.kind
+        if kind is EventKind.TEXT_DELTA:
+            result.text += event.text
+            self.write(event.text)
+            return True, False
+        if kind is EventKind.STATUS:
+            if event.text:
+                started_text = self._end_text_run(started_text)
+                self.status(event.text)
+            return started_text, False
+        if kind is EventKind.TOOL_CALL:
+            self.tool_call(event.tool, (event.args or {}).get("command"))
+            return started_text, False
+        if kind is EventKind.TOOL_RESULT:
+            self.tool_result(event.tool, tool_exit_code(event.result))
+            return started_text, False
+        if kind is EventKind.PROPOSAL and event.proposal is not None:
+            started_text = self._end_text_run(started_text)
+            result.proposals.append(event.proposal)
+            if on_proposal is not None:
+                # Blocks on a keypress; the ticker stays paused throughout.
+                on_proposal(event.proposal, event)
+            return started_text, False
+        if kind is EventKind.ERROR:
+            result.error = event.error
+            started_text = self._end_text_run(started_text)
+            self.line(f"{self.style.red}nvsh: {event.error}{self.style.reset}")
+            return started_text, True
+        if kind is EventKind.DONE:
+            result.done = True
+            return started_text, True
+        return started_text, False
+
     def _on_sigint(self, cancel: Callable[[], object] | None) -> Callable[[int, object], None]:
         def handler(_signum: int, _frame: object) -> None:
             if cancel is not None:
                 _quiet(cancel)
-            raise _Interrupted()
+            # KeyboardInterrupt, like the one _interrupt_handler raises: a
+            # BaseException is what breaks a blocking read without any of
+            # the ``except Exception`` guards on the way out swallowing it.
+            raise KeyboardInterrupt()
 
         return handler
 
@@ -641,7 +674,7 @@ class Panel:
             previous = _install_sigint(_interrupt_handler)
             try:
                 raw = self._read_line()
-            except (KeyboardInterrupt, _Interrupted):
+            except KeyboardInterrupt:
                 self.line()
                 return every
             finally:
@@ -826,7 +859,7 @@ class Panel:
         previous = _install_sigint(_interrupt_handler)
         try:
             raw = self._read_line()
-        except (KeyboardInterrupt, _Interrupted):
+        except KeyboardInterrupt:
             self.line()
             return ""
         finally:
@@ -836,7 +869,7 @@ class Panel:
     def _read_line(self) -> str:
         try:
             raw = self.in_.readline()
-        except (KeyboardInterrupt, _Interrupted):
+        except KeyboardInterrupt:
             raise
         except Exception:  # noqa: BLE001 - a closed stdin is simply "nothing typed"
             return ""
@@ -913,7 +946,8 @@ def _quiet(call: Callable[..., object], *args: object) -> None:
         return
 
 
-def _restore_termios(stream: object, saved) -> None:
+def _restore_termios(saved) -> None:
+    """Put back what :func:`_save_termios` returned (``(fd, attrs)``, or none)."""
     if not saved:
         return
     fd, attrs = saved

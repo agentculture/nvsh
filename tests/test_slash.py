@@ -17,7 +17,7 @@ from nvsh.agent.base import AgentEvent, EventKind, RequestKind
 from nvsh.panel import Panel
 
 
-@pytest.fixture()
+@pytest.fixture
 def xdg(tmp_path, monkeypatch):
     state = tmp_path / "state"
     config = tmp_path / "config"
@@ -247,6 +247,23 @@ def test_undo_clears_pending_proposal_with_no_daemon(xdg):
     data = json.loads(path.read_text(encoding="utf-8"))
     assert "pending_proposal" not in data
     assert data["failure_id"] == "abc"  # the rest of the failure record survives
+
+
+def test_undo_reports_the_daemon_rewind_and_leaves_the_state_file_alone(xdg, monkeypatch):
+    """With a daemon answering, /undo says so and touches no local state."""
+    path = client_mod.last_failure_path()
+    client_mod._write_private_json(
+        path, {"failure_id": "abc", "pending_proposal": {"command": "ls"}}
+    )
+    monkeypatch.setattr(
+        client_transport, "control", lambda *a, **k: [AgentEvent(kind=EventKind.DONE)]
+    )
+    p = _panel()
+    rc = slash_mod.dispatch("/undo", platform_kind="dgx-spark", panel=p)
+    assert rc == 0
+    assert "undid the last agent turn" in p.out.getvalue()
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert data["pending_proposal"] == {"command": "ls"}
 
 
 def test_undo_with_no_recorded_failure_still_never_executes(xdg, monkeypatch):
