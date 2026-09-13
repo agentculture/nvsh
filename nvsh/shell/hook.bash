@@ -104,7 +104,7 @@ __nvsh_hook() {
     local __nvsh_status=$? __nvsh_pipe=("${PIPESTATUS[@]}")
 
     # bash-preexec (loaded by Ghostty's own integration on bash < 5.3, and by
-    # fig / amazon-q) rewrites PROMPT_COMMAND on its first prompt so that its
+    # kiro-cli / fig / amazon-q on any bash) rewrites PROMPT_COMMAND on its first prompt so that its
     # `__bp_precmd_invoke_cmd` runs first and every element that was there
     # before is folded in behind it as one newline-joined string. It restores
     # `$?` for each folded command via `__bp_set_ret_value`, but that `return`

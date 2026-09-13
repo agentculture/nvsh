@@ -81,8 +81,9 @@ into a wrapper process, and no PTY-transparency problem to solve.
   `bash-preexec` the hook reads `BP_PIPESTATUS`** (deviation `d2`, measured
   on the Spark against a copy of the operator's real rc). nvsh is first
   when no other prompt manager is present. But `bash-preexec.sh` — which
-  Ghostty's own integration sources on bash < 5.3, and which fig /
-  amazon-q also load — rewrites `PROMPT_COMMAND` on its first prompt by
+  Ghostty's own integration sources on bash < 5.3, and which kiro-cli /
+  fig / amazon-q load on any bash (on the Spark it is kiro-cli's copy,
+  `shell/bashrc.pre.bash`, that wins first position) — rewrites `PROMPT_COMMAND` on its first prompt by
   design: its `__bp_install` puts `__bp_precmd_invoke_cmd` first and folds
   whatever was there before into a single newline-joined first element
   behind it, so the array becomes
