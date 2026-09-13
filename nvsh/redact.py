@@ -127,7 +127,10 @@ _RULES: list[tuple[str, re.Pattern[str], _ReplFunc]] = [
             r"(?im)^(?P<prefix>[ \t]*(?:export[ \t]+)?)"
             r"(?P<name>[A-Za-z_][A-Za-z0-9_]*(?:TOKEN|SECRET|KEY|PASSWORD|PASS)[A-Za-z0-9_]*)"
             r"(?P<eq>[ \t]*=[ \t]*)"
-            r"(?P<value>\S+)"
+            # A shell value is a whole quoted string *or* an unquoted run of
+            # non-space. Stopping at the first space would leave the rest of
+            # `KEY="secret value"` in the slice sent to the backend.
+            r"(?P<value>\"(?:[^\"\\]|\\.)*\"|'[^']*'|\S+)"
         ),
         _env_assignment_repl,
     ),

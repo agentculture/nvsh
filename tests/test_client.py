@@ -990,3 +990,111 @@ def test_slash_steer_without_text_is_a_user_error(xdg):
     p = _panel()
     assert client_mod.handle_slash("/steer", panel=p) == 1
     assert "/steer" in p.out.getvalue()
+
+
+# --- PR #8 review: retry runs where the command failed ---------------------
+
+
+def test_retry_runs_in_the_recorded_directory(xdg, monkeypatch):
+    """Relative paths must resolve against the directory that failed.
+
+    ``/retry`` after a ``cd`` would otherwise touch different files than the
+    invocation the operator approved.
+    """
+    work = xdg.tmp / "work"
+    work.mkdir()
+    client_mod.save_last_failure(_args(work, line="touch relative-marker"))
+    elsewhere = xdg.tmp / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+
+    p = _panel("\n")
+    assert client_mod.retry(panel=p) == 0
+    assert (work / "relative-marker").exists()
+    assert not (elsewhere / "relative-marker").exists()
+    assert os.getcwd() == str(elsewhere), "the process cwd must be restored"
+
+
+def test_retry_refuses_when_the_recorded_directory_is_gone(xdg, monkeypatch):
+    gone = xdg.tmp / "gone"
+    gone.mkdir()
+    client_mod.save_last_failure(_args(gone, line="touch marker"))
+    monkeypatch.chdir(xdg.tmp)
+    gone.rmdir()
+
+    p = _panel("\n")
+    rc = client_mod.retry(panel=p)
+    assert rc == 1
+    assert not (xdg.tmp / "marker").exists()
+    assert "director" in p.out.getvalue()
+
+
+def test_retry_without_a_recorded_cwd_still_runs_here(xdg, monkeypatch):
+    """An old state file with no cwd keeps working (runs in the current dir)."""
+    here = xdg.tmp / "here"
+    here.mkdir()
+    monkeypatch.chdir(here)
+    p = _panel("\n")
+    assert client_mod.retry({"line": "touch no-cwd-marker", "exit": 2}, panel=p) == 0
+    assert (here / "no-cwd-marker").exists()
+
+
+# --- PR #8 review: the rate decision is atomic across shells ---------------
+
+
+def _lock_is_held(path) -> bool:
+    """Can another *process* take an exclusive flock on ``path`` right now?"""
+    import subprocess
+    import sys
+
+    probe = (
+        "import fcntl, os, sys\n"
+        "fd = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT, 0o600)\n"
+        "try:\n"
+        "    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)\n"
+        "except OSError:\n"
+        "    sys.exit(3)\n"
+        "sys.exit(0)\n"
+    )
+    return (
+        subprocess.run(  # noqa: S603
+            [sys.executable, "-c", probe, str(path)], capture_output=True
+        ).returncode
+        == 3
+    )
+
+
+def test_rate_decision_runs_under_an_exclusive_lock(xdg, monkeypatch):
+    """Two shells failing at once must not both read the same stale state."""
+    from nvsh import config as nvsh_config
+    from nvsh import triggers as triggers_mod
+
+    seen = {}
+    real_decide = triggers_mod.decide
+
+    def spy(event):
+        seen["held"] = _lock_is_held(client_mod.rate_lock_path())
+        return real_decide(event)
+
+    monkeypatch.setattr(triggers_mod, "decide", spy)
+    client_mod._rate_limited(_args(xdg.tmp), nvsh_config.load(), None)
+    assert seen["held"] is True
+
+
+def test_rate_lock_is_released_afterwards(xdg):
+    from nvsh import config as nvsh_config
+
+    client_mod._rate_limited(_args(xdg.tmp), nvsh_config.load(), None)
+    assert _lock_is_held(client_mod.rate_lock_path()) is False
+
+
+def test_rate_lock_failure_does_not_break_the_decision(xdg, monkeypatch):
+    """A filesystem that refuses locking still gets its diagnosis."""
+    from nvsh import config as nvsh_config
+
+    def no_locking(*_args, **_kwargs):
+        raise OSError("no locking on this filesystem")
+
+    monkeypatch.setattr(client_mod.fcntl, "flock", no_locking)
+    assert client_mod._rate_limited(_args(xdg.tmp), nvsh_config.load(), None) is False
+    assert client_mod.rate_state_path().exists()

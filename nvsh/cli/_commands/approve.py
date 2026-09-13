@@ -81,14 +81,18 @@ def cmd_approve_list(args: argparse.Namespace) -> int:
 
 def cmd_approve_remove(args: argparse.Namespace) -> int:
     approvals = Approvals.load()
-    approvals.remove(args.pattern)
+    found = approvals.remove(args.pattern)
     approvals.save()
     json_mode = bool(getattr(args, "json", False))
-    result = {"removed": args.pattern}
+    # `removed` stays the long-standing key; `found` says whether the pattern
+    # was actually there, so a typo no longer reads as a successful removal.
+    result = {"removed": args.pattern, "found": found}
     if json_mode:
         emit_result(result, json_mode=True)
-    else:
+    elif found:
         emit_result(f"removed: {args.pattern}", json_mode=False)
+    else:
+        emit_result(f"no such approval: {args.pattern}", json_mode=False)
     return 0
 
 

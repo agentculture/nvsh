@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import subprocess
 import sys
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
@@ -493,3 +494,79 @@ def test_setup_agent_choice_has_no_key_hint_for_other_backends(tmp_path, monkeyp
     assert code == 0, err
     payload = json.loads(out)
     assert payload["agent"]["key_hint"] is None
+
+
+# --------------------------------------------------------------------------
+# PR #8 review
+# --------------------------------------------------------------------------
+
+
+def test_rc_block_guard_treats_disable_zero_as_enabled(tmp_path):
+    """``NVSH_DISABLE=0`` is the documented "off switch off" value.
+
+    The hook's own kill switch reads ``-n $NVSH_DISABLE && != 0``; the rc
+    block skipped sourcing on *any* non-empty value, so an operator who set
+    the documented false value got no hook at all.
+    """
+    rc = _rc(tmp_path)
+    rc.write_text(UBUNTU_RC)
+    _run(["setup", "--rc", str(rc), "--json"])
+    block = rc.read_text().split("# >>> nvsh setup >>>", 1)[1]
+    guard = next(ln for ln in block.splitlines() if "hook.bash" in ln)
+
+    # Keep the condition, swap the sourcing for a marker: this asserts on the
+    # guard bash actually runs, not on a restatement of it.
+    condition, _, _body = guard.partition("|| ")
+    probe = f"{condition}|| __NVSH_PROBE=1"
+    for value, expect in (("", "1"), ("0", "1"), ("1", "0"), ("yes", "0")):
+        proc = subprocess.run(  # noqa: S603
+            ["bash", "-c", f'{probe}\necho "SOURCED=${{__NVSH_PROBE:-0}}"'],
+            capture_output=True,
+            text=True,
+            env={"PATH": os.environ.get("PATH", ""), "NVSH_DISABLE": value},
+            check=False,
+        )
+        assert f"SOURCED={expect}" in proc.stdout, (value, proc.stdout, proc.stderr)
+
+
+def test_uninstall_stops_the_daemon_before_unlinking_its_socket(tmp_path, monkeypatch):
+    """Unlinking first makes the running daemon unreachable through its socket."""
+    rc = _rc(tmp_path)
+    rc.write_text(UBUNTU_RC)
+    runtime = tmp_path / "run" / "nvsh"
+    runtime.mkdir(parents=True)
+    sock = runtime / "daemon.sock"
+    sock.write_text("")
+    _run(["setup", "--rc", str(rc), "--json"])
+
+    from nvsh.cli._commands import setup as setup_mod
+
+    seen: list[bool] = []
+
+    def fake_run(argv, **kwargs):
+        seen.append(sock.exists())
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr(setup_mod.subprocess, "run", fake_run)
+    code, out, err = _run(["uninstall", "--rc", str(rc), "--json"])
+    assert code == 0, err
+    assert seen == [True], "daemon stop must run while the socket is still bound"
+    assert json.loads(out)["daemon_stopped"] is True
+    assert not sock.exists()
+
+
+def test_uninstall_reports_a_daemon_that_did_not_stop(tmp_path, monkeypatch):
+    rc = _rc(tmp_path)
+    rc.write_text(UBUNTU_RC)
+    _run(["setup", "--rc", str(rc), "--json"])
+
+    from nvsh.cli._commands import setup as setup_mod
+
+    monkeypatch.setattr(
+        setup_mod.subprocess,
+        "run",
+        lambda argv, **kw: subprocess.CompletedProcess(argv, 1),
+    )
+    code, out, err = _run(["uninstall", "--rc", str(rc), "--json"])
+    assert code == 0, err
+    assert json.loads(out)["daemon_stopped"] is False

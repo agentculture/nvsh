@@ -286,3 +286,61 @@ def test_run_install_result_returncode_matches(tmp_path, returncode):
         audit=AuditLog(path=tmp_path / "audit.jsonl"),
     )
     assert result.returncode == returncode
+
+
+# --- PR #8 review: the pi step is recomputed after node/npm land ------------
+
+
+def test_pi_step_is_recomputed_after_node_is_installed(monkeypatch):
+    """A fresh machine (no node, no npm, no pi) must still get pi installed.
+
+    The whole plan used to be computed up front, so pi was permanently
+    marked non-executable ("npm not found") even though the node step
+    installed npm moments later.
+    """
+    from nvsh.cli._commands import setup as setup_mod
+
+    present: set[str] = set()
+
+    def which(name):
+        return f"/usr/bin/{name}" if name in present else None
+
+    ran: list[str] = []
+
+    def fake_run_install(step, **kwargs):
+        if not step.executable:
+            return installers.InstallResult(tool=step.tool, ran=False, returncode=None)
+        ran.append(step.tool)
+        if step.tool == "node":
+            present.update({"node", "npm"})  # apt-get installed nodejs + npm
+        return installers.InstallResult(tool=step.tool, ran=True, returncode=0)
+
+    monkeypatch.setattr(setup_mod.installers, "run_install", fake_run_install)
+    present.add("apt-get")
+    missing = installers.missing_tools(which=which)
+    assert [t.name for t in missing] == ["node", "pi", "uv", "tmux"]
+
+    rows, any_ran = setup_mod._process_installs(
+        missing, offer_only=False, confirm=lambda _m: True, which=which
+    )
+    assert any_ran is True
+    pi_row = next(row for row in rows if row["tool"] == "pi")
+    assert pi_row["executable"] is True, pi_row
+    assert pi_row["ran"] is True
+    assert "npm" in pi_row["command"]
+    assert "pi" in ran
+
+
+def test_offer_only_still_reports_the_unmet_dependency(monkeypatch):
+    """With nothing installed, the offer text still says npm is missing."""
+    from nvsh.cli._commands import setup as setup_mod
+
+    def which(name):
+        return "/usr/bin/apt-get" if name == "apt-get" else None
+
+    missing = installers.missing_tools(which=which)
+    rows, any_ran = setup_mod._process_installs(missing, offer_only=True, confirm=None, which=which)
+    assert any_ran is False
+    pi_row = next(row for row in rows if row["tool"] == "pi")
+    assert pi_row["executable"] is False
+    assert "npm not found" in pi_row["command"]

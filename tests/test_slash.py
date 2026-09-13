@@ -417,3 +417,30 @@ def test_ask_with_an_unknown_agent_names_the_known_ones(xdg, monkeypatch):
     out = p.out.getvalue()
     assert "nvsh: @nope is not available: " in out
     assert "pi" in out
+
+
+# --- PR #8 review: malformed quoting is an input error, not a guess ---------
+
+
+def test_unterminated_quote_is_rejected_not_reparsed(xdg, monkeypatch):
+    """The dispatcher contract: a parse failure is reported, never guessed at.
+
+    Re-splitting on whitespace would hand ``/ask "question`` to the agent as
+    if it had parsed.
+    """
+    sent = []
+    monkeypatch.setattr(client_transport, "send", _stub_send([]))
+    monkeypatch.setattr(client_transport, "one_shot", lambda *a, **k: sent.append(a) or iter(()))
+    p = _panel()
+    result = slash_mod.dispatch_result('/ask "question', platform_kind="dgx-spark", panel=p)
+    assert result.handled is False
+    assert result.exit_code == 1
+    assert not sent
+    out = p.out.getvalue()
+    assert "quot" in out.lower() or "parse" in out.lower()
+
+
+def test_malformed_quoting_names_the_line_and_suggests_help(xdg):
+    p = _panel()
+    slash_mod.dispatch_result("/fix 'oops", platform_kind="dgx-spark", panel=p)
+    assert "/help" in p.out.getvalue()

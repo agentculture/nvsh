@@ -320,3 +320,40 @@ def test_rc_editor_exemption_list_still_matches_real_files() -> None:
     repo_root = Path(__file__).parent.parent
     for rel in _RC_EDITOR_FILES:
         assert (repo_root / rel).is_file(), f"exempted path does not exist: {rel}"
+
+
+# --- quoted shell assignments (PR #8 review) --------------------------------
+
+
+def test_quoted_env_assignment_value_is_redacted_whole() -> None:
+    """A shell-quoted secret must not survive past its first space."""
+    out = redact(b'API_KEY="secret value here"\n').decode()
+    assert "secret" not in out
+    assert "value" not in out
+    assert "here" not in out
+    assert "API_KEY=" in out
+
+
+def test_single_quoted_env_assignment_value_is_redacted_whole() -> None:
+    out = redact(b"export HF_TOKEN='two word secret'\n").decode()
+    assert "word" not in out
+    assert "secret" not in out
+    assert "HF_TOKEN=" in out
+
+
+def test_quoted_assignment_redaction_stops_at_the_closing_quote() -> None:
+    """Only the value goes: whatever follows the closing quote survives."""
+    out = redact(b'API_KEY="a b" && echo keepme\n').decode()
+    assert "a b" not in out
+    assert "keepme" in out
+
+
+def test_escaped_quote_inside_a_double_quoted_value_is_redacted() -> None:
+    out = redact(b'API_SECRET="one \\" two"\n').decode()
+    assert "one" not in out
+    assert "two" not in out
+
+
+def test_quoted_env_assignment_redaction_is_idempotent() -> None:
+    once = redact(b'API_KEY="secret value"\n')
+    assert redact(once) == once

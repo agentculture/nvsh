@@ -55,7 +55,10 @@ def _build_block(shell_dir: Path, nvsh_bin: str) -> str:
     body_lines = [
         f'export NVSH_HOOK_VERSION="{__version__}"',
         f'export NVSH_BIN="{nvsh_bin}"',
-        "[[ -n $NVSH_DISABLE ]] || "
+        # Exactly the condition the hook's own kill switch uses: a `0` means
+        # the off switch is off, so the hook still loads. Skipping on any
+        # non-empty value left `NVSH_DISABLE=0` shells with no hook at all.
+        "[[ -n $NVSH_DISABLE && $NVSH_DISABLE != 0 ]] || "
         f'{{ source "{shell_dir}/hook.bash"; source "{shell_dir}/readline.bash"; }}',
         'nvsh() { case $1 in on|off) eval "$(command nvsh "$@" --shell)";; '
         '*) command nvsh "$@";; esac; }',
@@ -83,17 +86,27 @@ def _install_step_dict(
 
 
 def _process_installs(
-    plan: list[installers.InstallStep], *, offer_only: bool, confirm
+    missing: list[installers.ToolSpec], *, offer_only: bool, confirm, which=None
 ) -> tuple[list[dict], bool]:
-    """Turn a plan into JSON-able rows, running each step unless ``offer_only``.
+    """Turn the missing tools into JSON-able rows, running each unless ``offer_only``.
+
+    Each step is computed **immediately before it runs**, in
+    :data:`nvsh.installers.TOOLS` dependency order. Planning the whole list
+    up front froze pi's step at "npm not found" on a machine with no Node,
+    even though the node step installed npm seconds later, so a fresh system
+    never got the agent backend installed at all.
 
     Returns ``(rows, any_ran)`` -- ``any_ran`` tells the caller whether it is
     worth re-running :func:`nvsh.agent.registry.choose` (a freshly installed
     ``pi`` only gets picked up on the next PATH lookup).
     """
+    # Resolved at call time, never as a def-time default: `shutil.which` is
+    # what the tests (and a future caller) substitute.
+    lookup = shutil.which if which is None else which
     rows: list[dict] = []
     any_ran = False
-    for step in plan:
+    for tool in missing:
+        step = tool.install_commands(lookup)
         if offer_only:
             rows.append(_install_step_dict(step, None))
             continue
@@ -153,7 +166,6 @@ def cmd_setup(args: argparse.Namespace) -> int:
     json_mode = bool(getattr(args, "json", False))
 
     missing = installers.missing_tools(which=shutil.which)
-    plan = installers.plan_installs(missing, which=shutil.which)
 
     if no_install:
         offer_only, confirm = True, None
@@ -166,7 +178,7 @@ def cmd_setup(args: argparse.Namespace) -> int:
     else:
         offer_only, confirm = False, None  # run_install's own input() prompt
 
-    install_rows, any_ran = _process_installs(plan, offer_only=offer_only, confirm=confirm)
+    install_rows, any_ran = _process_installs(missing, offer_only=offer_only, confirm=confirm)
     if any_ran:
         chosen, reason = registry.choose(cfg)
 
@@ -215,16 +227,20 @@ def _stop_daemon(nvsh_bin: str) -> bool:
     Detected with ``importlib.util.find_spec`` — this checks the module is
     importable *without* importing it (``nvsh.daemon`` is not this task's to
     depend on). When it is not present, the socket is unlinked directly.
+
+    Returns whether the daemon actually reported itself stopped: ignoring
+    ``daemon stop``'s exit status made uninstall claim a clean shutdown
+    while an orphaned agent process was still running.
     """
     if importlib.util.find_spec("nvsh.daemon") is None:
         return False
     try:
-        subprocess.run(  # nosec B603 - fixed argv, no shell
+        proc = subprocess.run(  # nosec B603 - fixed argv, no shell
             [nvsh_bin, "daemon", "stop"], check=False, timeout=5
         )
-        return True
     except (OSError, subprocess.SubprocessError):
         return False
+    return proc.returncode == 0
 
 
 def cmd_uninstall(args: argparse.Namespace) -> int:
@@ -256,6 +272,11 @@ def cmd_uninstall(args: argparse.Namespace) -> int:
                 f.unlink()
                 removed_files.append(str(f))
 
+    # Stop the daemon *before* touching its socket: unlinking first leaves a
+    # live daemon bound to a pathname nothing can reach any more, so
+    # `daemon stop` cannot connect and the orphan survives to its own timeout.
+    daemon_stopped = _stop_daemon(render.resolve_nvsh_bin())
+
     runtime_dir = _runtime_dir()
     removed_runtime = []
     if runtime_dir.exists():
@@ -269,8 +290,6 @@ def cmd_uninstall(args: argparse.Namespace) -> int:
         if sock.exists():
             sock.unlink()
             removed_runtime.append(str(sock))
-
-    daemon_stopped = _stop_daemon(render.resolve_nvsh_bin())
 
     result = {
         "rc": str(rc_path),

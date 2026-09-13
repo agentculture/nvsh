@@ -29,10 +29,14 @@ Patterns are ``fnmatch`` globs matched against the *full* command line
 (after whitespace normalization), not just argv[0] — ``"docker ps*"``
 matches ``docker ps -a`` but not ``docker exec ...``.
 
-``add()`` refuses obviously dangerous patterns outright: a bare ``"*"``,
-anything starting with ``sudo`` or ``rm`` (with or without a following
-glob), so a single approval can never blanket-authorize destructive or
-privilege-escalating commands.
+``add()`` refuses obviously dangerous patterns outright: a bare ``"*"``, and
+anything whose executable token can *match* ``sudo`` or ``rm`` -- literally
+(``"sudo reboot"``) or through a glob (``"sudo*"``, ``"rm*"``, ``"* -rf /"``)
+-- so a single approval can never blanket-authorize destructive or
+privilege-escalating commands. :meth:`Approvals.matches` enforces the same
+policy again on the candidate command, so a pattern that reached the store
+some other way (a hand-edited ``approved.toml``) still cannot auto-approve
+``sudo rm -rf /``.
 """
 
 from __future__ import annotations
@@ -60,6 +64,9 @@ DEFAULT_PATTERNS: tuple[str, ...] = (
 
 _WHITESPACE_RE = re.compile(r"\s+")
 
+#: Executables no approval -- pattern or stored -- may ever authorize.
+_NEVER_APPROVED_EXECUTABLES: tuple[str, ...] = ("sudo", "rm")
+
 
 class ApprovalError(ValueError):
     """Raised by :meth:`Approvals.add` when a pattern is refused."""
@@ -80,8 +87,30 @@ def refusal_reason(pattern: str) -> str | None:
     if normalized == "*":
         return "a bare '*' would approve every command"
     first_word = normalized.split(" ", 1)[0]
-    if first_word in ("sudo", "rm"):
-        return f"patterns starting with '{first_word}' are never approved"
+    # The executable token is a glob too: comparing it literally let `sudo*`
+    # and `rm*` (and a bare `*` in argv[0]) through, and `matches()` would
+    # then happily auto-approve `sudo rm -rf /`. Refuse any first token that
+    # *can match* a forbidden executable, not just one that equals it.
+    for forbidden in _NEVER_APPROVED_EXECUTABLES:
+        if first_word == forbidden or fnmatch.fnmatchcase(forbidden, first_word):
+            return f"patterns starting with '{forbidden}' are never approved"
+    return None
+
+
+def command_refusal_reason(cmd: str) -> str | None:
+    """Why ``cmd`` may never be *auto*-approved, whatever patterns are stored.
+
+    The same policy as :func:`refusal_reason`, applied to the candidate
+    command rather than to the pattern, so a pattern that reached the store
+    some other way (a hand-edited ``approved.toml``, a file written by an
+    older nvsh) still cannot authorize a privileged or destructive command.
+    """
+    normalized = _normalize(cmd)
+    if not normalized:
+        return None
+    first_word = normalized.split(" ", 1)[0]
+    if first_word in _NEVER_APPROVED_EXECUTABLES:
+        return f"'{first_word}' commands are never auto-approved"
     return None
 
 
@@ -254,12 +283,23 @@ class Approvals:
         if scope == "session":
             self.save_session()
 
-    def remove(self, pattern: str) -> None:
-        """Remove ``pattern`` from both lists if present (idempotent)."""
-        if pattern in self.user_patterns:
-            self.user_patterns.remove(pattern)
-        if pattern in self.session_patterns:
-            self.session_patterns.remove(pattern)
+    def remove(self, pattern: str) -> bool:
+        """Remove ``pattern`` from both lists if present (idempotent).
+
+        Normalizes the argument the way :meth:`add` normalizes what it
+        stores, so ``remove("kubectl get  *")`` really does drop the stored
+        ``"kubectl get *"``. Returns whether anything was removed, so the
+        CLI can tell "removed" from "no such approval" instead of always
+        reporting success.
+        """
+        normalized = _normalize(pattern)
+        removed = False
+        for target in (self.user_patterns, self.session_patterns):
+            for candidate in (pattern, normalized):
+                if candidate in target:
+                    target.remove(candidate)
+                    removed = True
+        return removed
 
     def matches(self, cmd: str) -> tuple[str, str | None]:
         """Return ``(scope, pattern)`` for the first match, checking user before session.
@@ -268,6 +308,10 @@ class Approvals:
         matching glob, or ``None`` when nothing matched.
         """
         normalized = _normalize(cmd)
+        if command_refusal_reason(normalized) is not None:
+            # No stored pattern, however it got there, may pre-authorize a
+            # privileged or destructive command: the operator is always asked.
+            return "ask", None
         for pattern in self.user_patterns:
             if fnmatch.fnmatchcase(normalized, pattern):
                 return "user", pattern

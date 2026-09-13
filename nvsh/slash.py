@@ -572,8 +572,11 @@ def dispatch_result(
 
     try:
         parts = shlex.split(text)
-    except ValueError:
-        parts = text.split()
+    except ValueError as exc:
+        # Re-splitting on whitespace would hand `/ask "question` to the agent
+        # as though it had parsed. The contract is: report, never guess.
+        _panel_for(panel, resolved).line(f"nvsh: malformed slash command ({exc}) (try /help)")
+        return DispatchResult(handled=False, exit_code=1)
     if not parts:
         _panel_for(panel, resolved).line("nvsh: empty slash command (try /help)")
         return DispatchResult(handled=False, exit_code=1)

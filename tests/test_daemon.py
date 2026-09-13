@@ -562,3 +562,80 @@ def test_no_process_is_spawned_by_importing_the_client(tmp_path: Path) -> None:
     path = client_transport.daemon_socket_path(env)
     assert not path.exists()
     assert len(os.listdir("/proc/self/task")) == before
+
+
+# --- PR #8 review: per-shell isolation of cancel / steer / ui-response ------
+
+
+class SteerableAgent(RecordingAgent):
+    """A RecordingAgent with the mid-turn channel ``_handle_steer`` looks for."""
+
+    def __init__(self, log: list[tuple[str, str]], name: str = "a0") -> None:
+        super().__init__(log, name)
+        self.steered: list[str] = []
+
+    def steer(self, text: str) -> bool:
+        self.steered.append(text)
+        self.log.append((self.name, f"steer:{text}"))
+        return True
+
+
+def _daemon_with_slots(tmp_path, shells: list[str]):
+    """A daemon holding one slot per shell in ``shells`` (no socket, no serve)."""
+    log: list[tuple[str, str]] = []
+    made: list[SteerableAgent] = []
+
+    def factory():
+        agent = SteerableAgent(log, f"a{len(made)}")
+        made.append(agent)
+        return agent
+
+    cfg = Config()
+    cfg.sessions_max = len(shells)
+    daemon = daemon_mod.Daemon(cfg, env=_env(tmp_path), agent_factory=factory)
+    for shell in shells:
+        daemon._acquire(shell)
+    return daemon, made
+
+
+def test_cancel_shell_only_cancels_that_shells_slot(tmp_path):
+    daemon, agents = _daemon_with_slots(tmp_path, ["shell-a", "shell-b"])
+    daemon.cancel_shell("shell-b")
+    assert [a.cancelled for a in agents] == [False, True]
+
+
+def test_cancel_shell_for_an_unknown_shell_cancels_nothing(tmp_path):
+    """A terminal queued behind another's turn must not cancel that turn."""
+    daemon, agents = _daemon_with_slots(tmp_path, ["shell-a"])
+    daemon.cancel_shell("shell-queued")
+    assert [a.cancelled for a in agents] == [False]
+
+
+def test_steer_reaches_only_the_requesting_shell(tmp_path):
+    daemon, agents = _daemon_with_slots(tmp_path, ["shell-a", "shell-b"])
+    events = list(daemon._handle_steer("shell-b", {"text": "check memory"}))
+    assert agents[0].steered == []
+    assert agents[1].steered == ["check memory"]
+    assert [e.kind for e in events][-1] is EventKind.DONE
+
+
+def test_steer_from_an_idle_shell_is_an_error_not_a_broadcast(tmp_path):
+    daemon, agents = _daemon_with_slots(tmp_path, ["shell-a"])
+    events = list(daemon._handle_steer("shell-idle", {"text": "check memory"}))
+    assert agents[0].steered == []
+    assert events[0].kind is EventKind.ERROR
+    assert "no running turn" in (events[0].error or "")
+
+
+def test_ui_response_from_an_idle_shell_is_an_error(tmp_path):
+    daemon, agents = _daemon_with_slots(tmp_path, ["shell-a"])
+    events = list(daemon._handle_ui_response("shell-idle", {"request_id": "ui-1"}))
+    assert not [entry for entry in agents[0].log if entry[1].startswith("respond_ui")]
+    assert events[0].kind is EventKind.ERROR
+
+
+def test_ui_response_reaches_its_own_shell(tmp_path):
+    daemon, agents = _daemon_with_slots(tmp_path, ["shell-a", "shell-b"])
+    events = list(daemon._handle_ui_response("shell-b", {"request_id": "ui-1"}))
+    assert (agents[1].name, "respond_ui:ui-1") in agents[1].log
+    assert [e.kind for e in events][-1] is EventKind.DONE

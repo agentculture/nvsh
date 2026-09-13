@@ -227,9 +227,25 @@ def wrapper_command(env: dict, log: Path) -> WrapperCommand:
     return WrapperCommand(argv=argv, bash_line=bash_line)
 
 
+def shell_single_quote(text: str) -> str:
+    """Single-quote ``text`` for a shell word, escaping embedded apostrophes.
+
+    The bash hook's ``__nvsh_shquote`` renders the identical string. Always
+    quotes (unlike :func:`shlex.quote`, which elides the quotes for a plain
+    word) so the rendered line reads the same whatever the path is.
+    """
+    return "'" + text.replace("'", "'\\''") + "'"
+
+
 def tmux_pipe_command(log: Path) -> str:
-    """Render the ``tmux pipe-pane -o`` invocation that appends to ``log``."""
-    return f"tmux pipe-pane -o \"cat >> '{log}'\""
+    """Render the ``tmux pipe-pane -o`` invocation that appends to ``log``.
+
+    The path comes from ``XDG_RUNTIME_DIR``, which the operator (or whoever
+    set their environment) controls, and ``pipe-pane`` runs its argument
+    through a shell -- so the redirection target is quoted, never
+    interpolated raw.
+    """
+    return f'tmux pipe-pane -o "cat >> {shell_single_quote(str(log))}"'
 
 
 # ---------------------------------------------------------------------------
@@ -308,12 +324,27 @@ def _locate_last_region(data: bytes) -> tuple[bytes, str] | None:
 
 
 def _bound(raw: bytes, limit: int) -> tuple[bytes, bool]:
-    """Cap ``raw`` to ``limit`` bytes (head + tail + marker). Returns ``(bytes, truncated)``."""
+    """Cap ``raw`` to ``limit`` bytes *including* the truncation marker.
+
+    Returns ``(bytes, truncated)``. The marker is budgeted first and only the
+    remainder is split between head and tail, so the result never exceeds
+    ``limit`` -- a slice handed to the prompt composer is bounded by the
+    number the caller asked for, not by that number plus a marker. The
+    budget is computed from the marker for the *largest* possible byte count
+    (``len(raw)``), so shrinking head/tail can only leave slack, never
+    overflow. When ``limit`` is smaller than the marker itself there is no
+    room for any content: the marker alone, cut to ``limit``, comes back.
+    """
     if len(raw) <= limit:
         return raw, False
-    half = limit // 2
-    head = raw[:half]
-    tail = raw[-half:] if half else b""
+    if limit <= 0:
+        return b"", True
+    widest = _TRUNCATION_TEMPLATE.format(n=len(raw)).encode("ascii")
+    budget = limit - len(widest)
+    if budget <= 0:
+        return widest[:limit], True
+    head = raw[: budget // 2]
+    tail = raw[-(budget - budget // 2) :] if budget - budget // 2 else b""
     marker = _TRUNCATION_TEMPLATE.format(n=len(raw) - len(head) - len(tail)).encode("ascii")
     return head + marker + tail, True
 
