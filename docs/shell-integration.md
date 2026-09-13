@@ -190,6 +190,51 @@ is what `\C-m` binds, so feeding LF would bypass the whole layer. Tab tests
 set `show-all-if-ambiguous` so a single Tab prints the candidate list. The
 suite skips when no pty is available.
 
+## The inline panel (`nvsh/panel.py`)
+
+Everything the operator sees after a qualifying failure is drawn by
+`nvsh/panel.py`. It consults no capability database and shells out to
+nothing: colour and cursor control are a handful of literal SGR/CSI
+constants, switched off entirely under `NO_COLOR`, `TERM=dumb`/empty, or
+when stdout is not a tty — so a headless ssh from Ghostty into a machine
+with no `xterm-ghostty` terminfo entry renders exactly the same text,
+minus the escapes.
+
+Three things make a slow turn legible (deviation d13, after an operator on
+the DGX Spark reported "I don't see proper indications things run"):
+
+- **Waiting indicator.** The real model routinely takes tens of seconds
+  before its first token. When no event has arrived for more than a second,
+  a background ticker paints one dim line, `... waiting for the agent (12s)`,
+  updated once a second with an honest elapsed count. On a tty with styling
+  on it is repainted in place with a literal `\r` plus `ESC [ 2 K`
+  (erase-to-end-of-line) — never `tput`, never an animated spinner.
+  Everywhere else (pipe, `NO_COLOR`, `TERM=dumb`) the panel prints the plain
+  line `... waiting for the agent` **once** and never repaints, so a
+  captured log stays one line per fact. The line is always erased before the
+  next real event reaches the screen, and the ticker is paused for as long
+  as the panel is handling an event — a proposal prompt is never painted
+  over. One lock guards every write, so the ticker can never interleave
+  with the agent's text, and `Ctrl+C` still ends the stream within a second
+  while waiting.
+- **Keypress acknowledgement.** The instant a key is pressed at a proposal,
+  the panel prints `nvsh: running ...` (Enter), `nvsh: explaining ...`
+  (`e`), `nvsh: details ...` (`d`) or `nvsh: ignored` (Esc or anything
+  else) — before anything else happens. Whatever follows can take seconds,
+  and the operator must never wonder whether the key registered. This ack
+  is the *first* line; the client's own outcome lines (`nvsh: not run`,
+  `nvsh: <cmd> -> exit N`, the dim `... running <cmd>` of an auto-approved
+  inspection) still follow it and are deliberately worded differently.
+- **Fallback notice.** A `status` event that announces the daemon was not
+  usable — text starting with the word `one-shot`, or containing `daemon did not start`,
+  `daemon refused` or `daemon connection lost`, all produced by
+  `nvsh/client_transport.py` — is rendered as a visible (bold, not dim)
+  `nvsh: falling back - <original text>` line, because it explains the
+  slower turn that follows. Every other status stays a dim `... text` line,
+  and a status with empty text prints nothing at all.
+
+See `tests/test_panel.py`.
+
 ## The slash-command registry (`nvsh/slash.py`)
 
 `nvsh complete` and `nvsh slash` (the two calls above) are thin CLI verbs

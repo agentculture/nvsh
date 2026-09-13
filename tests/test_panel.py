@@ -333,3 +333,146 @@ def test_ctrl_c_returns_to_a_prompt_within_one_second(tmp_path):
     assert proc.returncode == 130
     assert elapsed < 1.0, f"took {elapsed:.3f}s"
     assert marker.read_text(encoding="utf-8") == "cancelled"
+
+
+# --- waiting indicator (d13) --------------------------------------------
+
+
+def _slow_events(delay: float):
+    """An event source whose first event only arrives after ``delay``."""
+
+    def gen():
+        time.sleep(delay)
+        yield AgentEvent(kind=EventKind.TEXT_DELTA, text="the answer")
+        yield AgentEvent(kind=EventKind.DONE)
+
+    return gen()
+
+
+def test_waiting_line_repaints_in_place_with_an_elapsed_count_on_a_tty():
+    out = io.StringIO()
+    p = _panel(out=out, env={"TERM": "xterm-256color"}, isatty=True)
+    result = p.stream(_slow_events(2.5))
+    text = out.getvalue()
+    assert "waiting for the agent (1s)" in text
+    assert "waiting for the agent (2s)" in text
+    # repainted in place: carriage return + hard-coded erase-to-end-of-line
+    assert "\r\x1b[2K" in text
+    assert text.index("waiting for the agent") < text.index("the answer")
+    assert result.text == "the answer"
+    assert result.done is True
+
+
+def test_waiting_line_is_one_plain_line_and_never_repaints_off_a_tty():
+    out = io.StringIO()
+    p = _panel(out=out, isatty=False)
+    p.stream(_slow_events(2.5))
+    text = out.getvalue()
+    assert text.count("... waiting for the agent") == 1
+    assert "(1s)" not in text
+    assert "\r" not in text
+    assert "\x1b[" not in text
+    assert "the answer" in text
+
+
+def test_no_waiting_line_when_the_first_event_arrives_immediately():
+    out = io.StringIO()
+    p = _panel(out=out, env={"TERM": "xterm-256color"}, isatty=True)
+    p.stream(
+        iter(
+            [
+                AgentEvent(kind=EventKind.TEXT_DELTA, text="instant"),
+                AgentEvent(kind=EventKind.DONE),
+            ]
+        )
+    )
+    assert "waiting" not in out.getvalue()
+
+
+def test_waiting_line_is_cleared_before_the_first_text_reaches_the_screen():
+    out = io.StringIO()
+    p = _panel(out=out, env={"TERM": "xterm-256color"}, isatty=True)
+    p.stream(_slow_events(1.4))
+    text = out.getvalue()
+    head, _, tail = text.rpartition("\r\x1b[2K")
+    assert "waiting for the agent" in head
+    assert tail.startswith("the answer")
+
+
+# --- keypress acknowledgement (d13) --------------------------------------
+
+
+@pytest.mark.parametrize(
+    "typed,ack",
+    [
+        ("\n", "nvsh: running"),
+        ("e\n", "nvsh: explaining"),
+        ("d\n", "nvsh: details"),
+        ("q\n", "nvsh: ignored"),
+        ("", "nvsh: ignored"),
+    ],
+)
+def test_show_proposal_acknowledges_the_keypress_immediately(typed, ack):
+    out = io.StringIO()
+    p = _panel(out=out, in_=io.StringIO(typed), isatty=False)
+    p.show_proposal(Proposal(command="df -h", rationale="disk", kind=ProposalKind.INSPECT))
+    lines = [line for line in out.getvalue().splitlines() if line.strip()]
+    assert lines[-1].startswith(ack), lines
+    # the client still prints its own outcome line afterwards; no duplication here
+    assert out.getvalue().count("nvsh: ") == 1
+
+
+# --- fallback notice (d13) -----------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "status",
+    [
+        "one-shot pi: daemon did not start within 10s",
+        "one-shot fake: daemon refused the connection",
+        "daemon did not start within 10s",
+        "daemon refused the connection",
+        "daemon connection lost: [Errno 32] Broken pipe",
+    ],
+)
+def test_fallback_status_is_a_visible_notice_keeping_the_original_text(status):
+    out = io.StringIO()
+    p = _panel(out=out, isatty=False)
+    p.stream(iter([AgentEvent(kind=EventKind.STATUS, text=status), AgentEvent(EventKind.DONE)]))
+    text = out.getvalue()
+    assert "nvsh: falling back" in text
+    assert status in text
+    assert not text.startswith("... ")
+
+
+def test_fallback_notice_is_not_dim_when_style_is_on():
+    out = io.StringIO()
+    p = _panel(out=out, env={"TERM": "xterm-256color"}, isatty=True)
+    p.stream(
+        iter(
+            [
+                AgentEvent(kind=EventKind.STATUS, text="one-shot pi: daemon refused"),
+                AgentEvent(EventKind.DONE),
+            ]
+        )
+    )
+    notice = [ln for ln in out.getvalue().splitlines() if "falling back" in ln][0]
+    assert "\x1b[2m" not in notice
+    assert "\x1b[" in notice
+
+
+def test_ordinary_status_stays_dim_and_empty_status_renders_nothing():
+    out = io.StringIO()
+    p = _panel(out=out, env={"TERM": "xterm-256color"}, isatty=True)
+    p.stream(
+        iter(
+            [
+                AgentEvent(kind=EventKind.STATUS, text="checking disk"),
+                AgentEvent(kind=EventKind.STATUS, text=""),
+                AgentEvent(EventKind.DONE),
+            ]
+        )
+    )
+    text = out.getvalue()
+    assert "\x1b[2m... checking disk\x1b[0m" in text
+    assert text.count("...") == 1

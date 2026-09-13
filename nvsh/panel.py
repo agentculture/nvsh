@@ -9,13 +9,34 @@ entry, and CLAUDE.md's headless-over-SSH constraint):
   a handful of literal escape constants, switched off entirely when
   ``NO_COLOR`` is set, when ``TERM`` is ``dumb``/empty, or when the output is
   not a tty.
-* **First text on screen immediately.** :meth:`Panel.stream` writes and
-  flushes every ``text_delta`` as it arrives; nothing is buffered until the
-  answer is complete, and there is no spinner to repaint.
+* **First text on screen immediately, and progress while there is none.**
+  :meth:`Panel.stream` writes and flushes every ``text_delta`` as it
+  arrives; nothing is buffered until the answer is complete. When the
+  backend goes quiet for more than a second (the real model routinely takes
+  tens of seconds before its first token) a background ticker paints one
+  dim ``... waiting for the agent (12s)`` line, repainted in place with a
+  literal ``\r`` plus ``ESC [ 2 K`` -- only when styling is on, i.e. on a
+  tty without ``NO_COLOR``/``TERM=dumb``. Off a tty the panel prints that
+  line once, in plain text, and never repaints. The line is always erased
+  before the next real event reaches the screen, so nothing interleaves.
+  This is deliberately not an animated spinner: it is one line whose only
+  moving part is an honest elapsed count (deviation d13, which revised this
+  module's earlier "no spinner to repaint" rule).
 * **Propose, don't run.** :meth:`Panel.show_proposal` renders the proposed
   command *exactly* as the agent proposed it and returns the operator's
   choice. It never pre-types anything and never touches ``READLINE_LINE``:
   the panel reports a decision, the caller (``nvsh.client``) acts on it.
+  It does print one acknowledgement line the instant a key is pressed
+  (``nvsh: running ...`` / ``explaining`` / ``details`` / ``ignored``), so a
+  keypress is never followed by silence while the backend reacts. That ack
+  is the *first* line; the caller's own outcome lines (``nvsh: not run``,
+  ``nvsh: <cmd> -> exit N``) still follow it and are worded differently.
+* **A fallback is news, not noise.** A ``status`` event announcing that the
+  daemon could not be used (``one-shot ...``, ``daemon did not start`` /
+  ``refused`` / ``connection lost``) is rendered as a visible
+  ``nvsh: falling back - <original text>`` line rather than another dim
+  ``...`` line. Every other status stays dim, and an empty one prints
+  nothing at all.
 * **Ctrl+C always returns the prompt.** While streaming, SIGINT is handled
   here: the caller's ``cancel`` callback runs (aborting the daemon/one-shot
   run), the terminal's termios settings are restored in a ``finally``, one
@@ -30,6 +51,8 @@ from __future__ import annotations
 import os
 import signal
 import sys
+import threading
+import time
 from dataclasses import dataclass, field
 from typing import Callable, Iterable, Mapping, TextIO
 
@@ -38,11 +61,48 @@ from .agent.base import AgentEvent, EventKind, Proposal
 #: The panel's fixed width for its ASCII boxes.
 _BOX_WIDTH = 72
 
+#: Seconds of silence before the panel admits it is waiting.
+_WAIT_AFTER = 1.0
+
+#: How often the waiting ticker wakes up to consider a repaint.
+_WAIT_TICK = 0.2
+
+#: The waiting line's text (the elapsed count is appended on a tty).
+_WAIT_TEXT = "waiting for the agent"
+
+#: Carriage return plus erase-to-end-of-line. Hard-coded CSI, never tput.
+_ERASE_LINE = "\r\x1b[2K"
+
+#: Status texts that mean "the daemon was not usable" -- see
+#: ``nvsh.client_transport``, which is the only producer of these.
+_FALLBACK_MARKERS = (
+    "daemon did not start",
+    "daemon refused",
+    "daemon connection lost",
+)
+
 #: What :meth:`Panel.show_proposal` can return.
 APPROVE = "approve"
 EXPLAIN = "explain"
 DETAILS = "details"
 IGNORE = "ignore"
+
+#: What the panel prints the instant a proposal key is pressed. Worded so it
+#: never collides with the caller's own outcome lines (``nvsh: not run``).
+_ACK = {
+    APPROVE: "nvsh: running ...",
+    EXPLAIN: "nvsh: explaining ...",
+    DETAILS: "nvsh: details ...",
+    IGNORE: "nvsh: ignored",
+}
+
+
+def is_fallback_status(text: str) -> bool:
+    """True when a ``status`` text announces a fall back off the daemon."""
+    stripped = text.strip()
+    if stripped.startswith("one-shot "):
+        return True
+    return any(marker in stripped for marker in _FALLBACK_MARKERS)
 
 
 @dataclass(frozen=True)
@@ -133,15 +193,34 @@ class Panel:
             isatty = _safe_isatty(self.out)
         self.isatty = bool(isatty)
         self.style = style(self.env, self.isatty)
+        # One lock guards every write, so the waiting ticker (a background
+        # thread) can never interleave its repaint with the agent's text.
+        self._write_lock = threading.RLock()
+        self._waiting_shown = False
+        self._waiting_plain = False
+        self._waiting_since = 0.0
+        self._waiting_paused = True
 
     # -- low-level writing -------------------------------------------------
 
     def write(self, text: str) -> None:
         """Write and flush immediately -- nothing waits for the answer to end."""
+        with self._write_lock:
+            try:
+                self.out.write(text)
+                self.out.flush()
+            except UnicodeEncodeError:
+                # An ASCII-only locale (a bare ssh, a cron-ish TERM) must not
+                # swallow a line: degrade the characters, keep the message.
+                self._write_raw(text.encode("ascii", "replace").decode("ascii"))
+            except (OSError, ValueError):  # closed pipe: the operator moved on
+                pass
+
+    def _write_raw(self, text: str) -> None:
         try:
             self.out.write(text)
             self.out.flush()
-        except (OSError, ValueError):  # closed pipe: the operator moved on
+        except (OSError, ValueError):
             pass
 
     def line(self, text: str = "") -> None:
@@ -151,10 +230,79 @@ class Panel:
         """One dim informational line (never mixed into the agent's text)."""
         self.line(f"{self.style.dim}{text}{self.style.reset}")
 
+    def status(self, text: str) -> None:
+        """Render one ``status`` event.
+
+        A fallback off the daemon is news the operator must see (it explains
+        the wait that follows), so it is bold, not dim, and keeps the
+        original text verbatim after the prefix. Everything else is a dim
+        ``...`` line, and an empty status prints nothing.
+        """
+        if not text:
+            return
+        if is_fallback_status(text):
+            s = self.style
+            self.line(f"{s.bold}{s.yellow}nvsh: falling back - {s.reset}{text}")
+            return
+        self.note(f"... {text}")
+
     def header(self, command: str, exit_code: int) -> None:
         """The panel's first line: what failed and with which status."""
         s = self.style
         self.line(f"{s.bold}{s.red}nvsh:{s.reset} {command} failed (exit {exit_code})")
+
+    # -- the waiting indicator ---------------------------------------------
+
+    def _paint_waiting(self, seconds: int) -> None:
+        """Repaint (tty) or print once (everything else) the waiting line."""
+        s = self.style
+        with self._write_lock:
+            if s.enabled:
+                self._waiting_shown = True
+                self.write(f"{_ERASE_LINE}{s.dim}... {_WAIT_TEXT} ({seconds}s){s.reset}")
+            elif not self._waiting_plain:
+                self._waiting_plain = True
+                self.line(f"... {_WAIT_TEXT}")
+
+    def _clear_waiting(self) -> None:
+        """Erase the in-place waiting line, if one is on screen."""
+        with self._write_lock:
+            if self._waiting_shown:
+                self._waiting_shown = False
+                self.write(_ERASE_LINE)
+
+    def _wait_ticker(self, stop: threading.Event) -> None:
+        """Background thread: the only thing that ever repaints in place.
+
+        It owns no state of its own beyond the last count it painted; the
+        stream loop pauses it (``_waiting_paused``) for as long as it is
+        handling an event, so a proposal prompt is never painted over.
+        """
+        painted = -1
+        while not stop.wait(_WAIT_TICK):
+            with self._write_lock:
+                if stop.is_set() or self._waiting_paused:
+                    painted = -1
+                    continue
+                elapsed = time.monotonic() - self._waiting_since
+                if elapsed < _WAIT_AFTER:
+                    continue
+                seconds = int(elapsed)
+                if seconds == painted:
+                    continue
+                painted = seconds
+                self._paint_waiting(seconds)
+
+    def _arm_waiting(self) -> None:
+        with self._write_lock:
+            self._waiting_since = time.monotonic()
+            self._waiting_paused = False
+
+    def _pause_waiting(self) -> None:
+        """Stop the ticker and erase its line before anything else prints."""
+        with self._write_lock:
+            self._waiting_paused = True
+            self._clear_waiting()
 
     # -- streaming ---------------------------------------------------------
 
@@ -175,15 +323,32 @@ class Panel:
         saved_attrs = _save_termios(self.in_, self.isatty)
         previous = _install_sigint(self._on_sigint(cancel))
         started_text = False
+        stop_waiting = threading.Event()
+        self._waiting_shown = False
+        self._waiting_plain = False
+        ticker = threading.Thread(
+            target=self._wait_ticker, args=(stop_waiting,), daemon=True, name="nvsh-wait"
+        )
         try:
+            # Started inside the try: a SIGINT that lands during start() must
+            # still end as an interrupted stream, not a traceback.
+            ticker.start()
+            self._arm_waiting()
             for event in events:
+                # Everything below prints; the ticker must be off and its
+                # line erased first, and stay off until the event is handled
+                # (``on_proposal`` blocks on a keypress).
+                self._pause_waiting()
                 if event.kind is EventKind.TEXT_DELTA:
                     started_text = True
                     result.text += event.text
                     self.write(event.text)
                 elif event.kind is EventKind.STATUS:
                     if event.text:
-                        self.note(f"... {event.text}")
+                        if started_text:
+                            self.line()
+                            started_text = False
+                        self.status(event.text)
                 elif event.kind is EventKind.TOOL_CALL:
                     self.note(f"... running tool: {event.tool}")
                 elif event.kind is EventKind.TOOL_RESULT:
@@ -205,9 +370,14 @@ class Panel:
                 elif event.kind is EventKind.DONE:
                     result.done = True
                     break
+                self._arm_waiting()
         except (KeyboardInterrupt, _Interrupted):
             result.interrupted = True
         finally:
+            stop_waiting.set()
+            if ticker.ident is not None:
+                _quiet(ticker.join, 2.0)
+            self._pause_waiting()
             _restore_sigint(previous)
             _restore_termios(self.in_, saved_attrs)
             if started_text:
@@ -263,7 +433,18 @@ class Panel:
         """
         self.render_proposal(proposal)
         self.line("[Enter] run   [e] explain   [d] details   [Esc] ignore")
-        return self._read_choice()
+        choice = self._read_choice()
+        self.acknowledge(choice)
+        return choice
+
+    def acknowledge(self, choice: str) -> None:
+        """Echo the decision the instant the key is pressed.
+
+        Whatever happens next (a command, a backend round-trip, nothing)
+        can take seconds; the operator must not be left wondering whether
+        the keypress registered at all.
+        """
+        self.line(_ACK.get(choice, _ACK[IGNORE]))
 
     def _read_choice(self) -> str:
         if self.isatty:
