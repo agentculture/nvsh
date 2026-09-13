@@ -2,7 +2,7 @@
   "plan_slug": "nvsh-bash-hook-agent-on-error",
   "schema_version": 2,
   "created": "2026-09-13T13:17:31Z",
-  "updated": "2026-09-13T16:14:31Z",
+  "updated": "2026-09-13T16:15:44Z",
   "deviations": [
     {
       "id": "d1",
@@ -293,6 +293,22 @@
       "status": "proposed",
       "classification": "needs-follow-up",
       "seq": 19
+    },
+    {
+      "id": "d20",
+      "what": "operator: a natural-language sentence typed at the prompt (exit 127, first word not a command, prose-like) must be treated as a request to the agent - like a chat prompt - not as a failed command; and the agent must do the thing (run the inspections itself through the approved bash tool, then answer with the numbers), not tell the operator which commands to run. Fix: prose detection in nvsh/triggers.py routes the line as an explicit/ask request with the sentence as the question; the system brief instructs the agent to act and answer rather than instruct",
+      "task_ref": "t19",
+      "reason": "operator on 2026-09-13: 'It helped me, but ended up just telling me what commands to run, instead of just doing the thing... I really wanted to pass a request to the agent, as if using the CMD line as prompt entry like I talk with you'",
+      "affects": [
+        "t2",
+        "t13",
+        "c4",
+        "c33"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "classification": "needs-follow-up",
+      "seq": 20
     }
   ],
   "evidence": [],
