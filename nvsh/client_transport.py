@@ -5,8 +5,11 @@ entry point here degrades instead of raising:
 
 * the daemon answers -> its events are streamed through verbatim;
 * no daemon (never started, or crashed) -> one is started in the background
-  (``autostart``) and, if that still does not answer, the request runs
-  **one-shot** in this process through :func:`nvsh.agent.registry.choose`;
+  (``autostart``, but never a second one while another holds the lock) and
+  waited for until it *answers*; only if it still does not does the request
+  run **one-shot** in this process through
+  :func:`nvsh.agent.registry.choose`, preceded by a ``status`` event naming
+  the reason (``daemon did not start within 10s`` and friends);
 * nothing works at all -> a single ``error`` event describing why.
 
 Stdlib only. Importing this module starts no process and creates no file --
@@ -29,13 +32,26 @@ from . import daemon as _daemon
 from .agent.base import AgentContext, AgentEvent, AgentRequest, EventKind, event_from_dict
 from .config import Config
 
-#: How long to wait for the socket to appear after an autostart.
-_AUTOSTART_WAIT = 5.0
+#: How long a ``connect()`` on an existing socket may take.
+_CONNECT_TIMEOUT = 5.0
 
-#: Socket-level timeout for one request/stream.
+#: Socket-level read timeout while streaming one request's events. Separate
+#: from the connect wait on purpose: a cold backend (pi loading node, a model
+#: warming up) can take many seconds to produce its first token, and the
+#: client must keep listening rather than declare the daemon lost.
 _DEFAULT_TIMEOUT = 120.0
 
+#: How long an autostart waits for the daemon to accept *and answer*.
+_DEFAULT_START_TIMEOUT = 10.0
+
+#: Environment override for that bound (seconds).
+START_TIMEOUT_ENV = "NVSH_DAEMON_START_TIMEOUT"
+
 daemon_socket_path = _daemon.socket_path
+
+
+def _resolve_env(env: Mapping[str, str] | None) -> Mapping[str, str]:
+    return os.environ if env is None else env
 
 
 def _shell_id(shell_id: str | int | None) -> str:
@@ -56,14 +72,73 @@ def _connect(env: Mapping[str, str] | None, timeout: float) -> socket.socket | N
     return sock
 
 
-def _wait_for_socket(env: Mapping[str, str] | None, timeout: float) -> socket.socket | None:
+def start_timeout(env: Mapping[str, str] | None = None) -> float:
+    """How long an autostart may wait for the daemon, in seconds.
+
+    ``$NVSH_DAEMON_START_TIMEOUT`` overrides the default, so an operator on
+    a slow Jetson (or one pointing pi at a cold remote model) can give the
+    daemon more room without editing code. Junk or non-positive values fall
+    back to the default rather than failing on the failure path.
+    """
+    resolved = _resolve_env(env)
+    raw = resolved.get(START_TIMEOUT_ENV, "")
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return _DEFAULT_START_TIMEOUT
+    return value if value > 0 else _DEFAULT_START_TIMEOUT
+
+
+def _ping(env: Mapping[str, str] | None, timeout: float) -> bool:
+    """Did a daemon accept a connection **and answer on it**?
+
+    A socket file that exists, or even a ``connect()`` that succeeds, only
+    proves something bound the path -- a daemon still inside its imports has
+    both. Only a reply proves the accept loop is running.
+    """
+    sock = _connect(env, timeout)
+    if sock is None:
+        return False
+    try:
+        for event in _stream(sock, {"shell": "-", "kind": "ping"}):
+            if event.kind in (EventKind.STATUS, EventKind.DONE):
+                return True
+    except OSError:
+        return False
+    return False
+
+
+def _wait_for_daemon(env: Mapping[str, str] | None, timeout: float) -> bool:
     deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        sock = _connect(env, 5.0)
-        if sock is not None:
-            return sock
+    while True:
+        left = deadline - time.monotonic()
+        if _ping(env, min(_CONNECT_TIMEOUT, max(0.1, left))):
+            return True
+        if time.monotonic() >= deadline:
+            return False
         time.sleep(0.02)
-    return None
+
+
+def _autostart(env: Mapping[str, str] | None, timeout: float) -> tuple[socket.socket | None, str]:
+    """Start a daemon if none holds the lock, then wait for it to answer.
+
+    Returns ``(socket, "")`` on success, or ``(None, reason)`` -- a reason
+    the operator can act on, never a bare fallback.
+    """
+    already = _daemon.lock_held(env)
+    if not already:
+        try:
+            _daemon.spawn(env)
+        except OSError as exc:
+            return None, f"could not start a daemon: {exc}"
+    if not _wait_for_daemon(env, timeout):
+        if already:
+            return None, f"daemon did not answer within {timeout:g}s"
+        return None, f"daemon did not start within {timeout:g}s"
+    sock = _connect(env, _CONNECT_TIMEOUT)
+    if sock is None:
+        return None, "daemon refused the connection"
+    return sock, ""
 
 
 def _stream(sock: socket.socket, payload: dict) -> Iterator[AgentEvent]:
@@ -147,7 +222,11 @@ def send(
     """Stream the daemon's events for one request, falling back to one-shot.
 
     ``shell_id`` defaults to this process's pid -- the hook passes ``$$`` so
-    every terminal keeps its own conversation.
+    every terminal keeps its own conversation. ``timeout`` is the *stream*
+    timeout (how long one read may wait for the next event), not the connect
+    or autostart wait: those are :data:`_CONNECT_TIMEOUT` and
+    :func:`start_timeout`. A fallback to one-shot is always preceded by a
+    ``status`` event naming the reason.
     """
     payload = {
         "shell": _shell_id(shell_id),
@@ -156,18 +235,19 @@ def send(
         "context": asdict(context) if context is not None else {},
     }
 
-    sock = _connect(env, timeout)
+    sock = _connect(env, _CONNECT_TIMEOUT)
+    reason = ""
     if sock is None and autostart:
-        try:
-            _daemon.spawn(env)
-        except OSError:
-            sock = None
-        else:
-            sock = _wait_for_socket(env, _AUTOSTART_WAIT)
+        sock, reason = _autostart(env, start_timeout(env))
     if sock is None:
+        if reason:  # say why the warm session was given up on
+            yield AgentEvent(kind=EventKind.STATUS, text=reason)
         yield from one_shot(request, context, config=config)
         return
 
+    # The connect wait is over; from here the stream may be idle for as long
+    # as a cold backend needs to say its first word.
+    sock.settimeout(timeout)
     try:
         yield from _stream(sock, payload)
     except OSError as exc:

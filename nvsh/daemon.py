@@ -23,6 +23,7 @@ to ``$XDG_STATE_HOME/nvsh/daemon.log`` (0600).
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import logging
 import os
@@ -62,6 +63,14 @@ _CONTROL_KINDS = frozenset(
 _LOGGER_NAME = "nvsh.daemon"
 
 
+class DaemonAlreadyRunning(OSError):
+    """Raised when another daemon already holds this user's single-instance lock.
+
+    An :class:`OSError` so every existing caller (``main``, ``nvsh daemon
+    run``) already treats it as "could not serve" and exits 2.
+    """
+
+
 # --- paths -----------------------------------------------------------------
 
 
@@ -85,6 +94,42 @@ def runtime_dir(env: Mapping[str, str] | None = None) -> Path:
 def socket_path(env: Mapping[str, str] | None = None) -> Path:
     """Where the daemon listens. Pure: creates nothing, touches nothing."""
     return runtime_dir(env) / "daemon.sock"
+
+
+def lock_path(env: Mapping[str, str] | None = None) -> Path:
+    """The single-instance lock next to the socket. Pure: creates nothing.
+
+    One ``flock`` on this file, held for the daemon's whole life, is what
+    makes "one daemon per user" true: whoever holds it owns the socket, and
+    a daemon that cannot take it exits at once instead of unlinking a live
+    daemon's socket and binding a rival one (deviation d7).
+    """
+    return runtime_dir(env) / "daemon.lock"
+
+
+def lock_held(env: Mapping[str, str] | None = None) -> bool:
+    """Is some process holding the single-instance lock right now?
+
+    Answered by trying to take the lock in a private file descriptor and
+    giving it straight back: ``flock`` locks belong to an open file
+    description, so probing never disturbs the real holder.
+    """
+    path = lock_path(env)
+    if not path.exists():
+        return False
+    try:
+        fd = os.open(path, os.O_RDWR)
+    except OSError:
+        return False
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        return True
+    else:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        return False
+    finally:
+        os.close(fd)
 
 
 def log_path(env: Mapping[str, str] | None = None) -> Path:
@@ -298,6 +343,8 @@ class Daemon:
         self._notified: set[str] = set()
 
         self._server: _Server | None = None
+        self._lock_fd: int | None = None
+        self._owns_socket = False
         self._stopping = False
         self._stopped = threading.Event()
         self._last_activity = time.monotonic()
@@ -343,13 +390,51 @@ class Daemon:
             return
         raise OSError(f"another nvsh daemon is already listening on {path}")
 
+    def _acquire_lock(self) -> None:
+        """Take the single-instance lock, or raise :class:`DaemonAlreadyRunning`.
+
+        Non-blocking on purpose: a daemon that loses the race must exit
+        immediately rather than linger as an orphan process holding no
+        socket. The lock file is never unlinked -- a fresh inode under a
+        waiting process would let two daemons hold "the" lock.
+        """
+        path = lock_path(self.env)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        os.chmod(path.parent, 0o700)
+        fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            os.fchmod(fd, 0o600)
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            os.close(fd)
+            raise DaemonAlreadyRunning(f"another nvsh daemon already holds {path}: {exc}") from exc
+        os.ftruncate(fd, 0)
+        os.write(fd, f"{os.getpid()}\n".encode("utf-8"))
+        self._lock_fd = fd
+
+    def _release_lock(self) -> None:
+        fd, self._lock_fd = self._lock_fd, None
+        if fd is None:
+            return
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        except OSError:  # pragma: no cover - the fd is about to go anyway
+            pass
+        os.close(fd)
+
     def _bind(self) -> _Server:
         path = self.socket_path
         path.parent.mkdir(parents=True, exist_ok=True)
         os.chmod(path.parent, 0o700)
-        self._reap_stale_socket(path)
-        server = _Server(str(path), _Handler, self)
-        os.chmod(path, 0o600)
+        self._acquire_lock()
+        try:
+            self._reap_stale_socket(path)
+            server = _Server(str(path), _Handler, self)
+            os.chmod(path, 0o600)
+        except OSError:
+            self._release_lock()
+            raise
+        self._owns_socket = True
         return server
 
     # -- serving -----------------------------------------------------------
@@ -413,7 +498,12 @@ class Daemon:
                 self._server.server_close()
             except OSError:  # pragma: no cover
                 pass
-        self.socket_path.unlink(missing_ok=True)
+        if self._owns_socket:
+            # Only the daemon that bound this socket may remove it; a loser
+            # that unlinks it orphans the live daemon (deviation d7).
+            self.socket_path.unlink(missing_ok=True)
+            self._owns_socket = False
+        self._release_lock()
         self._log.info("daemon stopped")
         self._stopped.set()
 
@@ -694,7 +784,11 @@ def main(argv: list[str] | None = None) -> int:
     daemon = Daemon(config, idle_timeout=args.idle_timeout)
     try:
         daemon.serve_forever()
-    except OSError:
+    except OSError as exc:
+        # Losing the lock is the normal outcome of two shells failing at
+        # once: log it and exit at once, touching nothing this daemon does
+        # not own.
+        daemon._log.info("not starting: %s", exc)
         return 2
     return 0
 
