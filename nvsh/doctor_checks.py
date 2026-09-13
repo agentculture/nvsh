@@ -44,6 +44,13 @@ from nvsh.platform._subprocess import Runner, Which, default_run, default_which
 
 RUN_TO_HOOK_REMEDIATION = "run /doctor from a hooked shell"
 
+#: Marker line separating ``bind -p`` from the ``bind -s``/``bind -X`` dumps
+#: in the payload a hooked bash exports (see ``check_bindings_present``).
+BIND_SECTION_MARKER = "# nvsh: bind -s/-X follow"
+
+#: Source label for a base_url that came from pi's own models.json.
+PI_MODELS_JSON_SOURCE = "pi models.json"
+
 
 def _check(check_id: str, passed: bool, severity: str, message: str, remediation: str) -> dict:
     return {
@@ -198,23 +205,26 @@ def _resolve_pi_api_key(raw: object) -> tuple[str | None, str | None]:
         var = match.group(1)
         value = os.environ.get(var)
         return (value, f"${var}") if value else (None, None)
-    return text, "models.json"
+    return text, PI_MODELS_JSON_SOURCE
 
 
 def _pi_endpoint_info(
     config: Config, home: Path
-) -> tuple[str | None, str | None, str | None, str | None]:
-    """Return ``(base_url, bearer, bearer_source, provider_name)`` for the pi provider.
+) -> tuple[str | None, str, str | None, str | None, str | None]:
+    """Return ``(base_url, base_url_source, bearer, bearer_source, provider_name)``.
 
     ``base_url`` prefers config's own ``[agents.pi] base_url`` over
-    models.json's. ``bearer``/``bearer_source`` come only from models.json's
-    ``apiKey`` for the configured provider (pi's config.toml has no
-    ``api_key_env`` -- its bearer always lives in models.json).
+    models.json's, and ``base_url_source`` says which of the two it came from
+    (d4b: that label, never the URL, is what reaches a check message).
+    ``bearer``/``bearer_source`` come only from models.json's ``apiKey`` for
+    the configured provider (pi's config.toml has no ``api_key_env`` -- its
+    bearer always lives in models.json).
     """
     pi_settings = config.agents.get("pi", {})
     provider_name = pi_settings.get("provider")
     base_url_raw = pi_settings.get("base_url")
     base_url = str(base_url_raw) if base_url_raw else None
+    base_url_source = "[agents.pi]" if base_url else PI_MODELS_JSON_SOURCE
 
     entry = _find_provider_entry(_load_pi_models(home), provider_name)
 
@@ -227,17 +237,30 @@ def _pi_endpoint_info(
     if entry:
         bearer, bearer_source = _resolve_pi_api_key(entry.get("apiKey"))
 
-    return base_url, bearer, bearer_source, provider_name
+    return base_url, base_url_source, bearer, bearer_source, provider_name
 
 
 def _probe_endpoint(
     base_url: str,
+    base_url_source: str,
     bearer: str | None,
     bearer_source: str | None,
     timeout: float,
     *,
     remediation_401: str,
 ) -> dict:
+    """Probe ``base_url`` and report the result **without ever printing it**.
+
+    Deviation d4b: the endpoint's host is machine-identifying and has no
+    place in a doctor line an operator may paste anywhere. Every message and
+    remediation below names only *where* the URL was configured
+    (``base_url_source``) and where the bearer came from (an env var name or
+    ``pi models.json``) -- never the URL, host or port themselves.
+    """
+    source_note = f"base_url from {base_url_source}"
+    if bearer_source:
+        source_note += f", bearer from {bearer_source}"
+
     url = base_url.rstrip("/") + "/models"
     scheme = urllib.parse.urlsplit(url).scheme
     if scheme not in ("http", "https"):
@@ -266,29 +289,26 @@ def _probe_endpoint(
             "agent_reachable",
             False,
             "error",
-            f"endpoint unreachable (endpoint-unreachable): {base_url}",
-            f"check that the endpoint at {base_url} is running and reachable " "from this machine",
+            f"endpoint unreachable (endpoint-unreachable; {source_note})",
+            "check that the configured endpoint is running and reachable from this "
+            f"machine ({source_note})",
         )
-
-    bearer_note = f" (bearer from {bearer_source})" if bearer_source else ""
 
     if status == 401:
         return _check(
             "agent_reachable",
             False,
             "error",
-            f"endpoint returned 401 Unauthorized (endpoint-401): {base_url}{bearer_note}",
+            f"endpoint returned 401 Unauthorized (endpoint-401; {source_note})",
             remediation_401,
         )
     if status == 200:
-        return _check(
-            "agent_reachable", True, "info", f"endpoint reachable: {base_url}{bearer_note}", ""
-        )
+        return _check("agent_reachable", True, "info", f"endpoint reachable ({source_note})", "")
     return _check(
         "agent_reachable",
         False,
         "warning",
-        f"endpoint {base_url} responded with HTTP {status}{bearer_note}",
+        f"endpoint responded with status {status} ({source_note})",
         "",
     )
 
@@ -311,7 +331,9 @@ def check_agent_reachable(
                 "configured provider is pi, but 'pi' is not on PATH (pi-missing)",
                 "nvsh agent install pi, or nvsh agent use openai-compat",
             )
-        base_url, bearer, bearer_source, provider_name = _pi_endpoint_info(config, home)
+        base_url, base_url_source, bearer, bearer_source, provider_name = _pi_endpoint_info(
+            config, home
+        )
         provider_label = provider_name or "the configured provider"
         if bearer:
             remediation_401 = f"update apiKey for provider {provider_label} in {_PI_MODELS_JSON}"
@@ -321,6 +343,7 @@ def check_agent_reachable(
         settings = config.agents.get("openai-compat", {})
         base_url_raw = settings.get("base_url")
         base_url = str(base_url_raw) if base_url_raw else None
+        base_url_source = "[agents.openai-compat]"
         api_key_env = settings.get("api_key_env")
         bearer = os.environ.get(api_key_env) if api_key_env else None
         bearer_source = f"${api_key_env}" if bearer else None
@@ -348,7 +371,7 @@ def check_agent_reachable(
         )
 
     return _probe_endpoint(
-        base_url, bearer, bearer_source, timeout, remediation_401=remediation_401
+        base_url, base_url_source, bearer, bearer_source, timeout, remediation_401=remediation_401
     )
 
 
@@ -497,12 +520,28 @@ def check_hook_first_in_prompt_command(prompt_command_text: str | None) -> dict:
 # bindings_present
 # ---------------------------------------------------------------------------
 
-_REQUIRED_BIND_SUBSTRINGS = (
-    r'"\C-x\C-n": __nvsh_enter',
-    r'"\C-g": __nvsh_ctrl_g',
+#: The three bindings ``readline.bash`` installs, each as
+#: ``(label, pattern)``. The patterns allow for **both** dump formats, which
+#: is the whole of deviation d4a: ``bind -p`` lists neither ``bind -x``
+#: functions nor macros, so the ``\C-x\C-n``/``\C-g`` handlers show up only
+#: in ``bind -X`` (which *quotes* the shell command --
+#: ``"\C-x\C-n": "__nvsh_enter"``) and the Enter macro only in ``bind -s``.
+#: A payload that merges the three dumps therefore carries the quoted form,
+#: while hand-written/older payloads carry the bare one; both must parse.
+_REQUIRED_BINDINGS = (
+    (r'"\C-x\C-n": __nvsh_enter', re.compile(r'"\\C-x\\C-n"\s*:\s*"?__nvsh_enter"?')),
+    (r'"\C-g": __nvsh_ctrl_g', re.compile(r'"\\C-g"\s*:\s*"?__nvsh_ctrl_g"?')),
+    (r'"\C-m": "\C-x\C-n\C-j"', re.compile(r'"\\C-m"\s*:\s*"\\C-x\\C-n\\C-j"')),
 )
-_ENTER_MACRO_RE = re.compile(r'"\\C-m":\s*"\\C-x\\C-n\\C-j"')
-_ENTER_MACRO_LABEL = r'"\C-m": "\C-x\C-n\C-j"'
+
+#: What a payload that only carries ``bind -p`` can honestly be reported as.
+_BIND_P_ONLY_MESSAGE = (
+    "cannot verify the nvsh readline bindings for {label}: this shell exported "
+    "only 'bind -p', which lists neither bind -x functions nor macros"
+)
+_BIND_P_ONLY_REMEDIATION = (
+    "run nvsh setup to refresh the hook so the shell exports bind -s and bind -X too"
+)
 
 
 def check_bindings_present(bind_p_text: str | None, keymap: str | None) -> dict:
@@ -515,9 +554,7 @@ def check_bindings_present(bind_p_text: str | None, keymap: str | None) -> dict:
             RUN_TO_HOOK_REMEDIATION,
         )
     label = keymap or "active keymap"
-    missing = [entry for entry in _REQUIRED_BIND_SUBSTRINGS if entry not in bind_p_text]
-    if not _ENTER_MACRO_RE.search(bind_p_text):
-        missing.append(_ENTER_MACRO_LABEL)
+    missing = [label_ for label_, pattern in _REQUIRED_BINDINGS if not pattern.search(bind_p_text)]
     if not missing:
         return _check(
             "bindings_present",
@@ -525,6 +562,18 @@ def check_bindings_present(bind_p_text: str | None, keymap: str | None) -> dict:
             "info",
             f"nvsh readline bindings present ({label})",
             "",
+        )
+    # Nothing found at all, and no sign the payload carries the bind -s /
+    # bind -X tables: the state needed to judge this simply is not here, so
+    # report that honestly (info) instead of a false FAIL (d4a).
+    complete_payload = BIND_SECTION_MARKER in bind_p_text or len(missing) < len(_REQUIRED_BINDINGS)
+    if not complete_payload:
+        return _check(
+            "bindings_present",
+            False,
+            "info",
+            _BIND_P_ONLY_MESSAGE.format(label=label),
+            _BIND_P_ONLY_REMEDIATION,
         )
     return _check(
         "bindings_present",

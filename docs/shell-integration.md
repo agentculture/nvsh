@@ -183,6 +183,20 @@ export NVSH_BIND_P="$(bind -p)"
 export NVSH_KEYMAP="$(__nvsh_keymap)"   # emacs / vi-insert / vi-command
 ```
 
+**`bind -p` alone cannot show nvsh's bindings** (deviation d4a, measured on
+spark/thor/orin and reproduced on a `bash --norc --noprofile -i` pty). `bind
+-p` lists only key sequences bound to readline *functions*, so the `bind -x`
+handlers (`\C-x\C-n` → `__nvsh_enter`, `\C-g` → `__nvsh_ctrl_g`) show up only
+under `bind -X`, the Enter macro (`"\C-m": "\C-x\C-n\C-j"`) only under `bind
+-s`, and binding that macro removes `\C-m` from `bind -p` entirely. The
+payload `bindings_present` can actually verify therefore merges all three
+dumps, separated by a marker line
+(`nvsh.doctor_checks.BIND_SECTION_MARKER`):
+
+```bash
+export NVSH_BIND_P="$(bind -p; echo '# nvsh: bind -s/-X follow'; bind -s; bind -X)"
+```
+
 The `/doctor` slash handler (`nvsh.slash._handle_doctor`) reads these three
 variables straight from its environment and passes them to
 `nvsh.cli._commands.doctor.cmd_doctor`, exactly as the `nvsh doctor
@@ -192,15 +206,22 @@ variables straight from its environment and passes them to
   string form); `hook_first_in_prompt_command` parses it to confirm
   `__nvsh_hook` is element `[0]`, exactly as `__nvsh_hook_install` (in
   `nvsh/shell/hook.bash`) placed it.
-- `NVSH_BIND_P` is plain `bind -p` output for whichever keymap is currently
-  active (not `bind -m <keymap> -p` — `readline.bash` registers every
-  binding across all three keymaps, so the active keymap's own `bind -p` is
-  enough); `bindings_present` looks for the `\C-x\C-n` dispatch binding, the
-  `\C-m` Enter macro and the `\C-g` binding described above.
+- `NVSH_BIND_P` is bind-dump output for whichever keymap is currently active
+  (not `bind -m <keymap> -…` — `readline.bash` registers every binding across
+  all three keymaps, so the active keymap's own dump is enough);
+  `bindings_present` looks for the `\C-x\C-n` dispatch binding, the `\C-m`
+  Enter macro and the `\C-g` binding described above, accepting both the bare
+  form (`"\C-g": __nvsh_ctrl_g`) and the quoted form `bind -X` actually
+  prints (`"\C-g": "__nvsh_ctrl_g"`). When the payload carries none of the
+  three *and* no `bind -s`/`bind -X` marker — i.e. it is a `bind -p`-only
+  export, which cannot list them in the first place — the check reports
+  `passed=false, severity=info` ("cannot verify …") rather than a false
+  `error`; only a payload that demonstrably includes the other dumps can
+  fail this check.
 - `NVSH_KEYMAP` is parsed from `bind -V`'s `keymap is set to` line by the
   small `__nvsh_keymap` helper, one of `emacs`, `vi-insert` or
   `vi-command`, and only labels the `bindings_present` message — it does not
-  change which bindings are checked, since `bind -p` already reflects the
+  change which bindings are checked, since the dump already reflects the
   active keymap.
 
 Run `nvsh doctor` (or `nvsh doctor --json`) directly, or `/doctor` from a
