@@ -75,38 +75,34 @@ def test_extension_forwards_to_nvsh_approve_check():
     assert '"check"' in text
 
 
-def test_extension_offers_the_four_choices():
+def test_extension_offers_the_six_choices():
     text = _read_extension()
-    for choice in ("once", "session", "user", "deny"):
+    for choice in ("once", "session", "session-specific", "user", "user-specific", "deny"):
         assert f'"{choice}"' in text, f"missing choice {choice!r}"
 
 
-def test_extension_select_lists_the_four_choices_in_order():
-    """d15: the panel's keys map onto these, so the order is part of the contract."""
+def test_extension_select_lists_the_six_choices_in_order():
+    """d15/d24: the panel's keys map onto these, so the order is part of the contract."""
     text = _read_extension()
     start = text.index("await ctx.ui.select(")
     options = text[text.index("[", start) : text.index("]", start) + 1]
-    found = [c for c in ("once", "session", "user", "deny") if f'"{c}"' in options]
-    assert found == ["once", "session", "user", "deny"], options
-    order = [options.index(f'"{c}"') for c in found]
+    expected = ["once", "session", "session-specific", "user", "user-specific", "deny"]
+    order = [options.index(f'"{c}"') for c in expected]
     assert order == sorted(order), options
 
 
-def test_extension_widens_the_user_scope_to_first_word_star():
-    """d15: `user` approves the command *class*, not just this exact line."""
+def test_extension_never_builds_a_pattern_itself():
+    """d24: `nvsh approve add --scope` is the single writer *and* the single
+    place that derives a pattern from a command line."""
     text = _read_extension()
-    assert "command.trim().split(" in text
-    assert "`${firstWord} *`" in text
+    assert "firstWord" not in text
+    assert "` *`" not in text and '" *"' not in text
 
 
-def test_extension_adds_the_exact_line_for_the_session_scope():
-    """Session scope approves the line the model actually proposed, unwidened."""
+def test_extension_forwards_every_scope_choice_to_approve_add():
     text = _read_extension()
-    branch = text[text.index('if (choice === "session")') :]
-    branch = branch[: branch.index('audit(command, "session")')]
-    assert '"--session"' in branch
-    assert "command," in branch
-    assert "firstWord" not in branch
+    assert '"--scope"' in text
+    assert '"add"' in text
 
 
 def test_extension_blocks_with_reason_shape():

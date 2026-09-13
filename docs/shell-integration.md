@@ -288,9 +288,9 @@ the DGX Spark reported "I don't see proper indications things run"):
   while waiting.
 - **Keypress acknowledgement.** The instant a key is pressed at a proposal,
   the panel prints `nvsh: running ...` (Enter),
-  `nvsh: running (approved for this session) ...` (`s`),
-  `nvsh: running (approved for this user) ...` (`u`),
-  `nvsh: explaining ...`
+  `nvsh: running; 'ssh orin *' approved for this session` (`s`/`S`),
+  `nvsh: running; 'ssh orin *' approved for this user` (`u`/`U`) — each ack
+  names the pattern it just stored — `nvsh: explaining ...`
   (`e`), `nvsh: details ...` (`d`) or `nvsh: ignored` (Esc or anything
   else) — before anything else happens. Whatever follows can take seconds,
   and the operator must never wonder whether the key registered. This ack
@@ -305,23 +305,69 @@ the DGX Spark reported "I don't see proper indications things run"):
   slower turn that follows. Every other status stays a dim `... text` line,
   and a status with empty text prints nothing at all.
 
-### Approving from the proposal keys (deviation d15)
+### Approving from the proposal keys (deviations d15, d24)
 
-The legend under a proposal is one line, kept under 80 columns so it never
+The legend under a proposal is one line, kept within 80 columns so it never
 wraps on a bare ssh into a Jetson:
 
 ```text
-[Enter] run  [s] +session  [u] +user  [e] explain  [d] details  [Esc] ignore
+[Enter] run [s/S] +session [u/U] +user [e] why [d] details [t] tell [Esc] ignore
 ```
 
-`Enter` runs the command once and changes nothing. `s` and `u` run it *and*
-stop nvsh asking about that class of command again — the operator used to
-re-approve the same `docker logs …` on every failure:
+`Enter` runs the command once and changes nothing. The scope keys run it
+*and* stop nvsh asking about that class of command again — the operator
+used to re-approve the same `docker logs …` on every failure:
 
 | key | pattern stored | scope | where |
 |-----|----------------|-------|-------|
 | `s` | the exact command line | this login session | `$XDG_RUNTIME_DIR/nvsh/session-approvals.toml` (0600) |
+| `S` | `<command> <first argument> *` | this login session | same file |
 | `u` | `<first word> *` | this user, until removed | `$XDG_CONFIG_HOME/nvsh/approved.toml` (0600) |
+| `U` | `<command> <first argument> *` | this user, until removed | same file |
+
+**The specific form (`S`/`U`, deviation d24).** An operator on the Spark was
+shown `ssh orin "ps -eo pid,rss,comm --sort=-rss | head -n 20"` and offered
+`[u] allows 'ssh *' (any arguments)` — an approval for *every* ssh command
+to *every* host, when all they wanted was that one box. The uppercase keys
+keep the command's first argument: `ssh orin *`, `docker ps *`,
+`git status *`. When the line has no second word there is nothing to be
+specific about, and `S`/`U` behave exactly like `s`/`u`; the scope line says
+so (`same as [u] (no second word)`) rather than quoting a pattern twice.
+
+The scope line above the legend names both forms of both lifetimes, so no
+key can be mistaken for a narrower one than it is:
+
+```text
+[s] this exact line  [S] 'ssh orin *'  (this session)
+[u] 'ssh *'  [U] 'ssh orin *'  (persisted for you)
+```
+
+**One pattern per stage (deviation d24).** A command line is split into
+stages on `|`, `&&`, `||`, `&`, `;` and newlines, honouring quotes —
+`ssh orin "ps | head"` is ONE stage, because the pipe is inside the quoted
+argument ssh carries to the far end. Approving at any scope stores one
+pattern per stage (`ps *` *and* `head *`), and a later command is
+auto-approved only when **every** one of its stages matches a stored
+pattern. That is what stops a broad `ls *` from authorizing
+`ls | sudo tee /etc/x`: the second stage is a separate stage, and a
+privileged or destructive one can never be pre-approved at all — it makes
+the whole line unapprovable for `s`/`S`/`u`/`U`, exactly as a bare
+`sudo …` always has been. When there is more than one stage the scope line
+lists the per-stage patterns (`[u] 'ps *' 'head *'`), clipped at 80
+columns, and `[s]` reads `each stage exactly`.
+
+A line carrying a subshell or a command substitution — `(cd /tmp && ls)`,
+`echo $(id)`, a backtick — is **opaque**: what it really runs is not in its
+own text, so nvsh treats it as one stage that no pattern may ever match and
+refuses every scope key for it. `Enter` still runs it once, in front of the
+operator who just read it.
+
+`nvsh approve check` reports the stage that is holding a line back:
+
+```console
+$ nvsh approve check "nvidia-smi -q | grep -i fan" --json
+{"decision": "ask", "pattern": null, "stage": "grep -i fan"}
+```
 
 **Where a session approval lives, and why.** "Session" used to mean one
 Python process's memory — and since every writer of a session approval is a
@@ -344,16 +390,23 @@ under their scope headings (`user:` / `session:`), and
 **Two paths, one answer.** When the proposal carries a `request_id` it came
 from a backend dialog (pi's approval extension), and that backend is blocked
 waiting: nvsh forwards the operator's answer verbatim as
-`{"value": "once"|"session"|"user"|"deny"}` and the extension does the
-widening, the store write and the run — nvsh must not run the command a
-second time. Without a `request_id` (the openai-compat adapter and the other
-non-dialog backends) nvsh owns execution, so it writes the pattern through
+`{"value": <choice>}`, where `<choice>` is one of the six the extension
+offers `ctx.ui.select` — in this order, which is part of the contract:
+`once`, `session`, `session-specific`, `user`, `user-specific`, `deny`. The
+extension then does the store write and the run — nvsh must not run the
+command a second time. It derives no pattern of its own: it shells out to
+`nvsh approve add <command> --scope <choice>`, the single writer, which
+splits the line into stages and applies the scope's form to each. Without a
+`request_id` (the openai-compat adapter and the other non-dialog backends)
+nvsh owns execution, so it writes the same patterns through
 `nvsh.approvals` itself and then runs the command. Either way the decision
-is audited as `decision: once | session | user | deny`.
+is audited as
+`decision: once | session | session-specific | user | user-specific | deny`.
 
-**`s`/`u` are refused for privileged and destructive commands.** A command
-containing `sudo`/`doas`/`pkexec`, and any pattern `Approvals.add` refuses
-(`sudo …`, `rm …`, a bare `*`), cannot be pre-approved at any scope: the
+**The scope keys are refused for privileged and destructive commands.** A
+command with a `sudo`/`doas`/`pkexec` stage, a stage whose pattern
+`Approvals.add` refuses (`sudo …`, `rm …`, a bare `*`), or an opaque
+subshell, cannot be pre-approved at any scope: the
 panel prints one line —
 `nvsh: cannot approve for this user: patterns starting with 'rm' are never
 approved` — and asks again with `[Enter] run` still on the table. Approving

@@ -493,11 +493,13 @@ def test_legend_offers_session_and_user_keys_on_one_80_column_line():
     p.show_proposal(_proposal())
     legend = [ln for ln in out.getvalue().splitlines() if ln.startswith("[Enter]")][0]
     assert len(legend) <= 80, f"legend is {len(legend)} columns: {legend!r}"
-    for token in ("[Enter] run", "[s]", "[u]", "[e] explain", "[d] details", "[Esc] ignore"):
+    for token in ("[Enter] run", "[s/S]", "[u/U]", "[d] details", "[t] tell", "[Esc] ignore"):
         assert token in legend, legend
     assert "session" in legend and "user" in legend
-    # order: run, session, user, explain, details, ignore
-    positions = [legend.index(t) for t in ("[Enter]", "[s]", "[u]", "[e]", "[d]", "[Esc]")]
+    # order: run, session, user, explain, details, tell, ignore
+    positions = [
+        legend.index(t) for t in ("[Enter]", "[s/S]", "[u/U]", "[e]", "[d]", "[t]", "[Esc]")
+    ]
     assert positions == sorted(positions), legend
 
 
@@ -505,9 +507,9 @@ def test_legend_offers_session_and_user_keys_on_one_80_column_line():
     "typed,expected",
     [
         ("s\n", panel_mod.APPROVE_SESSION),
-        ("S\n", panel_mod.APPROVE_SESSION),
+        ("S\n", panel_mod.APPROVE_SESSION_SPECIFIC),
         ("u\n", panel_mod.APPROVE_USER),
-        ("U\n", panel_mod.APPROVE_USER),
+        ("U\n", panel_mod.APPROVE_USER_SPECIFIC),
     ],
 )
 def test_show_proposal_reads_the_scope_keys(typed, expected):
@@ -581,11 +583,13 @@ def test_legend_offers_the_tell_key_on_one_80_column_line():
     p.show_proposal(_proposal())
     legend = [ln for ln in out.getvalue().splitlines() if ln.startswith("[Enter]")][0]
     assert len(legend) <= 80, f"legend is {len(legend)} columns: {legend!r}"
-    for token in ("[Enter] run", "[s] +session", "[u] +user", "[e] explain"):
+    for token in ("[Enter] run", "[s/S] +session", "[u/U] +user", "[e] why"):
         assert token in legend, legend
     for token in ("[d] details", "[t] tell", "[Esc] ignore"):
         assert token in legend, legend
-    positions = [legend.index(t) for t in ("[Enter]", "[s]", "[u]", "[e]", "[d]", "[t]", "[Esc]")]
+    positions = [
+        legend.index(t) for t in ("[Enter]", "[s/S]", "[u/U]", "[e]", "[d]", "[t]", "[Esc]")
+    ]
     assert positions == sorted(positions), legend
 
 
@@ -792,10 +796,15 @@ def test_running_and_finished_helpers_are_callable_for_locally_run_commands():
     assert out.getvalue() == "... running: free -h\n... finished (exit 0)\n"
 
 
-# --- d16 (operator feedback on d15): say what a scope key would store -----
+# --- d16/d24: say what each scope key would store ------------------------
 
 
-_SCOPES = {"session": "this exact line", "user": "'whatis *' (any arguments)"}
+_SCOPES = {
+    "session": "this exact line",
+    "session-specific": "'whatis ls *'",
+    "user": "'whatis *'",
+    "user-specific": "'whatis ls *'",
+}
 
 
 def test_scope_line_says_what_each_key_would_store_before_the_legend():
@@ -804,16 +813,28 @@ def test_scope_line_says_what_each_key_would_store_before_the_legend():
     p.show_proposal(Proposal("whatis ls", "look it up", ProposalKind.INSPECT), scopes=_SCOPES)
     lines = out.getvalue().splitlines()
     scope_lines = [ln for ln in lines if ln.startswith("[s] ") or ln.startswith("[u] ")]
-    assert scope_lines, lines
-    blob = " ".join(scope_lines)
-    assert "this exact line" in blob
-    assert "'whatis *' (any arguments)" in blob
-    assert "for this session" in blob
-    assert "persisted" in blob
+    assert len(scope_lines) == 2, lines
+    session_line, user_line = scope_lines
+    assert session_line == "[s] this exact line  [S] 'whatis ls *'  (this session)"
+    assert user_line == "[u] 'whatis *'  [U] 'whatis ls *'  (persisted for you)"
     for line in scope_lines:
         assert len(line) <= 80, f"{len(line)} columns: {line!r}"
     legend_at = lines.index(panel_mod.LEGEND)
     assert max(lines.index(ln) for ln in scope_lines) < legend_at
+
+
+def test_a_long_scope_line_is_truncated_to_80_columns():
+    out = io.StringIO()
+    p = _panel(out=out, in_=io.StringIO("q\n"), isatty=False)
+    wide = {
+        "session": "each stage exactly",
+        "session-specific": "'" + "x" * 90 + " *'",
+        "user": "'" + "y" * 90 + " *'",
+        "user-specific": "'" + "z" * 90 + " *'",
+    }
+    p.show_proposal(_proposal(), scopes=wide)
+    for line in out.getvalue().splitlines():
+        assert len(line) <= 80, f"{len(line)} columns: {line!r}"
 
 
 def test_a_refused_scope_is_named_as_unavailable_instead_of_promised():
@@ -821,12 +842,12 @@ def test_a_refused_scope_is_named_as_unavailable_instead_of_promised():
     p = _panel(out=out, in_=io.StringIO("q\n"), isatty=False)
     p.show_proposal(
         Proposal("sudo nvpmodel -m 0", "power", ProposalKind.FIX),
-        guard=lambda scope: None if scope == "session" else "never pre-approved",
+        guard=lambda scope: None if scope.startswith("session") else "never pre-approved",
         scopes=_SCOPES,
     )
     text = out.getvalue()
-    assert "[u] not available: never pre-approved" in text
-    assert "[s] allows this exact line" in text
+    assert "[u]/[U] not available: never pre-approved" in text
+    assert "[s] this exact line" in text
 
 
 def test_no_scope_line_when_the_caller_passes_no_scopes():
@@ -840,16 +861,36 @@ def test_no_scope_line_when_the_caller_passes_no_scopes():
 @pytest.mark.parametrize(
     "typed,ack",
     [
-        ("s\n", "nvsh: running; this exact line approved for this session"),
-        ("u\n", "nvsh: running; 'whatis *' (any arguments) approved for this user"),
+        ("s\n", "nvsh: running; 'whatis ls' approved for this session"),
+        ("S\n", "nvsh: running; 'whatis ls *' approved for this session"),
+        ("u\n", "nvsh: running; 'whatis *' approved for this user"),
+        ("U\n", "nvsh: running; 'whatis ls *' approved for this user"),
     ],
 )
 def test_scope_acks_name_the_stored_pattern(typed, ack):
     out = io.StringIO()
     p = _panel(out=out, in_=io.StringIO(typed), isatty=False)
-    p.show_proposal(Proposal("whatis ls", "look", ProposalKind.INSPECT), scopes=_SCOPES)
+    patterns = {
+        "session": "'whatis ls'",
+        "session-specific": "'whatis ls *'",
+        "user": "'whatis *'",
+        "user-specific": "'whatis ls *'",
+    }
+    p.show_proposal(
+        Proposal("whatis ls", "look", ProposalKind.INSPECT),
+        scopes=_SCOPES,
+        patterns=patterns,
+    )
     lines = [line for line in out.getvalue().splitlines() if line.strip()]
     assert lines[-1] == ack, lines
+
+
+def test_a_scope_ack_falls_back_to_the_scope_phrase_without_patterns():
+    out = io.StringIO()
+    p = _panel(out=out, in_=io.StringIO("u\n"), isatty=False)
+    p.show_proposal(Proposal("whatis ls", "look", ProposalKind.INSPECT), scopes=_SCOPES)
+    lines = [line for line in out.getvalue().splitlines() if line.strip()]
+    assert lines[-1] == "nvsh: running; 'whatis *' approved for this user"
 
 
 # --- d22: the header says which backend is being asked -------------------

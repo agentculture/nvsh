@@ -168,11 +168,24 @@ Backs the "propose, don't run" contract: an agent-proposed fix is never
 executed without operator approval, and this is the single shared decision
 point other components (the bash hook, the daemon client) call into.
 
-Patterns are `fnmatch` globs matched against the *full* command line, after
-whitespace normalization — not just the program name. `add()` refuses
-`sudo *`, `rm *`, a bare `*`, and any pattern starting with `sudo` or `rm`.
+Patterns are `fnmatch` globs matched against one *stage* of the command
+line, after whitespace normalization — not just the program name. `add()`
+refuses `sudo *`, `rm *`, a bare `*`, and any pattern starting with `sudo`
+or `rm`.
 
-Two scopes:
+## Stages
+
+A command line is split on `|`, `&&`, `||`, `&`, `;` and newlines, honouring
+quotes — `ssh orin "ps | head"` is ONE stage whose first argument is
+`orin`. Approving stores one pattern per stage, and a command is approved
+only when **every** stage matches a pattern, so a broad `ls *` never
+authorizes `ls | sudo tee /etc/x`. A line with a subshell or a command
+substitution (`(...)`, `$(...)`, backticks) is opaque and is never
+auto-approved at all.
+
+## Scopes
+
+Two lifetimes, each in two forms:
 
 - `user` — persisted to `$XDG_CONFIG_HOME/nvsh/approved.toml` (mode 0600),
   so it survives logout and reboot.
@@ -181,11 +194,15 @@ Two scopes:
   logout. It is therefore in force for every later nvsh process in this
   login session, and gone at the next one. It never reaches
   `approved.toml`.
+- `user-specific` / `session-specific` — the same two lifetimes, but the
+  pattern keeps the command's *first argument*: `ssh orin *` rather than
+  `ssh *`. With no second word to keep, they fall back to the plain form.
 
-The panel's proposal keys write into the same store: `[s]` runs the command
-and adds the exact line for this session, `[u]` runs it and adds the widened
-`<first word> *` for this user. Both are refused for a command that
-escalates privilege, and for any pattern `add` itself refuses.
+The panel's proposal keys write into the same store: `[s]`/`[S]` run the
+command and approve it for this session, `[u]`/`[U]` run it and persist the
+approval for this user; the uppercase key of each pair stores the specific
+form. All four are refused for a command that escalates privilege, for an
+opaque line, and for any pattern `add` itself refuses.
 
 ## Usage
 
@@ -193,6 +210,7 @@ escalates privilege, and for any pattern `add` itself refuses.
     nvsh approve check "nvidia-smi -q" --json
     nvsh approve add "docker logs *"
     nvsh approve add "docker logs *" --session
+    nvsh approve add "ssh orin uptime" --scope user-specific
     nvsh approve list --json
     nvsh approve remove "docker logs *"
     nvsh approve audit --tool bash --command "nvidia-smi -L" --decision user
@@ -201,31 +219,44 @@ escalates privilege, and for any pattern `add` itself refuses.
 _APPROVE_CHECK = """\
 # nvsh approve check <cmd>
 
-Returns the approval decision for a command line: `{decision, pattern}` where
-`decision` is `user`, `session`, or `ask`, and `pattern` is the matching glob
-(or `null`/absent when nothing matched). User patterns are checked before
-session patterns.
+Returns the approval decision for a command line:
+`{decision, pattern, stage}` where `decision` is `user`, `session`, or
+`ask`, `pattern` is the matching glob (the stage patterns joined by ` | `
+for a pipeline, or `null` when nothing matched), and `stage` names the first
+stage that is *not* approved when the decision is `ask`. User patterns are
+checked before session patterns, and every stage of the line has to match
+something for the answer to be anything but `ask`.
 
 ## Usage
 
     nvsh approve check "docker ps -a"
     nvsh approve check "docker ps -a" --json
+    nvsh approve check "ps -eo pid | head -n 20" --json
 """
 
 _APPROVE_ADD = """\
 # nvsh approve add <pattern>
 
-Approves an `fnmatch` glob pattern, matched against the full command line.
-Persists to `user_patterns` by default; pass `--session` to hold it in memory
-only for the current process.
+Approves an `fnmatch` glob pattern, matched against one stage of a command
+line. Persists to `user_patterns` by default; pass `--session` to write it
+to this login session's runtime-dir store instead.
+
+With `--scope session|session-specific|user|user-specific` the argument is a
+*command line*, not a pattern: nvsh splits it into stages and derives one
+pattern per stage (the `-specific` scopes keep each stage's first argument).
+This is the single writer the pi approval extension calls, so the widening
+rules live in exactly one place.
 
 Refused outright (raises a user error, nothing is written): `sudo *`, `rm *`,
-a bare `*`, and any pattern starting with `sudo` or `rm`.
+a bare `*`, any pattern starting with `sudo` or `rm`, and — under `--scope`
+— any command line with a privileged stage or a command substitution.
 
 ## Usage
 
     nvsh approve add "docker logs *"
     nvsh approve add "docker logs *" --session
+    nvsh approve add "ssh orin uptime" --scope user-specific
+    nvsh approve add "ps -eo pid | head -n 20" --scope user
 """
 
 _APPROVE_LIST = """\

@@ -101,10 +101,18 @@ export default function (pi: ExtensionAPI) {
       command,
       reason,
     });
+    // Order is part of the contract: the panel's keys map onto these
+    // (Enter/s/S/u/U/Esc), and nvsh forwards the operator's answer
+    // verbatim as {"value": choice}. The two "-specific" scopes are
+    // deviation d24: they keep the command's first argument in the stored
+    // pattern ("ssh orin *"), where the plain ones widen to the whole
+    // program ("ssh *") or stay the exact line.
     const choice = await ctx.ui.select(payload, [
       "once",
       "session",
+      "session-specific",
       "user",
+      "user-specific",
       "deny",
     ]);
 
@@ -118,33 +126,20 @@ export default function (pi: ExtensionAPI) {
       return;
     }
 
-    // choice === "session": the exact line, unwidened, for this login
-    // session. `--session` writes to
-    // $XDG_RUNTIME_DIR/nvsh/session-approvals.toml (deviation d15), so the
-    // approval outlives this spawnSync and the next `approve check` -- from
-    // any process of this login -- matches it. Before d15 it was held in
-    // the CLI process's memory and was gone before this call returned.
-    if (choice === "session") {
-      const added = nvsh(["approve", "add", command, "--session", "--json"]);
-      if (!added.ok) {
-        audit(command, "block");
-        return blockedBy(added, "nvsh refused to approve this pattern for the session");
-      }
-      audit(command, "session");
-      return;
-    }
-
-    // choice === "user": widen to "<first word> *" per the spec, so
-    // Approvals.add's own refusal rules (sudo/rm/bare '*') still apply --
-    // e.g. "sudo rm -rf /x" always asks even after this branch is tried.
-    const firstWord = command.trim().split(/\s+/, 1)[0] || command;
-    const pattern = `${firstWord} *`;
-    const added = nvsh(["approve", "add", pattern, "--json"]);
+    // Every remaining choice is a scope. `nvsh approve add --scope` is the
+    // single writer *and* the single place that turns a command line into
+    // patterns: it splits the line into stages (d24) and derives one
+    // pattern per stage, so this file never re-implements the widening
+    // rules and can never drift from the panel's scope line. A session
+    // scope lands in $XDG_RUNTIME_DIR/nvsh/session-approvals.toml (d15),
+    // so the approval outlives this spawnSync and the next `approve check`
+    // -- from any process of this login -- matches it.
+    const added = nvsh(["approve", "add", command, "--scope", String(choice), "--json"]);
     if (!added.ok) {
       audit(command, "block");
-      return blockedBy(added, "nvsh refused to approve this pattern for the user");
+      return blockedBy(added, `nvsh refused to approve this command for the ${choice} scope`);
     }
-    audit(command, "user");
+    audit(command, String(choice));
     return;
   });
 }

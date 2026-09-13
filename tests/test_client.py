@@ -1098,3 +1098,111 @@ def test_rate_lock_failure_does_not_break_the_decision(xdg, monkeypatch):
     monkeypatch.setattr(client_mod.fcntl, "flock", no_locking)
     assert client_mod._rate_limited(_args(xdg.tmp), nvsh_config.load(), None) is False
     assert client_mod.rate_state_path().exists()
+
+
+# --- d24: the specific form (S/U) and one pattern per pipeline stage ------
+
+
+def test_user_specific_key_without_a_dialog_stores_the_first_argument(xdg, monkeypatch):
+    proposal = Proposal(command="ssh orin uptime", rationale="look", kind=ProposalKind.INSPECT)
+    monkeypatch.setattr(client_transport, "send", _stub_send([], _proposal_events(proposal)))
+    monkeypatch.setattr(client_mod, "_run_command", lambda cmd, **kw: _ok())
+    assert client_mod.handle_failure(_args(xdg.tmp), panel=_panel("U\n")) == 0
+    saved = (xdg.config / "nvsh" / "approved.toml").read_text(encoding="utf-8")
+    assert "ssh orin *" in saved, saved
+    assert '"ssh *"' not in saved, saved
+    approvals = _approvals()
+    assert approvals.decide("ssh orin free -h") == "user"
+    assert approvals.decide("ssh thor free -h") == "ask"
+    assert "user-specific" in _decisions(_audit_entries())
+
+
+def test_session_specific_key_without_a_dialog_stores_the_first_argument(xdg, monkeypatch):
+    proposal = Proposal(command="ssh orin uptime", rationale="look", kind=ProposalKind.INSPECT)
+    monkeypatch.setattr(client_transport, "send", _stub_send([], _proposal_events(proposal)))
+    monkeypatch.setattr(client_mod, "_run_command", lambda cmd, **kw: _ok())
+    assert client_mod.handle_failure(_args(xdg.tmp), panel=_panel("S\n")) == 0
+    approvals = _approvals()
+    assert "ssh orin *" in approvals.session_patterns
+    assert "ssh orin *" not in approvals.user_patterns
+
+
+@pytest.mark.parametrize(
+    "typed,value",
+    [("S\n", "session-specific"), ("U\n", "user-specific")],
+)
+def test_specific_keys_on_a_pi_dialog_forward_their_own_token(xdg, monkeypatch, typed, value):
+    proposal = Proposal(command="ssh orin uptime", rationale="look", kind=ProposalKind.FIX)
+    events = [
+        AgentEvent(kind=EventKind.PROPOSAL, proposal=proposal, args={"request_id": "req-x"}),
+        AgentEvent(kind=EventKind.DONE),
+    ]
+    monkeypatch.setattr(client_transport, "send", _stub_send([], events))
+    answered = []
+    monkeypatch.setattr(
+        client_transport, "respond_ui", lambda rid, fields, **kw: answered.append((rid, fields))
+    )
+    executed = []
+    monkeypatch.setattr(client_mod, "_run_command", lambda cmd, **kw: executed.append(cmd))
+    client_mod.handle_failure(_args(xdg.tmp), panel=_panel(typed))
+    assert answered == [("req-x", {"value": value})]
+    assert executed == [], "the extension owns the store write and the run"
+
+
+def test_a_pipeline_stores_one_pattern_per_stage(xdg, monkeypatch):
+    command = "ps -eo pid,rss | head -n 20"
+    proposal = Proposal(command=command, rationale="look", kind=ProposalKind.INSPECT)
+    monkeypatch.setattr(client_transport, "send", _stub_send([], _proposal_events(proposal)))
+    monkeypatch.setattr(client_mod, "_run_command", lambda cmd, **kw: _ok())
+    assert client_mod.handle_failure(_args(xdg.tmp), panel=_panel("u\n")) == 0
+    approvals = _approvals()
+    assert "ps *" in approvals.user_patterns
+    assert "head *" in approvals.user_patterns
+    assert approvals.decide(command) == "user"
+
+
+def test_a_pipeline_with_a_privileged_stage_refuses_every_scope_key(xdg, monkeypatch):
+    command = "ls /nope | sudo tee /etc/x"
+    proposal = Proposal(command=command, rationale="fix", kind=ProposalKind.FIX)
+    monkeypatch.setattr(client_transport, "send", _stub_send([], _proposal_events(proposal)))
+    executed = []
+    monkeypatch.setattr(client_mod, "_run_command", lambda cmd, **kw: executed.append(cmd) or _ok())
+    p = _panel("U\nq\n")  # refused, then ignore
+    client_mod.handle_failure(_args(xdg.tmp), panel=p)
+    assert "cannot approve" in p.out.getvalue()
+    approvals = _approvals()
+    assert "ls *" not in approvals.user_patterns
+    assert approvals.session_patterns == []
+    assert executed == []
+
+
+def test_the_scope_line_lists_every_stage_pattern(xdg, monkeypatch):
+    command = "ps -eo pid,rss | head -n 20"
+    proposal = Proposal(command=command, rationale="look", kind=ProposalKind.INSPECT)
+    monkeypatch.setattr(client_transport, "send", _stub_send([], _proposal_events(proposal)))
+    p = _panel("q\n")
+    client_mod.handle_failure(_args(xdg.tmp), panel=p)
+    text = p.out.getvalue()
+    assert "'ps *' 'head *'" in text, text
+    assert "each stage exactly" in text, text
+
+
+def test_the_scope_line_says_when_the_specific_form_adds_nothing(xdg, monkeypatch):
+    proposal = Proposal(command="htop", rationale="look", kind=ProposalKind.INSPECT)
+    monkeypatch.setattr(client_transport, "send", _stub_send([], _proposal_events(proposal)))
+    p = _panel("q\n")
+    client_mod.handle_failure(_args(xdg.tmp), panel=p)
+    text = p.out.getvalue()
+    assert "same as [u] (no second word)" in text, text
+    assert "same as [s] (no second word)" in text, text
+
+
+def test_details_quote_the_specific_patterns_too(xdg, monkeypatch):
+    proposal = Proposal(command="ssh orin uptime", rationale="look", kind=ProposalKind.FIX)
+    monkeypatch.setattr(client_transport, "send", _stub_send([], _proposal_events(proposal)))
+    p = _panel("d\nq\n")
+    client_mod.handle_failure(_args(xdg.tmp), panel=p)
+    text = p.out.getvalue()
+    assert "user pattern: ssh *" in text, text
+    assert "user-specific pattern: ssh orin *" in text, text
+    assert "session-specific pattern: ssh orin *" in text, text

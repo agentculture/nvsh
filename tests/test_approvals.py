@@ -257,3 +257,140 @@ def test_remove_reports_whether_anything_went(xdg_home):
     approvals = Approvals.default()
     assert approvals.remove("nothing like this *") is False
     assert approvals.remove("nvidia-smi *") is True
+
+
+# --- d24: the specific form, and one pattern per pipeline stage -----------
+
+
+@pytest.mark.parametrize(
+    "command,scope,expected",
+    [
+        ("ssh orin ps", "session", "ssh orin ps"),
+        ("ssh orin ps", "user", "ssh *"),
+        ("ssh orin ps", "session-specific", "ssh orin *"),
+        ("ssh orin ps", "user-specific", "ssh orin *"),
+        ("docker ps -a", "user-specific", "docker ps *"),
+        ("git status --short", "user-specific", "git status *"),
+        # A quoted first argument keeps its quotes: the pattern is matched
+        # against the raw (whitespace-normalized) line, not a shlex-split one.
+        ('ssh "my host" ps', "user-specific", 'ssh "my host" *'),
+        ('ssh orin "ps | head"', "user-specific", "ssh orin *"),
+        # No second word: the specific keys fall back to the plain form.
+        ("htop", "user-specific", "htop *"),
+        ("htop", "session-specific", "htop"),
+        ("htop", "session", "htop"),
+        ("htop", "user", "htop *"),
+        # Whitespace is normalized before anything else.
+        ("  ssh   orin   ps  ", "user-specific", "ssh orin *"),
+    ],
+)
+def test_pattern_for_covers_every_scope(command, scope, expected):
+    from nvsh.approvals import pattern_for
+
+    assert pattern_for(command, scope) == expected
+
+
+def test_pattern_for_rejects_an_unknown_scope():
+    from nvsh.approvals import ApprovalError, pattern_for
+
+    with pytest.raises(ApprovalError):
+        pattern_for("ls", "forever")
+
+
+@pytest.mark.parametrize(
+    "command,expected",
+    [
+        ("ls -l", ["ls -l"]),
+        ("ps -eo pid | head -n 20", ["ps -eo pid", "head -n 20"]),
+        ("make && make install", ["make", "make install"]),
+        ("make || echo failed", ["make", "echo failed"]),
+        ("cd /tmp; ls", ["cd /tmp", "ls"]),
+        ("sleep 1 & wait", ["sleep 1", "wait"]),
+        ("ls\nps", ["ls", "ps"]),
+        # Quoted separators are data, not separators: this is ONE stage.
+        ('ssh orin "ps | head"', ['ssh orin "ps | head"']),
+        ("echo 'a && b'", ["echo 'a && b'"]),
+        ("grep -e 'x;y' file", ["grep -e 'x;y' file"]),
+        # Trailing/duplicate separators never produce an empty stage.
+        ("ls ;", ["ls"]),
+        ("", []),
+        # A subshell or command substitution is one opaque stage.
+        ("(cd /tmp && ls)", ["(cd /tmp && ls)"]),
+        ("echo $(rm -rf /tmp/x)", ["echo $(rm -rf /tmp/x)"]),
+        ("echo `id`", ["echo `id`"]),
+    ],
+)
+def test_stages_splits_on_separators_outside_quotes(command, expected):
+    from nvsh.approvals import stages
+
+    assert stages(command) == expected
+
+
+def test_patterns_for_gives_one_pattern_per_stage():
+    from nvsh.approvals import patterns_for
+
+    assert patterns_for("ps -eo pid | head -n 20", "user") == ["ps *", "head *"]
+    assert patterns_for("ps -eo pid | head -n 20", "user-specific") == ["ps -eo *", "head -n *"]
+    assert patterns_for("ps -eo pid | head -n 20", "session") == ["ps -eo pid", "head -n 20"]
+
+
+def test_patterns_for_dedupes_identical_stage_patterns():
+    from nvsh.approvals import patterns_for
+
+    assert patterns_for("ls /a | ls /b", "user") == ["ls *"]
+
+
+def test_an_opaque_command_is_never_auto_approved(xdg_home):
+    from nvsh.approvals import command_refusal_reason
+
+    approvals = Approvals.default()
+    approvals.add("echo *")
+    assert approvals.decide("echo $(id)") == "ask"
+    assert command_refusal_reason("echo $(id)") is not None
+
+
+def test_every_stage_must_match_an_approved_pattern(xdg_home):
+    approvals = Approvals.default()
+    approvals.add("ps *")
+    assert approvals.decide("ps -eo pid") == "user"
+    assert approvals.decide("ps -eo pid | head -n 20") == "ask"
+    approvals.add("head *")
+    assert approvals.decide("ps -eo pid | head -n 20") == "user"
+
+
+def test_a_broad_first_stage_pattern_never_covers_a_privileged_second_stage(xdg_home):
+    """The whole point of d24's stage rule: `ls *` must not authorize `sudo x`."""
+    approvals = Approvals.default()
+    approvals.add("ls *")
+    assert approvals.decide("ls -l") == "user"
+    assert approvals.decide("ls | sudo x") == "ask"
+    assert approvals.decide("ls -l ; rm -rf /tmp/x") == "ask"
+
+
+def test_matches_reports_the_session_scope_when_any_stage_is_session_only(xdg_home):
+    approvals = Approvals.default()
+    approvals.add("ps *")
+    approvals.add("head -n 20", scope="session")
+    scope, pattern = approvals.matches("ps -eo pid | head -n 20")
+    assert scope == "session"
+    assert "ps *" in pattern and "head -n 20" in pattern
+
+
+def test_unapproved_stage_names_the_stage_that_failed(xdg_home):
+    approvals = Approvals.default()
+    approvals.add("ps *")
+    assert approvals.unapproved_stage("ps -eo pid | head -n 20") == "head -n 20"
+    assert approvals.unapproved_stage("ps -eo pid") is None
+    assert approvals.unapproved_stage("ls | sudo rmmod x") == "sudo rmmod x"
+
+
+def test_add_accepts_the_specific_scope_tokens(xdg_home):
+    from nvsh.approvals import base_scope
+
+    approvals = Approvals.default()
+    approvals.add("ssh orin *", scope="user-specific")
+    assert "ssh orin *" in approvals.user_patterns
+    approvals.add("ssh thor *", scope="session-specific")
+    assert "ssh thor *" in approvals.session_patterns
+    assert base_scope("user-specific") == "user"
+    assert base_scope("session-specific") == "session"
