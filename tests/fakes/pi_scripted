@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Fake ``pi --mode rpc`` driven by an externally supplied event script.
 
-Used only by the shared ``tests/test_agent_conformance.py`` suite to make
-``PiAgent`` replay an arbitrary, test-supplied sequence of already-wire-shaped
-JSON events (built by ``_agent_event_to_wire`` in that test module) -- the
-same trick the generic ``tests/fakes/pi`` cannot do, since its canned
-responses are fixed.
+Used by the shared ``tests/test_agent_conformance.py`` suite (and by
+``tests/test_client.py``'s one-shot dialog tests) to make ``PiAgent`` replay
+an arbitrary, test-supplied sequence of already-wire-shaped JSON events
+(built by ``_agent_event_to_wire`` in that test module) -- the same trick the
+generic ``tests/fakes/pi`` cannot do, since its canned responses are fixed.
 
 Protocol: reads ``NVSH_TEST_PI_SCRIPT`` (a JSON array of wire-event dicts,
 each with a ``"type"`` field) from the environment. On the first ``prompt``
@@ -13,12 +13,29 @@ command received on stdin, acks it, then emits each scripted event in order.
 An ``abort`` command is acked but otherwise ignored -- ``PiAgent`` itself is
 responsible for not yielding further events after ``cancel()``, per the same
 contract ``FakeAgent`` honours.
+
+Two optional environment knobs make the fake behave like a *real* dialog
+(deviation d11, where nothing answered pi's ``select`` and the turn stalled):
+
+* ``NVSH_TEST_PI_AWAIT_UI=1`` -- pause the script after emitting an
+  ``extension_ui_request`` and resume only once an ``extension_ui_response``
+  arrives on stdin. Off by default, so scripts that never answer a dialog
+  (the d8 regression scripts) still run to completion.
+* ``NVSH_TEST_PI_RESPONSES=<path>`` -- append every ``extension_ui_response``
+  command received, one JSON object per line, so a test can assert on what
+  the client actually sent back.
+
+While awaiting an answer the fake gives up after ``NVSH_TEST_PI_UI_TIMEOUT``
+seconds (default 10) and emits an ``error`` event, so a *broken* client fails
+the test quickly instead of hanging the suite -- which is exactly what d11
+looked like in the terminal.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import select
 import sys
 
 
@@ -27,11 +44,42 @@ def emit(obj: dict) -> None:
     sys.stdout.flush()
 
 
+def record(cmd: dict) -> None:
+    path = os.environ.get("NVSH_TEST_PI_RESPONSES")
+    if not path:
+        return
+    with open(path, "a", encoding="utf-8") as handle:
+        handle.write(json.dumps(cmd) + "\n")
+
+
+def emit_script(events: list, await_ui: bool) -> tuple:
+    """Emit ``events`` in order; stop after a dialog when awaiting an answer.
+
+    Returns ``(remaining, paused)``: what is left to emit once the dialog has
+    been answered, and whether the fake is now waiting for that answer.
+    """
+    for index, event in enumerate(events):
+        emit(event)
+        if await_ui and event.get("type") == "extension_ui_request":
+            return events[index + 1 :], True
+    return [], False
+
+
 def main() -> None:
     script = json.loads(os.environ.get("NVSH_TEST_PI_SCRIPT", "[]"))
+    await_ui = os.environ.get("NVSH_TEST_PI_AWAIT_UI") == "1"
+    ui_timeout = float(os.environ.get("NVSH_TEST_PI_UI_TIMEOUT", "10"))
     sent = False
+    pending: list = []
+    awaiting = False
 
-    for raw_line in sys.stdin:
+    while True:
+        if awaiting and not select.select([sys.stdin], [], [], ui_timeout)[0]:
+            emit({"type": "error", "error": f"no extension_ui_response within {ui_timeout:g}s"})
+            return
+        raw_line = sys.stdin.readline()
+        if not raw_line:
+            return
         line = raw_line.strip()
         if not line:
             continue
@@ -45,10 +93,12 @@ def main() -> None:
             emit({"id": cmd.get("id"), "type": "response", "command": "prompt", "success": True})
             if not sent:
                 sent = True
-                for event in script:
-                    emit(event)
+                pending, awaiting = emit_script(script, await_ui)
         elif cmd_type == "abort":
             emit({"id": cmd.get("id"), "type": "response", "command": "abort", "success": True})
+        elif cmd_type == "extension_ui_response":
+            record(cmd)
+            pending, awaiting = emit_script(pending, await_ui)
         else:
             emit(
                 {

@@ -198,6 +198,45 @@ def test_unknown_wire_event_maps_to_status(tmp_path):
     assert events[-1].kind == EventKind.DONE
 
 
+# -- d11: rpc lifecycle bookkeeping is not panel material -------------------
+#
+# On the Spark the panel printed "... agent_start", "... turn_start",
+# "... message_start", "... message_end": pi's per-turn lifecycle events,
+# which say nothing an operator can act on, reached the panel through the
+# catch-all STATUS fallback. They must map to no event at all.
+
+
+def test_lifecycle_events_are_dropped_entirely(tmp_path):
+    script = [
+        {"type": "agent_start"},
+        {"type": "turn_start"},
+        {"type": "message_start"},
+        {
+            "type": "message_update",
+            "assistantMessageEvent": {"type": "text_delta", "delta": "hello"},
+        },
+        {"type": "tool_execution_start", "toolName": "bash", "args": {"command": "ls /"}},
+        {"type": "tool_execution_update", "toolName": "bash"},
+        {"type": "tool_execution_end", "toolName": "bash", "result": {"output": "bin"}},
+        {"type": "message_end"},
+        {"type": "turn_end"},
+        {"type": "agent_end"},
+    ]
+    agent = PiAgent(pi_path="pi_scripted", env=_env(tmp_path))
+    agent._env["NVSH_TEST_PI_SCRIPT"] = json.dumps(script)
+    agent.start()
+    try:
+        events = list(agent.run(_request(), _context()))
+    finally:
+        agent.close()
+    assert [e.kind for e in events] == [
+        EventKind.TEXT_DELTA,
+        EventKind.TOOL_CALL,
+        EventKind.TOOL_RESULT,
+        EventKind.DONE,
+    ]
+
+
 # --- cancel / kill --------------------------------------------------------
 
 

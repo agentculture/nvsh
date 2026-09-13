@@ -42,6 +42,28 @@ from .prompt import build_prompt as _build_prompt
 #: process or a cancel() without busy-waiting.
 _POLL_INTERVAL_SECONDS = 0.2
 
+#: pi's per-turn lifecycle and progress bookkeeping. These say only that the
+#: rpc loop is doing its job, which is nothing an operator at a failing
+#: prompt can act on, so they map to no event at all -- deviation d11, where
+#: the catch-all STATUS fallback below put "... agent_start",
+#: "... turn_start", "... message_start", "... message_end" straight into
+#: the panel, and a live run against nemotron/associate added three
+#: "... tool_execution_update" lines per tool call on top. The panel already
+#: says which tool is running and when it finished. Genuinely unknown event
+#: types still surface as STATUS, so nothing new is dropped silently.
+_QUIET_EVENT_TYPES = frozenset(
+    {
+        "agent_start",
+        "turn_start",
+        "turn_end",
+        "message_start",
+        "message_end",
+        "message_final",
+        "agent_settled",
+        "tool_execution_update",
+    }
+)
+
 #: How long close() waits for a clean exit after closing stdin, and then
 #: after terminate(), before escalating.
 _CLOSE_WAIT_SECONDS = 2.0
@@ -367,6 +389,9 @@ class PiAgent(NvshAgent):
 
         if msg_type == "agent_end":
             return AgentEvent(kind=EventKind.DONE)
+
+        if msg_type in _QUIET_EVENT_TYPES:
+            return None  # lifecycle/progress bookkeeping is not panel material (d11)
 
         if msg_type == "error":
             return AgentEvent(kind=EventKind.ERROR, error=str(obj.get("error", "")))

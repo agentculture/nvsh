@@ -374,6 +374,7 @@ def _send(
     env: Mapping[str, str],
     shell_id: int,
     config,
+    responder=None,
 ) -> Iterable[AgentEvent]:
     return client_transport.send(
         request,
@@ -382,6 +383,7 @@ def _send(
         env=env,
         config=config,
         autostart=_autostart(env),
+        responder=responder,
     )
 
 
@@ -422,10 +424,18 @@ def _proposal_handler(
     *,
     approvals,
     inspections: list[tuple[str, RunResult]],
-    env: Mapping[str, str],
-    shell_id: int,
+    responder,
     audit,
 ):
+    """Answer one proposal, sending the answer wherever the dialog came from.
+
+    ``responder`` is the d11 fix: a proposal carrying a ``request_id`` was
+    raised by the backend and only that backend can unblock the turn. The
+    handler no longer assumes a daemon is listening -- it hands the answer
+    to :class:`nvsh.client_transport.Responder`, which is pointed at the
+    daemon socket or at the one-shot, in-process agent as appropriate.
+    """
+
     def handle(proposal: Proposal, event: AgentEvent) -> None:
         command = proposal.command
         request_id = (event.args or {}).get("request_id")
@@ -445,9 +455,7 @@ def _proposal_handler(
                 audit.record(event="decision", proposal=proposal, decision="auto-inspect")
                 audit.record(event="outcome", proposal=proposal, outcome=result.exit_code)
             if request_id:
-                client_transport.respond_ui(
-                    request_id, {"value": "once"}, shell_id=shell_id, env=env
-                )
+                responder.respond(request_id, {"value": "once"})
             return
 
         choice = _decide_proposal(panel, proposal)
@@ -455,15 +463,13 @@ def _proposal_handler(
             audit.record(event="decision", proposal=proposal, decision=choice)
         if choice != APPROVE:
             if request_id:
-                client_transport.respond_ui(
-                    request_id, {"value": "deny"}, shell_id=shell_id, env=env
-                )
+                responder.respond(request_id, {"value": "deny"})
             panel.note("nvsh: not run")
             return
         if request_id:
             # The backend owns execution (pi's approval extension); nvsh only
             # relays the operator's answer, and must not run it a second time.
-            client_transport.respond_ui(request_id, {"value": "once"}, shell_id=shell_id, env=env)
+            responder.respond(request_id, {"value": "once"})
             return
         result = _run_command(command)
         if audit is not None:
@@ -495,18 +501,18 @@ def _stream_request(
     inspections: list[tuple[str, RunResult]] | None = None,
     audit=None,
 ) -> StreamResult:
+    responder = client_transport.Responder(shell_id=shell_id, env=env)
     on_proposal = None
     if approvals is not None and inspections is not None:
         on_proposal = _proposal_handler(
             panel,
             approvals=approvals,
             inspections=inspections,
-            env=env,
-            shell_id=shell_id,
+            responder=responder,
             audit=audit,
         )
     return panel.stream(
-        _send(request, context, env=env, shell_id=shell_id, config=config),
+        _send(request, context, env=env, shell_id=shell_id, config=config, responder=responder),
         on_proposal=on_proposal,
         cancel=lambda: client_transport.cancel(shell_id=shell_id, env=env),
     )

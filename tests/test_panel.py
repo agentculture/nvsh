@@ -110,6 +110,39 @@ def test_status_events_render_without_a_spinner():
         assert spinner not in text
 
 
+def test_empty_status_events_render_nothing():
+    """d11: a backend may emit a STATUS with no text; the panel stays quiet."""
+    out = io.StringIO()
+    p = _panel(out=out)
+    p.stream(
+        iter(
+            [
+                AgentEvent(kind=EventKind.STATUS, text=""),
+                AgentEvent(kind=EventKind.TEXT_DELTA, text="hello"),
+                AgentEvent(EventKind.DONE),
+            ]
+        )
+    )
+    assert out.getvalue() == "hello\n"
+
+
+def test_tool_call_says_which_tool_is_running():
+    out = io.StringIO()
+    p = _panel(out=out)
+    p.stream(
+        iter(
+            [
+                AgentEvent(kind=EventKind.TOOL_CALL, tool="bash", args={"command": "nvidia-smi"}),
+                AgentEvent(kind=EventKind.TOOL_RESULT, tool="bash", result={"output": "ok"}),
+                AgentEvent(EventKind.DONE),
+            ]
+        )
+    )
+    text = out.getvalue()
+    assert "... running tool: bash" in text
+    assert "... tool bash finished" in text
+
+
 def test_proposal_events_are_collected_and_handed_to_on_proposal():
     p = _panel()
     proposal = Proposal(command="df -h", rationale="check disk", kind=ProposalKind.INSPECT)

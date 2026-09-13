@@ -50,6 +50,54 @@ START_TIMEOUT_ENV = "NVSH_DAEMON_START_TIMEOUT"
 daemon_socket_path = _daemon.socket_path
 
 
+class Responder:
+    """Where the operator's answer to a proposal dialog goes.
+
+    A proposal that carries a ``request_id`` was raised by the backend
+    itself (pi's approval extension), and that backend stays blocked until
+    the dialog is answered -- so the answer has to reach *the agent that
+    asked*. Which agent that is depends on how the request was served, and
+    the client cannot know up front: it asks the daemon, and only mid-stream
+    may it learn there is none and that a one-shot agent is running in this
+    very process (deviation d11, where the answer went to an absent daemon
+    and pi waited forever while the panel's Enter appeared to do nothing).
+
+    So this object is deliberately mutable: it starts out pointed at the
+    daemon socket, and :func:`one_shot` rebinds it to the live in-process
+    agent the moment it builds one.
+    """
+
+    def __init__(
+        self,
+        *,
+        shell_id: str | int | None = None,
+        env: Mapping[str, str] | None = None,
+    ) -> None:
+        self.shell_id = shell_id
+        self.env = env
+        self.agent: object | None = None
+
+    def bind_agent(self, agent: object) -> None:
+        """Point answers at ``agent`` -- the one-shot, in-process backend."""
+        self.agent = agent
+
+    def respond(self, request_id: str, fields: Mapping[str, object]) -> bool:
+        """Answer dialog ``request_id``. Never raises on the failure path."""
+        if not request_id:
+            return False
+        agent = self.agent
+        if agent is None:
+            return respond_ui(request_id, fields, shell_id=self.shell_id, env=self.env)
+        respond = getattr(agent, "respond_ui", None)
+        if not callable(respond):
+            return False
+        try:
+            respond(request_id, **dict(fields))
+        except Exception:  # noqa: BLE001 - a dead backend must not break the panel
+            return False
+        return True
+
+
 def _resolve_env(env: Mapping[str, str] | None) -> Mapping[str, str]:
     return os.environ if env is None else env
 
@@ -164,11 +212,16 @@ def one_shot(
     context: AgentContext | None = None,
     *,
     config: Config | None = None,
+    responder: Responder | None = None,
 ) -> Iterator[AgentEvent]:
     """Run *request* in this process, with no daemon, and close the adapter.
 
     Used when the daemon is missing or crashed. Slower (a cold backend per
     call) but it always produces something.
+
+    ``responder``, when given, is bound to the live adapter before the first
+    event is yielded, so a caller answering a dialog raised during this run
+    talks to *this* agent rather than to a daemon that is not there (d11).
     """
     from .agent import registry
 
@@ -180,6 +233,8 @@ def one_shot(
         yield AgentEvent(kind=EventKind.ERROR, error=f"no agent available: {exc}")
         return
 
+    if responder is not None:
+        responder.bind_agent(agent)
     yield AgentEvent(kind=EventKind.STATUS, text=f"one-shot {name}: {reason}")
     ctx = context if context is not None else AgentContext()
     saw_terminal = False
@@ -218,6 +273,7 @@ def send(
     config: Config | None = None,
     autostart: bool = True,
     timeout: float = _DEFAULT_TIMEOUT,
+    responder: Responder | None = None,
 ) -> Iterator[AgentEvent]:
     """Stream the daemon's events for one request, falling back to one-shot.
 
@@ -242,7 +298,7 @@ def send(
     if sock is None:
         if reason:  # say why the warm session was given up on
             yield AgentEvent(kind=EventKind.STATUS, text=reason)
-        yield from one_shot(request, context, config=config)
+        yield from one_shot(request, context, config=config, responder=responder)
         return
 
     # The connect wait is over; from here the stream may be idle for as long
@@ -252,7 +308,7 @@ def send(
         yield from _stream(sock, payload)
     except OSError as exc:
         yield AgentEvent(kind=EventKind.STATUS, text=f"daemon connection lost: {exc}")
-        yield from one_shot(request, context, config=config)
+        yield from one_shot(request, context, config=config, responder=responder)
 
 
 def control(

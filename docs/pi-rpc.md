@@ -60,10 +60,18 @@ Events have no `id` (except `bash_execution_update`, unused here). The ones
   not currently consumed; `agent_end` is the simpler, earlier signal the
   spec asks for.)
 - A malformed line (fails `json.loads`) → `EventKind.ERROR`.
-- Anything else — `queue_update`, `turn_start`/`turn_end`,
-  `compaction_start`/`compaction_end`, `auto_retry_*`, `extension_error`,
-  etc. — → `EventKind.STATUS` with `text` set to the raw `"type"` value, so
-  nothing is silently dropped.
+- Per-turn lifecycle and progress bookkeeping — `agent_start`,
+  `turn_start`/`turn_end`, `message_start`/`message_end`, `message_final`,
+  `agent_settled`, `tool_execution_update` — → no event at all. These only
+  say the rpc loop is running; rendering them put `... agent_start`,
+  `... turn_start`, `... message_start`, `... message_end` and three
+  `... tool_execution_update` lines per tool call into the operator's panel
+  (deviation d11), which is noise at a failing prompt. The panel already
+  says which tool is running and when it finished.
+- Anything else — `queue_update`, `compaction_start`/`compaction_end`,
+  `auto_retry_*`, `extension_error`, etc. — → `EventKind.STATUS` with `text`
+  set to the raw `"type"` value, so an event type nvsh has not seen before
+  is still never silently dropped.
 
 ## The approval envelope
 
