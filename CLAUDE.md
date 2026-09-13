@@ -46,20 +46,40 @@ are installed and still works when they are not.
 
 ## Current state
 
-The repo is still mostly the **culture-agent-template scaffold** renamed to
-`nvsh`, with the bash-hook-and-agent-on-error design now converged (this
-file, `docs/architecture.md`, `docs/platforms.md`) but its implementation
-still **in progress**: `nvsh/` today only holds the agent-first verbs
-(`whoami`, `learn`, `explain`, `overview`, `doctor`, `cli overview`). The
-hook installer (`nvsh setup`/`nvsh uninstall`), the trigger table, the
-slash-command routing, the `NvshAgent` adapters and the platform detectors
-described below are planned, not implemented, unless a later task's own
-notes say otherwise. The harness prompt files and the CLI's own descriptions
-(`learn`, `explain`, `--help`) already describe nvsh and mark the shell as
-planned. Keep them that way: don't describe planned behavior as implemented.
-The package, CLI, import and PyPI names are all already `nvsh`, so no rename
-is needed. Some code comments and test docstrings still say "this template";
-that wording is internal and harmless.
+The bash-hook-and-agent-on-error design (this file, `docs/architecture.md`,
+`docs/platforms.md`) is **implemented** as of nvsh 0.9.2, not just
+converged. The hook installer (`nvsh setup`/`nvsh uninstall`, `nvsh on`/`off`,
+`nvsh/rcfile.py`, `nvsh/shell/hook.bash`, `nvsh/shell/readline.bash`), the
+trigger table (`nvsh/triggers.py`), redaction (`nvsh/redact.py`), platform
+detection (`nvsh/platform/`), output capture (`nvsh/capture.py`), the
+pluggable `NvshAgent` backends (`nvsh/agent/`: `base`, `fake`, `pi`,
+`openai_compat`, `claude`, `codex`, `qwen`, `registry`, `loop`, `audit`, and
+the Pi extension at `nvsh/agent/pi_ext/approval.ts`), the per-user session
+daemon (`nvsh/daemon.py`), the failure client and panel (`nvsh/client.py`,
+`nvsh/panel.py`), slash-command routing (`nvsh/slash.py`; `nvsh slash`,
+`nvsh complete`), the approval store (`nvsh/approvals.py`, `nvsh approve`)
+and the helper-tool installers (`nvsh/installers.py`) are all on disk,
+alongside the original agent-first verbs (`whoami`, `learn`, `explain`,
+`overview`, `doctor`, `cli overview`). `doctor` now also runs the extended
+rubric in `nvsh/doctor_checks.py`: platform detection, agent
+configured/reachable, and, from a hooked shell, hook sourced/first-in-
+`PROMPT_COMMAND`, bindings, capture and daemon status. Before describing any
+of this as implemented in a future change, confirm the file still exists
+and the verb still runs (`uv run --frozen nvsh --help`,
+`uv run --frozen nvsh doctor --json`) rather than assuming this paragraph
+stays accurate forever.
+
+What is still genuinely open, so don't describe it as implemented: the
+default-login-shell (`chsh`) mode stays parked, not built — see
+`docs/architecture.md`'s "Parked: login-shell mode"; an auto-apply mode
+that runs an agent-suggested fix without operator confirmation is out of
+scope for v1 (nvsh always proposes, the operator always approves); and
+machine-level undo beyond the current approve/execute/verify loop (rolling
+back changes a *fix* made to the machine, not just retrying the original
+command) is tracked separately as issue #7, not this branch. The package,
+CLI, import and PyPI names are all already `nvsh`, so no rename is needed.
+Some code comments and test docstrings still say "this template"; that
+wording is internal and harmless.
 
 ## Commands
 

@@ -36,11 +36,17 @@ afi-cli scaffolder this CLI is cited from).
 
 ## Current state
 
-This is still the scaffold. No shell features exist yet, and only the
-agent-first verbs are implemented (see "The CLI"). If you describe shell
-behavior below as though it exists, mark it `(planned)`.
+The hook is implemented, not just designed: `nvsh setup`/`nvsh uninstall`/
+`nvsh on`/`nvsh off`, the trigger table, redaction, platform detection, the
+pluggable agent backends, the session daemon, the failure panel, slash
+commands and the approval store are all on disk alongside the original
+agent-first verbs (see "The CLI"). Still `(planned)`: the login-shell
+(`chsh`) mode (parked), an auto-apply mode that runs a fix without
+confirmation (out of scope for v1), and machine-level undo beyond the
+approve/execute/verify loop (issue #7). If you describe any of those three
+as though they exist, mark it `(planned)`.
 
-## Design constraints (planned work)
+## Design constraints (implemented)
 
 `CLAUDE.md` and `docs/architecture.md` have the full write-up. The essentials:
 
@@ -107,9 +113,15 @@ dependency only. The agent-first verbs:
 - `nvsh learn` prints a structured self-teaching prompt.
 - `nvsh explain <path>` prints markdown docs for any noun/verb.
 - `nvsh overview` gives a descriptive snapshot of the agent.
-- `nvsh doctor` runs health checks (today the agent-identity invariants;
-  planned: platform detection and agent-backend reachability).
+- `nvsh doctor` runs health checks: agent-identity invariants, platform
+  detection, agent-backend configured/reachable, and (from a hooked shell)
+  hook/bindings/capture/daemon status.
 - `nvsh cli overview` describes the CLI surface itself.
+- `nvsh setup` / `nvsh uninstall` install and remove the bash hook.
+  `nvsh on` / `nvsh off` toggle it in the current shell. `nvsh agent`,
+  `nvsh approve`, `nvsh capture`, `nvsh context`, `nvsh daemon`, `nvsh slash`
+  and `nvsh complete` are the shell/agent-loop verbs — see `nvsh <verb>
+  --help` or `nvsh explain <verb>`.
 
 Conventions:
 

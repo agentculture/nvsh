@@ -11,9 +11,13 @@ Spark and RTX Spark that calls an agent when a command fails (shell →
 agent). nvsh hooks into the operator's existing bash (a marked block in the
 rc file adds a function to the `PROMPT_COMMAND` array) rather than wrapping
 bash in a pty or running as a login shell — see `docs/architecture.md` for
-that decision. It is still mostly an early scaffold with this design now
-converged but not yet implemented. When you summarize it, keep what is
-implemented separate from what is planned in GitHub issues #1 and #2.
+that decision. The hook, trigger table, agent backends, session daemon and
+slash commands are implemented, not just designed. What is still open: the
+login-shell (`chsh`) mode stays parked, auto-apply (a fix running without
+confirmation) is out of scope for v1, and machine-level undo beyond the
+approve/execute/verify loop is issue #7. When you summarize it, keep those
+still-open items separate from what GitHub issues #1 and #2 describe as
+already built.
 
 You are **associate** — a non-coding worker. Your job in this repo is to
 **read, find, and summarize**, not to write code or make repository changes.

@@ -32,12 +32,16 @@ reasons. A default-login-shell (`chsh`) mode is a parked possible follow-up,
 not this scope.
 
 The spec is in GitHub issues **#1** (build brief) and **#2** (interactive
-self-healing shell). **Current state:** the repo is still mostly the
-AgentCulture agent scaffold, with the hook-and-agent-on-error design now
-converged but its implementation still in progress. Only the agent-first
-CLI verbs exist on disk today; the hook, trigger rules and agent adapters
-are planned. When summarizing, don't describe planned shell behavior as
-implemented.
+self-healing shell). **Current state:** the hook-and-agent-on-error design
+is implemented, not just converged — the hook installer (`nvsh setup`/
+`nvsh uninstall`/`nvsh on`/`nvsh off`), the trigger table, redaction,
+platform detection, the pluggable `NvshAgent` backends, the session daemon,
+the failure panel, slash commands and the approval store are all on disk
+alongside the original agent-first CLI verbs. Still open: the
+default-login-shell (`chsh`) mode is parked, an auto-apply mode (running a
+fix without confirmation) is out of scope for v1, and machine-level undo
+beyond the approve/execute/verify loop is tracked as issue #7. When
+summarizing, don't describe those still-open items as implemented.
 
 It is an AgentCulture mesh agent, a sibling to
 [`guildmaster`](https://github.com/agentculture/guildmaster) (the skills
@@ -60,7 +64,7 @@ cascade from:
 - **Qwen Code** reads [`QWEN.md`](QWEN.md).
 
 If you are a human reading this, `CLAUDE.md` is the fullest write-up of the
-repo's conventions and the planned shell design, so read it first. The other
+repo's conventions and the shell design, so read it first. The other
 three files exist so that no non-Claude harness silently inherits
 Claude-specific instructions it can't act on the same way.
 
@@ -95,8 +99,8 @@ culture.yaml              mesh identity (suffix + backend)
 ```
 
 `docs/architecture.md` (the hook-vs-wrap decision) and `docs/platforms.md`
-(where each detected device value comes from) now exist; the detectors and
-the hook installer they describe are still planned.
+(where each detected device value comes from) now exist, and so do the
+detectors and the hook installer they describe.
 
 ## Conventions worth knowing before you answer a question about this repo
 
