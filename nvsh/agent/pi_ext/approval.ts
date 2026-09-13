@@ -8,10 +8,12 @@
 // Wire shape: pi's own `ctx.ui.select()` only emits
 // {type, id, method, title, options, timeout} over the rpc extension_ui
 // sub-protocol -- there is no room for a custom "command" field. So the
-// command line rides inside `title`, on its own line prefixed
-// "command: ", and PiAgent._map_event's fallback chain
-// (command -> message -> title) picks it up from `title` since `message`
-// is absent for `select`. See docs/pi-rpc.md.
+// payload rides inside `title` as one machine-readable JSON envelope,
+// {"nvsh":"approval","v":1,"tool":"bash","command":<raw>,"reason":<text>},
+// and PiAgent._map_event parses it back out. The envelope never contains
+// human prompt text: nvsh renders the panel itself, and a title built as
+// prose would come back as Proposal.command and be run verbatim
+// (deviation d8). See docs/pi-rpc.md.
 
 import { spawnSync } from "node:child_process";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -51,7 +53,20 @@ export default function (pi: ExtensionAPI) {
       return;
     }
 
-    const choice = await ctx.ui.select(`nvsh: run this command?\ncommand: ${command}`, [
+    // The model's stated reason, when the tool schema carries one. pi
+    // 0.84.2's bash tool takes only {command, timeout}, so this is usually
+    // "" -- it is read defensively so a future schema needs no change here.
+    const reason = String(
+      (event.input && (event.input.reason || event.input.description)) || "",
+    );
+    const payload = JSON.stringify({
+      nvsh: "approval",
+      v: 1,
+      tool: "bash",
+      command,
+      reason,
+    });
+    const choice = await ctx.ui.select(payload, [
       "once",
       "session",
       "user",

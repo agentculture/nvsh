@@ -328,6 +328,113 @@ def test_reader_tolerates_u2028_inside_json_string(tmp_path):
     assert deltas[0].text == text_with_separator
 
 
+# -- d8: Proposal.command is the bare tool-call command --------------------
+#
+# Verification on spark with the real pi 0.84.2 + associate model showed
+# every approval proposal carrying the *rendered panel text* as its command
+# ("nvsh: run this command?\ncommand: type ls"): the approval extension
+# folded the human prompt into ctx.ui.select()'s title, the only string
+# field pi's `select` request carries, and _map_event's old fallback chain
+# (command -> message -> title) then read that whole title as the command.
+# The scripts below replay the recorded shapes (docs/pi-rpc.md plus the
+# audit log from that run) through the scripted fake pi.
+
+#: What the pre-fix extension put in `title` -- never a command.
+PANEL_TEXT = "nvsh: run this command?\ncommand: type ls"
+
+
+def _proposals_from_script(tmp_path: Path, script: list[dict]):
+    agent = PiAgent(pi_path="pi_scripted", env=_env(tmp_path))
+    agent._env["NVSH_TEST_PI_SCRIPT"] = json.dumps(script)
+    agent.start()
+    try:
+        events = list(agent.run(_request(), _context()))
+    finally:
+        agent.close()
+    return [e for e in events if e.kind == EventKind.PROPOSAL]
+
+
+def _approval_request(command: str, reason: str = "", request_id: str = "ui-7") -> dict:
+    """One `extension_ui_request` exactly as the fixed approval.ts produces."""
+    title = json.dumps(
+        {"nvsh": "approval", "v": 1, "tool": "bash", "command": command, "reason": reason}
+    )
+    return {
+        "type": "extension_ui_request",
+        "id": request_id,
+        "method": "select",
+        "title": title,
+        "options": ["once", "session", "user", "deny"],
+    }
+
+
+def test_approval_request_yields_the_bare_command(tmp_path):
+    script = [
+        {"type": "turn_start"},
+        {
+            "type": "message_update",
+            "assistantMessageEvent": {
+                "type": "text_delta",
+                "delta": "`ls` is not missing -- let me check how the shell resolves it.",
+            },
+        },
+        _approval_request("type ls", reason="check how the shell resolves ls"),
+        {"type": "agent_end"},
+    ]
+    proposals = _proposals_from_script(tmp_path, script)
+    assert len(proposals) == 1
+    proposal = proposals[0].proposal
+    assert proposal is not None
+    assert proposal.command == "type ls"
+    assert "nvsh: run this command?" not in proposal.command
+    assert proposal.rationale == "check how the shell resolves ls"
+    assert proposals[0].args.get("request_id") == "ui-7"
+
+
+def test_approval_request_preserves_a_multiline_command_verbatim(tmp_path):
+    command = 'python3 -c "import torch\nprint(torch.cuda.is_available())"'
+    proposals = _proposals_from_script(
+        tmp_path, [_approval_request(command), {"type": "agent_end"}]
+    )
+    assert proposals[0].proposal.command == command
+
+
+def test_panel_text_in_title_never_becomes_the_command(tmp_path):
+    """The pre-fix wire shape (d8) must not produce a runnable command."""
+    script = [
+        {
+            "type": "extension_ui_request",
+            "id": "ui-1",
+            "method": "select",
+            "title": PANEL_TEXT,
+            "options": ["once", "session", "user", "deny"],
+        },
+        {"type": "agent_end"},
+    ]
+    proposals = _proposals_from_script(tmp_path, script)
+    proposal = proposals[0].proposal
+    assert proposal.command == ""
+    assert "nvsh: run this command?" not in proposal.command
+    assert PANEL_TEXT in proposal.rationale
+
+
+def test_explicit_command_field_still_wins(tmp_path):
+    """A dialog that does carry a structured `command` field is unchanged."""
+    script = [
+        {
+            "type": "extension_ui_request",
+            "id": "ui-2",
+            "method": "confirm",
+            "title": "Apply fix?",
+            "command": "sudo nvidia-smi -pm 1",
+            "message": "Run: sudo nvidia-smi -pm 1",
+        },
+        {"type": "agent_end"},
+    ]
+    proposals = _proposals_from_script(tmp_path, script)
+    assert proposals[0].proposal.command == "sudo nvidia-smi -pm 1"
+
+
 @pytest.mark.skipif(
     not (os.environ.get("NVSH_LIVE_PI") == "1"),
     reason="set NVSH_LIVE_PI=1 and have the real pi binary on PATH to run this",

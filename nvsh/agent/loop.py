@@ -40,9 +40,9 @@ def run_loop(
     For every event: it is first handed to ``on_event`` (the caller's
     rendering hook). A ``PROPOSAL`` event is then always logged, always
     passed to ``approve``, and its decision is always logged; only when
-    ``approve`` returns ``True`` is ``proposal.command`` passed to
-    ``executor`` -- never anything else, never through an environment
-    variable -- and the outcome is logged.
+    ``approve`` returns ``True`` *and* ``proposal.command`` is non-blank is
+    that command passed to ``executor`` -- never anything else, never
+    through an environment variable -- and the outcome is logged.
     """
     results: list[ExecResult] = []
     agent.start()
@@ -56,6 +56,12 @@ def run_loop(
             decision = approve(proposal)
             audit.record(event="decision", proposal=proposal, decision=decision)
             if not decision:
+                continue
+            if not proposal.command.strip():
+                # Nothing to run. A dialog that carries no command maps to an
+                # empty ``Proposal.command`` -- never to its prompt text, see
+                # deviation d8 and ``PiAgent._proposal_fields`` -- so approving
+                # one executes nothing at all.
                 continue
             outcome = executor(proposal.command)
             results.append(outcome)

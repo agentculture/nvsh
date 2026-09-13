@@ -52,11 +52,9 @@ Events have no `id` (except `bash_execution_update`, unused here). The ones
 - `tool_execution_end` with `"toolName"`, `"result"` → `EventKind.TOOL_RESULT`.
 - `extension_ui_request` with `"id"`, `"method"` (`select`/`confirm`/`input`/
   `editor` block for a response; `notify`/`setStatus`/`setWidget`/`setTitle`/
-  `set_editor_text` are fire-and-forget) → `EventKind.PROPOSAL`. The
-  approval extension (`nvsh/agent/pi_ext/approval.ts`, written by task t11)
-  is expected to carry the proposed command in a `"command"` field on the
-  request; `PiAgent` falls back to `"message"` then `"title"` if that field
-  is absent, since the exact shape isn't fixed until t11 lands.
+  `set_editor_text` are fire-and-forget) → `EventKind.PROPOSAL`. See
+  [the approval envelope](#the-approval-envelope) for how the proposed
+  command reaches `Proposal.command`.
 - `agent_end` → `EventKind.DONE`. (`agent_settled` — the point after which
   no further automatic retry/compaction/queued continuation will run — is
   not currently consumed; `agent_end` is the simpler, earlier signal the
@@ -66,6 +64,42 @@ Events have no `id` (except `bash_execution_update`, unused here). The ones
   `compaction_start`/`compaction_end`, `auto_retry_*`, `extension_error`,
   etc. — → `EventKind.STATUS` with `text` set to the raw `"type"` value, so
   nothing is silently dropped.
+
+## The approval envelope
+
+`pi`'s `select` request carries only `{type, id, method, title, options,
+timeout}` — there is no room for a custom `"command"` field. So the approval
+extension (`nvsh/agent/pi_ext/approval.ts`) passes one machine-readable JSON
+envelope as the `title`:
+
+```json
+{
+  "type": "extension_ui_request",
+  "id": "uuid-1",
+  "method": "select",
+  "title": "{\"nvsh\":\"approval\",\"v\":1,\"tool\":\"bash\",\"command\":\"type ls\",\"reason\":\"\"}",
+  "options": ["once", "session", "user", "deny"]
+}
+```
+
+`command` is the bash tool call's `command` argument **verbatim** — no
+prompt text, no prefix, newlines and quoting preserved by JSON — and
+`reason` is the model's stated reason when the tool schema carries one
+(pi 0.84.2's bash tool takes only `{command, timeout}`, so it is usually
+`""`). `PiAgent._proposal_fields` decodes the envelope into
+`Proposal.command` / `Proposal.rationale`; nvsh renders its own panel around
+that command.
+
+The envelope must never contain human-facing prose. It used to: the
+extension built the title as `"nvsh: run this command?\ncommand: <cmd>"` and
+`PiAgent` fell back to reading the whole `title` as the command, so the
+rendered panel text became `Proposal.command` — pressing Enter would have
+run that string, and the panel rendered visibly nested (deviation d8).
+`PiAgent` therefore only ever takes a command from a field that holds a
+command: the envelope's `command`, or a structured top-level `"command"`
+field. A dialog carrying neither yields an empty `Proposal.command`
+(its `title`/`message` becomes the rationale), and `run_loop` executes
+nothing for a blank command even if the operator approves it.
 
 ## Extension UI sub-protocol
 
