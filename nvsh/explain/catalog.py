@@ -296,6 +296,106 @@ runs anything on its own.
     nvsh agent install pi --yes
 """
 
+_DAEMON = """\
+# nvsh daemon
+
+The per-user **session daemon** (`nvsh.daemon`). It owns the warm agent
+processes and one conversation per shell, and listens on
+`$XDG_RUNTIME_DIR/nvsh/daemon.sock` (directory `0700`, socket `0600`).
+
+It is started **lazily** by the hook client on the first qualifying failure —
+never at shell start — and it stops when the last shell unregisters (bash's
+`EXIT` trap) or after an idle timeout. A stale socket left by a crashed
+daemon is reaped at the next start. If the daemon or the backend is missing,
+the client falls back to a one-shot adapter run, so a failure is never left
+without a diagnosis.
+
+Each shell (keyed by bash's `$$`) owns its own conversation. With
+`sessions.max = 1` (the default) one agent process serves every shell: the
+active conversation is put to sleep (`switch_session` / `new_session`) and
+the caller's is resumed, so contexts from different terminals never mix.
+Raising `sessions.max` allows that many concurrent agent processes.
+
+The daemon never writes to a terminal; it logs to
+`$XDG_STATE_HOME/nvsh/daemon.log` (`0600`).
+
+## Usage
+
+    nvsh daemon status --json
+    nvsh daemon run --foreground
+    nvsh daemon stop
+    nvsh daemon unregister --shell $$
+
+## See also
+
+- `nvsh explain agent`
+- `docs/daemon.md` — the wire protocol
+"""
+
+_DAEMON_RUN = """\
+# nvsh daemon run
+
+Serves the session daemon. With `--foreground` it serves in this process
+(what the tests and `systemd`-style supervision use); without it, the daemon
+is spawned detached and the pid is reported. `--idle-timeout <seconds>` sets
+how long the daemon may sit idle before it closes its agents and exits.
+
+Refuses to start when another daemon is already listening on the socket
+(exit code 2); a socket left behind by a crashed daemon is reaped instead.
+
+## Usage
+
+    nvsh daemon run --foreground
+    nvsh daemon run --idle-timeout 300 --json
+"""
+
+_DAEMON_STATUS = """\
+# nvsh daemon status
+
+Reports `{running, pid, socket, shells, agents, conversations, backend,
+backend_reason, fallback_notice, idle_timeout}`. When no daemon is
+listening it reports `{"running": false, "socket": "..."}` and still exits
+`0` — "not running" is a state, not an error.
+
+`backend` is what the daemon actually chose (`nvsh.agent.registry.choose`);
+`fallback_notice` is set when that is not the configured provider, e.g.
+`pi unavailable: pi not on PATH and node missing`.
+
+## Usage
+
+    nvsh daemon status
+    nvsh daemon status --json
+"""
+
+_DAEMON_STOP = """\
+# nvsh daemon stop
+
+Asks a running daemon to close its agent processes, unlink its socket and
+exit. Idempotent: with no daemon running it reports `{"stopped": false}` and
+exits `0`.
+
+## Usage
+
+    nvsh daemon stop
+    nvsh daemon stop --json
+"""
+
+_DAEMON_UNREGISTER = """\
+# nvsh daemon unregister --shell <pid>
+
+Tells the daemon that a shell session has exited. The bash integration's
+`EXIT` trap calls this; when the **last** registered shell unregisters, the
+daemon closes its agents and stops, so closing the last terminal leaves no
+nvsh or agent process behind.
+
+Never starts a daemon: with none running it is a no-op that exits `0`.
+
+## Usage
+
+    nvsh daemon unregister --shell $$
+    nvsh daemon unregister --shell 12345 --json
+"""
+
 
 ENTRIES: dict[tuple[str, ...], str] = {
     (): _ROOT,
@@ -318,4 +418,9 @@ ENTRIES: dict[tuple[str, ...], str] = {
     ("agent", "list"): _AGENT_LIST,
     ("agent", "use"): _AGENT_USE,
     ("agent", "install"): _AGENT_INSTALL,
+    ("daemon",): _DAEMON,
+    ("daemon", "run"): _DAEMON_RUN,
+    ("daemon", "status"): _DAEMON_STATUS,
+    ("daemon", "stop"): _DAEMON_STOP,
+    ("daemon", "unregister"): _DAEMON_UNREGISTER,
 }

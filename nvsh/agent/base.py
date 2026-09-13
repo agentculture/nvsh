@@ -10,7 +10,7 @@ from __future__ import annotations
 import abc
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Iterator
+from typing import Iterator, Mapping
 
 
 class RequestKind(str, Enum):
@@ -95,6 +95,73 @@ class AgentEvent:
     result: object = None
     proposal: Proposal | None = None
     error: str = ""
+
+
+def event_to_dict(event: AgentEvent) -> dict:
+    """Encode an :class:`AgentEvent` as a JSON-serializable dict.
+
+    Default-valued fields are omitted so one line on the daemon socket
+    (``nvsh.daemon``) stays small; :func:`event_from_dict` restores them.
+    """
+    data: dict[str, object] = {"kind": event.kind.value}
+    if event.text:
+        data["text"] = event.text
+    if event.tool:
+        data["tool"] = event.tool
+    if event.args:
+        data["args"] = dict(event.args)
+    if event.result is not None:
+        data["result"] = event.result
+    if event.proposal is not None:
+        data["proposal"] = {
+            "command": event.proposal.command,
+            "rationale": event.proposal.rationale,
+            "kind": event.proposal.kind.value,
+        }
+    if event.error:
+        data["error"] = event.error
+    return data
+
+
+def event_from_dict(data: Mapping[str, object]) -> AgentEvent:
+    """Decode what :func:`event_to_dict` produced.
+
+    Deliberately lenient about ``kind``: a kind this version does not know
+    (a newer daemon talking to an older client) degrades to
+    :attr:`EventKind.STATUS` rather than raising, so an unknown event is
+    surfaced as noise instead of breaking the stream.
+    """
+    raw_kind = str(data.get("kind", EventKind.STATUS.value))
+    try:
+        kind = EventKind(raw_kind)
+        text = str(data.get("text", ""))
+    except ValueError:
+        kind = EventKind.STATUS
+        text = str(data.get("text", "") or raw_kind)
+
+    raw_proposal = data.get("proposal")
+    proposal = None
+    if isinstance(raw_proposal, Mapping):
+        try:
+            proposal_kind = ProposalKind(str(raw_proposal.get("kind", ProposalKind.FIX.value)))
+        except ValueError:
+            proposal_kind = ProposalKind.FIX
+        proposal = Proposal(
+            command=str(raw_proposal.get("command", "")),
+            rationale=str(raw_proposal.get("rationale", "")),
+            kind=proposal_kind,
+        )
+
+    raw_args = data.get("args")
+    return AgentEvent(
+        kind=kind,
+        text=text,
+        tool=str(data.get("tool", "")),
+        args=dict(raw_args) if isinstance(raw_args, Mapping) else {},
+        result=data.get("result"),
+        proposal=proposal,
+        error=str(data.get("error", "")),
+    )
 
 
 @dataclass(frozen=True)
