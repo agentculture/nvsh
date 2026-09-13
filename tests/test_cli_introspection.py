@@ -92,15 +92,24 @@ def test_doctor_json_shape(capsys: pytest.CaptureFixture[str]) -> None:
 
 
 def test_doctor_recognizes_declared_backend(capsys: pytest.CaptureFixture[str]) -> None:
-    """The repo's own declared backend must be a known one — doctor stays healthy.
+    """The repo's own declared backend must be a known one — its checks stay healthy.
 
     Guards the backend-consistency invariant: a promotion that changes
     ``culture.yaml``'s backend without teaching ``doctor`` the matching prompt
     file would otherwise slip through (the shape tests above tolerate rc==1).
+
+    Scoped to the resident-prompt checks specifically (``prompt_file_present``,
+    ``skills_present``) rather than the overall ``rc``/``healthy``: task t17's
+    ``agent_reachable``/``platform_detected`` checks reflect this machine's
+    real network and backend config (this repo has no fixture agent
+    endpoint), which is not what this test guards. Those checks have their
+    own coverage in tests/test_doctor_checks.py.
     """
     rc = main(["doctor", "--json"])
     payload = json.loads(capsys.readouterr().out)
     messages = " ".join(str(c["message"]) for c in payload["checks"])
     assert "unknown backend" not in messages
-    assert rc == 0
-    assert payload["healthy"] is True
+    assert rc in (0, 1)
+    checks_by_id = {c["id"]: c for c in payload["checks"]}
+    assert checks_by_id["prompt_file_present"]["passed"] is True
+    assert checks_by_id["skills_present"]["passed"] is True

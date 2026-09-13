@@ -1,0 +1,52 @@
+# Redaction corpus (fixtures/redact_corpus.txt)
+#
+# Deliberately fake secret-shaped strings used to exercise nvsh.redact.
+# None of these are real credentials; they follow the public shape of each
+# token type (see docs/platforms.md redaction notes) so the redactor and
+# scripts/scan-secrets.py both treat them consistently. Do NOT replace these
+# with anything that could resemble a real, live secret.
+
+# --- env-style assignments -------------------------------------------------
+HF_TOKEN=hf_EXAMPLE00000000000000000000000000
+OPENAI_API_KEY=sk-EXAMPLE0000000000000000000000000000000000
+MY_SECRET_KEY=abcdEXAMPLEsecretvalue0000000000
+DB_PASSWORD=hunter2EXAMPLEpassword000
+export AWS_ACCESS_KEY_ID=AKIAEXAMPLE00000000
+
+# --- .env-style KEY=value ---------------------------------------------------
+GITHUB_TOKEN=ghp_EXAMPLE0000000000000000000000000000
+STRIPE_API_KEY=sk_test_EXAMPLE00000000000000000000
+
+# --- CLI flags ---------------------------------------------------------------
+curl --api-key sk-EXAMPLE0000000000000000000000000000 https://api.example.com
+curl --api-key=sk-EXAMPLE0000000000000000000000000001 https://api.example.com
+tool --token ghp_EXAMPLE0000000000000000000000000001
+
+# --- Authorization headers ---------------------------------------------------
+Authorization: Bearer sk-EXAMPLE0000000000000000000000000002
+Authorization: Basic ZXhhbXBsZTpwYXNzd29yZC1FWEFNUExFLTAwMDA=
+
+# --- ssh private key block ---------------------------------------------------
+-----BEGIN OPENSSH PRIVATE KEY-----
+b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW
+QyNTUxOQAAACBFWEFNUExFRVhBTVBMRUVYQU1QTEVFWEFNUExFRVhBTVBMRQAAAKBEXAMP
+LEEXAMPLEEXAMPLEEXAMPLEEXAMPLEEXAMPLEEXAMPLEEXAMPLEEXAMPLEEXAMPLE0000A
+-----END OPENSSH PRIVATE KEY-----
+
+# --- JSON apiKey fields -------------------------------------------------------
+{"apiKey": "sk-EXAMPLE0000000000000000000000000003"}
+{"api_key": "sk-EXAMPLE0000000000000000000000000004"}
+{"token": "ghp_EXAMPLE0000000000000000000000000002"}
+{"secret": "EXAMPLEsecretvalue00000000000000"}
+{"password": "hunter2EXAMPLEpassword001"}
+
+# --- URLs with embedded credentials ------------------------------------------
+https://admin:hunter2EXAMPLEpw@internal.example.com/api
+postgres://dbuser:s3cr3tEXAMPLEpw000@db.example.com:5432/app
+
+# --- common token shapes -------------------------------------------------------
+hf_EXAMPLE00000000000000000000000000
+sk-EXAMPLE0000000000000000000000000000000000
+ghp_EXAMPLE0000000000000000000000000000
+AKIAEXAMPLE00000000
+xoxb-EXAMPLE0000000000-EXAMPLE0000000000-EXAMPLE00000000000000000000

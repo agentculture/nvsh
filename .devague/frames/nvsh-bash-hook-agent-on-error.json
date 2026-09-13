@@ -1,0 +1,2143 @@
+{
+  "slug": "nvsh-bash-hook-agent-on-error",
+  "title": "nvsh bash hook + agent on error",
+  "schema_version": 6,
+  "status": "exported",
+  "created": "2026-09-13T10:08:02Z",
+  "updated": "2026-09-13T19:20:12Z",
+  "claims": [
+    {
+      "id": "c1",
+      "kind": "announcement",
+      "text": "nvsh elevates your existing bash into a self-healing NVIDIA shell: install one sourced hook, keep bash exactly as it is, and when a command fails an NVIDIA-opinionated agent (Pi.dev driving the local associate model by default) appears inline with a diagnosis and a proposed fix you approve, retry and verify; /ask, /fix, /doctor and Ctrl+G reach the same agent on demand, and successful commands never pay a millisecond for it.",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h1",
+          "text": "On spark, thor and orin, 'nvsh setup' then a normal session shows no visible change on successful commands, and 'ls /nope' produces the inline panel with the real 'No such file or directory' text in its context (--show-context).",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "Verify end to end on the Spark in Ghostty and on orin over ssh, orin both with and without tmux: 'nvsh setup', a successful command shows nothing new, 'ls /nope' shows the panel with the real error slice, /doctor and Ctrl+G reach the agent, 'nvsh uninstall' restores the shell.",
+      "revisions": []
+    },
+    {
+      "id": "c2",
+      "kind": "decision",
+      "text": "Architecture: nvsh HOOKS into the operator's existing bash instead of wrapping it. 'nvsh install bash' appends one 'source ~/.local/share/nvsh/bash.sh' line to ~/.bashrc, the sourced file appends to the PROMPT_COMMAND array (bash>=5.1; this Spark runs 5.2.21, verified) without clobbering an existing PROMPT_COMMAND, and 'nvsh uninstall' removes it. This flips CLAUDE.md:111-120 and QWEN.md:43-45, which currently record a PTY-wrapper-as-login-shell decision.",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c3",
+      "kind": "requirement",
+      "text": "Zero cost on the success path: the sourced bash hook is a pure-bash function that reads $? and PIPESTATUS, applies the cheap trigger pre-filter (0, 130, 141, empty line, leading-space/ignored history) in bash, and only execs the Python entrypoint when a failure qualifies. Measured on this Spark: the uv-tool entrypoint costs ~45 ms (associate --help 0.051 s, nvsh --help 0.043 s), which is too much to pay on every prompt but fine on a failure.",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h2",
+          "text": "Sourcing the hook and running 1000 successful commands in 'bash --norc -i' forks no nvsh process (strace -f -e execve count of nvsh == 0) and adds < 5 ms median to prompt latency.",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c4",
+      "kind": "requirement",
+      "text": "Trigger rules are a table-tested pure-Python module (nvsh/triggers.py) consulted by the entrypoint before any agent call: 130, 141, grep/diff exit 1, false, test/[ ], commands run inside scripts, pipelines without pipefail (PIPESTATUS is passed in by the hook), interactive/long-running programs, plus a rate limit. Pattern triggers for exit-0 failures are opt-in.",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h3",
+          "text": "tests/test_triggers.py is table-driven over (command, exit, PIPESTATUS, interactive-program flag, rate state) and covers every rule in CLAUDE.md's trigger list; all non-error rows produce 'no call'.",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c5",
+      "kind": "requirement",
+      "text": "Slash commands (/ask /fix /explain /retry /doctor /context /agent /help) are routed inside the same bash session by binding Enter (C-m) to a readline macro that first runs a bind -x function then accept-line (C-j). The function inspects READLINE_LINE: a line whose first word is a registered slash command is rewritten to a hidden `nvsh slash <line>` call prefixed with one space (so HISTCONTROL ignorespace keeps it out of history) and the original line is pushed with 'history -s'. Unregistered '/foo', absolute paths, quoted multi-line input and plain commands pass through unchanged. Verified in a throwaway bash 5.2 under script(1) on the Spark: /doctor and '/ask why is memory high?' routed, /notacmd and 'ls -d /tmp' ran as bash, a quoted two-line echo (Enter inside the quotes) continued normally. command_not_found_handle does NOT fire for '/doctor', so this rebind is required.",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h4",
+          "text": "In an interactive Ghostty session on the Spark with Ghostty's own integration loaded: /doctor routes, 'history' shows '/doctor' and not the dispatch line, '/tmp/x' runs as a path, 'echo \"a<Enter>b\"' continues, and no visible flicker or duplicated prompt appears.",
+          "status": "rejected",
+          "instruction": ""
+        },
+        {
+          "id": "h28",
+          "text": "In an interactive Ghostty session on the Spark with Ghostty's own integration loaded: /doctor routes, 'history' shows '/doctor' and not the dispatch line, '/tmp/x' runs as a path, a quoted two-line echo (Enter pressed inside the quotes) continues, and no visible flicker or duplicated prompt appears.",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [
+        {
+          "id": "q5",
+          "text": "risk: The Enter rebind (bind -x on C-m) is unverified interactively; if it cannot chain to accept-line cleanly the slash-command surface falls back to a 'nvsh ask ...' prefix or a Ctrl+G-only palette.",
+          "resolved": false,
+          "blocking": false,
+          "resolution": ""
+        },
+        {
+          "id": "q6",
+          "text": "risk: The Enter macro makes readline redraw the prompt line after the bind -x function on every command (harmless in the script log, but needs a real Ghostty check for flicker, multi-line PS1 and duplicated OSC 133 prompt markers).",
+          "resolved": false,
+          "blocking": false,
+          "resolution": ""
+        }
+      ],
+      "links": [],
+      "instruction": "",
+      "revisions": [
+        {
+          "text": "Slash commands (/ask /fix /explain /retry /doctor /context /agent /help) are routed inside the same bash session by a bind -x binding on Enter that inspects READLINE_LINE: a line starting with '/' and matching the registry is rewritten to 'nvsh <verb>' before bash sees it, and the original line is kept in history. Verified on this box that command_not_found_handle does NOT fire for '/doctor' (bash prints 'No such file or directory', exit 127), so issue #3's command-not-found fallback is not viable. The Enter-rebind chain is the highest-risk item and needs an interactive prototype before the design is final.",
+          "kind": "requirement",
+          "reason": "interactive prototype replaced the unverified design"
+        },
+        {
+          "text": "Slash commands (/ask /fix /explain /retry /doctor /context /agent /help) are routed inside the same bash session by binding Enter (C-m) to a readline macro that first runs a bind -x function then accept-line (C-j). The function inspects READLINE_LINE: a line whose first word is a registered slash command is rewritten to a hidden ' nvsh slash <line>' call (leading space + HISTCONTROL ignorespace) and the original line is pushed with 'history -s'. Unregistered '/foo', absolute paths, quoted multi-line input and plain commands pass through unchanged. Verified in a throwaway bash 5.2 under script(1) on the Spark: /doctor and '/ask why is memory high?' routed, /notacmd and 'ls -d /tmp' ran as bash, 'echo \"a<Enter>b\"' continued normally. command_not_found_handle does NOT fire for '/doctor', so this rebind is required.",
+          "kind": "requirement",
+          "reason": "lint: backtick angle-bracket tokens (MD033)"
+        },
+        {
+          "text": "Slash commands (/ask /fix /explain /retry /doctor /context /agent /help) are routed inside the same bash session by binding Enter (C-m) to a readline macro that first runs a bind -x function then accept-line (C-j). The function inspects READLINE_LINE: a line whose first word is a registered slash command is rewritten to a hidden ` nvsh slash <line>` call (leading space + HISTCONTROL ignorespace) and the original line is pushed with 'history -s'. Unregistered '/foo', absolute paths, quoted multi-line input and plain commands pass through unchanged. Verified in a throwaway bash 5.2 under script(1) on the Spark: /doctor and '/ask why is memory high?' routed, /notacmd and 'ls -d /tmp' ran as bash, a quoted two-line echo (Enter inside the quotes) continued normally. command_not_found_handle does NOT fire for '/doctor', so this rebind is required.",
+          "kind": "requirement",
+          "reason": "lint MD038: no leading space inside the code span"
+        }
+      ]
+    },
+    {
+      "id": "c6",
+      "kind": "requirement",
+      "text": "Completion: 'complete -I -F' (bash >= 5 initial-word completion) supplies the '/'+Tab palette: for a first word starting with '/' and containing no second '/', it merges registered slash commands with compgen -f path matches, so '/'+Tab lists /ask /doctor ... next to /etc /tmp, '/do'+Tab completes to /doctor, '/tm'+Tab still completes /tmp/, and every other word falls through via compopt -o bashdefault -o default ('ec'+Tab still lists echo). `complete -F <fn> /doctor` supplies per-command argument completion ('/doctor '+Tab lists gpu docker cuda memory services). Verified on the Spark in a throwaway bash 5.2 with bash-completion 2.11 loaded. fzf and ble.sh stay optional.",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h5",
+          "text": "'/'+Tab, '/do'+Tab, '/doctor '+Tab, '/tm'+Tab and 'ec'+Tab behave as in scope entry s18 in a real Ghostty session and over ssh to orin (no bash-completion assumptions beyond the stock package).",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": [
+        {
+          "text": "Completion: '/doctor <Tab>' argument completion uses 'complete -F nvsh_complete /doctor' (bash accepts a slash-prefixed command word, verified). The '/'+Tab palette needs a Tab keybinding that only diverts when READLINE_LINE starts with '/' and otherwise falls through to normal completion; bash-completion 2.11 is installed and sourced, fzf and ble.sh are not, so the dependency-free level-1 listing is the baseline and fzf is optional (issue #5).",
+          "kind": "requirement",
+          "reason": "interactive prototype replaced the unverified design"
+        },
+        {
+          "text": "Completion: 'complete -I -F' (bash >= 5 initial-word completion) supplies the '/'+Tab palette: for a first word starting with '/' and containing no second '/', it merges registered slash commands with compgen -f path matches, so '/'+Tab lists /ask /doctor ... next to /etc /tmp, '/do'+Tab completes to /doctor, '/tm'+Tab still completes /tmp/, and every other word falls through via compopt -o bashdefault -o default ('ec'+Tab still lists echo). 'complete -F <fn> /doctor' supplies per-command argument completion ('/doctor '+Tab lists gpu docker cuda memory services). Verified on the Spark in a throwaway bash 5.2 with bash-completion 2.11 loaded. fzf and ble.sh stay optional.",
+          "kind": "requirement",
+          "reason": "lint: backtick angle-bracket tokens (MD033)"
+        }
+      ]
+    },
+    {
+      "id": "c7",
+      "kind": "requirement",
+      "text": "Agent boundary: nvsh/agent/ defines a small NvshAgent contract (request kinds failure|slash|explicit, streamed events text-delta|tool-call|proposal|status|done|error, cancel, capabilities) with a FakeAgent for tests and PiAgent as the default. PiAgent spawns 'pi --mode rpc' (pi 0.84.2 installed, JSONL over stdio with prompt/abort/get_state/switch_session commands and message_update/tool_execution_* events, documented in the shipped docs/rpc.md) as one long-lived subprocess per shell session so a failure does not pay pi's ~0.35 s node startup each time.",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h6",
+          "text": "nvsh/agent/ imports nothing from pi; FakeAgent drives the full failure -> proposal -> approve -> retry -> verify loop in tests without pi installed; PiAgent's rpc reader splits on LF only and handles abort and a killed pi process without hanging the shell.",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c8",
+      "kind": "requirement",
+      "text": "Deterministic nvsh tools (inspect_gpu, inspect_memory, inspect_containers, inspect_services, read_logs, retry_command, verify) are implemented once in Python. To expose them to Pi as first-class tools, nvsh ships one generic TypeScript extension file loaded via `pi -e <path>` that forwards each call to `nvsh tool <name> --json`; pi has no RPC command to register tools from outside the process (verified in docs/extensions.md and docs/rpc.md). Mutating proposals surface as 'proposal' events and are confirmed by the operator in nvsh, mirroring shell-cli's operations.py apply=False default and deny-wins policy. (Per decision c25, v1 uses only pi's bash tool; the extension shim is the later migration path.)",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h7",
+          "text": "No agent-proposed command ever runs without an explicit operator keypress; the audit log records every proposal, the decision and the outcome; the fixture test asserts a 'sudo rm -rf' proposal is shown but never executed.",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [
+        {
+          "id": "q4",
+          "text": "Shipping a TypeScript pi extension inside a Python package: acceptable for v1 so nvsh tools are first-class pi tools, or should v1 give pi only a prompt plus the 'bash' RPC tool and keep all tool execution on the nvsh side?",
+          "resolved": true,
+          "blocking": false,
+          "resolution": "v1 gives pi only the prompt and its built-in bash tool (no TypeScript shim). nvsh skills and resident deterministic tools are explored first inside the associate harness (~/git/associate), then migrated into nvsh once they prove out."
+        }
+      ],
+      "links": [],
+      "instruction": "",
+      "revisions": [
+        {
+          "text": "Deterministic nvsh tools (inspect_gpu, inspect_memory, inspect_containers, inspect_services, read_logs, retry_command, verify) are implemented once in Python. To expose them to Pi as first-class tools, nvsh ships one generic TypeScript extension file loaded via 'pi -e <path>' that forwards each call to 'nvsh tool <name> --json'; pi has no RPC command to register tools from outside the process (verified in docs/extensions.md and docs/rpc.md). Mutating proposals surface as 'proposal' events and are confirmed by the operator in nvsh, mirroring shell-cli's operations.py apply=False default and deny-wins policy.",
+          "kind": "requirement",
+          "reason": "lint: backtick angle-bracket tokens (MD033); note v1 decision c25"
+        }
+      ]
+    },
+    {
+      "id": "c9",
+      "kind": "requirement",
+      "text": "Default model: nvsh's config ($XDG_CONFIG_HOME/nvsh/config.toml: [agent] provider=pi, [agents.pi] provider=nemotron model=associate) names Pi's own provider/model; the endpoint (a lobes-gateway at 192.168.1.138:8000, NOT this machine, which is 192.168.1.157) and its bearer key stay in ~/.pi/agent/models.json. nvsh never stores or forwards keys, and 'nvsh doctor' reports whether pi is on PATH and whether the configured provider answers /v1/models (both endpoints answered 'invalid_api_key' unauthenticated, so reachability is a 401-vs-timeout check).",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h8",
+          "text": "$XDG_CONFIG_HOME/nvsh/config.toml (stdlib tomllib) selects the harness and pi provider/model; grep of the nvsh package and tracked files finds no API key and no non-localhost endpoint; 'nvsh doctor' distinguishes pi-missing, endpoint-unreachable and endpoint-401 with distinct remediations.",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c10",
+      "kind": "requirement",
+      "text": "Platform detection is file-first and reports its sources: /etc/dgx-release (DGX_NAME, DGX_SWBUILD_VERSION, OTA version), /etc/nv_tegra_release (Jetson, absent here), /proc/device-tree/model, /sys/class/dmi/id/product_name (NVIDIA_DGX_Spark), /usr/local/cuda/version.json (13.0.2), /proc/driver/nvidia/version (580.126.09), /proc/meminfo. On GB10 nvidia-smi reports memory.total/used as [N/A] (verified), so the CUDA-OOM signal is MemAvailable and dmesg OOM-killer, not VRAM. When dgx-spark-cli's 'spark status --json' is installed nvsh calls it; cuDNN, TensorRT and nvpmodel are absent on this Spark and must be reported as absent, not guessed. All of this is recorded in docs/platforms.md.",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h9",
+          "text": "'nvsh context --show' on the Spark reports DGX Spark / DGX OS 7.x / CUDA 13.0.2 / driver 580.126.09 / unified memory with MemAvailable, each with its source path, and reports cuDNN, TensorRT and nvpmodel as absent rather than omitting them; docs/platforms.md lists every source with the verifying command.",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c11",
+      "kind": "requirement",
+      "text": "Context collector + redactor: bounded command line, exit code, PIPESTATUS, cwd, captured output when available, platform block; redaction of HF_TOKEN=, --api-key, Authorization:, .env-style assignments runs before anything leaves the process, with its own tests and --show-context. The operator's ~/.bashrc exports many plaintext tokens, so the collector never sources or dumps rc files.",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h10",
+          "text": "tests/test_redact.py scrubs HF_TOKEN=, --api-key, Authorization: Bearer, OPENAI_API_KEY=, .env-style KEY=value lines and ssh private-key blocks from the corpus, and asserts the redactor runs before PiAgent.run receives the context; --show-context prints exactly the bytes that would be sent.",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c12",
+      "kind": "assumption",
+      "text": "Output capture without a PTY wrapper: the hook cannot see the failed command's output. v1 captures it by re-running on demand under 'script -qec' (util-linux 2.39.3 installed) for /retry and 'nvsh run', and by 'tmux capture-pane -p' when $TMUX is set (tmux 3.4 installed). 'exec > >(tee)' is rejected because it breaks isatty and colors.",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [
+        {
+          "id": "q3",
+          "text": "Is re-running the failed command under script(1) acceptable as the default way to capture its output for diagnosis (it re-executes side effects), or should v1 only diagnose from exit code + command line unless the session is inside tmux?",
+          "resolved": true,
+          "blocking": false,
+          "resolution": "nvsh never re-runs a failed command silently. It first diagnoses from exit code, command line, PIPESTATUS and machine context; if output is needed it asks the operator before re-running under script(1), because the command may have side effects. Ghostty gives OSC 133 prompt/command markers, not a programmatic read of the scrollback, so it does not replace this rule."
+        }
+      ],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c13",
+      "kind": "requirement",
+      "text": "Packaging: pyproject's hatch wheel config lists only packages=['nvsh'] with no artifacts/force-include, so the bash integration must be either a Python string rendered by 'nvsh install bash' or an explicit include; the runtime stays dependencies=[] (stdlib subprocess/json/select). New verbs (install, uninstall, hook, run, ask, fix, explain-last, complete, tool, agent) follow the register(sub)/CliError/emit_result/--json contract and each gets a catalog entry so teken cli doctor --strict stays green.",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h11",
+          "text": "Building the wheel and installing it in a clean venv gives a working 'nvsh setup' that writes the bash integration file; 'uv run teken cli doctor . --strict' and the full lint set pass; dependencies stays [].",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c14",
+      "kind": "requirement",
+      "text": "Docs and prompts: add docs/architecture.md (hook decision and why, issue #1 milestone 1) and docs/platforms.md; update README's planned-verbs section and 'what leaves the machine'; rewrite the login-shell sections of CLAUDE.md, AGENTS.override.md, AGENTS.colleague.md, QWEN.md and .pi/SYSTEM.md so all four harness prompts describe the hook architecture; bump the version.",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h12",
+          "text": "docs/architecture.md records hook-over-wrap with the reasons and the parked login-shell mode; all four harness prompt files describe the same architecture; scripts/harness-smoke.py --stage config passes; the version is bumped.",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c15",
+      "kind": "requirement",
+      "text": "Jetson detection sources verified on real hardware over ssh (thor = AGX Thor devkit, orin = AGX Orin devkit): /etc/nv_tegra_release first line (thor 'R38 (release), REVISION: 2.2', orin 'R39 (release), REVISION: 2.0'), /proc/device-tree/model ('NVIDIA Jetson AGX Thor Developer Kit' / 'NVIDIA Jetson AGX Orin Developer Kit'), /proc/device-tree/compatible (tegra264 / tegra234), dpkg nvidia-l4t-core (orin 39.2.0) or nvidia-cuda 7.0-b128 (thor), /usr/include/aarch64-linux-gnu/cudnn_version.h, libnvinfer10 dpkg, nvidia-smi name 'NVIDIA Thor' / 'Orin (nvgpu)' with memory [N/A] like GB10, nvpmodel -q ('NV Power Mode: MAXN 0'), tegrastats one-sample RAM line, /etc/docker/daemon.json default-runtime (nvidia on thor, unset on orin). Orin has no /usr/local/cuda/version.json and no tensorrt python module, so every source must be optional and reported as absent when missing.",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h13",
+          "text": "'nvsh context --show' over ssh on thor reports L4T R38.2 / AGX Thor / CUDA 13 / cuDNN 9.12 / TensorRT 10.13 / nvpmodel MAXN, and on orin reports L4T R39.2 / AGX Orin and marks the CUDA toolkit and TensorRT as absent.",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c16",
+      "kind": "requirement",
+      "text": "Jetson runtime floor: thor and orin both run bash 5.2.21 and Python 3.12.3, have 'script' and ssh, but neither has pi, fzf or a user PROMPT_COMMAND; orin also lacks uv and tmux, and thor's uv is a snap. The bash hook and the Python entrypoint must work there with only the system Python 3.12 and no pi on PATH: doctor reports 'pi not installed' with the install remediation, and the agent degrades to a stdlib OpenAI-compatible adapter (associate's harness/pi.py:831-863 urllib pattern) pointed at a configured endpoint rather than failing.",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h14",
+          "text": "On orin with only system Python 3.12 and no pi, uv or tmux: the hook installs, a failure shows the panel with 'pi not installed' and the install/other-harness offer, and the stdlib adapter works when pointed at a configured endpoint.",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [
+        {
+          "id": "q2",
+          "text": "On the Jetsons pi is not installed. Should nvsh install pi (npm/nvm) as part of 'nvsh install', or point the Jetsons at the stdlib OpenAI-compatible adapter against the gateway on the Spark?",
+          "resolved": true,
+          "blocking": false,
+          "resolution": "When pi is missing, nvsh offers to install it, or lets the operator pick another harness: Qwen Code, Claude Code, Codex. Each is one adapter behind NvshAgent."
+        }
+      ],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c17",
+      "kind": "boundary",
+      "text": "No third-party runtime dependencies (pyproject dependencies=[] stays); pi is an external optional binary, never a Python dependency, and absence of pi, tmux, fzf, spark (dgx-spark-cli) or any NVIDIA tool degrades a feature, never breaks the shell.",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h15",
+          "text": "pyproject dependencies == [] and 'python -X importtime -c \"import nvsh.cli\"' shows only stdlib modules; removing pi, tmux, fzf and spark from PATH leaves every shell command working and only degrades nvsh features with a diagnostic.",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c18",
+      "kind": "non_goal",
+      "text": "nvsh is not built as a login shell or PTY wrapper in this scope: no chsh, no /etc/shells entry, no 'install-shell', no argv[0]='-nvsh' handling. The operator keeps /bin/bash (verified as the login shell on spark, thor and orin). This retires the 'Login-shell constraints' section of CLAUDE.md:122-152; a wrapper can be revisited later behind the same NvshAgent and tools layer.",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [
+        {
+          "id": "q1",
+          "text": "CLAUDE.md says the operator goal (default login shell via chsh) overrides conflicting issue text, and the user now says hook, don't replace. Is the login-shell goal dropped, or parked as a later phase built on top of the hook?",
+          "resolved": true,
+          "blocking": true,
+          "resolution": "Parked, not dropped: nvsh hooks into bash; a login-shell wrapper is a later phase, if ever. Supporting a wrapped bash is judged far harder than the hook."
+        }
+      ],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c19",
+      "kind": "non_goal",
+      "text": "nvsh does not re-implement or depend on jetson-cli, rtx-spark-cli or callsmith: all three are unrewritten culture-agent-template scaffolds with zero domain code (jetson-cli/CLAUDE.md:9-18; grep for nv_tegra_release/nvpmodel/guard returned nothing). Only dgx-spark-cli ('spark', spark/probe/*.py) is real and is called when installed.",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c20",
+      "kind": "boundary",
+      "text": "Untouched: culture.yaml (backend stays claude, never rewritten by code), .claude/skills (vendored verbatim from guildmaster), the .pi/skills relative symlink and the no-.pi/settings.json rule enforced by tests/test_pi_settings.py, and doctor's _PROMPT_FILE table which tests/test_harness_registries.py pins to backend-fingerprints.yaml.",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h16",
+          "text": "git diff on culture.yaml, .claude/skills, .pi/skills and doctor._PROMPT_FILE is empty across the whole change; tests/test_pi_settings.py and tests/test_harness_registries.py still pass.",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c21",
+      "kind": "boundary",
+      "text": "No endpoint or key lands in tracked JSON: scripts/scan-secrets.py fails CI on any non-localhost http URL under baseUrl/endpoint/url/host keys in JSON files, so config examples use localhost placeholders and the real provider mapping lives only in ~/.pi/agent/models.json on the machine.",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h17",
+          "text": "scripts/scan-secrets.py passes; any example config under docs/ or nvsh/ uses http://localhost placeholders only.",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c22",
+      "kind": "non_goal",
+      "text": "Deferred past this scope: known-good state (/remember-good, /diff-good, /restore-good), the OpenAI first-class adapter (issue #6 MVP step 7), zsh/fish integrations, fzf/ble.sh palettes (level 2/3 of issue #5), and pattern triggers for tools that fail with exit 0.",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c23",
+      "kind": "assumption",
+      "text": "Snappy means: a successful command adds one bash function call (no fork) before the next prompt; a qualifying failure shows the first agent text within about a second on the Spark because the pi rpc process is already warm; Ctrl+G and /ask reuse the same warm session; and everything renders in a plain 80-column SSH terminal (thor and orin are reached only over ssh) with 256-colour output optional.",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h22",
+          "text": "Timing on the Spark: successful command < 5 ms added; first agent text < 2 s after failure with a warm session; the panel renders correctly in an 80x24 ssh terminal with TERM=xterm and no colour.",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c24",
+      "kind": "requirement",
+      "text": "Harness chooser: 'nvsh install' / 'nvsh agent use' detects which harness CLIs are on PATH (pi, qwen, claude, codex), defaults to pi, offers to install pi when absent (npm via nvm on the Spark; the Jetsons have no node today), or lets the operator pick another. Each harness is an NvshAgent adapter that drives the CLI's headless mode (pi --mode rpc; claude -p --output-format stream-json; codex exec --json; qwen -p) and reports its capabilities.",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h18",
+          "text": "'nvsh agent list' shows pi, qwen, claude, codex with installed/not-installed status; with none installed the failure panel offers to install pi or pick another; each adapter passes the shared conformance test (stream, cancel, error, capability report).",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c25",
+      "kind": "decision",
+      "text": "v1 agent tooling: pi gets the nvsh system prompt, the bounded failure context and its built-in bash tool, gated by a small nvsh-shipped TypeScript extension that intercepts every tool_call: a command matching the operator's persistent 'approved for user' list or the in-memory 'approved for session' list runs; anything else is shown in the panel and waits for a keypress, with 'approve once / approve for session / approve for user' as the choices. Patterns are shell globs ('nvsh *' approves nvsh with any arguments). nvsh-specific skills and resident deterministic tools are still prototyped in the associate harness first and migrated when proven.",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [
+        {
+          "id": "q7",
+          "text": "contradiction with c8?",
+          "resolved": true,
+          "blocking": true,
+          "resolution": "Option (b): ship the TypeScript approval shim in v1. Every pi tool call passes through it; commands matching 'commands approved for user' (persistent) or 'commands approved for session' (in-memory) run, everything else is shown for a keypress. Patterns are globs, so 'nvsh *' approves nvsh with any arguments."
+        },
+        {
+          "id": "q8",
+          "text": "pi's built-in bash tool runs model-chosen commands autonomously with no approval hook unless a TypeScript extension blocks tool_call events (docs/extensions.md:751-793). That contradicts 'nothing runs without confirmation'. Options: (a) v1 runs pi with --no-tools and nvsh itself gathers read-only inspection (nvidia-smi, docker ps, journalctl tail, dpkg) into the prompt, so the model only reasons and proposes; (b) ship the small TypeScript shim after all, allow-listing read-only commands and blocking the rest; (c) allow pi's bash tool with a user-visible per-call approval via extension_ui_request. Which for v1?",
+          "resolved": true,
+          "blocking": true,
+          "resolution": "Option (b), see q7."
+        }
+      ],
+      "links": [],
+      "instruction": "",
+      "revisions": [
+        {
+          "text": "v1 agent tooling: pi gets the nvsh system prompt, the bounded failure context and its built-in bash tool; every mutation still surfaces as a proposal the operator approves in nvsh. nvsh-specific skills and resident deterministic tools are prototyped in the associate harness first and migrated into nvsh when proven.",
+          "kind": "decision",
+          "reason": "user decision on q7/q8: option (b) approval hook with user/session allowlists"
+        }
+      ]
+    },
+    {
+      "id": "c26",
+      "kind": "requirement",
+      "text": "Compose with Ghostty's bash integration, which is already active on the Spark (TERM_PROGRAM=ghostty 1.3.1, /usr/share/ghostty/shell-integration/bash/ghostty.bash): it appends __ghostty_hook to PROMPT_COMMAND array-aware and idempotently (ghostty.bash:295-308), uses PS0 for preexec on bash>=5.2 and otherwise sources bash-preexec.sh (line 312). nvsh's hook uses the same append pattern, registers through preexec_functions when bash-preexec is loaded instead of installing its own DEBUG trap, and preserves Ghostty's OSC 133 markers around its inline panel.",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h19",
+          "text": "In Ghostty on the Spark, after 'nvsh setup', 'declare -p PROMPT_COMMAND' shows both __ghostty_hook and the nvsh hook exactly once each; 'trap -p DEBUG' shows no nvsh trap; Ghostty jump-to-prompt still works across an nvsh panel.",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c27",
+      "kind": "decision",
+      "text": "Output capture rule: diagnose first from exit status, command line, PIPESTATUS and machine context; ask before any re-run under script(1); use tmux capture-pane only when already inside tmux. No silent re-execution ever.",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c28",
+      "kind": "decision",
+      "text": "'nvsh setup' installs the capture layer along with pi and the hooks: a per-session typescript via util-linux script(1) (present on spark, thor, orin) started from the hook file when the shell is interactive, not already under script or tmux, and not nested; tmux is installed/used when the operator wants a multiplexer (orin lacks it; apt candidate 3.4) and then tmux pipe-pane is the log source instead. Either log is sliced per command by Ghostty's OSC 133 C/D markers, which nvsh's hook file re-sources from /usr/share/ghostty/shell-integration/bash/ghostty.bash when TERM_PROGRAM=ghostty (or emits itself elsewhere). So the failed command's actual output is available without any re-run; re-run stays ask-first.",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h20",
+          "text": "In Ghostty and over ssh, 'ls /nope; false' produces a panel whose --show-context contains the ls error text captured from the session log without any re-run; inside tmux the same comes from pipe-pane.",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c29",
+      "kind": "requirement",
+      "text": "Session log hygiene: the typescript lives under $XDG_RUNTIME_DIR/nvsh/ (tmpfs) with mode 0600, is rotated/truncated per session, only the slice for the failed command is read, redaction runs on that slice before it reaches any agent, and 'nvsh setup' explains the log exists. If script(1) or the log fails, the hook silently continues without capture.",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h21",
+          "text": "The session log is mode 0600 under $XDG_RUNTIME_DIR/nvsh/, is removed at shell exit, and a test proves only the last C..D slice is read; killing script(1) mid-session leaves the shell usable.",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c30",
+      "kind": "audience",
+      "text": "Operators (starting with Ori) who live at a bash prompt on NVIDIA Jetson AGX Orin/Thor and DGX Spark machines, locally in Ghostty and over ssh, and who want an NVIDIA engineer to appear only when something breaks.",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h23",
+          "text": "README's opening names Jetson AGX Orin/Thor, DGX Spark, bash, Ghostty and ssh as the setting, and the install/uninstall checklist is executed on spark, thor and orin by the operator.",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "Check README's first paragraph names Jetson, DGX Spark, bash and ssh as the setting; run the hook on spark, thor and orin.",
+      "revisions": []
+    },
+    {
+      "id": "c31",
+      "kind": "before_state",
+      "text": "Today a failure on a Jetson or Spark means copying the error into a chat, re-deriving the machine's JetPack/CUDA/unified-memory facts by hand, and typing fixes back; nvsh itself is a scaffold with no shell behaviour (README.md:10-14) and its prompts still describe a PTY wrapper.",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h24",
+          "text": "docs/architecture.md opens with this before-state and cites README.md:10-14 and the retired PTY-wrapper wording in the prompt files as of version 0.9.1.",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c32",
+      "kind": "after_state",
+      "text": "After 'nvsh setup', the operator's own bash is unchanged on success; a qualifying failure shows an inline \u26a1 nvsh panel within a second with a diagnosis built from the real output slice and the machine's detected facts, offers a proposed fix that runs only after Enter, retries, and reports whether it worked; /ask, /fix, /doctor, /explain, /retry and Ctrl+G reach the same warm pi session; 'nvsh uninstall' removes everything.",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h25",
+          "text": "Two recorded demos exist in docs/: a CUDA-OOM-style failure in Ghostty on the Spark and a missing-package failure over ssh on orin, each showing panel, approve, retry and verify, plus 'nvsh uninstall' leaving PROMPT_COMMAND and ~/.bashrc as before.",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "Demonstrate on the Spark in Ghostty with a CUDA-OOM-style failure and on orin over ssh with a missing-package failure; record both as GIFs or screenshots in docs/.",
+      "revisions": []
+    },
+    {
+      "id": "c33",
+      "kind": "why_it_matters",
+      "text": "The value is NVIDIA-specific and local: unified memory on GB10/Jetson, L4T/JetPack version skew, container runtime and power mode are what a generic 'explain my error' tool gets wrong, and the machines are often air-gapped, so the agent must run against a local model with the facts collected on-box.",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h26",
+          "text": "The system prompt sent to the agent contains the detected platform block (unified memory, L4T/JetPack or DGX OS version, container runtime, power mode) and a test proves an air-gapped run (no network) still reaches a localhost model endpoint.",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c34",
+      "kind": "success_signal",
+      "text": "Measured: a successful command adds < 5 ms to the next prompt (bash-only hook, no fork); the panel's first agent text appears < 2 s after a qualifying failure on the Spark with a warm pi session; 0 agent calls for exit codes 130/141, grep/diff 1, false and test in the trigger table tests; 100% of the redaction test corpus is scrubbed; the hook installs and uninstalls cleanly on spark, thor and orin (3/3).",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h27",
+          "text": "Each number is produced by a named test or checklist: tests/test_triggers.py (0 calls), tests/test_redact.py (100%), a timing test under script(1) (< 5 ms, < 2 s), and the 3-machine checklist in docs/ with dates.",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "tests/test_triggers.py table; a timing test that sources the hook in 'bash --norc -i' under script and diffs prompt latency; tests/test_redact.py corpus; a manual 3-machine install/uninstall checklist in docs/.",
+      "revisions": []
+    },
+    {
+      "id": "c35",
+      "kind": "requirement",
+      "text": "Hook ordering and status capture: the nvsh hook is inserted as the FIRST element of the PROMPT_COMMAND array and captures $? and PIPESTATUS in its first statement; later elements (Ghostty's __ghostty_hook, others) run after it. Probe on the Spark: a hook placed after __ghostty_hook saw PIPESTATUS clobbered, while a first-position hook saw 'false | true' as '1 0' and 'true | false | true' as '0 1 0'; with the user's own 'set -o pipefail' the hook's $? becomes the pipeline status, which the trigger table must respect rather than override.",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h29",
+          "text": "With Ghostty's integration loaded, 'declare -p PROMPT_COMMAND' lists the nvsh hook first; a test sources the hook, runs 'false | true' and 'true | false | true', and the hook records PIPESTATUS '1 0' and '0 1 0'; under 'set -o pipefail' the recorded status is 1.",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c36",
+      "kind": "requirement",
+      "text": "Placement of the capture wrapper in ~/.bashrc: the exec into script(1) must be the first line after the distro's interactive guard ('If not running interactively' at line 40 on spark, 29 on thor, 28 on orin), guarded by an NVSH_WRAPPED env var, not appended at the end. Otherwise the whole rc (nvm, cargo, kiro-cli, bash-completion) runs twice and every new terminal pays a second 'bash -ic true' (0.25 s measured) before the prompt. 'nvsh setup' edits the rc idempotently inside a marked block and keeps a timestamped backup.",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h30",
+          "text": "After 'nvsh setup', the exec line sits immediately after the interactive guard inside a marked block; 'bash -ic true' timing is within 10% of the pre-setup baseline; running setup twice leaves ~/.bashrc unchanged; a backup file exists.",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c37",
+      "kind": "assumption",
+      "text": "Coexistence with other shell integrations on the operator's machines: Ghostty (PROMPT_COMMAND element + PS0/bash-preexec), kiro-cli pre/post files (5 lines each, no PROMPT_COMMAND/bind/trap found), bash-completion's 'complete -D _completion_loader' (the -I slot is free, verified with 'complete -p -I'). No integration on spark, thor or orin rebinds Enter today; any future one that does (fzf, atuin, ble.sh) is a known conflict class that 'nvsh doctor' reports by inspecting 'bind -p' for C-m.",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c38",
+      "kind": "requirement",
+      "text": "Terminal portability: thor has no xterm-ghostty terminfo (infocmp fails), so an ssh from Ghostty arrives with TERM=xterm-ghostty and tput/clear break. The panel renders with hard-coded SGR sequences guarded by NO_COLOR / TERM=dumb / non-tty checks and never calls tput; 'nvsh doctor' detects missing terminfo and prints the 'infocmp -x | ssh host tic -x -' remediation.",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h31",
+          "text": "In a shell with TERM=dumb and one with TERM=xterm-ghostty and no terminfo, the panel prints readable text without tput errors; doctor reports the missing terminfo with the tic remediation on thor.",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c39",
+      "kind": "requirement",
+      "text": "Readline keymaps: the Enter macro, Ctrl+G and the palette are bound in the emacs, vi-insert and vi-command keymaps (one 'bind -m' per keymap); probe on the Spark showed a plain 'bind -x' binding does not fire after 'set -o vi' while a vi-insert keymap binding does.",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h32",
+          "text": "In 'set -o vi' and in emacs mode, /doctor + Enter routes, Ctrl+G fires and '/'+Tab lists the palette (test drives both keymaps under script(1)).",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": [
+        {
+          "text": "Readline keymaps: the Enter macro, Ctrl+G and the palette are bound in the emacs, vi-insert and vi-command keymaps ('bind -m <keymap> -x'); probe on the Spark showed a plain 'bind -x' binding does not fire after 'set -o vi' while 'bind -m vi-insert -x' does.",
+          "kind": "requirement",
+          "reason": "lint MD033"
+        }
+      ]
+    },
+    {
+      "id": "c40",
+      "kind": "assumption",
+      "text": "The default model is LAN-local, not on-box: Pi's 'associate' is served by a gateway on 192.168.1.138, and orin (no node, 3.1 GB MemAvailable) cannot host pi or a model. So 'offline-first' in v1 means 'no internet, LAN reachable'; a truly air-gapped machine needs an on-box endpoint configured or gets 'no agent configured' from doctor with a clear message, never a hang.",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c41",
+      "kind": "requirement",
+      "text": "pi launch hygiene: PiAgent starts pi with --no-context-files (otherwise pi reads CLAUDE.md/AGENTS.md from the user's cwd into the prompt), --no-extensions, --no-skills, --no-prompt-templates, --no-approve, and either --no-session or --session-dir under $XDG_STATE_HOME/nvsh (0700). Probe: pi stores sessions per cwd under ~/.pi/agent/sessions (26 project dirs on the Spark), so an unflagged run would persist redacted-but-sensitive failure context into project-named session files.",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h33",
+          "text": "The PiAgent argv is asserted in a test to contain --no-context-files --no-extensions --no-skills --no-prompt-templates --no-approve and a session flag; after a failure run, no new file appears under ~/.pi/agent/sessions.",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c42",
+      "kind": "assumption",
+      "text": "Remote and container commands are pass-through for triggers: 'ssh host cmd', 'docker exec -it', 'kubectl exec', tmux/screen attach and 'su'/'sudo -i' return the remote or inner status, which is not this machine's failure. The trigger table lists them as never-auto-trigger; the operator can still /fix them explicitly.",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c43",
+      "kind": "requirement",
+      "text": "Warm-session ownership: the long-lived pi process is owned by an nvsh session daemon started lazily on the first qualifying failure (never at shell start), listening on a per-user socket under $XDG_RUNTIME_DIR/nvsh/; the 45 ms hook client connects, streams the panel, and exits. The daemon dies on an idle timeout and when its last shell exits (EXIT trap sends a stop); stale sockets are reaped at the next start. If the daemon or pi is missing or crashed, the client falls back to a one-shot 'pi -p' run so a failure is never left without a diagnosis.",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h34",
+          "text": "Starting a shell creates no nvsh or pi process; the first qualifying failure starts one daemon; closing the shell leaves no nvsh or pi process behind (pgrep); with pi absent the client still produces a diagnosis or a clear 'no agent' panel within 2 s.",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [
+        {
+          "id": "q9",
+          "text": "One pi process per shell (isolation, but N terminals = N node processes; impossible on orin and heavy on a 3 GB-free Jetson) or one per user with pi's steer/follow-up queue serialising concurrent failures from several terminals (shared 1M context across terminals, which the 'this worked this morning' use case in issue #2 actually wants)?",
+          "resolved": true,
+          "blocking": false,
+          "resolution": "Single pi session per user by default, configurable to more. When a different shell session sends work, the current conversation is put to sleep (saved) and a fresh one serves the new shell, so contexts from different terminals never mix; a sleeping conversation resumes when its shell returns."
+        }
+      ],
+      "links": [],
+      "instruction": "",
+      "revisions": [
+        {
+          "text": "Warm-session ownership: the long-lived pi process is owned by an nvsh session daemon started lazily on the first qualifying failure (never at shell start), listening on $XDG_RUNTIME_DIR/nvsh/<key>.sock; the 45 ms hook client connects, streams the panel, and exits. The daemon dies on an idle timeout and when its shell exits (EXIT trap sends a stop); stale sockets are reaped at the next start. If the daemon or pi is missing or crashed, the client falls back to a one-shot 'pi -p' run so a failure is never left without a diagnosis.",
+          "kind": "requirement",
+          "reason": "lint MD033; per-user socket per decision q9"
+        }
+      ]
+    },
+    {
+      "id": "c44",
+      "kind": "requirement",
+      "text": "Upgrade path: the sourced ~/.local/share/nvsh/bash.sh carries the nvsh version that rendered it; the failure-path client compares it with its own version and prints 'run nvsh setup to refresh the hook' once per session when they differ. 'nvsh setup' is idempotent and re-renders; a 'uv tool upgrade nvsh' alone never breaks the shell because the old hook only calls stable verbs.",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h35",
+          "text": "With the hook file stamped as an older version, the next failure prints the refresh notice once; 'nvsh setup' re-renders and the notice stops.",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c45",
+      "kind": "requirement",
+      "text": "Kill switch and reversibility: NVSH_DISABLE=1 in the environment makes the sourced file a no-op; 'nvsh off' / 'nvsh on' unbind and rebind Enter, the palette and the hook in the current shell; 'nvsh uninstall' removes the marked block from ~/.bashrc (restoring from its backup if the block was edited), the hook file, runtime sockets and logs, and stops daemons. Hook functions never use set -e and end with '|| return 0'. Probe on the Spark: an erroring bind -x function still lets the Enter macro accept the line, so a bug degrades, it does not lock the terminal.",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h36",
+          "text": "NVSH_DISABLE=1 bash -i shows no hook, no Enter macro (bind -p) and no capture; 'nvsh off' then '/doctor' runs as a path again; 'nvsh uninstall' restores ~/.bashrc byte-identical to the backup and leaves no files, sockets or processes.",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c46",
+      "kind": "requirement",
+      "text": "Interrupt and cleanup: Ctrl+C while the panel is streaming sends rpc abort to pi, restores the terminal and returns to a clean prompt with the original failure still available to /fix; killing script(1) or the daemon mid-session leaves the shell usable; stale session logs under $XDG_RUNTIME_DIR/nvsh are removed at next setup or shell start.",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h37",
+          "text": "Ctrl+C during a streaming panel returns to a working prompt within 1 s, pi's get_state shows isStreaming false, and '/fix' still finds the last failure; kill -9 of script(1) or the daemon leaves the shell accepting commands.",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c47",
+      "kind": "requirement",
+      "text": "The output slice sent to the agent is bounded (last 64 KB of the failed command's C..D region, head+tail with a marker when truncated), handled as bytes with invalid UTF-8 replaced, stripped of escape sequences before redaction, and redacted before it leaves the hook client. The session log itself is never transmitted whole and never leaves the machine.",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h38",
+          "text": "A failure whose output is 5 MB of binary yields a context slice of at most 64 KB with a truncation marker, valid UTF-8, no escape sequences, and redacted tokens; a test asserts the log path never appears in the agent request.",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c48",
+      "kind": "boundary",
+      "text": "No auto-apply in v1: every proposal, including package installs and container stops, waits for an explicit keypress; there is no 'safe auto-fix policy' switch yet, and 'sudo' proposals are shown with the exact command and never pre-typed into the prompt.",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h39",
+          "text": "The fixture agent proposing 'sudo apt install x' shows the exact command and requires Enter; a proposal is never inserted into READLINE_LINE; no code path executes a proposal without the approval function returning true.",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c49",
+      "kind": "requirement",
+      "text": "'nvsh doctor' gains in-shell checks with remediations: hook file sourced, nvsh hook first in PROMPT_COMMAND, Enter/Tab/Ctrl+G bindings present in the active keymap, capture active (script or tmux pipe-pane) with the log path and mode, daemon and pi status, harness reachable, terminfo present; '/doctor' prints the same inline.",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h40",
+          "text": "'nvsh doctor' run inside a hooked shell reports each in-shell check with pass/fail and a remediation; run with the hook deliberately moved to last position it fails the ordering check.",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c50",
+      "kind": "requirement",
+      "text": "Approval allowlists: 'approved for user' lives at $XDG_CONFIG_HOME/nvsh/approved.toml (0600) as glob patterns matched against the full command line with fnmatch semantics; 'approved for session' lives in the daemon's memory and dies with it. Defaults ship read-only inspectors ('nvidia-smi *', 'docker ps*', 'journalctl *', 'systemctl status *', 'df *', 'free *', 'nvsh *') and never 'sudo *', 'rm *' or a bare '*'; 'nvsh approve list/add/remove' and '/approve' manage them; every allowlisted execution is still written to the audit log.",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h41",
+          "text": "A test drives the fixture agent through 'nvidia-smi -q' (runs without prompt via the default list), 'apt install foo' (prompts; 'approve for session' makes a second call run; a new daemon prompts again), and 'sudo rm -rf /x' (prompts even after 'approve for user' is attempted, because sudo and rm patterns are refused by the add command); the audit log holds all three.",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c51",
+      "kind": "requirement",
+      "text": "Session daemon model (from decision on q9): one nvsh daemon and one pi process per user, $XDG_RUNTIME_DIR/nvsh/daemon.sock; each shell session (keyed by the hook's shell PID) owns its own pi conversation. When a request arrives from a shell other than the active one, the daemon puts the active conversation to sleep (pi rpc switch_session / new_session, which persist to the nvsh-owned session dir) and activates the caller's conversation, resuming it on its next request. 'sessions.max' in config allows more concurrent pi processes for machines that can afford them.",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h42",
+          "text": "With two terminals: a failure in A, then a failure in B, then '/ask what did you just see' in A answers about A's failure only; pgrep shows one pi process throughout; on orin (no node) the daemon reports 'pi unavailable' and the client falls back to the configured stdlib adapter.",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c52",
+      "kind": "decision",
+      "text": "/undo in v1 rewinds the agent conversation (last turn and its proposal) and never reverts machine changes; reverting changes is a follow-up tracked as a GitHub issue on agentculture/nvsh.",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    }
+  ],
+  "open_vagueness": [
+    {
+      "id": "v1",
+      "text": "Whether the Nemotron 'associate' endpoint behind the lobes-gateway honours OpenAI tool calling (pi's openai-completions api with compat flags); not exercised, no live prompt was sent.",
+      "kind": "unknown_nonblocking",
+      "claim_id": "c7",
+      "resolved": false,
+      "resolution": "",
+      "resolution_claim_id": null
+    },
+    {
+      "id": "v2",
+      "text": "pi --mode rpc time-to-first-event on this Spark (only pi --version was timed at 0.35 s); determines whether a warm process per shell session is a must or a nice-to-have.",
+      "kind": "unknown_nonblocking",
+      "claim_id": "c7",
+      "resolved": false,
+      "resolution": "",
+      "resolution_claim_id": null
+    },
+    {
+      "id": "v3",
+      "text": "The Enter rebind and '/'+Tab keybinding chain in stock readline without ble.sh needs an interactive prototype before the slash-command design is final.",
+      "kind": "unknown_blocking",
+      "claim_id": "c5",
+      "resolved": true,
+      "resolution": "Resolved by the interactive prototype (scope entry s18): Enter macro (C-m -> bind -x function -> C-j) plus 'complete -I' initial-word completion give slash routing, the '/'+Tab palette, prefix and argument completion in stock bash 5.2 readline with no ble.sh. Remaining check (prompt redraw in real Ghostty) is tracked as risk q6 on c5.",
+      "resolution_claim_id": "c5"
+    },
+    {
+      "id": "v4",
+      "text": "192.168.1.138:8000 (Pi's nemotron provider) is not this machine (192.168.1.157) and both Jetsons also listen on :8000; which box serves 'associate' and whether the Jetsons can reach it is unknown.",
+      "kind": "unknown_nonblocking",
+      "claim_id": "c9",
+      "resolved": false,
+      "resolution": "",
+      "resolution_claim_id": null
+    },
+    {
+      "id": "v5",
+      "text": "Login-shell / PTY-wrapper mode (chsh, /etc/shells, install-shell) \u2014 revisit only after the hook is solid; would sit on top of the same NvshAgent and tools layer.",
+      "kind": "follow_up",
+      "claim_id": "c18",
+      "resolved": false,
+      "resolution": "",
+      "resolution_claim_id": null
+    },
+    {
+      "id": "v6",
+      "text": "Residual: passwords or secrets typed at prompts that DO echo (custom scripts, 'read' without -s) land in the session log and are only caught if they match a redactor pattern.",
+      "kind": "unknown_nonblocking",
+      "claim_id": "c47",
+      "resolved": false,
+      "resolution": "",
+      "resolution_claim_id": null
+    },
+    {
+      "id": "v7",
+      "text": "Residual: a future integration that rebinds Enter (fzf, atuin, ble.sh) would silently take over or be taken over; doctor can detect it but the winner depends on source order.",
+      "kind": "unknown_nonblocking",
+      "claim_id": "c37",
+      "resolved": false,
+      "resolution": "",
+      "resolution_claim_id": null
+    },
+    {
+      "id": "v8",
+      "text": "Residual: pi's node startup and memory on Jetson Thor (node present) is unmeasured; the per-shell vs per-user daemon decision (q9) depends on it.",
+      "kind": "unknown_nonblocking",
+      "claim_id": "c43",
+      "resolved": false,
+      "resolution": "",
+      "resolution_claim_id": null
+    }
+  ],
+  "scope_entries": [
+    {
+      "id": "s1",
+      "surface": "GitHub issues #1, #2, #3, #5, #6",
+      "finding": "Issue #1 recommends the hook and #3/#5/#6 build on it (PROMPT_COMMAND, bind -x, slash commands, Pi.dev default harness, NvshAgent contract); only #2 asks for a PTY-backed shell. The user's direction (hook on bash, pi.dev first) matches #3/#5/#6 and retires #2's wrapper model but keeps #2's inline-panel UX, deterministic tools and activation rules.",
+      "seeds": [
+        "c2",
+        "c7",
+        "c8",
+        "c18",
+        "c22"
+      ]
+    },
+    {
+      "id": "s2",
+      "surface": "CLAUDE.md:26-29,111-152 and QWEN.md:19-20,43-45; AGENTS.override.md:27-28; AGENTS.colleague.md:34-35,49-50; .pi/SYSTEM.md",
+      "finding": "CLAUDE.md and QWEN.md record PTY-wrapper-as-login-shell as the decision and CLAUDE.md declares that goal overrides the issues; the other two prompts only repeat the login-shell goal and .pi/SYSTEM.md is silent. None mention slash commands or Pi.dev. All four must be rewritten together (CLAUDE.md:208-209 sync rule).",
+      "seeds": [
+        "c14",
+        "c18",
+        "q1"
+      ]
+    },
+    {
+      "id": "s3",
+      "surface": "README.md:10-14,16-47,75-77; CHANGELOG.md; pyproject.toml version 0.9.1",
+      "finding": "README marks the shell as not built and lists run/ask/init bash/install-shell as planned; 'private by default' is one sentence, not the 'what leaves the machine' section issue #1 asks for. docs/architecture.md and docs/platforms.md do not exist.",
+      "seeds": [
+        "c14"
+      ]
+    },
+    {
+      "id": "s4",
+      "surface": "bash 5.2.21 on spark, thor, orin (throwaway bash --norc -i sessions under script)",
+      "finding": "PROMPT_COMMAND array, $? and PIPESTATUS visible in it, DEBUG trap (fires for PROMPT_COMMAND's own commands too), bind -x with READLINE_LINE/READLINE_POINT, and complete -F on a '/doctor' word all verified. command_not_found_handle does NOT fire for '/doctor' (exit 127, 'No such file or directory'), and a bind -x function cannot call accept-line or complete, so Enter/Tab interception needs a keyseq macro chain. No user PROMPT_COMMAND exists on any of the three machines; ~/.bashrc on spark exports plaintext tokens.",
+      "seeds": [
+        "c2",
+        "c3",
+        "c5",
+        "c6",
+        "c11"
+      ]
+    },
+    {
+      "id": "s5",
+      "surface": "startup latency on spark: bash -ic true 0.24 s, python3 -c pass 0.016 s, uv run nvsh --help 0.043 s, associate --help 0.051 s, pi --version 0.35 s",
+      "finding": "A Python entrypoint costs ~45 ms and pi's node startup ~350 ms; both are acceptable only on the failure path, so the hook stays pure bash on success and the pi rpc process stays warm across failures.",
+      "seeds": [
+        "c3",
+        "c7",
+        "c23"
+      ]
+    },
+    {
+      "id": "s6",
+      "surface": "pi 0.84.2 shipped docs (docs/rpc.md, docs/extensions.md, docs/models.md) at ~/.nvm/.../@earendil-works/pi-coding-agent; ~/.pi/agent/settings.json, models.json, trust.json",
+      "finding": "pi --mode rpc is a JSONL stdin/stdout protocol with prompt/abort/get_state/switch_session/compact commands and streaming message_update, tool_execution_* and extension_ui_request events (approval round-trip); custom tools are only registrable from a TypeScript extension loaded with -e; no Python SDK. Default provider nemotron / model associate, contextWindow 1048576, api openai-completions, endpoint http://192.168.1.138:8000/v1 with a bearer key in models.json. trust.json only trusts ~/git/associate, so headless runs need --approve or a trusted dir. pi-acp is a third-party Zed bridge, not needed.",
+      "seeds": [
+        "c7",
+        "c8",
+        "c9",
+        "q4"
+      ]
+    },
+    {
+      "id": "s7",
+      "surface": "nvsh/cli/__init__.py:59-126, _commands/*.py, _errors.py, _output.py, explain/catalog.py, doctor.py:51-168, whoami.py:22-36",
+      "finding": "Every verb module is imported on every invocation (function-local imports in _build_parser), so new modules must import only stdlib at top level. Contract: register(sub), CliError, emit_result/emit_diagnostic, --json pre-scan, catalog entry per path; doctor checks share one shape and must handle find_culture_yaml()==None for wheel installs.",
+      "seeds": [
+        "c13",
+        "c3"
+      ]
+    },
+    {
+      "id": "s8",
+      "surface": "pyproject.toml ([tool.hatch.build.targets.wheel] packages=['nvsh'], dependencies=[], fail_under=60, bandit skips B404/B603); .github/workflows/tests.yml, publish.yml; scripts/scan-secrets.py:178-197; scripts/harness-smoke.py",
+      "finding": "No artifacts/force-include, so a .sh file would not ship in the wheel; subprocess use is already bandit-exempt; CI gates are black/isort/flake8/bandit/markdownlint/scan-secrets/teken cli doctor --strict/harness-smoke/version-check; scan-secrets rejects non-localhost URLs only in JSON key fields, not Markdown; any nvsh/** change publishes a TestPyPI dev build.",
+      "seeds": [
+        "c13",
+        "c17",
+        "c21"
+      ]
+    },
+    {
+      "id": "s9",
+      "surface": "tests/test_pi_settings.py, tests/test_harness_registries.py, culture.yaml, .claude/skills (vendored)",
+      "finding": "Pinned invariants the feature must not disturb: .pi/skills is a relative symlink and no .pi/settings.json exists; doctor._PROMPT_FILE equals backend-fingerprints.yaml; culture.yaml is two lines and never rewritten; skills are cite-don't-import from guildmaster.",
+      "seeds": [
+        "c20"
+      ]
+    },
+    {
+      "id": "s10",
+      "surface": "DGX Spark host: /etc/dgx-release, /sys/class/dmi/id/product_name, /usr/local/cuda/version.json, /proc/driver/nvidia/version, /proc/meminfo, nvidia-smi -q -d MEMORY, docker info, nvidia-ctk 1.18.2, systemctl, ss -ltnp, df",
+      "finding": "All identity and version values are readable from files; nvidia-smi memory.total/used are [N/A] on GB10 so unified-memory pressure is MemAvailable (121.7 GiB total, ~26 GiB available now); no cuDNN, TensorRT, nvpmodel, powercap or separate data mount; docker has no 'nvidia' runtime registered (CDI/--gpus path); vLLM containers (model-gear-*) and a lobes-gateway serve :8000/:8001 with auth.",
+      "seeds": [
+        "c10",
+        "c9"
+      ]
+    },
+    {
+      "id": "s11",
+      "surface": "thor (AGX Thor, L4T R38.2, tegra264) and orin (AGX Orin, L4T R39.2, tegra234) over ssh, read-only",
+      "finding": "Verified sources: /etc/nv_tegra_release, /proc/device-tree/model and compatible, nvidia-l4t-core / nvidia-cuda dpkg, /usr/include/aarch64-linux-gnu/cudnn_version.h, libnvinfer10, nvpmodel -q, tegrastats, /etc/docker/daemon.json default-runtime. Orin lacks /usr/local/cuda/version.json, the tensorrt module, uv and tmux; neither has pi or fzf; both have bash 5.2.21, Python 3.12.3, script(1), and something on :8000. Orin MemAvailable is 3 GiB of 61 GiB right now.",
+      "seeds": [
+        "c15",
+        "c16",
+        "q2"
+      ]
+    },
+    {
+      "id": "s12",
+      "surface": "dgx-spark-cli (spark/probe/host.py:17-21, gpu.py, memory.py:3,88; installed as 'spark'), jetson-cli, rtx-spark-cli, callsmith",
+      "finding": "Only dgx-spark-cli is real: file-first probes with graceful degradation and --json on every verb; it checks device-tree/DMI model strings, not /etc/dgx-release. jetson-cli (installed name 'jetson', not 'jetson-jolt'), rtx-spark-cli and callsmith are template scaffolds with no domain or guard code.",
+      "seeds": [
+        "c10",
+        "c19"
+      ]
+    },
+    {
+      "id": "s13",
+      "surface": "shell-cli (shell/policy.py:1-45,501-558; shell/operations.py:107-140,218-287; shell/process/shell.py:83-93), associate/harness/pi.py:831-863, culture_core/cli/agents.py:704-797, culture_core/devtools/backend_parity.py",
+      "finding": "Reusable ideas: deny-wins allow/deny policy, apply=False default with explicit apply for MUTATE/EXECUTE, a confinement note stamped on every result; a stdlib urllib GET /v1/models probe with bearer header and 5 s timeout; a dict-of-factories backend registry. culture has no Pi backend (acp is stale), so nvsh's PiAgent is new.",
+      "seeds": [
+        "c8",
+        "c16"
+      ]
+    },
+    {
+      "id": "s14",
+      "surface": "microduck/scripts/setup-login.sh:119 (only PROMPT_COMMAND prior art in ~/git)",
+      "finding": "Append-don't-clobber idiom PROMPT_COMMAND=\"fn${PROMPT_COMMAND:+;$PROMPT_COMMAND}\"; nothing in the workspace intercepts commands or routes to an agent, so the hook is new code.",
+      "seeds": [
+        "c2"
+      ]
+    },
+    {
+      "id": "s15",
+      "surface": "output capture options: script 2.39.3, tmux 3.4 (not in $TMUX here), exec > >(tee)",
+      "finding": "Resolved by experiment s17: a session typescript (script -f) or tmux pipe-pane log plus OSC 133 markers gives the real output of the failed command with no re-run. Re-run under script stays ask-first for the retry step only.",
+      "seeds": [
+        "c12",
+        "q3"
+      ]
+    },
+    {
+      "id": "s16",
+      "surface": "/usr/share/ghostty/shell-integration/bash/ghostty.bash:192-313 and $GHOSTTY_* env on the Spark",
+      "finding": "Ghostty runs locally on the Spark and already owns a PROMPT_COMMAND entry plus PS0/bash-preexec; it emits OSC 133 A/B/C/D markers (prompt, input, output, exit status) that let the terminal jump to prompts and select a command's output, but exposes no escape sequence for a process to read the scrollback. Its append-don't-clobber logic is the reference for nvsh's own hook installer.",
+      "seeds": [
+        "c26",
+        "c27"
+      ]
+    },
+    {
+      "id": "s17",
+      "surface": "script -qfc 'bash -i' typescript and tmux pipe-pane logs on the Spark, with ghostty.bash sourced inside (scratchpad experiment)",
+      "finding": "Both logs contain Ghostty's OSC 133 A/B/C/D markers; slicing between the last C and D yields exactly the failed command's stdout+stderr ('hello-out', 'ls: cannot access /nope'). Nested bash does not get Ghostty's injection automatically (GHOSTTY_BASH_INJECT is consumed by the first shell), so the hook file must source ghostty.bash itself. The D marker's status was 0 after 'false' in the experiment, so nvsh takes exit status from its own hook, not the marker. script adds no measurable startup cost (bash -ic true 0.25 s either way). script 2.39.3 is on all three machines; tmux 3.4 on spark and thor only.",
+      "seeds": [
+        "c28",
+        "c29",
+        "c27"
+      ]
+    },
+    {
+      "id": "s18",
+      "surface": "throwaway readline prototype (scratchpad nvsh-proto.bash) fed CR keystrokes into 'bash --norc -i' under script(1) on the Spark",
+      "finding": "Verified: Enter macro C-m -> bind -x function + C-j routes '/doctor' and '/ask ...' to a hidden dispatch and keeps the original line in history; '/notacmd', 'ls -d /tmp' and a quoted two-line echo pass through unchanged; complete -I gives the '/'+Tab palette merged with real paths, '/do'+Tab -> /doctor, '/tm'+Tab -> /tmp/, 'ec'+Tab still lists echo; complete -F on '/doctor' gives argument completion; bind -x C-g prints a panel and restores the line. Gotchas found: LF (^J) bypasses a C-m binding (terminals send CR, feeds must too); the hidden dispatch line needs HISTCONTROL ignorespace; readline redraws the prompt line after every bind -x call.",
+      "seeds": [
+        "c5",
+        "c6"
+      ]
+    },
+    {
+      "id": "s19",
+      "surface": "challenge pass / adjacent-systems lens: PROMPT_COMMAND ordering probe (bash --norc -i under script, with and without ghostty.bash)",
+      "finding": "First-position hook keeps $? and PIPESTATUS; appended after Ghostty's hook loses PIPESTATUS. pipefail changes the observed status.",
+      "seeds": [
+        "c35"
+      ]
+    },
+    {
+      "id": "s20",
+      "surface": "challenge pass / adjacent-systems lens: ~/.bashrc on spark, thor, orin (interactive guard line, sourced files), kiro-cli shell files, bash-completion complete -p -I/-D, thor infocmp",
+      "finding": "All three rcs guard non-interactive shells at the top, so appended lines are interactive-only but an appended exec would double-source the rc; kiro-cli installs no hooks; complete -I is free; thor lacks xterm-ghostty terminfo.",
+      "seeds": [
+        "c36",
+        "c37",
+        "c38"
+      ]
+    },
+    {
+      "id": "s21",
+      "surface": "challenge pass / unstated-assumptions lens: pi docs/extensions.md tool_call blocking, pi --help tool flags, vi-mode bind probe, pi session dirs, LAN topology (192.168.1.138 vs .157, orin without node)",
+      "finding": "Found a real contradiction between c25 and c8 (bash tool = autonomous execution); vi keymaps need explicit binding; pi persists per-cwd sessions and reads cwd context files unless disabled; the default model is LAN-local, not on-box.",
+      "seeds": [
+        "c39",
+        "c40",
+        "c41",
+        "c42"
+      ]
+    },
+    {
+      "id": "s22",
+      "surface": "challenge pass / overlooked-actors-and-lifecycle lens: c7 warm session, c2 install, c45 uninstall, issue #3 /undo, orin memory and node absence (P14)",
+      "finding": "The spec named a warm pi process but not its owner, lifetime, per-shell vs per-user scope or crash fallback; upgrade drift between the sourced hook and the CLI was unaddressed; kill switch and Ctrl+C behaviour were implicit; /undo is unmentioned.",
+      "seeds": [
+        "c43",
+        "c44",
+        "c45",
+        "c46"
+      ]
+    },
+    {
+      "id": "s23",
+      "surface": "challenge pass / security-and-reversibility lens: c11 redactor, c28/c29 session log, c8 approvals, tty state inside bind -x (raw: -icanon -echo)",
+      "finding": "Slice bounding and byte-safety were unstated; the log's non-transmission is now a boundary; the dispatch must run outside the readline callback (terminal is raw inside bind -x), which the rewrite-then-accept variant already does; sudo prompts do not echo so passwords stay out of the log, but the redactor only knows named patterns.",
+      "seeds": [
+        "c47",
+        "c48"
+      ]
+    },
+    {
+      "id": "s24",
+      "surface": "challenge pass / observability-and-recovery lens: c9 doctor, c46 interrupt, c43 daemon",
+      "finding": "Doctor had platform and backend checks but nothing about the hook's own health; added in-shell checks.",
+      "seeds": [
+        "c49"
+      ]
+    },
+    {
+      "id": "s25",
+      "surface": "challenge pass / concurrency lens: two terminals failing at once, daemon socket, rate limit state",
+      "finding": "Per-shell daemons are independent; a per-user daemon serialises via pi's one-at-a-time steering (get_state showed steeringMode one-at-a-time). Rate-limit state lives with the daemon. No finding beyond the per-shell/per-user question on c43.",
+      "seeds": []
+    },
+    {
+      "id": "s26",
+      "surface": "challenge pass / migration lens: fresh install only, no prior nvsh state exists on any machine",
+      "finding": "Nothing to migrate; the version-stamped hook (c44) covers future upgrades. Clean.",
+      "seeds": []
+    }
+  ],
+  "lapses": [
+    {
+      "id": "l1",
+      "code": "assumption-for-measurement",
+      "what": "pi --mode rpc cold-start wall time and RSS were not measured: the probe's /usr/bin/time output was cut off by head and I moved on instead of re-running; v2 stays parked on an estimate.",
+      "skipped_check": "P9 pi rpc timing probe",
+      "refs": [
+        "challenge pass / adjacent-systems lens: pi rpc"
+      ],
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "l2",
+      "code": "assumption-for-measurement",
+      "what": "The ISIG-inside-bind-x probe printed only '-icanon' and I did not re-run it to learn whether Ctrl+C is delivered inside a readline callback; the design routes dispatch outside the callback, so I treated it as moot without verifying.",
+      "skipped_check": "P13 stty isig probe",
+      "refs": [
+        "challenge pass / security lens: tty state in bind -x"
+      ],
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "l3",
+      "code": "grader-unverified",
+      "what": "t3 reported 'scan-secrets: clean' but the corpus fixture was untracked when scanned; once tracked the scanner reports 41 findings and tests/test_scan_secrets fails",
+      "skipped_check": "",
+      "refs": [
+        "t3",
+        "h10"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l4",
+      "code": "assumption-for-measurement",
+      "what": "t2: 'rate limiter records a refused call' interpreted as rule_id=rate_limited in the returned Decision with RateState unchanged; no definition in spec, assumption not measurement",
+      "skipped_check": "",
+      "refs": [
+        "t2",
+        "h3"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l5",
+      "code": "grader-unverified",
+      "what": "t6: tests were written before running but never seen failing first (red phase skipped); FakeAgent raise-path has no dedicated test",
+      "skipped_check": "red phase of TDD",
+      "refs": [
+        "t6"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l6",
+      "code": "provenance-missing",
+      "what": "t1: claim-id to bullet mapping (c2,c18,c27,c28,c43,c51) not traced into docs/architecture.md; content sourced from the brief's synthesized facts and scope entries s4-s6,s15-s19 instead",
+      "skipped_check": "",
+      "refs": [
+        "t1"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l7",
+      "code": "grader-unverified",
+      "what": "t4: tests and implementation written together, never seen failing first (red phase skipped)",
+      "skipped_check": "red phase of TDD",
+      "refs": [
+        "t4"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l8",
+      "code": "grader-unverified",
+      "what": "t20: first red run happened after hook.bash was written and two assertions matched pty-echoed input (vacuous pass); agent caught both and re-ran red/green, but the initial grader was unverified",
+      "skipped_check": "genuine red run before implementation",
+      "refs": [
+        "t20"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l9",
+      "code": "grader-unverified",
+      "what": "t7: a keymap test was first written with an assertion that could never fail ('or True'); caught on review before running and rewritten against bind -m -X/-s output",
+      "skipped_check": "",
+      "refs": [
+        "t7"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l10",
+      "code": "grader-unverified",
+      "what": "t12: test_stale_socket_is_reaped first passed for the wrong reason (waited on socket file existence, which the stale file already satisfied); rewritten to wait on a real connect",
+      "skipped_check": "",
+      "refs": [
+        "t12"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l11",
+      "code": "control-absent",
+      "what": "t9/t10 merge: registry._make_pi called PiAgent positionally while PiAgent.__init__ is keyword-only; no test exercised the registry->PiAgent path, so the TypeError reached t12",
+      "skipped_check": "registry factory smoke test for every adapter",
+      "refs": [
+        "t9",
+        "t10"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l12",
+      "code": "grader-unverified",
+      "what": "t17: first terminfo test depended on this machine's real terminfo dirs (passed/failed by host state); fixed by making TERMINFO_DIRS replace the defaults; and agent_reachable first probed without pi's bearer, reporting 401 on a working setup until verified against the gateway",
+      "skipped_check": "",
+      "refs": [
+        "t17",
+        "c49"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l13",
+      "code": "grader-unverified",
+      "what": "t13: the proposal box first wrapped commands at 68 columns, silently breaking 'exact command' for long paths; only a long-path test caught it; two initial assertions were wrong ('tput' substring matched 'output')",
+      "skipped_check": "",
+      "refs": [
+        "t13",
+        "h31"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l14",
+      "code": "control-absent",
+      "what": "d1/t21b: one test run invoked real 'sudo apt-get' and 'sudo snap' on the dev box because subprocess.run was bound as a def-time default and the monkeypatch did not take; no install happened (sudo needs a tty), fixed by resolving at call time",
+      "skipped_check": "hermetic run-spy in the first test run",
+      "refs": [
+        "t21",
+        "d1"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l15",
+      "code": "grader-unverified",
+      "what": "t14: implementation and tests written together and run green first (no red phase); daemon-level /undo tests added afterwards to close a gap",
+      "skipped_check": "red phase of TDD",
+      "refs": [
+        "t14"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l16",
+      "code": "control-absent",
+      "what": "d2: the six bash-preexec hook tests are skipif-gated on /usr/share/ghostty/.../bash-preexec.sh, so on a CI runner without Ghostty they skip silently and the PIPESTATUS regression is guarded only on machines that have that file; the agent's first repro also assumed ghostty.bash loads bash-preexec (it does not on bash 5.2 here) before reading ghostty.bash:266-313",
+      "skipped_check": "",
+      "refs": [],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l17",
+      "code": "provenance-missing",
+      "what": "t19: the committed spark demo recording is an earlier successful run, not the last supervised one (the final re-record produced no agent output in 100 s); the recorder's early pty close was never root-caused",
+      "skipped_check": "",
+      "refs": [],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l18",
+      "code": "assumption-for-measurement",
+      "what": "t19: 'capture path inside tmux PASS (by construction)' is an inference from the code plus a correct slice, not an observed pipe-pane log; the echo step was mangled by the driver",
+      "skipped_check": "",
+      "refs": [],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l19",
+      "code": "grader-unverified",
+      "what": "t19: test_success_path_overhead_under_5ms was never seen failing and its 0.055 ms delta is two orders under the bound, so its sensitivity to a real 5 ms regression is unverified; test_time_to_first_agent_text first failed silently on a persisted rate limit",
+      "skipped_check": "",
+      "refs": [],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l20",
+      "code": "grader-unverified",
+      "what": "t19: candidate v3 (doctor bindings_present false negative) was inferred from behaviour without reading nvsh/doctor_checks.py; /doctor rows recorded as PARTIAL rather than pass/fail",
+      "skipped_check": "",
+      "refs": [],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l21",
+      "code": "control-absent",
+      "what": "t19: nvsh setup --yes was run in a throwaway HOME on orin and issued three sudo apt-get attempts (all refused, nothing changed) despite the no-sudo instruction; the control on remote side effects was the missing password, not the procedure",
+      "skipped_check": "",
+      "refs": [],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l22",
+      "code": "grader-unverified",
+      "what": "d5: the NVSH_BIND_P bind-sections export test was written and run green only (coordinator-supplied one-liner), never seen red",
+      "skipped_check": "",
+      "refs": [],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l23",
+      "code": "control-absent",
+      "what": "d7 finding: tests/test_cli_setup.py::test_hook_prints_refresh_notice_once_per_session leaves a detached 900 s-idle daemon behind on every run (21 per-pid logs found under the fallback runtime dir), and client_transport.one_shot() ignores the caller's env so a fallback in tests can reach the operator's real backend; neither is controlled by the suite",
+      "skipped_check": "",
+      "refs": [],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l24",
+      "code": "control-absent",
+      "what": "d11: two live-check attempts ran without a private XDG_RUNTIME_DIR and sent a synthetic failure to the operator's live daemon, blocking on its stream; caught after debugging a 'hang', not from the instruction",
+      "skipped_check": "",
+      "refs": [],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l25",
+      "code": "control-absent",
+      "what": "d15: the runtime-dir persistence for session approvals was designed before grepping tests for scope='session'; test_slash.py surfaced only when the full suite went red, and four fixtures lacked XDG_RUNTIME_DIR so they were one save away from writing into the operator's real runtime dir (they did not, by ordering luck)",
+      "skipped_check": "",
+      "refs": [],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l26",
+      "code": "control-absent",
+      "what": "d14: the agent stopped its own daemon with pkill -f 'python -m nvsh.daemo[n]', which also killed six idle daemons belonging to other worktrees (idle, no persistent state, restarted lazily)",
+      "skipped_check": "",
+      "refs": [],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l27",
+      "code": "assumption-for-measurement",
+      "what": "d21: the operator's transcript could not be reproduced as described (the audit log shows each whatis class asked once, in [u] order); the reproducible ENOENT failure mode was fixed instead, and the agent spent a long stretch on theories before reading the audit log",
+      "skipped_check": "",
+      "refs": [],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l28",
+      "code": "grader-unverified",
+      "what": "validate-delivery first pass: file_evidence.py ran pytest with a stale node id (tests renamed by d21/d23), pytest collected nothing, and the script filed e2-e52 as 'fail' without checking that any test ran; the records are wrong and await the user's --reject; a second pass with verified node ids follows",
+      "skipped_check": "",
+      "refs": [],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l29",
+      "code": "grader-unverified",
+      "what": "Qodo fix #13 (rate-limit lock): implementation written before the test, so the red was only the missing rate_lock_path symbol, and concurrency is asserted via a second process observing the lock rather than two racing hooks",
+      "skipped_check": "",
+      "refs": [],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l30",
+      "code": "assumption-for-measurement",
+      "what": "Sonar batch B: the agent chased a phantom regression for a long stretch (two full suites collided in one worktree; a long TMPDIR pushed AF_UNIX socket paths past 108 bytes) instead of reading one traceback with -x; six orphaned test daemons resulted and were killed by PID",
+      "skipped_check": "",
+      "refs": [],
+      "origin": "llm",
+      "status": "proposed"
+    }
+  ],
+  "obligations": [
+    {
+      "id": "o1",
+      "claim_id": "c1",
+      "seam": "end-to-end interactive session (tests/test_e2e_shell.py under script(1) + docs/verification.md)",
+      "behavior": "after 'nvsh setup' a successful command prints nothing new; 'ls /nope' shows the panel with the real error slice; /doctor and Ctrl+G reach the agent; 'nvsh uninstall' restores the shell",
+      "source_text": "nvsh elevates your existing bash into a self-healing NVIDIA shell: install one sourced hook, keep bash exactly as it is, and when a command fails an NVIDIA-opinionated agent (Pi.dev driving the local associate model by default) appears inline with a diagnosis and a proposed fix you approve, retry and verify; /ask, /fix, /doctor and Ctrl+G reach the same agent on demand, and successful commands never pay a millisecond for it.",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o2",
+      "claim_id": "c2",
+      "seam": "nvsh/shell/hook.bash sourced from the marked block in ~/.bashrc",
+      "behavior": "nvsh only installs a sourced hook into the existing bash; no nvsh executable ever acts as login shell or wraps bash as a REPL",
+      "source_text": "Architecture: nvsh HOOKS into the operator's existing bash instead of wrapping it. 'nvsh install bash' appends one 'source ~/.local/share/nvsh/bash.sh' line to ~/.bashrc, the sourced file appends to the PROMPT_COMMAND array (bash>=5.1; this Spark runs 5.2.21, verified) without clobbering an existing PROMPT_COMMAND, and 'nvsh uninstall' removes it. This flips CLAUDE.md:111-120 and QWEN.md:43-45, which currently record a PTY-wrapper-as-login-shell decision.",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o3",
+      "claim_id": "c3",
+      "seam": "tests/test_hook_bash.py execve counter and prompt timer",
+      "behavior": "1000 successful commands fork zero nvsh processes and add under 5 ms median to the prompt",
+      "source_text": "Zero cost on the success path: the sourced bash hook is a pure-bash function that reads $? and PIPESTATUS, applies the cheap trigger pre-filter (0, 130, 141, empty line, leading-space/ignored history) in bash, and only execs the Python entrypoint when a failure qualifies. Measured on this Spark: the uv-tool entrypoint costs ~45 ms (associate --help 0.051 s, nvsh --help 0.043 s), which is too much to pay on every prompt but fine on a failure.",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o4",
+      "claim_id": "c4",
+      "seam": "nvsh/triggers.py decide()",
+      "behavior": "every non-error row of the trigger table yields skip with a rule id; the rate limiter refuses a second automatic call inside the window",
+      "source_text": "Trigger rules are a table-tested pure-Python module (nvsh/triggers.py) consulted by the entrypoint before any agent call: 130, 141, grep/diff exit 1, false, test/[ ], commands run inside scripts, pipelines without pipefail (PIPESTATUS is passed in by the hook), interactive/long-running programs, plus a rate limit. Pattern triggers for exit-0 failures are opt-in.",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o5",
+      "claim_id": "c5",
+      "seam": "nvsh/shell/readline.bash Enter macro (tests/test_readline_bash.py)",
+      "behavior": "a line whose first word is a registered slash command routes to 'nvsh slash' with the original line in history; every other line passes through unchanged",
+      "source_text": "Slash commands (/ask /fix /explain /retry /doctor /context /agent /help) are routed inside the same bash session by binding Enter (C-m) to a readline macro that first runs a bind -x function then accept-line (C-j). The function inspects READLINE_LINE: a line whose first word is a registered slash command is rewritten to a hidden `nvsh slash <line>` call prefixed with one space (so HISTCONTROL ignorespace keeps it out of history) and the original line is pushed with 'history -s'. Unregistered '/foo', absolute paths, quoted multi-line input and plain commands pass through unchanged. Verified in a throwaway bash 5.2 under script(1) on the Spark: /doctor and '/ask why is memory high?' routed, /notacmd and 'ls -d /tmp' ran as bash, a quoted two-line echo (Enter inside the quotes) continued normally. command_not_found_handle does NOT fire for '/doctor', so this rebind is required.",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o6",
+      "claim_id": "c6",
+      "seam": "complete -I in readline.bash fed by 'nvsh complete --json'",
+      "behavior": "'/'+Tab lists slash commands with paths, '/do'+Tab gives /doctor, '/tm'+Tab gives /tmp/, '/doctor '+Tab lists arguments, 'ec'+Tab still lists echo",
+      "source_text": "Completion: 'complete -I -F' (bash >= 5 initial-word completion) supplies the '/'+Tab palette: for a first word starting with '/' and containing no second '/', it merges registered slash commands with compgen -f path matches, so '/'+Tab lists /ask /doctor ... next to /etc /tmp, '/do'+Tab completes to /doctor, '/tm'+Tab still completes /tmp/, and every other word falls through via compopt -o bashdefault -o default ('ec'+Tab still lists echo). `complete -F <fn> /doctor` supplies per-command argument completion ('/doctor '+Tab lists gpu docker cuda memory services). Verified on the Spark in a throwaway bash 5.2 with bash-completion 2.11 loaded. fzf and ble.sh stay optional.",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o7",
+      "claim_id": "c7",
+      "seam": "nvsh/agent/base.py + tests/test_agent_conformance.py",
+      "behavior": "every registered adapter passes the same streaming, cancel, error, capability and teardown suite; only nvsh/agent/pi.py knows pi's protocol",
+      "source_text": "Agent boundary: nvsh/agent/ defines a small NvshAgent contract (request kinds failure|slash|explicit, streamed events text-delta|tool-call|proposal|status|done|error, cancel, capabilities) with a FakeAgent for tests and PiAgent as the default. PiAgent spawns 'pi --mode rpc' (pi 0.84.2 installed, JSONL over stdio with prompt/abort/get_state/switch_session commands and message_update/tool_execution_* events, documented in the shipped docs/rpc.md) as one long-lived subprocess per shell session so a failure does not pay pi's ~0.35 s node startup each time.",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o8",
+      "claim_id": "c8",
+      "seam": "nvsh/agent/loop.py approve callback + \\$XDG_STATE_HOME/nvsh/audit.jsonl",
+      "behavior": "no proposal executes before approve() returns True; every proposal, decision and outcome is appended to the audit log",
+      "source_text": "Deterministic nvsh tools (inspect_gpu, inspect_memory, inspect_containers, inspect_services, read_logs, retry_command, verify) are implemented once in Python. To expose them to Pi as first-class tools, nvsh ships one generic TypeScript extension file loaded via `pi -e <path>` that forwards each call to `nvsh tool <name> --json`; pi has no RPC command to register tools from outside the process (verified in docs/extensions.md and docs/rpc.md). Mutating proposals surface as 'proposal' events and are confirmed by the operator in nvsh, mirroring shell-cli's operations.py apply=False default and deny-wins policy. (Per decision c25, v1 uses only pi's bash tool; the extension shim is the later migration path.)",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o9",
+      "claim_id": "c9",
+      "seam": "nvsh/config.py + 'nvsh doctor' agent checks",
+      "behavior": "config names the pi provider/model without any key; doctor distinguishes pi-missing, endpoint-unreachable and endpoint-401 with distinct remediations",
+      "source_text": "Default model: nvsh's config ($XDG_CONFIG_HOME/nvsh/config.toml: [agent] provider=pi, [agents.pi] provider=nemotron model=associate) names Pi's own provider/model; the endpoint (a lobes-gateway at 192.168.1.138:8000, NOT this machine, which is 192.168.1.157) and its bearer key stay in ~/.pi/agent/models.json. nvsh never stores or forwards keys, and 'nvsh doctor' reports whether pi is on PATH and whether the configured provider answers /v1/models (both endpoints answered 'invalid_api_key' unauthenticated, so reachability is a 401-vs-timeout check).",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o10",
+      "claim_id": "c10",
+      "seam": "nvsh/platform/detect.py with the spark fixture tree",
+      "behavior": "reports DGX Spark, DGX OS 7.x, CUDA 13.0.2, driver 580.126.09 each with its source path; unified memory signalled via MemAvailable; cuDNN, TensorRT and nvpmodel reported absent",
+      "source_text": "Platform detection is file-first and reports its sources: /etc/dgx-release (DGX_NAME, DGX_SWBUILD_VERSION, OTA version), /etc/nv_tegra_release (Jetson, absent here), /proc/device-tree/model, /sys/class/dmi/id/product_name (NVIDIA_DGX_Spark), /usr/local/cuda/version.json (13.0.2), /proc/driver/nvidia/version (580.126.09), /proc/meminfo. On GB10 nvidia-smi reports memory.total/used as [N/A] (verified), so the CUDA-OOM signal is MemAvailable and dmesg OOM-killer, not VRAM. When dgx-spark-cli's 'spark status --json' is installed nvsh calls it; cuDNN, TensorRT and nvpmodel are absent on this Spark and must be reported as absent, not guessed. All of this is recorded in docs/platforms.md.",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o11",
+      "claim_id": "c11",
+      "seam": "nvsh/redact.py applied in nvsh/client.py before AgentContext leaves the process",
+      "behavior": "every corpus secret is scrubbed; 'nvsh context --show' prints exactly the bytes sent; rc files are never read",
+      "source_text": "Context collector + redactor: bounded command line, exit code, PIPESTATUS, cwd, captured output when available, platform block; redaction of HF_TOKEN=, --api-key, Authorization:, .env-style assignments runs before anything leaves the process, with its own tests and --show-context. The operator's ~/.bashrc exports many plaintext tokens, so the collector never sources or dumps rc files.",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o12",
+      "claim_id": "c12",
+      "seam": "nvsh/capture.py",
+      "behavior": "the failed command is never re-run to obtain its output; the slice comes from the session log or tmux pipe-pane",
+      "source_text": "Output capture without a PTY wrapper: the hook cannot see the failed command's output. v1 captures it by re-running on demand under 'script -qec' (util-linux 2.39.3 installed) for /retry and 'nvsh run', and by 'tmux capture-pane -p' when $TMUX is set (tmux 3.4 installed). 'exec > >(tee)' is rejected because it breaks isatty and colors.",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o13",
+      "claim_id": "c13",
+      "seam": "uv build + clean-venv install (tests/test_packaging.py)",
+      "behavior": "the wheel contains nvsh/shell/*.bash and nvsh/agent/pi_ext/*.ts, 'nvsh setup' works from it, dependencies stays empty",
+      "source_text": "Packaging: pyproject's hatch wheel config lists only packages=['nvsh'] with no artifacts/force-include, so the bash integration must be either a Python string rendered by 'nvsh install bash' or an explicit include; the runtime stays dependencies=[] (stdlib subprocess/json/select). New verbs (install, uninstall, hook, run, ask, fix, explain-last, complete, tool, agent) follow the register(sub)/CliError/emit_result/--json contract and each gets a catalog entry so teken cli doctor --strict stays green.",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o14",
+      "claim_id": "c14",
+      "seam": "docs/architecture.md, docs/platforms.md, CLAUDE.md, AGENTS.override.md, AGENTS.colleague.md, QWEN.md, .pi/SYSTEM.md, scripts/harness-smoke.py",
+      "behavior": "all prompt files describe the hook architecture; architecture.md records hook-over-wrap and the parked login-shell mode; harness-smoke config stage passes; version bumped",
+      "source_text": "Docs and prompts: add docs/architecture.md (hook decision and why, issue #1 milestone 1) and docs/platforms.md; update README's planned-verbs section and 'what leaves the machine'; rewrite the login-shell sections of CLAUDE.md, AGENTS.override.md, AGENTS.colleague.md, QWEN.md and .pi/SYSTEM.md so all four harness prompts describe the hook architecture; bump the version.",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o15",
+      "claim_id": "c15",
+      "seam": "nvsh/platform/detect.py with the thor and orin fixture trees",
+      "behavior": "thor reports R38.2, AGX Thor, CUDA 13, cuDNN 9.12, TensorRT 10.13, nvpmodel MAXN; orin reports R39.2, AGX Orin, CUDA toolkit absent, tensorrt absent",
+      "source_text": "Jetson detection sources verified on real hardware over ssh (thor = AGX Thor devkit, orin = AGX Orin devkit): /etc/nv_tegra_release first line (thor 'R38 (release), REVISION: 2.2', orin 'R39 (release), REVISION: 2.0'), /proc/device-tree/model ('NVIDIA Jetson AGX Thor Developer Kit' / 'NVIDIA Jetson AGX Orin Developer Kit'), /proc/device-tree/compatible (tegra264 / tegra234), dpkg nvidia-l4t-core (orin 39.2.0) or nvidia-cuda 7.0-b128 (thor), /usr/include/aarch64-linux-gnu/cudnn_version.h, libnvinfer10 dpkg, nvidia-smi name 'NVIDIA Thor' / 'Orin (nvgpu)' with memory [N/A] like GB10, nvpmodel -q ('NV Power Mode: MAXN 0'), tegrastats one-sample RAM line, /etc/docker/daemon.json default-runtime (nvidia on thor, unset on orin). Orin has no /usr/local/cuda/version.json and no tensorrt python module, so every source must be optional and reported as absent when missing.",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o16",
+      "claim_id": "c16",
+      "seam": "nvsh/agent/registry.py fallback on a host without pi, uv or tmux (orin)",
+      "behavior": "the hook installs with system Python 3.12; the panel offers install-or-choose; the stdlib openai-compat adapter serves a configured endpoint",
+      "source_text": "Jetson runtime floor: thor and orin both run bash 5.2.21 and Python 3.12.3, have 'script' and ssh, but neither has pi, fzf or a user PROMPT_COMMAND; orin also lacks uv and tmux, and thor's uv is a snap. The bash hook and the Python entrypoint must work there with only the system Python 3.12 and no pi on PATH: doctor reports 'pi not installed' with the install remediation, and the agent degrades to a stdlib OpenAI-compatible adapter (associate's harness/pi.py:831-863 urllib pattern) pointed at a configured endpoint rather than failing.",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o17",
+      "claim_id": "c17",
+      "seam": "pyproject.toml dependencies + 'python -X importtime -c \"import nvsh.cli\"'",
+      "behavior": "only stdlib modules import; missing pi/tmux/fzf/spark degrade a feature with a diagnostic, never break a shell command",
+      "source_text": "No third-party runtime dependencies (pyproject dependencies=[] stays); pi is an external optional binary, never a Python dependency, and absence of pi, tmux, fzf, spark (dgx-spark-cli) or any NVIDIA tool degrades a feature, never breaks the shell.",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o18",
+      "claim_id": "c18",
+      "seam": "nvsh CLI verb table + /etc/shells",
+      "behavior": "no install-shell, chsh or /etc/shells verb exists and no nvsh command edits /etc/shells",
+      "source_text": "nvsh is not built as a login shell or PTY wrapper in this scope: no chsh, no /etc/shells entry, no 'install-shell', no argv[0]='-nvsh' handling. The operator keeps /bin/bash (verified as the login shell on spark, thor and orin). This retires the 'Login-shell constraints' section of CLAUDE.md:122-152; a wrapper can be revisited later behind the same NvshAgent and tools layer.",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o19",
+      "claim_id": "c19",
+      "seam": "nvsh/platform imports",
+      "behavior": "no import of or hard dependency on jetson-cli, rtx-spark-cli or callsmith; only an optional 'spark status --json' subprocess",
+      "source_text": "nvsh does not re-implement or depend on jetson-cli, rtx-spark-cli or callsmith: all three are unrewritten culture-agent-template scaffolds with zero domain code (jetson-cli/CLAUDE.md:9-18; grep for nv_tegra_release/nvpmodel/guard returned nothing). Only dgx-spark-cli ('spark', spark/probe/*.py) is real and is called when installed.",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o20",
+      "claim_id": "c20",
+      "seam": "git diff on culture.yaml, .claude/skills, .pi/skills, doctor._PROMPT_FILE",
+      "behavior": "the diff is empty across the change; tests/test_pi_settings.py and tests/test_harness_registries.py pass",
+      "source_text": "Untouched: culture.yaml (backend stays claude, never rewritten by code), .claude/skills (vendored verbatim from guildmaster), the .pi/skills relative symlink and the no-.pi/settings.json rule enforced by tests/test_pi_settings.py, and doctor's _PROMPT_FILE table which tests/test_harness_registries.py pins to backend-fingerprints.yaml.",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o21",
+      "claim_id": "c21",
+      "seam": "scripts/scan-secrets.py over tracked files",
+      "behavior": "passes; every example config uses http://localhost placeholders",
+      "source_text": "No endpoint or key lands in tracked JSON: scripts/scan-secrets.py fails CI on any non-localhost http URL under baseUrl/endpoint/url/host keys in JSON files, so config examples use localhost placeholders and the real provider mapping lives only in ~/.pi/agent/models.json on the machine.",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o22",
+      "claim_id": "c22",
+      "seam": "nvsh/slash.py registry and nvsh/agent/registry.py",
+      "behavior": "no /remember-good, /diff-good, /restore-good verbs, no zsh/fish installers and no exit-0 pattern triggers ship in v1",
+      "source_text": "Deferred past this scope: known-good state (/remember-good, /diff-good, /restore-good), the OpenAI first-class adapter (issue #6 MVP step 7), zsh/fish integrations, fzf/ble.sh palettes (level 2/3 of issue #5), and pattern triggers for tools that fail with exit 0.",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o23",
+      "claim_id": "c23",
+      "seam": "tests/test_timing.py + an 80x24 TERM=xterm no-colour run",
+      "behavior": "under 5 ms added on success; under 2 s to first agent text with a warm session; panel readable without colour",
+      "source_text": "Snappy means: a successful command adds one bash function call (no fork) before the next prompt; a qualifying failure shows the first agent text within about a second on the Spark because the pi rpc process is already warm; Ctrl+G and /ask reuse the same warm session; and everything renders in a plain 80-column SSH terminal (thor and orin are reached only over ssh) with 256-colour output optional.",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o24",
+      "claim_id": "c24",
+      "seam": "'nvsh agent list/use' + the install offer in nvsh/agent/registry.py",
+      "behavior": "pi, qwen, claude, codex, openai-compat listed with installed status; with none installed the panel offers install pi or choose another; each adapter passes conformance",
+      "source_text": "Harness chooser: 'nvsh install' / 'nvsh agent use' detects which harness CLIs are on PATH (pi, qwen, claude, codex), defaults to pi, offers to install pi when absent (npm via nvm on the Spark; the Jetsons have no node today), or lets the operator pick another. Each harness is an NvshAgent adapter that drives the CLI's headless mode (pi --mode rpc; claude -p --output-format stream-json; codex exec --json; qwen -p) and reports its capabilities.",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o25",
+      "claim_id": "c25",
+      "seam": "nvsh/agent/pi_ext/approval.ts tool_call handler",
+      "behavior": "a bash tool call runs only when the user or session allowlist matches or the operator approves by keypress; other tools are blocked",
+      "source_text": "v1 agent tooling: pi gets the nvsh system prompt, the bounded failure context and its built-in bash tool, gated by a small nvsh-shipped TypeScript extension that intercepts every tool_call: a command matching the operator's persistent 'approved for user' list or the in-memory 'approved for session' list runs; anything else is shown in the panel and waits for a keypress, with 'approve once / approve for session / approve for user' as the choices. Patterns are shell globs ('nvsh *' approves nvsh with any arguments). nvsh-specific skills and resident deterministic tools are still prototyped in the associate harness first and migrated when proven.",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o26",
+      "claim_id": "c26",
+      "seam": "hook.bash Ghostty composition (declare -p PROMPT_COMMAND, trap -p DEBUG)",
+      "behavior": "nvsh hook first and __ghostty_hook once; no nvsh DEBUG trap; Ghostty jump-to-prompt survives a panel",
+      "source_text": "Compose with Ghostty's bash integration, which is already active on the Spark (TERM_PROGRAM=ghostty 1.3.1, /usr/share/ghostty/shell-integration/bash/ghostty.bash): it appends __ghostty_hook to PROMPT_COMMAND array-aware and idempotently (ghostty.bash:295-308), uses PS0 for preexec on bash>=5.2 and otherwise sources bash-preexec.sh (line 312). nvsh's hook uses the same append pattern, registers through preexec_functions when bash-preexec is loaded instead of installing its own DEBUG trap, and preserves Ghostty's OSC 133 markers around its inline panel.",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o27",
+      "claim_id": "c27",
+      "seam": "nvsh/client.py retry path",
+      "behavior": "diagnosis is produced from status, command line, PIPESTATUS and context first; any re-run waits for an explicit Enter",
+      "source_text": "Output capture rule: diagnose first from exit status, command line, PIPESTATUS and machine context; ask before any re-run under script(1); use tmux capture-pane only when already inside tmux. No silent re-execution ever.",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o28",
+      "claim_id": "c28",
+      "seam": "nvsh setup exec wrapper + hook.bash ghostty sourcing",
+      "behavior": "a script(1) typescript per interactive session, tmux pipe-pane inside tmux, ghostty.bash sourced when TERM_PROGRAM=ghostty; the failed command's output is available without re-run",
+      "source_text": "'nvsh setup' installs the capture layer along with pi and the hooks: a per-session typescript via util-linux script(1) (present on spark, thor, orin) started from the hook file when the shell is interactive, not already under script or tmux, and not nested; tmux is installed/used when the operator wants a multiplexer (orin lacks it; apt candidate 3.4) and then tmux pipe-pane is the log source instead. Either log is sliced per command by Ghostty's OSC 133 C/D markers, which nvsh's hook file re-sources from /usr/share/ghostty/shell-integration/bash/ghostty.bash when TERM_PROGRAM=ghostty (or emits itself elsewhere). So the failed command's actual output is available without any re-run; re-run stays ask-first.",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o29",
+      "claim_id": "c29",
+      "seam": "nvsh/capture.py open_session_log",
+      "behavior": "log is 0600 under \\$XDG_RUNTIME_DIR/nvsh, removed at exit, only the last C..D slice is read, and script(1) dying leaves the shell usable",
+      "source_text": "Session log hygiene: the typescript lives under $XDG_RUNTIME_DIR/nvsh/ (tmpfs) with mode 0600, is rotated/truncated per session, only the slice for the failed command is read, redaction runs on that slice before it reaches any agent, and 'nvsh setup' explains the log exists. If script(1) or the log fails, the hook silently continues without capture.",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o30",
+      "claim_id": "c30",
+      "seam": "README.md first paragraph + docs/verification.md",
+      "behavior": "names Jetson AGX Orin/Thor, DGX Spark, bash, Ghostty and ssh; the checklist is executed on spark, thor and orin",
+      "source_text": "Operators (starting with Ori) who live at a bash prompt on NVIDIA Jetson AGX Orin/Thor and DGX Spark machines, locally in Ghostty and over ssh, and who want an NVIDIA engineer to appear only when something breaks.",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o31",
+      "claim_id": "c31",
+      "seam": "docs/architecture.md opening section",
+      "behavior": "states the before-state citing README.md:10-14 and the retired PTY wording as of 0.9.1",
+      "source_text": "Today a failure on a Jetson or Spark means copying the error into a chat, re-deriving the machine's JetPack/CUDA/unified-memory facts by hand, and typing fixes back; nvsh itself is a scaffold with no shell behaviour (README.md:10-14) and its prompts still describe a PTY wrapper.",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o32",
+      "claim_id": "c32",
+      "seam": "docs/demos/ + docs/verification.md",
+      "behavior": "two recorded demos (Spark CUDA-OOM-style in Ghostty, orin missing-package over ssh) show panel, approve, retry, verify; uninstall leaves PROMPT_COMMAND and the rc as before",
+      "source_text": "After 'nvsh setup', the operator's own bash is unchanged on success; a qualifying failure shows an inline \u26a1 nvsh panel within a second with a diagnosis built from the real output slice and the machine's detected facts, offers a proposed fix that runs only after Enter, retries, and reports whether it worked; /ask, /fix, /doctor, /explain, /retry and Ctrl+G reach the same warm pi session; 'nvsh uninstall' removes everything.",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o33",
+      "claim_id": "c33",
+      "seam": "system prompt assembly in nvsh/client.py (tests/test_context.py)",
+      "behavior": "the platform block is in the prompt; with outbound network disabled a localhost endpoint is still reached",
+      "source_text": "The value is NVIDIA-specific and local: unified memory on GB10/Jetson, L4T/JetPack version skew, container runtime and power mode are what a generic 'explain my error' tool gets wrong, and the machines are often air-gapped, so the agent must run against a local model with the facts collected on-box.",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o34",
+      "claim_id": "c34",
+      "seam": "tests/test_triggers.py, tests/test_redact.py, tests/test_timing.py, docs/verification.md",
+      "behavior": "each success number is produced by its named test or dated checklist line",
+      "source_text": "Measured: a successful command adds < 5 ms to the next prompt (bash-only hook, no fork); the panel's first agent text appears < 2 s after a qualifying failure on the Spark with a warm pi session; 0 agent calls for exit codes 130/141, grep/diff 1, false and test in the trigger table tests; 100% of the redaction test corpus is scrubbed; the hook installs and uninstalls cleanly on spark, thor and orin (3/3).",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o35",
+      "claim_id": "c35",
+      "seam": "hook.bash PROMPT_COMMAND prepend (tests/test_hook_bash.py)",
+      "behavior": "'false | true' records PIPESTATUS '1 0', 'true | false | true' records '0 1 0', and pipefail changes the recorded status to 1",
+      "source_text": "Hook ordering and status capture: the nvsh hook is inserted as the FIRST element of the PROMPT_COMMAND array and captures $? and PIPESTATUS in its first statement; later elements (Ghostty's __ghostty_hook, others) run after it. Probe on the Spark: a hook placed after __ghostty_hook saw PIPESTATUS clobbered, while a first-position hook saw 'false | true' as '1 0' and 'true | false | true' as '0 1 0'; with the user's own 'set -o pipefail' the hook's $? becomes the pipeline status, which the trigger table must respect rather than override.",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o36",
+      "claim_id": "c36",
+      "seam": "nvsh/rcfile.py (tests/test_rcfile.py)",
+      "behavior": "the block sits right after the interactive guard, setup is idempotent, a timestamped backup exists, and 'bash -ic true' stays within 10% of baseline",
+      "source_text": "Placement of the capture wrapper in ~/.bashrc: the exec into script(1) must be the first line after the distro's interactive guard ('If not running interactively' at line 40 on spark, 29 on thor, 28 on orin), guarded by an NVSH_WRAPPED env var, not appended at the end. Otherwise the whole rc (nvm, cargo, kiro-cli, bash-completion) runs twice and every new terminal pays a second 'bash -ic true' (0.25 s measured) before the prompt. 'nvsh setup' edits the rc idempotently inside a marked block and keeps a timestamped backup.",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o37",
+      "claim_id": "c37",
+      "seam": "'nvsh doctor' bindings_present and hook_first checks",
+      "behavior": "any other integration that rebinds C-m or reorders PROMPT_COMMAND is reported with the source file when known",
+      "source_text": "Coexistence with other shell integrations on the operator's machines: Ghostty (PROMPT_COMMAND element + PS0/bash-preexec), kiro-cli pre/post files (5 lines each, no PROMPT_COMMAND/bind/trap found), bash-completion's 'complete -D _completion_loader' (the -I slot is free, verified with 'complete -p -I'). No integration on spark, thor or orin rebinds Enter today; any future one that does (fzf, atuin, ble.sh) is a known conflict class that 'nvsh doctor' reports by inspecting 'bind -p' for C-m.",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o38",
+      "claim_id": "c38",
+      "seam": "nvsh/panel.py renderer (tests/test_panel.py)",
+      "behavior": "no tput call; readable output under TERM=dumb, NO_COLOR=1, non-tty and TERM=xterm-ghostty without terminfo; doctor prints the tic remediation",
+      "source_text": "Terminal portability: thor has no xterm-ghostty terminfo (infocmp fails), so an ssh from Ghostty arrives with TERM=xterm-ghostty and tput/clear break. The panel renders with hard-coded SGR sequences guarded by NO_COLOR / TERM=dumb / non-tty checks and never calls tput; 'nvsh doctor' detects missing terminfo and prints the 'infocmp -x | ssh host tic -x -' remediation.",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o39",
+      "claim_id": "c39",
+      "seam": "readline.bash bind -m emacs / vi-insert / vi-command",
+      "behavior": "routing, Ctrl+G and the palette work in emacs mode and after 'set -o vi'",
+      "source_text": "Readline keymaps: the Enter macro, Ctrl+G and the palette are bound in the emacs, vi-insert and vi-command keymaps (one 'bind -m' per keymap); probe on the Spark showed a plain 'bind -x' binding does not fire after 'set -o vi' while a vi-insert keymap binding does.",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o40",
+      "claim_id": "c40",
+      "seam": "nvsh doctor agent_reachable + config endpoint",
+      "behavior": "a LAN endpoint is probed with a timeout; an unreachable or absent endpoint yields a clear message and never a hang",
+      "source_text": "The default model is LAN-local, not on-box: Pi's 'associate' is served by a gateway on 192.168.1.138, and orin (no node, 3.1 GB MemAvailable) cannot host pi or a model. So 'offline-first' in v1 means 'no internet, LAN reachable'; a truly air-gapped machine needs an on-box endpoint configured or gets 'no agent configured' from doctor with a clear message, never a hang.",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o41",
+      "claim_id": "c41",
+      "seam": "PiAgent argv (tests/test_pi_agent.py)",
+      "behavior": "argv contains --no-context-files --no-extensions --no-skills --no-prompt-templates --no-approve and a session flag; no file appears under ~/.pi/agent/sessions after a run",
+      "source_text": "pi launch hygiene: PiAgent starts pi with --no-context-files (otherwise pi reads CLAUDE.md/AGENTS.md from the user's cwd into the prompt), --no-extensions, --no-skills, --no-prompt-templates, --no-approve, and either --no-session or --session-dir under $XDG_STATE_HOME/nvsh (0700). Probe: pi stores sessions per cwd under ~/.pi/agent/sessions (26 project dirs on the Spark), so an unflagged run would persist redacted-but-sensitive failure context into project-named session files.",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o42",
+      "claim_id": "c42",
+      "seam": "nvsh/triggers.py program_class frozenset",
+      "behavior": "ssh, docker exec, kubectl exec, tmux, screen, su and sudo -i never auto-trigger; /fix still works on them",
+      "source_text": "Remote and container commands are pass-through for triggers: 'ssh host cmd', 'docker exec -it', 'kubectl exec', tmux/screen attach and 'su'/'sudo -i' return the remote or inner status, which is not this machine's failure. The trigger table lists them as never-auto-trigger; the operator can still /fix them explicitly.",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o43",
+      "claim_id": "c43",
+      "seam": "nvsh/daemon.py lifecycle (pgrep-based test)",
+      "behavior": "no nvsh or pi process at shell start; one daemon after the first qualifying failure; none after the last shell exits; one-shot fallback when the daemon is missing",
+      "source_text": "Warm-session ownership: the long-lived pi process is owned by an nvsh session daemon started lazily on the first qualifying failure (never at shell start), listening on a per-user socket under $XDG_RUNTIME_DIR/nvsh/; the 45 ms hook client connects, streams the panel, and exits. The daemon dies on an idle timeout and when its last shell exits (EXIT trap sends a stop); stale sockets are reaped at the next start. If the daemon or pi is missing or crashed, the client falls back to a one-shot 'pi -p' run so a failure is never left without a diagnosis.",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o44",
+      "claim_id": "c44",
+      "seam": "hook file version stamp vs nvsh --version",
+      "behavior": "an older stamp prints the refresh notice once per session; 'nvsh setup' re-renders and the notice stops",
+      "source_text": "Upgrade path: the sourced ~/.local/share/nvsh/bash.sh carries the nvsh version that rendered it; the failure-path client compares it with its own version and prints 'run nvsh setup to refresh the hook' once per session when they differ. 'nvsh setup' is idempotent and re-renders; a 'uv tool upgrade nvsh' alone never breaks the shell because the old hook only calls stable verbs.",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o45",
+      "claim_id": "c45",
+      "seam": "NVSH_DISABLE, 'nvsh on/off', 'nvsh uninstall' (tests/test_setup.py)",
+      "behavior": "NVSH_DISABLE=1 yields no hook, no bindings and no capture; off/on unbind and rebind; uninstall leaves the rc byte-identical to the backup and no files, sockets or processes",
+      "source_text": "Kill switch and reversibility: NVSH_DISABLE=1 in the environment makes the sourced file a no-op; 'nvsh off' / 'nvsh on' unbind and rebind Enter, the palette and the hook in the current shell; 'nvsh uninstall' removes the marked block from ~/.bashrc (restoring from its backup if the block was edited), the hook file, runtime sockets and logs, and stops daemons. Hook functions never use set -e and end with '|| return 0'. Probe on the Spark: an erroring bind -x function still lets the Enter macro accept the line, so a bug degrades, it does not lock the terminal.",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o46",
+      "claim_id": "c46",
+      "seam": "SIGINT handling in nvsh/client.py + PiAgent.cancel()",
+      "behavior": "Ctrl+C aborts the run and returns a working prompt within 1 s; /fix still finds the last failure; killing script(1) or the daemon leaves the shell usable",
+      "source_text": "Interrupt and cleanup: Ctrl+C while the panel is streaming sends rpc abort to pi, restores the terminal and returns to a clean prompt with the original failure still available to /fix; killing script(1) or the daemon mid-session leaves the shell usable; stale session logs under $XDG_RUNTIME_DIR/nvsh are removed at next setup or shell start.",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o47",
+      "claim_id": "c47",
+      "seam": "nvsh/capture.py last_slice + nvsh/redact.py (tests/test_capture.py)",
+      "behavior": "a 5 MB binary failure yields at most 64 KB with a truncation marker, valid UTF-8, no escape sequences, redacted; the log path never appears in the request",
+      "source_text": "The output slice sent to the agent is bounded (last 64 KB of the failed command's C..D region, head+tail with a marker when truncated), handled as bytes with invalid UTF-8 replaced, stripped of escape sequences before redaction, and redacted before it leaves the hook client. The session log itself is never transmitted whole and never leaves the machine.",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o48",
+      "claim_id": "c48",
+      "seam": "nvsh/agent/loop.py + nvsh/panel.py",
+      "behavior": "no auto-apply code path exists; a 'sudo apt install x' proposal is shown verbatim, requires Enter, and is never inserted into READLINE_LINE",
+      "source_text": "No auto-apply in v1: every proposal, including package installs and container stops, waits for an explicit keypress; there is no 'safe auto-fix policy' switch yet, and 'sudo' proposals are shown with the exact command and never pre-typed into the prompt.",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o49",
+      "claim_id": "c49",
+      "seam": "'nvsh doctor --json' in-shell checks",
+      "behavior": "hook_sourced, hook_first_in_prompt_command, bindings_present, capture_active, daemon_status, terminfo_present each report pass/fail with a remediation; ordering fails when the hook is last",
+      "source_text": "'nvsh doctor' gains in-shell checks with remediations: hook file sourced, nvsh hook first in PROMPT_COMMAND, Enter/Tab/Ctrl+G bindings present in the active keymap, capture active (script or tmux pipe-pane) with the log path and mode, daemon and pi status, harness reachable, terminfo present; '/doctor' prints the same inline.",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o50",
+      "claim_id": "c50",
+      "seam": "nvsh/approvals.py + approved.toml (tests/test_approvals.py)",
+      "behavior": "fnmatch on the full command line; add() refuses sudo, rm and bare patterns; defaults present; session list in memory only; every allowlisted run audited",
+      "source_text": "Approval allowlists: 'approved for user' lives at $XDG_CONFIG_HOME/nvsh/approved.toml (0600) as glob patterns matched against the full command line with fnmatch semantics; 'approved for session' lives in the daemon's memory and dies with it. Defaults ship read-only inspectors ('nvidia-smi *', 'docker ps*', 'journalctl *', 'systemctl status *', 'df *', 'free *', 'nvsh *') and never 'sudo *', 'rm *' or a bare '*'; 'nvsh approve list/add/remove' and '/approve' manage them; every allowlisted execution is still written to the audit log.",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o51",
+      "claim_id": "c51",
+      "seam": "nvsh/daemon.py conversation switching (tests/test_daemon.py)",
+      "behavior": "failures from shells A and B stay in separate conversations, one pi process serves both, sleeping conversations resume, sessions.max raises the limit",
+      "source_text": "Session daemon model (from decision on q9): one nvsh daemon and one pi process per user, $XDG_RUNTIME_DIR/nvsh/daemon.sock; each shell session (keyed by the hook's shell PID) owns its own pi conversation. When a request arrives from a shell other than the active one, the daemon puts the active conversation to sleep (pi rpc switch_session / new_session, which persist to the nvsh-owned session dir) and activates the caller's conversation, resuming it on its next request. 'sessions.max' in config allows more concurrent pi processes for machines that can afford them.",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o52",
+      "claim_id": "c52",
+      "seam": "/undo handler in nvsh/slash.py (tests/test_slash.py)",
+      "behavior": "drops the last agent turn and its proposal; the executor is never called",
+      "source_text": "/undo in v1 rewinds the agent conversation (last turn and its proposal) and never reverts machine changes; reverting changes is a follow-up tracked as a GitHub issue on agentculture/nvsh.",
+      "origin": "llm",
+      "status": "approved"
+    }
+  ]
+}

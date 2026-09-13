@@ -1,0 +1,287 @@
+#!/usr/bin/env python3
+"""Fake ``pi --mode rpc`` used by tests so CI never needs node/pi installed.
+
+Speaks a small, deliberately incomplete subset of the protocol documented in
+``docs/pi-rpc.md`` (itself summarizing the real
+``@earendil-works/pi-coding-agent`` ``docs/rpc.md``):
+
+* Reads JSONL commands from stdin, one per line.
+* On ``prompt``: replies with a ``response`` ack, then streams a
+  ``message_update`` text-delta event (two when the prompt contains
+  "TWODELTA"), optionally a ``tool_execution_start``/``tool_execution_end``
+  pair when the prompt contains "TOOL", an ``extension_ui_request`` when the
+  prompt contains "PROPOSE", and finally an ``agent_end`` event.
+* On ``abort``: replies with a ``response`` ack, then emits ``agent_end``
+  with ``aborted: true``.
+* On any other/unknown command type: emits an ``{"type": "error", ...}``
+  event.
+
+Two knobs exist only so the session daemon's tests can watch this process
+from the outside (``tests/test_daemon_lifecycle.py``):
+
+* ``FAKE_PI_PIDDIR`` -- write ``<pid>.pid`` there at start and remove it at
+  exit, so a test can count live fake-pi processes without ``pgrep -f``
+  (which under ``pytest -n auto`` also sees other tests' fakes).
+* ``FAKE_PI_CMDLOG`` -- append every received command object as one JSON
+  line, so a test can assert that ``new_session``/``switch_session``
+  actually reached pi.
+
+Set ``FAKE_PI_CRASH=1`` to make this process ``exit(1)`` partway through
+streaming a prompt's events (after the text delta, before ``agent_end``),
+simulating a crashed backend that a real caller must not hang waiting on.
+
+Two knobs model what the *real* pi does around commands (deviation d14):
+
+* ``FAKE_PI_STRICT_ACK=1`` -- behave like pi 0.85.1 when a client
+  pipelines: if another command line is already waiting on stdin when this
+  process is about to acknowledge one, both are dropped and the process
+  goes mute forever. That is the exact shape of d14, so a client that
+  writes a prompt without waiting for the previous command's ack hangs
+  here too instead of passing the test suite and failing on the Spark.
+* ``FAKE_PI_ACK_DELAY=<seconds>`` -- how long to dawdle before an ack,
+  widening the window a pipelining client would race into (default 0.2,
+  the measured round trip of the real pi).
+
+Like the real pi, this fake owns the name of its session file: it creates
+one under ``--session-dir`` on start and on every ``new_session``, and
+reports it as ``get_state``'s ``data.sessionFile``.
+"""
+
+from __future__ import annotations
+
+import atexit
+import json
+import os
+import select
+import sys
+import time
+import uuid
+from pathlib import Path
+
+
+def write_pidfile() -> None:
+    piddir = os.environ.get("FAKE_PI_PIDDIR")
+    if not piddir:
+        return
+    path = Path(piddir) / f"{os.getpid()}.pid"
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(str(os.getpid()), encoding="utf-8")
+    except OSError:
+        return
+    atexit.register(lambda: path.unlink(missing_ok=True))
+
+
+def log_command(cmd: dict) -> None:
+    cmdlog = os.environ.get("FAKE_PI_CMDLOG")
+    if not cmdlog:
+        return
+    try:
+        with open(cmdlog, "a", encoding="utf-8") as handle:
+            handle.write(json.dumps(cmd) + "\n")
+    except OSError:
+        pass
+
+
+def emit(obj: dict) -> None:
+    sys.stdout.write(json.dumps(obj) + "\n")
+    sys.stdout.flush()
+
+
+STATE = {"session_file": "", "mute": False}
+
+
+class Reader:
+    """Unbuffered line reader over fd 0, with an honest "is more waiting?".
+
+    ``sys.stdin``'s own buffering would hide a pipelined second command
+    inside Python's buffer, so the strict-ack check below reads fd 0
+    directly and keeps its own remainder.
+    """
+
+    def __init__(self) -> None:
+        self._buf = b""
+
+    def _fill(self) -> bool:
+        chunk = os.read(0, 65536)
+        if not chunk:
+            return False
+        self._buf += chunk
+        return True
+
+    def has_pending(self, timeout: float) -> bool:
+        """Is a whole further command already available within *timeout*?"""
+        if b"\n" in self._buf:
+            return True
+        if not select.select([0], [], [], timeout)[0]:
+            return False
+        return self._fill() and b"\n" in self._buf
+
+    def readline(self) -> str:
+        while b"\n" not in self._buf:
+            if not self._fill():
+                line, self._buf = self._buf, b""
+                return line.decode("utf-8", errors="replace")
+        line, _, self._buf = self._buf.partition(b"\n")
+        return line.decode("utf-8", errors="replace")
+
+
+def session_dir() -> Path | None:
+    argv = sys.argv
+    if "--session-dir" not in argv:
+        return None
+    return Path(argv[argv.index("--session-dir") + 1])
+
+
+def new_session_file() -> str:
+    """Create a session file the way pi does: our name, inside --session-dir."""
+    directory = session_dir()
+    if directory is None:
+        return ""
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"{uuid.uuid4()}.jsonl"
+    path.write_text("", encoding="utf-8")
+    STATE["session_file"] = str(path)
+    return STATE["session_file"]
+
+
+def ack(reader: "Reader", cmd: dict, command: str, **extra: object) -> None:
+    """Acknowledge one command, modelling pi 0.85.1's pipelining bug.
+
+    With ``FAKE_PI_STRICT_ACK=1``, a client that has already written its
+    next command before this ack goes out loses both: the fake stops
+    answering anything, forever, exactly as the real pi did in d14.
+    """
+    delay = float(os.environ.get("FAKE_PI_ACK_DELAY", "0") or 0)
+    if os.environ.get("FAKE_PI_STRICT_ACK") == "1":
+        if reader.has_pending(delay or 0.05):
+            STATE["mute"] = True
+            return
+    elif delay:
+        time.sleep(delay)
+    emit({"id": cmd.get("id"), "type": "response", "command": command, "success": True, **extra})
+
+
+def handle_prompt(reader: "Reader", cmd: dict) -> None:
+    message = cmd.get("message", "")
+    ack(reader, cmd, "prompt")
+    if STATE["mute"]:
+        return
+
+    emit(
+        {
+            "type": "message_update",
+            "assistantMessageEvent": {"type": "text_delta", "delta": "looking at the failure"},
+        }
+    )
+    if "TWODELTA" in message:
+        emit(
+            {
+                "type": "message_update",
+                "assistantMessageEvent": {"type": "text_delta", "delta": " and one more thing"},
+            }
+        )
+
+    if os.environ.get("FAKE_PI_CRASH") == "1":
+        sys.exit(1)
+
+    if "TOOL" in message:
+        emit(
+            {
+                "type": "tool_execution_start",
+                "toolCallId": "call_1",
+                "toolName": "bash",
+                "args": {"command": "nvidia-smi"},
+            }
+        )
+        emit(
+            {
+                "type": "tool_execution_end",
+                "toolCallId": "call_1",
+                "toolName": "bash",
+                "result": {"content": [{"type": "text", "text": "ok"}]},
+                "isError": False,
+            }
+        )
+
+    if "PROPOSE" in message:
+        emit(
+            {
+                "type": "extension_ui_request",
+                "id": "ui-1",
+                "method": "confirm",
+                "title": "Apply fix?",
+                "command": "sudo nvidia-smi -pm 1",
+                "message": "Run: sudo nvidia-smi -pm 1",
+            }
+        )
+        # A real pi blocks here for an extension_ui_response before
+        # continuing. This fake does not implement that round trip (it is
+        # only used to exercise the extension_ui_request -> PROPOSAL
+        # mapping); it always finishes the turn regardless.
+
+    emit({"type": "agent_end", "messages": [], "willRetry": False})
+
+
+def handle_abort(cmd: dict) -> None:
+    emit({"id": cmd.get("id"), "type": "response", "command": "abort", "success": True})
+    emit({"type": "agent_end", "messages": [], "willRetry": False, "aborted": True})
+
+
+def handle_unknown(cmd: dict) -> None:
+    emit(
+        {
+            "id": cmd.get("id"),
+            "type": "response",
+            "command": cmd.get("type", "unknown"),
+            "success": False,
+            "error": f"unknown command: {cmd.get('type')}",
+        }
+    )
+    emit({"type": "error", "error": f"unknown command: {cmd.get('type')}"})
+
+
+def main() -> None:
+    write_pidfile()
+    new_session_file()
+    reader = Reader()
+    while True:
+        raw_line = reader.readline()
+        if not raw_line:
+            return
+        line = raw_line.strip()
+        if not line:
+            continue
+        try:
+            cmd = json.loads(line)
+        except json.JSONDecodeError:
+            emit({"type": "response", "command": "parse", "success": False, "error": "bad json"})
+            continue
+
+        log_command(cmd)
+        if STATE["mute"]:
+            continue  # pipelined into: this process answers nothing, ever
+        cmd_type = cmd.get("type")
+        if cmd_type == "prompt":
+            handle_prompt(reader, cmd)
+        elif cmd_type == "abort":
+            handle_abort(cmd)
+        elif cmd_type in ("new_session", "switch_session"):
+            if cmd_type == "new_session":
+                new_session_file()
+            else:
+                STATE["session_file"] = str(cmd.get("sessionPath") or "")
+            ack(reader, cmd, cmd_type, data={"cancelled": False})
+        elif cmd_type == "get_state":
+            ack(
+                reader,
+                cmd,
+                "get_state",
+                data={"isStreaming": False, "sessionFile": STATE["session_file"]},
+            )
+        else:
+            handle_unknown(cmd)
+
+
+if __name__ == "__main__":
+    main()

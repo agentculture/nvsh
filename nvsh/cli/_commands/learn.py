@@ -29,6 +29,7 @@ Commands
   nvsh overview           Descriptive snapshot of the agent.
   nvsh doctor             Check the agent-identity invariants.
   nvsh cli overview       Describe the CLI surface itself.
+  nvsh approve check ...  Check whether a command is already approved.
 
 Machine-readable output
 -----------------------
@@ -64,6 +65,7 @@ def _as_json_payload() -> dict[str, object]:
             {"path": ["overview"], "summary": "Descriptive snapshot of the agent."},
             {"path": ["doctor"], "summary": "Check the agent-identity invariants."},
             {"path": ["cli", "overview"], "summary": "Describe the CLI surface."},
+            {"path": ["approve", "check"], "summary": "Check whether a command is approved."},
         ],
         "exit_codes": {
             "0": "success",

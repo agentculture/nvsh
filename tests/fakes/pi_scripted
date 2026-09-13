@@ -1,0 +1,177 @@
+#!/usr/bin/env python3
+"""Fake ``pi --mode rpc`` driven by an externally supplied event script.
+
+Used by the shared ``tests/test_agent_conformance.py`` suite (and by
+``tests/test_client.py``'s one-shot dialog tests) to make ``PiAgent`` replay
+an arbitrary, test-supplied sequence of already-wire-shaped JSON events
+(built by ``_agent_event_to_wire`` in that test module) -- the same trick the
+generic ``tests/fakes/pi`` cannot do, since its canned responses are fixed.
+
+Protocol: reads ``NVSH_TEST_PI_SCRIPT`` (a JSON array of wire-event dicts,
+each with a ``"type"`` field) from the environment. On the first ``prompt``
+command received on stdin, acks it, then emits each scripted event in order.
+An ``abort`` command is acked but otherwise ignored -- ``PiAgent`` itself is
+responsible for not yielding further events after ``cancel()``, per the same
+contract ``FakeAgent`` honours.
+
+Two optional environment knobs make the fake behave like a *real* dialog
+(deviation d11, where nothing answered pi's ``select`` and the turn stalled):
+
+* ``NVSH_TEST_PI_AWAIT_UI=1`` -- pause the script after emitting an
+  ``extension_ui_request`` and resume only once an ``extension_ui_response``
+  arrives on stdin. Off by default, so scripts that never answer a dialog
+  (the d8 regression scripts) still run to completion.
+* ``NVSH_TEST_PI_RESPONSES=<path>`` -- append every ``extension_ui_response``
+  command received, one JSON object per line, so a test can assert on what
+  the client actually sent back.
+* ``NVSH_TEST_PI_COMMANDS=<path>`` -- append *every* command line received,
+  one JSON object per line, so a test can assert on the mid-turn steer
+  (``{"type": "prompt", "streamingBehavior": "steer", ...}``) the client
+  writes while a dialog is open (deviation d16). A steering prompt is
+  acknowledged like any other prompt and never re-runs the script.
+
+While awaiting an answer the fake gives up after ``NVSH_TEST_PI_UI_TIMEOUT``
+seconds (default 10) and emits an ``error`` event, so a *broken* client fails
+the test quickly instead of hanging the suite -- which is exactly what d11
+looked like in the terminal. That deadline is a watchdog *thread*, not a
+``select`` on stdin: the client legitimately writes two command lines
+back to back (the d16 steer, then the deny), both land in one read, and
+``select`` would then report "nothing to read" while the second line was
+already sitting in Python's own buffer.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+import threading
+import uuid
+from pathlib import Path
+
+#: The session file this process is "writing", the way the real pi owns the
+#: name of its own session file inside ``--session-dir``.
+SESSION_FILE = ""
+
+
+def session_file(create: bool = False) -> str:
+    """Report (and optionally create) this process's session file."""
+    global SESSION_FILE
+    if not create:
+        return SESSION_FILE
+    argv = sys.argv
+    if "--session-dir" not in argv:
+        return ""
+    directory = Path(argv[argv.index("--session-dir") + 1])
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"{uuid.uuid4()}.jsonl"
+    path.write_text("", encoding="utf-8")
+    SESSION_FILE = str(path)
+    return SESSION_FILE
+
+
+def emit(obj: dict) -> None:
+    sys.stdout.write(json.dumps(obj) + "\n")
+    sys.stdout.flush()
+
+
+def _append(variable: str, cmd: dict) -> None:
+    path = os.environ.get(variable)
+    if not path:
+        return
+    with open(path, "a", encoding="utf-8") as handle:
+        handle.write(json.dumps(cmd) + "\n")
+
+
+def record(cmd: dict) -> None:
+    _append("NVSH_TEST_PI_RESPONSES", cmd)
+
+
+def record_command(cmd: dict) -> None:
+    _append("NVSH_TEST_PI_COMMANDS", cmd)
+
+
+def emit_script(events: list, await_ui: bool) -> tuple:
+    """Emit ``events`` in order; stop after a dialog when awaiting an answer.
+
+    Returns ``(remaining, paused)``: what is left to emit once the dialog has
+    been answered, and whether the fake is now waiting for that answer.
+    """
+    for index, event in enumerate(events):
+        emit(event)
+        if await_ui and event.get("type") == "extension_ui_request":
+            return events[index + 1 :], True
+    return [], False
+
+
+def main() -> None:
+    script = json.loads(os.environ.get("NVSH_TEST_PI_SCRIPT", "[]"))
+    await_ui = os.environ.get("NVSH_TEST_PI_AWAIT_UI") == "1"
+    ui_timeout = float(os.environ.get("NVSH_TEST_PI_UI_TIMEOUT", "10"))
+    sent = False
+    pending: list = []
+    awaiting = False
+    watchdog: threading.Timer | None = None
+
+    def give_up() -> None:
+        emit({"type": "error", "error": f"no extension_ui_response within {ui_timeout:g}s"})
+        os._exit(0)
+
+    def watch(now_awaiting: bool) -> threading.Timer | None:
+        if watchdog is not None:
+            watchdog.cancel()
+        if not now_awaiting:
+            return None
+        timer = threading.Timer(ui_timeout, give_up)
+        timer.daemon = True
+        timer.start()
+        return timer
+
+    while True:
+        raw_line = sys.stdin.readline()
+        if not raw_line:
+            return
+        line = raw_line.strip()
+        if not line:
+            continue
+        try:
+            cmd = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+
+        cmd_type = cmd.get("type")
+        record_command(cmd)
+        if cmd_type == "prompt":
+            emit({"id": cmd.get("id"), "type": "response", "command": "prompt", "success": True})
+            if not sent:
+                sent = True
+                pending, awaiting = emit_script(script, await_ui)
+                watchdog = watch(awaiting)
+        elif cmd_type == "abort":
+            emit({"id": cmd.get("id"), "type": "response", "command": "abort", "success": True})
+        elif cmd_type == "extension_ui_response":
+            record(cmd)
+            pending, awaiting = emit_script(pending, await_ui)
+            watchdog = watch(awaiting)
+        else:
+            data: dict = {}
+            if cmd_type == "new_session":
+                session_file(create=True)
+                data = {"cancelled": False}
+            elif cmd_type == "switch_session":
+                data = {"cancelled": False}
+            elif cmd_type == "get_state":
+                data = {"isStreaming": False, "sessionFile": session_file()}
+            emit(
+                {
+                    "id": cmd.get("id"),
+                    "type": "response",
+                    "command": cmd_type,
+                    "success": True,
+                    "data": data,
+                }
+            )
+
+
+if __name__ == "__main__":
+    main()

@@ -31,25 +31,38 @@ you add either of the other files later, update this section.
 `nvsh` is an **agent-first shell for NVIDIA Jetson (AGX Orin, Thor), DGX
 Spark and RTX Spark**. It runs commands like a normal shell. When a command
 fails, it hands the error and device context to an agent (shell → agent),
-which diagnoses the failure and proposes a fix. The operator's goal is to
-use it as their **default login shell** on their Spark and Jetson machines.
-The spec is in GitHub issues #1 and #2.
+which diagnoses the failure and proposes a fix. nvsh **hooks into the
+operator's existing bash** — one marked block that `nvsh setup` inserts
+into the rc file adds a function to the `PROMPT_COMMAND` array — rather
+than wrapping bash in a pty; see
+[`docs/architecture.md`](docs/architecture.md) for the decision. A
+default-login-shell (`chsh`) mode is a parked possible follow-up, not this
+scope. The spec is in GitHub issues #1 and #2.
 
-**Current state:** still the AgentCulture scaffold. Only the agent-first
-verbs (`whoami`, `learn`, `explain`, `overview`, `doctor`, `cli overview`)
-exist; the shell itself is not built yet.
+**Current state:** the hook design (`CLAUDE.md`, `docs/architecture.md`) is
+implemented, not just converged: the hook installer (`nvsh setup`/
+`nvsh uninstall`/`nvsh on`/`nvsh off`), the trigger table, redaction,
+platform detection, the pluggable `NvshAgent` backends, the session daemon,
+the failure panel, slash commands and the approval store are all on disk
+alongside the original agent-first verbs (`whoami`, `learn`, `explain`,
+`overview`, `doctor`, `cli overview`). Still open: the login-shell (`chsh`)
+mode is parked, auto-apply (running a fix without confirmation) is out of
+scope for v1, and machine-level undo beyond the approve/execute/verify loop
+is tracked as issue #7 — don't describe those as implemented.
 
 `CLAUDE.md` is written for a Claude Code session working *on* the repo. It is
-not your runtime prompt, but it is the fullest write-up of the planned design
+not your runtime prompt, but it is the fullest write-up of the shell design
 and the repo's conventions. Read it before any design or implementation
 task.
 
 ## Rules that apply to any change you make
 
-- **Login-shell safety first.** Any failure in nvsh must fall back to the
-  real shell. Non-interactive invocations (`-c`, no TTY, `scp`, `rsync`)
-  pass straight through with nothing written to stdout. Commands that
-  succeed get no added latency. Don't add third-party runtime dependencies.
+- **Hook safety first.** Any failure in nvsh's own hook must degrade and
+  return control to the prompt, never block it (`NVSH_DISABLE=1` disables
+  the hook outright). The hook only installs into interactive shells, so
+  non-interactive invocations (`-c`, no TTY, `scp`, `rsync`) never source it
+  and get nothing written to stdout. Commands that succeed get no added
+  latency. Don't add third-party runtime dependencies.
 - **Propose, don't run.** Never make nvsh run agent-suggested commands
   without human confirmation.
 - **Trigger rules and the redactor need table-driven tests.** Agent backends

@@ -15,9 +15,13 @@ which diagnoses the failure and proposes a fix. The human confirms before
 anything runs. *A shell first, an agent second.*
 
 The spec lives in GitHub issues **#1** (build brief) and **#2** (interactive
-self-healing shell). Read them before designing a feature. The operator's
-goal is to use nvsh as their **default login shell** (`chsh`) on their Spark
-and Jetson machines.
+self-healing shell). Read them before designing a feature.
+**Architecture: nvsh hooks into the operator's existing bash** — one marked
+block that `nvsh setup` inserts into the operator's rc file, adding a
+function to the `PROMPT_COMMAND` array — rather than wrapping bash in a
+pty. See [`docs/architecture.md`](docs/architecture.md) for the decision
+and its reasons. The earlier default-login-shell (`chsh`) goal is parked
+as a possible later phase, not dropped.
 
 nvsh is not a new POSIX shell (no bash parser or job-control rewrite). It is
 not an autonomous agent that runs commands on its own. It is not a
@@ -32,31 +36,39 @@ afi-cli scaffolder this CLI is cited from).
 
 ## Current state
 
-This is still the scaffold. No shell features exist yet, and only the
-agent-first verbs are implemented (see "The CLI"). If you describe shell
-behavior below as though it exists, mark it `(planned)`.
+The hook is implemented, not just designed: `nvsh setup`/`nvsh uninstall`/
+`nvsh on`/`nvsh off`, the trigger table, redaction, platform detection, the
+pluggable agent backends, the session daemon, the failure panel, slash
+commands and the approval store are all on disk alongside the original
+agent-first verbs (see "The CLI"). Still `(planned)`: the login-shell
+(`chsh`) mode (parked), an auto-apply mode that runs a fix without
+confirmation (out of scope for v1), and machine-level undo beyond the
+approve/execute/verify loop (issue #7). If you describe any of those three
+as though they exist, mark it `(planned)`.
 
-## Design constraints (planned work)
+## Design constraints (implemented)
 
-`CLAUDE.md` has the full write-up. The essentials:
+`CLAUDE.md` and `docs/architecture.md` have the full write-up. The essentials:
 
-- **Architecture:** a thin PTY wrapper around a real `bash`, not a
-  reimplementation. The hook-vs-wrap decision goes in
-  `docs/architecture.md` before building.
-- **Login-shell safety:** if nvsh fails in any way, it falls back to `exec`
-  of the real shell. Non-interactive invocations (`-c`, no TTY, `scp`,
-  `rsync`, `ssh host cmd`) pass straight through with no extra stdout
-  output. Login semantics (`-nvsh` / `-l`) are preserved. Commands that
-  succeed get no added latency, and the runtime package has no third-party
-  dependencies.
+- **Architecture:** a hook, not a wrapper. `nvsh setup` appends a function to
+  the interactive shell's `PROMPT_COMMAND` array from a marked block in the
+  rc file; bash keeps parsing, job control, completion, aliases and rc files
+  exactly as it always has. The decision and its reasons are in
+  `docs/architecture.md`.
+- **Hook safety:** if nvsh's own hook errors, it degrades and returns
+  control to the prompt rather than blocking it (`NVSH_DISABLE=1` disables
+  it outright). The hook only installs into interactive shells, so
+  non-interactive invocations (`-c`, no TTY, `scp`, `rsync`, `ssh host cmd`)
+  never source it and get no extra stdout. Commands that succeed get no
+  added latency, and the runtime package has no third-party dependencies.
 - **Trigger rules** are table-tested. `130`, `141`, `grep`/`diff` exiting
   `1`, `false`, and `test` are not errors. Automatic calls are rate-limited,
-  and manual invocation (`nvsh ask`, `Ctrl+G`) always works.
+  and manual invocation (`nvsh ask`, `Ctrl+G`, slash commands) always works.
 - **Propose, don't run:** agent-suggested commands never run without
   confirmation.
 - **Pluggable, offline-first backends** sit behind one adapter, with a
-  fixture backend for tests. Nemotron is only the initial model. Config
-  lives under `$XDG_CONFIG_HOME/nvsh/`.
+  fixture backend for tests. Nemotron ("associate", via Pi) is only the
+  initial model. Config lives under `$XDG_CONFIG_HOME/nvsh/`.
 - **Device context with redaction always on.** Record the source of each
   detected value in `docs/platforms.md`. Support `--show-context`, and give
   the redactor its own tests.
@@ -101,9 +113,15 @@ dependency only. The agent-first verbs:
 - `nvsh learn` prints a structured self-teaching prompt.
 - `nvsh explain <path>` prints markdown docs for any noun/verb.
 - `nvsh overview` gives a descriptive snapshot of the agent.
-- `nvsh doctor` runs health checks (today the agent-identity invariants;
-  planned: platform detection and agent-backend reachability).
+- `nvsh doctor` runs health checks: agent-identity invariants, platform
+  detection, agent-backend configured/reachable, and (from a hooked shell)
+  hook/bindings/capture/daemon status.
 - `nvsh cli overview` describes the CLI surface itself.
+- `nvsh setup` / `nvsh uninstall` install and remove the bash hook.
+  `nvsh on` / `nvsh off` toggle it in the current shell. `nvsh agent`,
+  `nvsh approve`, `nvsh capture`, `nvsh context`, `nvsh daemon`, `nvsh slash`
+  and `nvsh complete` are the shell/agent-loop verbs — see `nvsh <verb>
+  --help` or `nvsh explain <verb>`.
 
 Conventions:
 

@@ -113,6 +113,27 @@ STEWARD_WAIVED_PORTABILITY_PATHS = frozenset(
     }
 )
 
+#: Dated devague records — frame/plan/delivery state and the specs, plans and
+#: delivery summaries exported from them — quote the operator's real files
+#: (``~/.bashrc``, ``~/.pi/agent/models.json``) because that is what the
+#: decisions were about. They are records, not configuration nvsh reads, and
+#: the method forbids hand-editing them, so a portability finding confined to
+#: these prefixes is WAIVED (reported, never silently dropped).
+STEWARD_WAIVED_PORTABILITY_PREFIXES = (
+    ".devague/",
+    "docs/specs/",
+    "docs/plans/",
+    "docs/deliveries/",
+)
+
+
+def steward_portability_waivable(path: str) -> bool:
+    """Is a steward portability finding on *path* a known-accepted one?"""
+    return path in STEWARD_WAIVED_PORTABILITY_PATHS or path.startswith(
+        STEWARD_WAIVED_PORTABILITY_PREFIXES
+    )
+
+
 PASS, FAIL, SKIP, WAIVED = "PASS", "FAIL", "SKIP", "WAIVED"
 
 
@@ -437,7 +458,28 @@ def _run(argv: list[str], cwd: Path, timeout: int) -> subprocess.CompletedProces
     )
 
 
-_FINDING_PATH = re.compile(r"(?:^|\s)([\w./-]+\.(?:md|yaml|yml|toml|json)):\d+")
+#: A finding names files at the START of its detail lines (``path:line:``).
+#: Anchoring to the line start matters: claim text quoted inside a finding
+#: can itself contain ``CLAUDE.md:111-120``, which is prose, not a path.
+_FINDING_PATH = re.compile(r"^\s*([\w./-]+\.(?:md|yaml|yml|toml|json)):\d+", re.MULTILINE)
+
+
+def _finding_paths_by_line(message: str) -> set[str]:
+    """Paths named at the start of a finding's detail lines (``path:line:``).
+
+    A second, format-tolerant extraction next to :data:`_FINDING_PATH`: any
+    indented line whose first token before ``:`` looks like a repo-relative
+    file counts, whatever its extension.
+    """
+    found: set[str] = set()
+    for line in message.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith(("❌", "-", "Fix:", "Allowed")):
+            continue
+        head = stripped.split(":", 1)[0]
+        if "/" in head and " " not in head and not head.startswith(("~", "/")):
+            found.add(head)
+    return found
 
 
 def check_steward_doctor(repo: Path, timeout: int) -> Result:
@@ -500,11 +542,11 @@ def check_steward_doctor(repo: Path, timeout: int) -> Result:
     for finding in findings:
         check = str(finding.get("check", "?"))
         message = str(finding.get("message", ""))
-        paths = set(_FINDING_PATH.findall(message))
-        if check == "portability" and paths and paths <= STEWARD_WAIVED_PORTABILITY_PATHS:
+        paths = set(_FINDING_PATH.findall(message)) | _finding_paths_by_line(message)
+        if check == "portability" and paths and all(map(steward_portability_waivable, paths)):
             waived.append(f"{check} ({', '.join(sorted(paths))})")
         else:
-            unexpected.append(f"{check}: {message.strip()[:300]}")
+            unexpected.append(f"{check}: {message.strip()[:1500]}")
 
     if unexpected:
         return Result("toolchain", "steward-doctor", FAIL, " | ".join(unexpected))

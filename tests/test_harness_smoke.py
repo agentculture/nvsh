@@ -438,3 +438,23 @@ def test_guild_exiting_nonzero_with_no_output_skips_loudly(on_path: Path, clone:
     _fake_tool(on_path, "guild", "", "guild: not installed", 127)
     results = smoke.check_guild_create(clone, smoke.load_invocations(clone), 30)
     assert all(r.status == "SKIP" for r in results), [r.detail for r in results]
+
+
+def test_steward_portability_waiver_covers_records_but_not_code():
+    """The waiver is exact for the two vendored skills and prefix-based for
+    devague records; anything else (code, README, config) still fails."""
+    import importlib.util
+    from pathlib import Path
+
+    spec = importlib.util.spec_from_file_location(
+        "harness_smoke", Path(__file__).resolve().parents[1] / "scripts" / "harness-smoke.py"
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    assert mod.steward_portability_waivable(".claude/skills/recall/SKILL.md")
+    assert mod.steward_portability_waivable(".devague/frames/x.json")
+    assert mod.steward_portability_waivable("docs/specs/2026-09-13-x.md")
+    assert mod.steward_portability_waivable("docs/deliveries/2026-09-13-x.md")
+    assert not mod.steward_portability_waivable("README.md")
+    assert not mod.steward_portability_waivable("docs/architecture.md")
+    assert not mod.steward_portability_waivable(".claude/skills/cicd/SKILL.md")

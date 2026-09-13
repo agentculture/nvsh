@@ -1,0 +1,74 @@
+#!/usr/bin/env python3
+"""Fake ``nvsh`` executable used by tests/test_readline_bash.py.
+
+Implements just enough of the bash-side contract documented in
+docs/shell-integration.md for the readline layer to be testable before the
+real ``nvsh complete`` / ``nvsh slash`` verbs exist (plan task t14):
+
+* ``nvsh complete --json``                 -> the slash-command palette
+* ``nvsh complete --json -- /doctor <cur>`` -> argument candidates
+* ``nvsh slash <line>``                    -> appended to $NVSH_FAKE_RECORD
+
+Anything else exits 1 so an unexpected call is visible in a test.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+
+COMMANDS = [
+    "/ask",
+    "/fix",
+    "/doctor",
+    "/explain",
+    "/retry",
+    "/context",
+    "/agent",
+    "/help",
+    "/undo",
+    "/approve",
+    "@pi",
+    "@qwen",
+    "@claude",
+    "@codex",
+    "@openai-compat",
+]
+
+ARGUMENTS = {"/doctor": ["--json", "--strict"], "/ask": ["--agent"]}
+
+
+def _emit(values: list[str]) -> None:
+    items = [{"value": v, "description": "fake %s" % v} for v in values]
+    json.dump({"items": items}, sys.stdout)
+    sys.stdout.write("\n")
+
+
+def main(argv: list[str]) -> int:
+    record = os.environ.get("NVSH_FAKE_RECORD")
+    if argv and argv[0] == "slash":
+        if record:
+            with open(record, "a", encoding="utf-8") as handle:
+                handle.write("slash %s\n" % " ".join(argv[1:]))
+        draft = os.environ.get("NVSH_DRAFT", "")
+        if record and draft:
+            with open(record, "a", encoding="utf-8") as handle:
+                handle.write("draft %s\n" % draft)
+        return 0
+    if argv and argv[0] == "complete":
+        rest = argv[1:]
+        if "--json" not in rest:
+            return 1
+        if "--" in rest:
+            words = rest[rest.index("--") + 1 :]
+            command = words[0] if words else ""
+            _emit(ARGUMENTS.get(command, []))
+            return 0
+        _emit(COMMANDS)
+        return 0
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

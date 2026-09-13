@@ -27,7 +27,12 @@ exits 0 — there is nothing to diagnose.
 from __future__ import annotations
 
 import argparse
+import os
 
+from nvsh import __version__
+from nvsh import config as config_mod
+from nvsh import doctor_checks
+from nvsh import platform as platform_mod
 from nvsh.cli._commands.whoami import find_culture_yaml, read_agent_fields
 from nvsh.cli._output import emit_result
 
@@ -77,22 +82,69 @@ _RESIDENT_PROMPT = {
 }
 
 
-def _diagnose() -> dict[str, object]:
+def _new_checks(
+    *,
+    prompt_command_text: str | None,
+    bind_p_text: str | None,
+    keymap: str | None,
+) -> list[dict[str, object]]:
+    """Run the doctor extension checks (task t17): platform, backend, in-shell.
+
+    Called unconditionally by :func:`_diagnose`, including in the
+    wheel-install branch (no ``culture.yaml``) — these checks are about the
+    shell/backend, not the mesh-identity invariants that branch skips.
+    """
+    env = dict(os.environ)
+    try:
+        config = config_mod.load()
+        config_error: str | None = None
+    except config_mod.ConfigError as exc:
+        config = None
+        config_error = str(exc)
+    platform = platform_mod.detect()
+    return doctor_checks.collect_checks(
+        env=env,
+        current_version=__version__,
+        config=config,
+        config_error=config_error,
+        platform=platform,
+        prompt_command_text=prompt_command_text,
+        bind_p_text=bind_p_text,
+        keymap=keymap,
+    )
+
+
+def _diagnose(
+    *,
+    prompt_command_text: str | None = None,
+    bind_p_text: str | None = None,
+    keymap: str | None = None,
+) -> dict[str, object]:
     cfg = find_culture_yaml()
     if cfg is None:
-        check = {
-            "id": "source_checkout",
-            "passed": True,
-            "severity": "info",
-            "message": "no culture.yaml found alongside the package; identity checks skipped",
-            "remediation": "",
-        }
-        return {"healthy": True, "checks": [check]}
+        checks: list[dict[str, object]] = [
+            {
+                "id": "source_checkout",
+                "passed": True,
+                "severity": "info",
+                "message": "no culture.yaml found alongside the package; identity checks skipped",
+                "remediation": "",
+            }
+        ]
+        checks.extend(
+            _new_checks(
+                prompt_command_text=prompt_command_text,
+                bind_p_text=bind_p_text,
+                keymap=keymap,
+            )
+        )
+        healthy = all(c["passed"] for c in checks if c["severity"] != "info")
+        return {"healthy": healthy, "checks": checks}
 
     root = cfg.parent
     fields = read_agent_fields()
     backend = fields["backend"]
-    checks: list[dict[str, object]] = []
+    checks = []
 
     # 1. backend-consistency: the RESIDENT prompt file for the declared
     #    backend exists. Other harness prompt files recognized under the same
@@ -164,12 +216,37 @@ def _diagnose() -> dict[str, object]:
         }
     )
 
-    healthy = all(c["passed"] for c in checks)
+    checks.extend(
+        _new_checks(
+            prompt_command_text=prompt_command_text,
+            bind_p_text=bind_p_text,
+            keymap=keymap,
+        )
+    )
+
+    healthy = all(c["passed"] for c in checks if c["severity"] != "info")
     return {"healthy": healthy, "checks": checks}
 
 
+def _failure_mark(check: dict[str, object]) -> str:
+    """The text-mode marker for a check that did not pass.
+
+    Deviation d4c: ``healthy`` ignores info-severity checks (running outside
+    a hooked shell is not a failure), but the text report used to print
+    ``[FAIL]`` for them anyway — so ``nvsh doctor`` said "healthy" over four
+    ``[FAIL]`` lines on a non-hooked shell. The rule that keeps the two
+    consistent: ``[FAIL]`` appears **only** for the checks that actually
+    flip ``healthy`` — exactly those whose severity is not ``info``.
+    """
+    return "info" if check["severity"] == "info" else "FAIL"
+
+
 def cmd_doctor(args: argparse.Namespace) -> int:
-    report = _diagnose()
+    report = _diagnose(
+        prompt_command_text=getattr(args, "prompt_command", None),
+        bind_p_text=getattr(args, "bind_p", None),
+        keymap=getattr(args, "keymap", None),
+    )
     json_mode = bool(getattr(args, "json", False))
     if json_mode:
         emit_result(report, json_mode=True)
@@ -177,7 +254,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         status = "healthy" if report["healthy"] else "unhealthy"
         lines = [f"nvsh doctor: {status}", ""]
         for check in report["checks"]:
-            mark = "ok" if check["passed"] else "FAIL"
+            mark = "ok" if check["passed"] else _failure_mark(check)
             lines.append(f"[{mark}] {check['id']}: {check['message']}")
             if not check["passed"] and check["remediation"]:
                 lines.append(f"  hint: {check['remediation']}")
@@ -191,4 +268,23 @@ def register(sub: argparse._SubParsersAction) -> None:
         help="Check the agent-identity invariants (prompt-file-present, backend-consistency).",
     )
     p.add_argument("--json", action="store_true", help="Emit structured JSON.")
+    p.add_argument(
+        "--prompt-command",
+        dest="prompt_command",
+        default=None,
+        help="'declare -p PROMPT_COMMAND' from a hooked bash (for hook_first_in_prompt_command).",
+    )
+    p.add_argument(
+        "--bind-p",
+        dest="bind_p",
+        default=None,
+        help="'bind -p' output from a hooked bash (for bindings_present).",
+    )
+    p.add_argument(
+        "--keymap",
+        dest="keymap",
+        choices=["emacs", "vi-insert", "vi-command"],
+        default=None,
+        help="Active readline keymap, from 'bind -V' (for bindings_present).",
+    )
     p.set_defaults(func=cmd_doctor)

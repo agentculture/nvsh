@@ -1,0 +1,245 @@
+"""Tests for ``nvsh approve`` — check/add/list/remove over the Approvals store."""
+
+from __future__ import annotations
+
+import json
+
+import pytest
+
+from nvsh.cli import main
+
+
+@pytest.fixture(autouse=True)
+def xdg_home(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    runtime = tmp_path / "run"
+    runtime.mkdir()
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime))
+    return tmp_path
+
+
+def test_approve_check_matches_default_json(capsys):
+    rc = main(["approve", "check", "nvidia-smi -q", "--json"])
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["decision"] == "user"
+    assert payload["pattern"] == "nvidia-smi *"
+
+
+def test_approve_check_no_match_json(capsys):
+    rc = main(["approve", "check", "rm -rf /", "--json"])
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["decision"] == "ask"
+    assert payload["pattern"] is None
+
+
+def test_approve_check_text(capsys):
+    rc = main(["approve", "check", "nvidia-smi -q"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "user" in out
+
+
+def test_approve_add_and_list(capsys):
+    rc = main(["approve", "add", "kubectl get *"])
+    assert rc == 0
+    capsys.readouterr()
+    rc = main(["approve", "list", "--json"])
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert "kubectl get *" in payload["user"]
+
+
+def test_approve_add_session_is_visible_to_a_later_process_with_its_scope(capsys):
+    """d15: ``--session`` is worthless if it dies with this CLI process.
+
+    The pattern belongs to the login session (the runtime dir), so a later
+    ``nvsh approve list`` — a whole new process — must show it, under
+    ``session`` and never under ``user``.
+    """
+    rc = main(["approve", "add", "kubectl get *", "--session"])
+    assert rc == 0
+    capsys.readouterr()
+    rc = main(["approve", "list", "--json"])
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert "kubectl get *" in payload["session"]
+    assert "kubectl get *" not in payload["user"]
+
+
+def test_approve_list_text_labels_the_session_scope(capsys):
+    main(["approve", "add", "kubectl get *", "--session"])
+    capsys.readouterr()
+    rc = main(["approve", "list"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    session_block = out.split("session:", 1)[1]
+    assert "kubectl get *" in session_block
+
+
+def test_approve_check_sees_a_session_pattern_added_by_another_process(capsys):
+    main(["approve", "add", "apt install foo", "--session"])
+    capsys.readouterr()
+    rc = main(["approve", "check", "apt install foo", "--json"])
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["decision"] == "session"
+
+
+def test_approve_remove_drops_a_session_pattern_for_later_processes(capsys):
+    main(["approve", "add", "apt install foo", "--session"])
+    capsys.readouterr()
+    rc = main(["approve", "remove", "apt install foo"])
+    assert rc == 0
+    capsys.readouterr()
+    rc = main(["approve", "check", "apt install foo", "--json"])
+    assert json.loads(capsys.readouterr().out)["decision"] == "ask"
+
+
+def test_approve_add_refused_pattern_errors(capsys):
+    rc = main(["approve", "add", "sudo *"])
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert err.startswith("error:")
+    assert "hint:" in err
+
+
+def test_approve_remove(capsys):
+    main(["approve", "add", "kubectl get *"])
+    capsys.readouterr()
+    rc = main(["approve", "remove", "kubectl get *"])
+    assert rc == 0
+    capsys.readouterr()
+    rc = main(["approve", "list", "--json"])
+    payload = json.loads(capsys.readouterr().out)
+    assert "kubectl get *" not in payload["user"]
+
+
+def test_approve_list_text(capsys):
+    rc = main(["approve", "list"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "nvsh *" in out
+
+
+def test_approve_remove_reports_a_missing_pattern(capsys):
+    rc = main(["approve", "remove", "not-approved *", "--json"])
+    out = json.loads(capsys.readouterr().out)
+    assert rc == 0
+    assert out["found"] is False
+
+
+def test_approve_remove_reports_a_real_removal(capsys):
+    rc = main(["approve", "remove", "nvidia-smi  *", "--json"])
+    out = json.loads(capsys.readouterr().out)
+    assert rc == 0
+    assert out["found"] is True
+    main(["approve", "list", "--json"])
+    listed = json.loads(capsys.readouterr().out)
+    assert "nvidia-smi *" not in listed["user"]
+
+
+# --- d24: per-stage reporting and the specific scopes --------------------
+
+
+def test_approve_check_names_the_unapproved_stage(capsys):
+    rc = main(["approve", "check", "nvidia-smi -q | grep -i fan", "--json"])
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["decision"] == "ask"
+    assert payload["stage"] == "grep -i fan"
+
+
+def test_approve_check_text_names_the_unapproved_stage(capsys):
+    rc = main(["approve", "check", "nvidia-smi -q | grep -i fan"])
+    assert rc == 0
+    assert "stage: grep -i fan" in capsys.readouterr().out
+
+
+def test_approve_check_reports_no_stage_when_everything_matched(capsys):
+    rc = main(["approve", "check", "nvidia-smi -q", "--json"])
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["decision"] == "user"
+    assert payload["stage"] is None
+
+
+def test_approve_add_with_a_scope_derives_the_patterns(capsys):
+    rc = main(["approve", "add", "ssh orin uptime", "--scope", "user-specific", "--json"])
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["patterns"] == ["ssh orin *"]
+    assert payload["scope"] == "user"
+    rc = main(["approve", "list", "--json"])
+    assert "ssh orin *" in json.loads(capsys.readouterr().out)["user"]
+
+
+def test_approve_add_with_a_scope_writes_one_pattern_per_stage(capsys):
+    rc = main(["approve", "add", "ps -eo pid | head -n 20", "--scope", "user", "--json"])
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["patterns"] == ["ps *", "head *"]
+    rc = main(["approve", "check", "ps -eo pid | head -n 20", "--json"])
+    assert json.loads(capsys.readouterr().out)["decision"] == "user"
+
+
+def test_approve_add_with_a_session_scope_goes_to_the_session_store(capsys):
+    rc = main(["approve", "add", "ssh orin uptime", "--scope", "session-specific", "--json"])
+    assert rc == 0
+    capsys.readouterr()
+    rc = main(["approve", "list", "--json"])
+    payload = json.loads(capsys.readouterr().out)
+    assert "ssh orin *" in payload["session"]
+    assert "ssh orin *" not in payload["user"]
+
+
+def test_approve_add_with_a_scope_refuses_a_privileged_stage(capsys):
+    rc = main(["approve", "add", "ls | sudo tee /etc/x", "--scope", "user"])
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert err.startswith("error:")
+    assert "hint:" in err
+
+
+# --- d26: --stages restricts a --scope approval to some of the stages -----
+
+
+def test_approve_add_stages_stores_only_the_chosen_stage(capsys):
+    rc = main(
+        ["approve", "add", "ps -eo pid | head -n 20", "--scope", "user", "--stages", "2", "--json"]
+    )
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["patterns"] == ["head *"]
+    assert payload["stages"] == [2]
+    rc = main(["approve", "list", "--json"])
+    stored = json.loads(capsys.readouterr().out)["user"]
+    assert "head *" in stored
+    assert "ps *" not in stored
+
+
+def test_approve_add_stages_accepts_a_comma_list_and_the_word_all(capsys):
+    rc = main(
+        ["approve", "add", "ps -x | head -n 2", "--scope", "user", "--stages", "1,2", "--json"]
+    )
+    assert rc == 0
+    assert json.loads(capsys.readouterr().out)["patterns"] == ["ps *", "head *"]
+    rc = main(["approve", "add", "df -h | wc -l", "--scope", "user", "--stages", "all", "--json"])
+    assert rc == 0
+    assert json.loads(capsys.readouterr().out)["patterns"] == ["df *", "wc *"]
+
+
+def test_approve_add_stages_rejects_an_out_of_range_stage(capsys):
+    rc = main(["approve", "add", "ps -x | head -n 2", "--scope", "user", "--stages", "3"])
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert err.startswith("error:")
+    assert "hint:" in err
+
+
+def test_approve_add_stages_requires_a_scope(capsys):
+    rc = main(["approve", "add", "ps *", "--stages", "1"])
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "--scope" in err
