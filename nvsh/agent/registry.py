@@ -50,7 +50,13 @@ def _make_pi(config: Config) -> NvshAgent:
         from .pi import PiAgent
     except ImportError as exc:  # pragma: no cover - covered once t9 merges PiAgent
         raise RuntimeError("pi adapter not available yet: nvsh.agent.pi is not present") from exc
-    return PiAgent(config.agents.get("pi", {}))
+    settings = config.agents.get("pi", {})
+    provider = settings.get("provider")
+    model = settings.get("model")
+    return PiAgent(
+        provider=str(provider) if provider is not None else None,
+        model=str(model) if model is not None else None,
+    )
 
 
 def _make_qwen(config: Config) -> NvshAgent:

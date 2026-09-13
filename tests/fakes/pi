@@ -16,6 +16,16 @@ Speaks a small, deliberately incomplete subset of the protocol documented in
 * On any other/unknown command type: emits an ``{"type": "error", ...}``
   event.
 
+Two knobs exist only so the session daemon's tests can watch this process
+from the outside (``tests/test_daemon_lifecycle.py``):
+
+* ``FAKE_PI_PIDDIR`` -- write ``<pid>.pid`` there at start and remove it at
+  exit, so a test can count live fake-pi processes without ``pgrep -f``
+  (which under ``pytest -n auto`` also sees other tests' fakes).
+* ``FAKE_PI_CMDLOG`` -- append every received command object as one JSON
+  line, so a test can assert that ``new_session``/``switch_session``
+  actually reached pi.
+
 Set ``FAKE_PI_CRASH=1`` to make this process ``exit(1)`` partway through
 streaming a prompt's events (after the text delta, before ``agent_end``),
 simulating a crashed backend that a real caller must not hang waiting on.
@@ -23,9 +33,35 @@ simulating a crashed backend that a real caller must not hang waiting on.
 
 from __future__ import annotations
 
+import atexit
 import json
 import os
 import sys
+from pathlib import Path
+
+
+def write_pidfile() -> None:
+    piddir = os.environ.get("FAKE_PI_PIDDIR")
+    if not piddir:
+        return
+    path = Path(piddir) / f"{os.getpid()}.pid"
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(str(os.getpid()), encoding="utf-8")
+    except OSError:
+        return
+    atexit.register(lambda: path.unlink(missing_ok=True))
+
+
+def log_command(cmd: dict) -> None:
+    cmdlog = os.environ.get("FAKE_PI_CMDLOG")
+    if not cmdlog:
+        return
+    try:
+        with open(cmdlog, "a", encoding="utf-8") as handle:
+            handle.write(json.dumps(cmd) + "\n")
+    except OSError:
+        pass
 
 
 def emit(obj: dict) -> None:
@@ -111,6 +147,7 @@ def handle_unknown(cmd: dict) -> None:
 
 
 def main() -> None:
+    write_pidfile()
     for raw_line in sys.stdin:
         line = raw_line.strip()
         if not line:
@@ -121,6 +158,7 @@ def main() -> None:
             emit({"type": "response", "command": "parse", "success": False, "error": "bad json"})
             continue
 
+        log_command(cmd)
         cmd_type = cmd.get("type")
         if cmd_type == "prompt":
             handle_prompt(cmd)
