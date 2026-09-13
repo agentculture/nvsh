@@ -108,11 +108,24 @@ into a wrapper process, and no PTY-transparency problem to solve.
   sees the exit status at the next prompt). v1 closes that gap without a
   wrapper: each interactive session runs under a per-session typescript
   (`script -qfc "$BASH" log`, or `tmux pipe-pane -o` inside tmux), and the
-  hook slices that log between the last Ghostty OSC 133 `C` (command
-  start) and `D` (command end) marker to recover exactly the failed
-  command's real output — verified experimentally (`s17`): slicing the
-  typescript or the pipe-pane log between `C` and `D` yielded exactly the
-  failed command's stdout+stderr with no re-run. The log lives under
+  hook slices that log from the last OSC 133 `C` (command start) marker to
+  recover exactly the failed command's real output — verified
+  experimentally (`s17`): slicing the typescript or the pipe-pane log from
+  `C` yielded exactly the failed command's stdout+stderr with no re-run.
+  Which region is the *current* command depends on who owns OSC 133. Where
+  nvsh owns it, the hook emits `D` before calling the client, so the
+  current region is already closed. Under Ghostty the terminal owns the
+  markers and its `__ghostty_hook` runs *after* `__nvsh_hook` in
+  `PROMPT_COMMAND`, so the current region is still **open** — the log reads
+  `C <previous output> D … C <this output>` with no closing `D` yet.
+  `last_slice` therefore prefers the open region (the last `C` with no `D`
+  after it), ends it at a following `133;A` prompt marker when one is
+  present, and falls back to the last closed `C`..`D` pair only when there
+  is no open region; a trailing open region holding `script(1)`'s own
+  epilogue is the shell's `exit`, not a live command, and is skipped.
+  Taking the last closed pair unconditionally handed the agent the
+  *previous* command's output under Ghostty (deviation d3). The log lives
+  under
   `$XDG_RUNTIME_DIR/nvsh/` (tmpfs), mode `0600`, and only the last <=64 KB
   slice — redacted first — is ever read; the log itself is never sent
   whole and never leaves the machine.

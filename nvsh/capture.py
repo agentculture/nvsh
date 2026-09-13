@@ -7,8 +7,10 @@ section): each interactive session runs under a per-session typescript
 writing to the same log path. Ghostty's shell integration emits OSC 133
 ``C`` (command start) / ``D`` (command end) markers around every command's
 real output; :func:`last_slice` recovers exactly the last failed command's
-output by slicing the log between the last ``C`` and the following ``D``,
-never by re-running anything.
+output by slicing the log from the last ``C`` marker, never by re-running
+anything. That slice is normally still *open* (no ``D`` yet) when the hook
+asks for it, because Ghostty's own ``PROMPT_COMMAND`` entry — which writes
+``D`` — runs after nvsh's; see :func:`_locate_last_region`.
 
 This module owns only the Python side. The bash side (the ``exec`` into
 ``script``, the ``EXIT`` trap that calls :func:`cleanup`, and the
@@ -19,7 +21,8 @@ exact shell text to run.
 Pipeline for :func:`last_slice`, in order (see the "bound, then strip, then
 redact" rule in ``CLAUDE.md``'s device-context section):
 
-1. Locate the last OSC 133 ``C``..``D`` region in the raw bytes.
+1. Locate the current command's OSC 133 region in the raw bytes (the open
+   ``C``.. region when there is one, else the last closed ``C``..``D`` pair).
 2. Bound it to ``limit`` bytes (head + tail, with a truncation marker).
 3. Strip terminal escape sequences (OSC, CSI, single-char ESC) and
    normalise CR.
@@ -58,6 +61,18 @@ _OSC_133_C_RE = re.compile(rb"\x1b\]133;C[^\x07\x1b]*(?:\x07|\x1b\\)")
 #: OSC 133 "D" (command end) marker: ``ESC ] 133 ; D`` then ``;<exit code>``
 #: and optional further parameters, terminated the same way as "C".
 _OSC_133_D_RE = re.compile(rb"\x1b\]133;D[^\x07\x1b]*(?:\x07|\x1b\\)")
+
+#: OSC 133 "A" (prompt start) marker. A new prompt after an unclosed "C"
+#: implicitly closes that command's region: the command is over even though
+#: its "D" never arrived (or arrived after us).
+_OSC_133_A_RE = re.compile(rb"\x1b\]133;A[^\x07\x1b]*(?:\x07|\x1b\\)")
+
+#: ``script(1)``'s own epilogue, written when the typescript session ends.
+#: Its presence inside an unclosed region means the shell has exited and
+#: that region is ``exit`` itself, not a live command — see
+#: :func:`_locate_last_region`. Both spellings are matched because the
+#: date line is translatable while ``COMMAND_EXIT_CODE=`` is not.
+_SCRIPT_EPILOGUE_RE = re.compile(rb"Script done on |COMMAND_EXIT_CODE=")
 
 #: Any OSC (Operating System Command) sequence: ``ESC ]`` up to BEL or ST.
 _OSC_RE = rb"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)"
@@ -222,18 +237,60 @@ def tmux_pipe_command(log: Path) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _locate_last_region(data: bytes) -> tuple[bytes, str] | None:
-    """Return ``(raw_slice, "ok"|"partial")`` for the last C..D region, or ``None``.
+def _locate_open_region(data: bytes) -> tuple[bytes, str] | None:
+    """Return the open ``C``.. region (``(raw_slice, status)``) or ``None``.
 
-    A session log can end with a trailing, incomplete ``C`` marker that has
-    no matching ``D`` (e.g. the shell's own ``exit`` command: ``script(1)``
-    terminates before it can write ``D`` for it). That trailing marker is
-    not the failed command we are after, so the search starts from the
-    *last complete pair*: find the last ``D``, then the last ``C`` that
-    precedes it. Only when no ``D`` exists anywhere does a lone trailing
-    ``C`` (command still running, or ``script(1)`` killed mid-command)
-    count, and it is reported as ``"partial"``.
+    ``None`` means there is no open region, or the only open region is the
+    tail of a finished ``script(1)`` session (the shell's own ``exit``), in
+    which case :func:`_locate_last_region` falls back to the last closed
+    ``C``..``D`` pair.
     """
+    c_matches = list(_OSC_133_C_RE.finditer(data))
+    if not c_matches:
+        return None
+    last_c = c_matches[-1]
+    if _OSC_133_D_RE.search(data, last_c.end()) is not None:
+        return None
+
+    region = data[last_c.end() :]
+    prompt = _OSC_133_A_RE.search(region)
+    if prompt is not None:
+        return region[: prompt.start()], "ok"
+    if _SCRIPT_EPILOGUE_RE.search(region) is not None:
+        return None
+    return region, "partial"
+
+
+def _locate_last_region(data: bytes) -> tuple[bytes, str] | None:
+    """Return ``(raw_slice, "ok"|"partial")`` for the current command's region.
+
+    An **open** region — the last ``133;C`` with no ``133;D`` after it — is
+    preferred, because that is the command being diagnosed. Under Ghostty
+    the terminal, not nvsh, owns OSC 133, and its ``__ghostty_hook`` runs
+    *after* ``__nvsh_hook`` in ``PROMPT_COMMAND``; so when the hook calls
+    the client the log reads ``C <prev output> D ... C <this output>`` with
+    no closing ``D`` yet. Taking the last *closed* pair there would hand the
+    agent the previous command's output (deviation d3). Where nvsh owns the
+    markers (the hook emits ``D`` before calling the client) the current
+    region is already closed and the fallback below is the right answer.
+
+    A ``133;A`` (prompt start) after the last ``C`` implicitly closes the
+    open region: a new prompt means the command is over, so the slice ends
+    there and is reported ``"ok"`` rather than ``"partial"``.
+
+    Two open regions are *not* the current command:
+
+    * one holding ``script(1)``'s epilogue — the shell's own ``exit``, after
+      which the typescript ends and no ``D`` is ever written;
+    * none at all, in which case the last complete ``C``..``D`` pair is used.
+
+    An open region that runs to end-of-log (command still running, or
+    ``script(1)`` killed mid-command) is reported as ``"partial"``.
+    """
+    open_region = _locate_open_region(data)
+    if open_region is not None:
+        return open_region
+
     d_matches = list(_OSC_133_D_RE.finditer(data))
     if d_matches:
         last_d = d_matches[-1]
@@ -271,9 +328,11 @@ def last_slice(log: Path, limit: int = DEFAULT_LIMIT, source: str = "script") ->
     """Return the bounded, stripped, redacted output of the last failed command.
 
     Never raises. A missing or unreadable log, or a log with no OSC 133 "C"
-    marker at all, yields ``status="no capture"`` and empty text. A "C" with
-    no following "D" (``script(1)`` killed mid-command) yields
-    ``status="partial"`` with whatever followed "C". Bounding to ``limit``
+    marker at all, yields ``status="no capture"`` and empty text. An open
+    "C" region (no "D" yet, because the terminal's own hook has not run, or
+    ``script(1)`` was killed mid-command) is preferred as the current
+    command's output and yields ``status="partial"`` unless a following
+    "133;A" prompt marker closes it. Bounding to ``limit``
     bytes (head + tail with a truncation marker) overrides the status to
     ``"truncated"``. The log's own path never appears in the returned text.
     """

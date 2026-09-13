@@ -267,6 +267,87 @@ def test_last_slice_replaces_invalid_utf8(tmp_path):
     result.text.encode("utf-8")
 
 
+# --- last_slice: open vs closed region selection (deviation d3) --------------
+#
+# Under Ghostty the *terminal* owns OSC 133 and its ``__ghostty_hook`` runs
+# after ``__nvsh_hook`` in ``PROMPT_COMMAND``, so when the hook calls the
+# client the failing command's region is still open: the log holds
+# ``C <prev output> D ... C <this command's output>`` with no closing ``D``
+# yet. The open region is the command we are diagnosing.
+
+
+def test_last_slice_prefers_open_region_over_previous_closed_region(tmp_path):
+    log = tmp_path / "nvsh" / "ghostty.log"
+    log.parent.mkdir(parents=True)
+    log.write_bytes(
+        b"\x1b]133;A;\x07prompt$ echo hi\r\n"
+        b"\x1b]133;C;\x07previous command output\r\n"
+        b"\x1b]133;D;0;\x07"
+        b"\x1b]133;A;\x07prompt$ ls /nope\r\n"
+        b"\x1b]133;C;\x07ls: cannot access '/nope': No such file or directory\r\n"
+    )
+    result = capture.last_slice(log)
+    assert "ls: cannot access" in result.text
+    assert "previous command output" not in result.text
+    assert result.status == "partial"
+
+
+def test_last_slice_falls_back_to_last_closed_region_when_none_open(tmp_path):
+    log = tmp_path / "nvsh" / "closed.log"
+    log.parent.mkdir(parents=True)
+    log.write_bytes(
+        b"\x1b]133;C;\x07first output\x1b]133;D;0;\x07"
+        b"\x1b]133;C;\x07second output\x1b]133;D;1;\x07"
+        b"\x1b]133;A;\x07prompt$ "
+    )
+    result = capture.last_slice(log)
+    assert result.status == "ok"
+    assert "second output" in result.text
+    assert "first output" not in result.text
+
+
+def test_last_slice_open_region_ends_at_next_prompt_marker(tmp_path):
+    """A ``133;A`` after the last ``C`` is an implicit close: a new prompt began."""
+    log = tmp_path / "nvsh" / "implicit-close.log"
+    log.parent.mkdir(parents=True)
+    log.write_bytes(
+        b"\x1b]133;C;\x07previous command output\x1b]133;D;0;\x07"
+        b"\x1b]133;C;\x07current command output\r\n"
+        b"\x1b]133;A;\x07prompt$ trailing prompt noise"
+    )
+    result = capture.last_slice(log)
+    assert result.status == "ok"
+    assert "current command output" in result.text
+    assert "previous command output" not in result.text
+    assert "trailing prompt noise" not in result.text
+
+
+def test_last_slice_ignores_trailing_exit_region_of_a_finished_script_log(tmp_path):
+    """``script(1)``'s own epilogue means the session ended, not a live command."""
+    log = tmp_path / "nvsh" / "finished.log"
+    log.parent.mkdir(parents=True)
+    log.write_bytes(
+        b"\x1b]133;C;\x07ls: cannot access '/nope': No such file or directory\r\n"
+        b"\x1b]133;D;2;\x07"
+        b"\x1b]133;A;\x07bash-5.2$ exit\r\n"
+        b"\x1b]133;C;\x07exit\r\n"
+        b'\nScript done on 2026-09-13 13:43:11+03:00 [COMMAND_EXIT_CODE="1"]\n'
+    )
+    result = capture.last_slice(log)
+    assert result.status == "ok"
+    assert "ls: cannot access" in result.text
+    assert "Script done on" not in result.text
+
+
+def test_last_slice_empty_log_is_no_capture(tmp_path):
+    log = tmp_path / "nvsh" / "empty.log"
+    log.parent.mkdir(parents=True)
+    log.write_bytes(b"")
+    result = capture.last_slice(log)
+    assert result.status == "no capture"
+    assert result.text == ""
+
+
 # --- Slice dataclass shape ----------------------------------------------------
 
 
