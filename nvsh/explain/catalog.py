@@ -237,6 +237,8 @@ appears in the output.**
 ## See also
 
 - `nvsh explain doctor`
+"""
+
 _AGENT = """\
 # nvsh agent
 
