@@ -237,6 +237,61 @@ appears in the output.**
 ## See also
 
 - `nvsh explain doctor`
+_AGENT = """\
+# nvsh agent
+
+Lists, chooses, and installs `NvshAgent` harness backends (`nvsh.agent.registry`):
+`pi`, `qwen`, `claude`, `codex`, and the stdlib `openai-compat` fallback that
+needs no binary on PATH. `nvsh setup` calls the same `choose()` logic to pick
+a backend automatically — the configured provider if it is on PATH, else
+`openai-compat`, with a reason.
+
+## Usage
+
+    nvsh agent list
+    nvsh agent list --json
+    nvsh agent use claude
+    nvsh agent install pi
+"""
+
+_AGENT_LIST = """\
+# nvsh agent list
+
+Reports every registered backend with its installed status (from PATH) and
+whether it is the currently configured provider:
+`{adapters: [{name, installed, binary, description, configured}]}`.
+
+## Usage
+
+    nvsh agent list
+    nvsh agent list --json
+"""
+
+_AGENT_USE = """\
+# nvsh agent use <name>
+
+Sets `[agent] provider` in `config.toml` to `<name>` (one of `pi`, `qwen`,
+`claude`, `codex`, `openai-compat`), preserving every other table already on
+disk. Refuses an unknown name with a user error.
+
+## Usage
+
+    nvsh agent use claude
+    nvsh agent use openai-compat --json
+"""
+
+_AGENT_INSTALL = """\
+# nvsh agent install <name>
+
+Prints the install command for `<name>` (only `pi` today:
+`npm install -g @earendil-works/pi-coding-agent`). Runs it only with `--yes`
+or an interactive `y` confirmation, and only when `npm` is on PATH — it never
+runs anything on its own.
+
+## Usage
+
+    nvsh agent install pi
+    nvsh agent install pi --yes
 """
 
 
@@ -257,4 +312,8 @@ ENTRIES: dict[tuple[str, ...], str] = {
     ("approve", "remove"): _APPROVE_REMOVE,
     ("capture",): _CAPTURE,
     ("capture", "show"): _CAPTURE,
+    ("agent",): _AGENT,
+    ("agent", "list"): _AGENT_LIST,
+    ("agent", "use"): _AGENT_USE,
+    ("agent", "install"): _AGENT_INSTALL,
 }

@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import pytest
 
-from nvsh.config import Config, ConfigError, default_toml, load
+from nvsh.config import Config, ConfigError, default_toml, load, save, set_provider
 
 
 @pytest.fixture()
@@ -90,6 +90,55 @@ def test_never_reads_api_key_literal(xdg_home):
     with pytest.raises(ConfigError) as exc:
         load()
     assert "api_key" in str(exc.value)
+
+
+# --- save / set_provider (task t10) ---------------------------------------
+
+
+def test_save_then_load_round_trips(xdg_home):
+    cfg = Config()
+    cfg.agent_provider = "openai-compat"
+    save(cfg)
+    reloaded = load()
+    assert reloaded.agent_provider == "openai-compat"
+    assert reloaded.agents["pi"]["provider"] == "nemotron"
+
+
+def test_set_provider_writes_and_returns_updated_config(xdg_home):
+    cfg = set_provider("claude")
+    assert cfg.agent_provider == "claude"
+    reloaded = load()
+    assert reloaded.agent_provider == "claude"
+
+
+def test_set_provider_preserves_existing_tables(xdg_home):
+    cfg_dir = xdg_home / "nvsh"
+    cfg_dir.mkdir(parents=True)
+    (cfg_dir / "config.toml").write_text(
+        '[agent]\nprovider = "pi"\n\n[sessions]\nmax = 5\n\n'
+        '[agents.openai-compat]\nbase_url = "http://localhost:8000/v1"\n'
+        'api_key_env = "NVSH_API_KEY"\n',
+        encoding="utf-8",
+    )
+    set_provider("openai-compat")
+    reloaded = load()
+    assert reloaded.agent_provider == "openai-compat"
+    assert reloaded.sessions_max == 5
+    assert reloaded.agents["openai-compat"]["base_url"] == "http://localhost:8000/v1"
+
+
+def test_save_never_writes_a_literal_api_key(xdg_home):
+    cfg = Config()
+    cfg.agents["openai-compat"] = {
+        "base_url": "http://localhost:8000/v1",
+        "api_key_env": "NVSH_API_KEY",
+    }
+    save(cfg)
+    from nvsh.config import _default_path
+
+    text = _default_path().read_text(encoding="utf-8")
+    assert "api_key_env" in text
+    assert '"api_key"' not in text
 
 
 def test_unknown_top_level_key_rejected(xdg_home):

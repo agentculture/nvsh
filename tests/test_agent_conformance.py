@@ -23,11 +23,15 @@ from nvsh.agent import (
     FakeAgent,
     RequestKind,
 )
+from tests._fake_adapters import ClaudeAgentViaFake, CodexAgentViaFake, QwenAgentViaFake
 
 # Registry of adapter factories. Append here to bring a new backend under the
 # same conformance suite.
 ADAPTERS = [
     FakeAgent,
+    ClaudeAgentViaFake,
+    CodexAgentViaFake,
+    QwenAgentViaFake,
 ]
 
 
