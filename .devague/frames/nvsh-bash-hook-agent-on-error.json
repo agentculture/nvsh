@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-09-13T10:08:02Z",
-  "updated": "2026-09-13T17:03:12Z",
+  "updated": "2026-09-13T17:56:15Z",
   "claims": [
     {
       "id": "c1",
@@ -1646,6 +1646,15 @@
       "id": "l28",
       "code": "grader-unverified",
       "what": "validate-delivery first pass: file_evidence.py ran pytest with a stale node id (tests renamed by d21/d23), pytest collected nothing, and the script filed e2-e52 as 'fail' without checking that any test ran; the records are wrong and await the user's --reject; a second pass with verified node ids follows",
+      "skipped_check": "",
+      "refs": [],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l29",
+      "code": "grader-unverified",
+      "what": "Qodo fix #13 (rate-limit lock): implementation written before the test, so the red was only the missing rate_lock_path symbol, and concurrency is asserted via a second process observing the lock rather than two racing hooks",
       "skipped_check": "",
       "refs": [],
       "origin": "llm",

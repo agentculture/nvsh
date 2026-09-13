@@ -2,7 +2,7 @@
   "plan_slug": "nvsh-bash-hook-agent-on-error",
   "schema_version": 2,
   "created": "2026-09-13T13:17:31Z",
-  "updated": "2026-09-13T17:33:17Z",
+  "updated": "2026-09-13T17:56:15Z",
   "deviations": [
     {
       "id": "d1",
@@ -371,6 +371,19 @@
       "status": "proposed",
       "classification": "needs-follow-up",
       "seq": 128
+    },
+    {
+      "id": "d25",
+      "what": "Qodo finding #20 (deferred): 'nvsh off' / __nvsh_unload erase the Enter, Tab and Ctrl+G bindings instead of restoring the operator's prior readline bindings; restoring across the three keymaps needs its own design and pty tests (a wrong restore breaks Enter). Follow-up, not in this PR",
+      "task_ref": "t7",
+      "reason": "review thread on PR #8 deferred by the Qodo triage agent; 'never lock the operator out' makes a hasty restore riskier than the current unbind",
+      "affects": [
+        "c45"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "classification": "needs-follow-up",
+      "seq": 129
     }
   ],
   "evidence": [
