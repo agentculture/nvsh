@@ -156,10 +156,17 @@ never breaks an older client.
 
 ## Conversations and `sessions.max`
 
-Each shell owns a `Conversation` (its pi session path under
-`$XDG_STATE_HOME/nvsh/pi-sessions/shell-<id>.jsonl`, plus whether it is
-asleep). `sessions.max` (config `[sessions] max`, default `1`) bounds how
-many agent **processes** may exist:
+Each shell owns a `Conversation` (the session file its agent is writing,
+under `$XDG_STATE_HOME/nvsh/pi-sessions/`, plus whether it is asleep).
+**pi names that file, not nvsh**: there is no rpc command that chooses a
+session path (see `docs/pi-rpc.md`), so the daemon reads back what pi
+reports in `get_state` after `new_session` and remembers it for the later
+`switch_session`. Only a backend that reports no session file falls back to
+this daemon's own per-shell key, `shell-<id>.jsonl`. A session file the
+backend refuses to resume is logged as an error and replaced with a fresh
+session rather than failing the request. `sessions.max` (config
+`[sessions] max`, default `1`) bounds how many agent **processes** may
+exist:
 
 - `max = 1` — one process serves everyone. A request from another shell puts
   the active conversation to sleep and resumes the caller's
@@ -175,6 +182,28 @@ for what happens to the requests that have to wait.
 An adapter without `new_session`/`switch_session` (the stateless
 `openai-compat` client, for instance) is simply used as-is; nothing is
 swapped.
+
+Both calls are **synchronous against the backend**: `PiAgent` waits for pi's
+acknowledgement before returning, so the prompt the daemon sends next cannot
+overtake the session command. It used to, and pi 0.85.1 then answered
+neither — the turn produced no event at all until the client's 120 s stream
+timeout gave up (deviation d14; see `docs/pi-rpc.md`).
+
+## When the backend breaks
+
+Nothing about a broken backend is silent:
+
+- an agent that will not start, a session command that is never
+  acknowledged, or an adapter that raises mid-turn becomes an `error` event
+  on the client's stream **and** an `ERROR` line (with traceback) in
+  `daemon.log`;
+- a pi subprocess that exits or never handshakes within its bound is
+  reported with its exit code and the redacted tail of its stderr, e.g.
+  `no agent available: pi closed its output before acknowledging get_state
+  (pi exited with code 3; stderr tail: pi: cannot find module foo)`;
+- the agent process behind a failed start or a failed turn is retired
+  (closed and dropped), so the next request builds a fresh one instead of
+  talking to a backend in an unknown state.
 
 ## Backends and fallback
 

@@ -16,15 +16,18 @@ external CLI reached only through argv.
 
 from __future__ import annotations
 
+import collections
 import importlib.resources
 import json
 import os
 import queue
 import subprocess  # external `pi` CLI (bandit B404, allowed repo-wide)
 import threading
+import time
 from pathlib import Path
-from typing import Iterator, Mapping
+from typing import Any, Iterator, Mapping
 
+from ..redact import redact
 from .base import (
     AgentContext,
     AgentEvent,
@@ -67,6 +70,39 @@ _QUIET_EVENT_TYPES = frozenset(
 #: How long close() waits for a clean exit after closing stdin, and then
 #: after terminate(), before escalating.
 _CLOSE_WAIT_SECONDS = 2.0
+
+#: How long one rpc *command* may go unacknowledged before PiAgent gives up
+#: and says so out loud. Commands are acknowledged in milliseconds once pi
+#: is up (measured: ~0.2 s on the Spark, cold), so this is a liveness bound,
+#: not a thinking budget -- a turn's own thinking time is bounded by the
+#: daemon's turn cap, not by this.
+_ACK_TIMEOUT_SECONDS = 20.0
+
+#: Environment override for that bound, in seconds.
+ACK_TIMEOUT_ENV = "NVSH_PI_ACK_TIMEOUT"
+
+#: How much of pi's stderr is kept for the tail of an error message.
+_STDERR_TAIL_BYTES = 2048
+
+
+class PiRpcError(RuntimeError):
+    """pi did not hold up its end of the rpc protocol.
+
+    Raised instead of returning quietly: every caller (the daemon's
+    ``_run_locked``, ``client_transport.one_shot``) turns an exception into
+    an ``error`` event the operator can read, and silence is exactly the
+    failure mode deviation d14 was.
+    """
+
+
+def ack_timeout(env: Mapping[str, str] | None = None) -> float:
+    """How long to wait for one command's ``response`` ack, in seconds."""
+    resolved = os.environ if env is None else env
+    try:
+        value = float(resolved.get(ACK_TIMEOUT_ENV, ""))
+    except (TypeError, ValueError):
+        return _ACK_TIMEOUT_SECONDS
+    return value if value > 0 else _ACK_TIMEOUT_SECONDS
 
 
 def _default_pi_agent_config() -> dict[str, object]:
@@ -186,10 +222,17 @@ class PiAgent(NvshAgent):
 
         self._proc: subprocess.Popen | None = None
         self._reader_thread: threading.Thread | None = None
+        self._stderr_thread: threading.Thread | None = None
+        self._stderr_tail: collections.deque[bytes] = collections.deque(maxlen=40)
         self._queue: queue.Queue = queue.Queue()
+        #: Objects pulled off the queue while waiting for a command ack but
+        #: belonging to the event stream. Read *before* the queue so the
+        #: order pi sent them in survives the detour.
+        self._held: collections.deque = collections.deque()
         self._cancelled = False
         self._closed = False
         self._write_lock = threading.Lock()
+        self._ack_timeout = ack_timeout(self._env)
 
     # -- argv / lifecycle --------------------------------------------------
 
@@ -222,11 +265,21 @@ class PiAgent(NvshAgent):
         return argv
 
     def start(self) -> None:
-        """Spawn the pi subprocess. Idempotent: a second call is a no-op."""
+        """Spawn the pi subprocess and handshake with it. Idempotent.
+
+        The handshake is one ``get_state`` command whose ``response`` is
+        waited for: it proves the process booted *and* that its rpc loop is
+        reading stdin, so a pi that dies on launch (missing node, a broken
+        install, a rejected model) is reported as an error naming its exit
+        code and the tail of its stderr instead of leaving the caller
+        waiting on a stream that will never start (deviation d14).
+        """
         if self._proc is not None:
             return
         self._closed = False
         self._cancelled = False
+        self._held.clear()
+        self._stderr_tail.clear()
         self._session_dir.mkdir(parents=True, exist_ok=True)
         os.chmod(self._session_dir, 0o700)
 
@@ -237,11 +290,18 @@ class PiAgent(NvshAgent):
             argv,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
             env=self._env,
         )
         self._reader_thread = threading.Thread(target=self._reader_loop, daemon=True)
         self._reader_thread.start()
+        self._stderr_thread = threading.Thread(target=self._stderr_loop, daemon=True)
+        self._stderr_thread.start()
+        try:
+            self._command("get_state")
+        except PiRpcError:
+            self.close()
+            raise
 
     def _reader_loop(self) -> None:
         """Read stdout line by line, splitting on LF only, then decode and parse.
@@ -279,16 +339,112 @@ class PiAgent(NvshAgent):
             obj = {"type": "_malformed", "raw": text}
         self._queue.put(obj)
 
-    def _send(self, obj: dict) -> None:
-        if self._proc is None or self._proc.stdin is None:
+    def _stderr_loop(self) -> None:
+        """Keep the tail of pi's stderr so a failure can quote it.
+
+        Drained in its own thread for two reasons: a full stderr pipe would
+        block pi mid-turn, and a process that dies on launch says why only
+        here. Only the last few lines are kept, and they are redacted before
+        anyone reads them (:meth:`_stderr_text`).
+        """
+        proc = self._proc
+        if proc is None or proc.stderr is None:  # pragma: no cover - always piped
             return
+        for raw_line in iter(proc.stderr.readline, b""):
+            self._stderr_tail.append(raw_line)
+
+    def _stderr_text(self) -> str:
+        """The redacted tail of pi's stderr, as a single short string."""
+        blob = b"".join(self._stderr_tail)[-_STDERR_TAIL_BYTES:]
+        text = redact(blob).decode("utf-8", errors="replace").strip()
+        return " | ".join(line.strip() for line in text.splitlines() if line.strip())
+
+    def _exit_detail(self) -> str:
+        """How the pi process is doing, for the tail of an error message."""
+        proc = self._proc
+        if proc is None:
+            return " (no pi process)"
+        code = proc.poll()
+        state = "still running" if code is None else f"exited with code {code}"
+        stderr = self._stderr_text()
+        if stderr:
+            return f" (pi {state}; stderr tail: {stderr})"
+        return f" (pi {state}; no stderr)"
+
+    def _send(self, obj: dict) -> bool:
+        """Write one command line. ``False`` when pi's stdin is gone."""
+        if self._proc is None or self._proc.stdin is None:
+            return False
         line = (json.dumps(obj) + "\n").encode("utf-8")
         with self._write_lock:
             try:
                 self._proc.stdin.write(line)
                 self._proc.stdin.flush()
-            except (BrokenPipeError, ValueError):
-                pass
+            except (BrokenPipeError, ValueError, OSError):
+                return False
+        return True
+
+    # -- command/ack round trips -------------------------------------------
+
+    def _next_object(self, timeout: float) -> Any:
+        """The next thing pi said: held objects first, then the live queue."""
+        if self._held:
+            return self._held.popleft()
+        return self._queue.get(timeout=timeout)
+
+    def _command(self, command: str, timeout: float | None = None, **fields: object) -> dict:
+        """Send one rpc command and wait for *its* ``response`` acknowledgement.
+
+        **Never pipeline commands.** pi 0.85.1 drops both commands --
+        silently, forever, with no response and no events -- when a second
+        command line arrives before the first has been acknowledged. That is
+        deviation d14: the daemon wrote ``new_session`` and then, a
+        millisecond later, ``prompt``; pi went mute and the operator's panel
+        waited out the client's 120 s stream timeout. Waiting for the ack
+        costs one round trip (~0.2 s measured against the real pi) and makes
+        the sequence deterministic.
+
+        Raises :class:`PiRpcError` when the ack does not come, when pi
+        rejects the command, or when pi has gone away.
+        """
+        if not self._send({"type": command, **fields}):
+            raise PiRpcError(f"could not send {command} to pi{self._exit_detail()}")
+        return self._await_response(command, self._ack_timeout if timeout is None else timeout)
+
+    def _await_response(self, command: str, timeout: float) -> dict:
+        carried: list = []
+        deadline = time.monotonic() + timeout
+        try:
+            while True:
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    raise PiRpcError(
+                        f"pi did not acknowledge {command} within {timeout:g}s"
+                        f"{self._exit_detail()}"
+                    )
+                try:
+                    obj = self._next_object(min(_POLL_INTERVAL_SECONDS, left))
+                except queue.Empty:
+                    if self._proc is not None and self._proc.poll() is not None:
+                        raise PiRpcError(
+                            f"pi went away before acknowledging {command}{self._exit_detail()}"
+                        ) from None
+                    continue
+                if obj is None:  # EOF sentinel: keep it for run() to report too
+                    carried.append(None)
+                    raise PiRpcError(
+                        f"pi closed its output before acknowledging {command}"
+                        f"{self._exit_detail()}"
+                    )
+                if obj.get("type") == "response" and obj.get("command") == command:
+                    if not obj.get("success", True):
+                        raise PiRpcError(
+                            f"pi rejected {command}: {obj.get('error', 'no reason given')}"
+                        )
+                    return obj
+                carried.append(obj)
+        finally:
+            self._held.extendleft(reversed(carried))
 
     # -- running -------------------------------------------------------
 
@@ -296,7 +452,9 @@ class PiAgent(NvshAgent):
         self.start()
         self._cancelled = False
         prompt_text = build_prompt(request, context)
-        self._send({"type": "prompt", "message": prompt_text})
+        # Acknowledged, like every other command: a prompt pi never answers
+        # for is an error the operator gets to read, not silence (d14).
+        self._command("prompt", message=prompt_text)
 
         while True:
             if self._cancelled:
@@ -315,12 +473,12 @@ class PiAgent(NvshAgent):
                     continue
                 yield AgentEvent(
                     kind=EventKind.ERROR,
-                    error=f"pi process exited (code {self._proc.returncode})",
+                    error=f"pi process exited{self._exit_detail()}",
                 )
                 return
 
             try:
-                obj = self._queue.get(timeout=_POLL_INTERVAL_SECONDS)
+                obj = self._next_object(_POLL_INTERVAL_SECONDS)
             except queue.Empty:
                 continue
 
@@ -340,10 +498,13 @@ class PiAgent(NvshAgent):
                 return
 
     def _drain_one_nowait(self) -> AgentEvent | None:
-        try:
-            obj = self._queue.get_nowait()
-        except queue.Empty:
-            return None
+        if self._held:
+            obj = self._held.popleft()
+        else:
+            try:
+                obj = self._queue.get_nowait()
+            except queue.Empty:
+                return None
         if obj is None:
             return None
         return self._map_event(obj)
@@ -416,13 +577,31 @@ class PiAgent(NvshAgent):
         """
         self._send({"type": "extension_ui_response", "id": request_id, **fields})
 
-    def new_session(self) -> None:
-        """Pass-through for the session daemon (t12): start a fresh pi session."""
-        self._send({"type": "new_session"})
+    def new_session(self) -> str:
+        """Start a fresh pi session and return the file pi will store it in.
+
+        Acknowledged before returning, so the caller's next command (the
+        daemon's very next move is the prompt) cannot race it -- pipelining
+        these two is what made every daemon-routed turn hang (d14).
+
+        pi names its own session file inside ``--session-dir``; there is no
+        rpc command to choose the name. So the path is read back from
+        ``get_state`` and returned for the caller to remember and hand to
+        :meth:`switch_session` later. Returns ``""`` when pi reports no
+        session file (``--no-session``), and the caller keeps its own key.
+        """
+        self._command("new_session")
+        return self.session_file()
+
+    def session_file(self) -> str:
+        """The session file pi is currently writing, or ``""``."""
+        state = self._command("get_state").get("data") or {}
+        path = state.get("sessionFile")
+        return str(path) if isinstance(path, str) else ""
 
     def switch_session(self, path: str) -> None:
-        """Pass-through for the session daemon (t12): resume a stored session."""
-        self._send({"type": "switch_session", "sessionPath": str(path)})
+        """Resume a stored session. Acknowledged before returning (see above)."""
+        self._command("switch_session", sessionPath=str(path))
 
     # -- cancel / close ---------------------------------------------------
 
@@ -465,6 +644,8 @@ class PiAgent(NvshAgent):
                         pass
         if self._reader_thread is not None:
             self._reader_thread.join(timeout=_CLOSE_WAIT_SECONDS)
+        if self._stderr_thread is not None:
+            self._stderr_thread.join(timeout=_CLOSE_WAIT_SECONDS)
         self._proc = None
 
     def capabilities(self) -> Capabilities:

@@ -25,7 +25,7 @@ from pathlib import Path
 import pytest
 
 from nvsh.agent.base import AgentContext, AgentRequest, Capabilities, EventKind, RequestKind
-from nvsh.agent.pi import PiAgent, build_prompt
+from nvsh.agent.pi import PiAgent, PiRpcError, build_prompt
 
 FAKES_DIR = Path(__file__).resolve().parent / "fakes"
 
@@ -319,6 +319,136 @@ def test_new_session_and_switch_session_are_passthroughs(tmp_path):
         agent.switch_session("/tmp/some-session.jsonl")
     finally:
         agent.close()
+
+
+def test_new_session_returns_the_session_file_pi_chose(tmp_path):
+    """pi names its own session file; the caller has to be told which one.
+
+    There is no rpc command that chooses the name (``docs/pi-rpc.md``), so
+    ``new_session()`` reads it back from ``get_state`` -- otherwise the
+    daemon would later ``switch_session`` to a path pi never wrote.
+    """
+    env = _env(tmp_path)
+    agent = PiAgent(pi_path="pi", env=env)
+    agent.start()
+    try:
+        path = agent.new_session()
+    finally:
+        agent.close()
+    assert path, "new_session() must report the session file pi created"
+    assert Path(path).is_file()
+    assert Path(path).parent == Path(env["XDG_STATE_HOME"]) / "nvsh" / "pi-sessions"
+
+
+# --- d14: commands are acknowledged, never pipelined -----------------------
+#
+# pi 0.85.1 drops both commands -- silently and permanently -- when a second
+# command line arrives before it has acknowledged the first. On the Spark the
+# daemon wrote new_session and then, a millisecond later, the prompt; pi went
+# mute and the operator's panel waited out the client's 120 s stream timeout
+# with nothing on screen. ``FAKE_PI_STRICT_ACK=1`` makes tests/fakes/pi
+# behave the same way, so a client that pipelines hangs here too.
+
+
+def test_session_command_then_prompt_still_answers_under_a_strict_pi(tmp_path):
+    env = _env(tmp_path, FAKE_PI_STRICT_ACK="1")
+    agent = PiAgent(pi_path="pi", env=env)
+    agent.start()
+    try:
+        agent.new_session()
+        events = list(agent.run(_request(), _context()))
+    finally:
+        agent.close()
+    kinds = [event.kind for event in events]
+    assert EventKind.TEXT_DELTA in kinds, "a strict pi answered nothing: commands were pipelined"
+    assert kinds[-1] == EventKind.DONE
+
+
+def test_new_session_returns_only_after_its_ack(tmp_path):
+    """The ack is what makes the following prompt safe -- so it is waited for."""
+    env = _env(tmp_path, FAKE_PI_STRICT_ACK="1", FAKE_PI_ACK_DELAY="0.4")
+    agent = PiAgent(pi_path="pi", env=env)
+    agent.start()
+    try:
+        start = time.monotonic()
+        agent.new_session()
+        elapsed = time.monotonic() - start
+    finally:
+        agent.close()
+    assert elapsed >= 0.4, "new_session() returned before pi acknowledged it"
+
+
+# --- d14: a backend that will not start says so out loud -------------------
+
+
+def _exiting_pi(tmp_path: Path, code: int, stderr: str) -> Path:
+    """A ``pi`` stub that prints to stderr and exits at once."""
+    bindir = tmp_path / "deadbin"
+    bindir.mkdir(exist_ok=True)
+    stub = bindir / "pi"
+    stub.write_text(
+        "#!/usr/bin/env python3\n"
+        "import sys\n"
+        f"sys.stderr.write({stderr!r} + '\\n')\n"
+        f"sys.exit({code})\n",
+        encoding="utf-8",
+    )
+    stub.chmod(0o755)
+    return bindir
+
+
+def test_start_reports_a_pi_that_exits_at_once(tmp_path):
+    env = _env(tmp_path)
+    env["PATH"] = str(_exiting_pi(tmp_path, 3, "pi: cannot find module foo")) + (
+        os.pathsep + os.environ.get("PATH", "")
+    )
+    agent = PiAgent(pi_path="pi", env=env)
+    start = time.monotonic()
+    with pytest.raises(PiRpcError) as excinfo:
+        agent.start()
+    elapsed = time.monotonic() - start
+    agent.close()
+    message = str(excinfo.value)
+    assert elapsed < 5.0, "a dead pi must be reported at once, not waited out"
+    assert "code 3" in message
+    assert "cannot find module foo" in message
+
+
+def test_start_redacts_secrets_out_of_the_stderr_tail(tmp_path):
+    env = _env(tmp_path)
+    secret = "hf_" + "z" * 24
+    env["PATH"] = str(_exiting_pi(tmp_path, 1, f"auth failed\nHF_TOKEN={secret}")) + (
+        os.pathsep + os.environ.get("PATH", "")
+    )
+    agent = PiAgent(pi_path="pi", env=env)
+    with pytest.raises(PiRpcError) as excinfo:
+        agent.start()
+    agent.close()
+    message = str(excinfo.value)
+    assert "auth failed" in message
+    assert secret not in message
+
+
+def test_ack_timeout_is_bounded_and_names_the_backend(tmp_path):
+    """A pi that never answers a command is an error, not an unbounded wait."""
+    bindir = tmp_path / "mutebin"
+    bindir.mkdir()
+    stub = bindir / "pi"
+    stub.write_text(
+        "#!/usr/bin/env python3\nimport time\nwhile True:\n    time.sleep(1)\n", encoding="utf-8"
+    )
+    stub.chmod(0o755)
+    env = _env(tmp_path, NVSH_PI_ACK_TIMEOUT="0.5")
+    env["PATH"] = str(bindir) + os.pathsep + os.environ.get("PATH", "")
+    agent = PiAgent(pi_path="pi", env=env)
+    start = time.monotonic()
+    with pytest.raises(PiRpcError) as excinfo:
+        agent.start()
+    elapsed = time.monotonic() - start
+    agent.close()
+    assert 0.4 <= elapsed < 5.0
+    assert "get_state" in str(excinfo.value)
+    assert "still running" in str(excinfo.value)
 
 
 # --- teardown --------------------------------------------------------------

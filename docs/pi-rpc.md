@@ -24,17 +24,42 @@ before decoding, so this is a non-issue by construction.
 
 Every command is `{"type": "<name>", ...}`, with an optional `"id"` used to
 correlate the eventual `{"type": "response", ...}` acknowledgement.
+
+**Never pipeline: write one command, wait for its `response`, then write
+the next.** Measured against pi 0.85.1 on the Spark (nemotron/associate), a
+second command line written before the first has been acknowledged loses
+*both*: no `response`, no events, ever again — the process stays alive,
+keeps reading stdin, and answers nothing. That is deviation d14, where the
+session daemon wrote `new_session` and then, a millisecond later, `prompt`:
+the operator's panel sat empty until the client's 120 s stream timeout gave
+up and re-ran the request one-shot. With the ack waited for, 4/4 runs
+answered in ~1.5 s; pipelined, 4/4 produced nothing at all. The ack costs
+one round trip (~0.2 s cold). `PiAgent._command()` is the only way commands
+are written and it always waits, bounded by `$NVSH_PI_ACK_TIMEOUT`
+(default 20 s) — a bound that expires is an error naming pi's exit code and
+the redacted tail of its stderr, never silence.
+
 `PiAgent` sends:
 
+- `{"type": "get_state"}` — the handshake, sent once at `start()`. Its
+  `response` proves pi booted *and* that its rpc loop is reading stdin; the
+  `data.sessionFile` it carries is how nvsh learns which session file pi is
+  writing.
 - `{"type": "prompt", "message": "<text>"}` — start a turn. Acked with
   `{"type": "response", "command": "prompt", "success": true|false}`;
   `success: false` means the prompt was rejected outright (rare) — a
   rejected/failed turn after acceptance instead shows up in the event
   stream, not a second response.
-- `{"type": "abort"}` — cancel the current turn.
+- `{"type": "abort"}` — cancel the current turn. The one deliberately
+  unacknowledged write: `cancel()` must return inside a second, and it is
+  only ever sent mid-turn, with no command outstanding.
 - `{"type": "new_session"}` / `{"type": "switch_session", "sessionPath": "<path>"}`
   — start fresh / resume a stored session (`PiAgent.new_session()` /
-  `.switch_session()`, pass-throughs the session daemon (t12) will drive).
+  `.switch_session()`, driven by the session daemon). **pi names its own
+  session file** inside `--session-dir`; no rpc command chooses the name, so
+  `new_session()` follows its ack with a `get_state` and returns the
+  `sessionFile` for the daemon to remember and hand back to
+  `switch_session()` later.
 - `{"type": "extension_ui_response", "id": "<id>", ...}` — answer a pending
   dialog request (see below); sent by `PiAgent.respond_ui()`.
 
