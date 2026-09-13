@@ -8,7 +8,11 @@ instead of `AGENTS.md`/`CLAUDE.md` for this directory.
 
 The repository is **nvsh**, an agent-first shell for NVIDIA Jetson, DGX
 Spark and RTX Spark that calls an agent when a command fails (shell →
-agent). It is still an early scaffold. When you summarize it, keep what is
+agent). nvsh hooks into the operator's existing bash (a marked block in the
+rc file adds a function to the `PROMPT_COMMAND` array) rather than wrapping
+bash in a pty or running as a login shell — see `docs/architecture.md` for
+that decision. It is still mostly an early scaffold with this design now
+converged but not yet implemented. When you summarize it, keep what is
 implemented separate from what is planned in GitHub issues #1 and #2.
 
 You are **associate** — a non-coding worker. Your job in this repo is to

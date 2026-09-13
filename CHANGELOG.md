@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/). This project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.2] - 2026-09-13
+
+### Added
+
+- docs/architecture.md recording the hook-vs-wrap decision (issue #1 milestone 1) and a docs/platforms.md skeleton for the platform-detection value/source table
+
+### Changed
+
+- README.md, CLAUDE.md, AGENTS.override.md, AGENTS.colleague.md, QWEN.md and .pi/SYSTEM.md now describe the bash-hook architecture instead of the retired PTY-wrapper/login-shell design; CLAUDE.md's Login-shell constraints section is replaced by Hook constraints; README's opening names Jetson AGX Orin/Thor, DGX Spark, bash, Ghostty and ssh, marks the shell verbs as in progress, and adds a What leaves the machine section
+
 ## [0.9.1] - 2026-09-13
 
 ### Changed

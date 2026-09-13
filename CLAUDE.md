@@ -17,16 +17,26 @@ The spec lives in two GitHub issues. Read them before designing a feature
 - **#1: Build brief** (guildmaster). Covers the hook-vs-wrap decision,
   trigger rules, "propose, don't run", offline-first pluggable backends,
   device context with required redaction, and the first-milestone checklist.
-- **#2: Interactive self-healing shell.** Covers the PTY-backed interactive
-  UX (inline diagnosis panels, `Ctrl+G` to call the agent), deterministic
+- **#2: Interactive self-healing shell.** Covers the interactive UX (inline
+  diagnosis panels, `Ctrl+G` to call the agent, slash commands), deterministic
   operator tools under the model, long-context machine awareness, and
-  known-good state (`remember-good` / `diff-good` / `restore-good`).
-  Nemotron 3.5 Lightning is the first model, but it must not be hard-wired.
+  known-good state (`remember-good` / `diff-good` / `restore-good`). The
+  PTY-wrapper delivery this issue originally sketched is retired — see
+  [`docs/architecture.md`](docs/architecture.md) — but its inline-panel UX,
+  deterministic tools and activation rules carry forward onto the hook.
+  Nemotron ("associate", served by Pi) is the first model, but it must not
+  be hard-wired.
 
-**Operator goal: nvsh will be the operator's default login shell (`chsh`) on
-their Spark and Jetson machines.** This goal settles questions the issues
-leave open, and it overrides any issue text that conflicts with it (see
-[Login-shell constraints](#login-shell-constraints)).
+**Architecture: nvsh HOOKS into the operator's existing bash, it does not
+wrap it.** `nvsh setup` inserts one marked block into the operator's rc file
+right after the distro's interactive guard, which appends nvsh's function to
+the `PROMPT_COMMAND` array; bash itself still parses, does job control,
+completion, aliases and rc files exactly as before. See
+[`docs/architecture.md`](docs/architecture.md) for the decision and its
+reasons, and [Hook constraints](#hook-constraints) for what that means in
+practice. **The login-shell (`chsh`) goal is parked, not dropped** — a
+wrapper is a possible later phase on top of the same agent and tools layer,
+but is not this scope; see docs/architecture.md's "Parked: login-shell mode".
 
 nvsh is **not** a new POSIX shell (don't rewrite a bash parser or job
 control). It is not an autonomous agent that runs commands on its own
@@ -36,15 +46,20 @@ are installed and still works when they are not.
 
 ## Current state
 
-The repo is still the **culture-agent-template scaffold** renamed to `nvsh`.
-No shell features exist yet. `nvsh/` only holds the agent-first verbs
+The repo is still mostly the **culture-agent-template scaffold** renamed to
+`nvsh`, with the bash-hook-and-agent-on-error design now converged (this
+file, `docs/architecture.md`, `docs/platforms.md`) but its implementation
+still **in progress**: `nvsh/` today only holds the agent-first verbs
 (`whoami`, `learn`, `explain`, `overview`, `doctor`, `cli overview`). The
-harness prompt files and the CLI's own descriptions (`learn`, `explain`,
-`--help`) already describe nvsh and mark the shell as planned. Keep them
-that way: don't describe planned behavior as implemented. The package, CLI,
-import and PyPI names are all already `nvsh`, so no rename is needed. Some
-code comments and test docstrings still say "this template"; that wording is
-internal and harmless.
+hook installer (`nvsh setup`/`nvsh uninstall`), the trigger table, the
+slash-command routing, the `NvshAgent` adapters and the platform detectors
+described below are planned, not implemented, unless a later task's own
+notes say otherwise. The harness prompt files and the CLI's own descriptions
+(`learn`, `explain`, `--help`) already describe nvsh and mark the shell as
+planned. Keep them that way: don't describe planned behavior as implemented.
+The package, CLI, import and PyPI names are all already `nvsh`, so no rename
+is needed. Some code comments and test docstrings still say "this template";
+that wording is internal and harmless.
 
 ## Commands
 
@@ -70,9 +85,10 @@ uv run nvsh doctor --json                   # run the CLI from the checkout
 
 Python ≥ 3.12, line length 100 (black/isort/flake8 agree). The runtime
 package has **no third-party dependencies** (`dependencies = []`). Keep it
-that way unless there is a strong reason: a login shell has to start fast
-and must not break when a venv or wheel breaks. PTY handling, `termios`,
-`select`, `subprocess` and `json` are all in the stdlib.
+that way unless there is a strong reason: nvsh's Python entrypoint runs on
+every qualifying failure of an interactive shell and must not break when a
+venv or wheel breaks. `termios`, `select`, `subprocess`, `tomllib` and
+`json` are all in the stdlib.
 
 ## CLI architecture (the contract new verbs must keep)
 
@@ -103,53 +119,56 @@ and must not break when a venv or wheel breaks. PTY handling, `termios`,
 - `whoami.find_culture_yaml()` walks up from the module to find this repo's
   `culture.yaml`. When nvsh runs from a wheel install there is no
   `culture.yaml`, and `doctor` reports a single info check. Shell and device
-  checks must still work in that case, because that is how nvsh runs as a
-  login shell.
+  checks must still work in that case, because that is how nvsh runs when
+  hooked into an operator's rc file on a machine without this checkout.
 
 ## Design decisions the issues force
 
-**Hook vs wrap.** Issue #1 recommends a bash/zsh hook (`trap ERR` /
-`PROMPT_COMMAND` / `precmd`). Issue #2 asks for a PTY-backed interactive
-shell. As a *default login shell*, nvsh has to be the executable that `login`
-/ `sshd` start, which points to #2's model: a thin PTY wrapper around a real
-`bash` (or the user's configured inner shell). The inner shell still parses,
-does job control, completion and aliases, and loads rc files. The wrapper
-watches exit status and output. Hook-style integration (`nvsh init bash`)
-stays useful when nvsh is *not* the login shell. Record the decision and the
-reasons in `docs/architecture.md` before building (milestone item 1 in
-issue #1).
+**Hook, not wrap.** Issue #1 recommends a bash/zsh hook (`trap ERR` /
+`PROMPT_COMMAND` / `precmd`); issue #2 originally asked for a PTY-backed
+interactive shell delivered as a default-login-shell wrapper. The converged
+decision (`docs/architecture.md`) is the hook: `nvsh setup` appends one
+function to the operator's `PROMPT_COMMAND` array (first position, so
+`PIPESTATUS` survives — see below) via one marked block inserted into
+`$HOME/.bashrc` right after the distro's interactive guard, and `nvsh uninstall`
+removes it. Bash itself still parses, does job control, completion, aliases
+and rc files exactly as before; nothing wraps it, and there is no pty to
+stay transparent to. Issue #2's UX (inline panels, `Ctrl+G`, deterministic
+operator tools, long-context awareness) carries forward onto the hook. See
+[`docs/architecture.md`](docs/architecture.md) for the full decision, the
+measured reasons (success-path latency, `PROMPT_COMMAND` ordering, Ghostty
+composition, output capture without a pty) and the parked login-shell mode.
 
-### Login-shell constraints
+### Hook constraints
 
-These hold whenever nvsh is set with `chsh`:
+These hold for the hook, replacing the login-shell/PTY-wrapper constraints
+this section used to carry (as of nvsh 0.9.1; see `docs/architecture.md`'s
+"Before" section for that prior wording):
 
-- **Never lock the operator out.** Any failure in nvsh (import error,
-  corrupt config, backend down, PTY setup failure) must fall back to `exec`
-  of the real shell. Treat this as a tested invariant, not a best effort.
-  Keep a way to skip the wrapper entirely, such as an env var or a sentinel
-  file.
-- **Non-interactive invocations pass straight through.** When nvsh gets
-  `-c <cmd>`, stdin is not a TTY, or a remote command arrives, it `exec`s the
-  inner shell with the same argv and adds nothing: no banner, no stdout
-  output, no PTY. `scp`, `sftp`, `rsync`, `ssh host cmd`, `git` over ssh, VS
-  Code Remote and Ansible all depend on this, and extra bytes on stdout
-  break them.
-- **Login semantics.** Support being started as `-nvsh` (argv[0] starts with
-  `-`) and `-l`. Pass login-ness on to the inner shell so `/etc/profile` and
-  the user's profile still load.
-- **No added latency on the success path.** Import nothing heavy at startup,
-  make no model call and no network I/O before the prompt, and do nothing
-  extra for a command that succeeds.
-- **Installation.** `chsh` needs an absolute path listed in `/etc/shells`
-  (on this DGX Spark it currently lists only sh/bash/dash/rbash/screen/tmux).
-  A `uv tool install` puts the entry point in the user's tool bin directory, so the
-  install/uninstall story (e.g. `nvsh install-shell` / `nvsh uninstall`) has
-  to cover `/etc/shells`, the `chsh` itself, and a documented recovery path.
-  Jetson images may ship an older system Python than 3.12, so don't rely on
-  the system interpreter.
+- **Never lock the operator out.** A hook function that errors must never
+  block the prompt: hook functions never use `set -e` and end with
+  `|| return 0`, so a bug in nvsh degrades the panel, it does not lock the
+  terminal. `NVSH_DISABLE=1` makes the sourced hook file a no-op outright.
+- **Non-interactive invocations are untouched by construction.** The hook
+  only installs into an *interactive* shell's `PROMPT_COMMAND` array, placed
+  after the distro's own interactive guard in the rc file. `-c <cmd>`,
+  non-TTY stdin, `scp`/`sftp`/`rsync`/`ssh host cmd` and other non-interactive
+  invocations never source the hook at all, so there is nothing to pass
+  through and nothing extra on stdout to break them.
+- **No added latency on the success path.** The hook is a pure-bash function:
+  it reads `$?`/`PIPESTATUS`, applies the trigger pre-filter in bash, and
+  execs a Python process only when a failure qualifies. A successful command
+  pays one bash function call and nothing else — no fork, no import, no
+  model call, no network I/O.
+- **Installation is idempotent and reversible.** `nvsh setup` inserts one
+  marked block into `$HOME/.bashrc`, keeping a timestamped backup; running it
+  twice leaves the rc unchanged. `nvsh uninstall` restores the rc from that
+  backup, removes the hook file, runtime sockets and logs, and stops any
+  daemon. There is no `/etc/shells` entry and no `chsh` involved.
 - **Headless over SSH.** Jetsons are often reached only over SSH and are
-  often air-gapped. The UI must work in a plain terminal with no
-  mouse or GUI.
+  often air-gapped. The panel must render in a plain terminal with no
+  mouse or GUI, with no dependency on terminfo (hard-coded SGR sequences,
+  guarded by `NO_COLOR`/`TERM=dumb`/non-tty checks, never `tput`).
 
 ### Behavior rules (both issues agree)
 

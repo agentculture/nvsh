@@ -23,15 +23,21 @@ what the repo is and how it is laid out, not who is reading it.
 `nvsh` is an **agent-first shell for NVIDIA Jetson (AGX Orin, Thor), DGX
 Spark and RTX Spark**. It runs commands like a normal shell. When a command
 fails, it hands the error and device context to an agent (shell → agent),
-which diagnoses the failure and proposes a fix that the human confirms. The
-operator's goal is to use nvsh as their **default login shell** on their
-Spark and Jetson machines.
+which diagnoses the failure and proposes a fix that the human confirms.
+nvsh **hooks into the operator's existing bash** — one marked block that
+`nvsh setup` inserts into the operator's rc file adds a function to the
+`PROMPT_COMMAND` array — rather than wrapping bash in a pty; see
+[`docs/architecture.md`](docs/architecture.md) for the decision and its
+reasons. A default-login-shell (`chsh`) mode is a parked possible follow-up,
+not this scope.
 
 The spec is in GitHub issues **#1** (build brief) and **#2** (interactive
-self-healing shell). **Current state:** the repo is still the
-AgentCulture agent scaffold. Only the agent-first CLI verbs exist, and no
-shell features have been built yet. When summarizing, don't describe planned
-shell behavior as implemented.
+self-healing shell). **Current state:** the repo is still mostly the
+AgentCulture agent scaffold, with the hook-and-agent-on-error design now
+converged but its implementation still in progress. Only the agent-first
+CLI verbs exist on disk today; the hook, trigger rules and agent adapters
+are planned. When summarizing, don't describe planned shell behavior as
+implemented.
 
 It is an AgentCulture mesh agent, a sibling to
 [`guildmaster`](https://github.com/agentculture/guildmaster) (the skills
@@ -88,9 +94,9 @@ culture.yaml              mesh identity (suffix + backend)
 .github/workflows/        tests + deploy (PyPI Trusted Publishing)
 ```
 
-Planned (not on disk yet): `docs/architecture.md` (the hook-vs-wrap
-decision) and `docs/platforms.md` (where each detected device value comes
-from).
+`docs/architecture.md` (the hook-vs-wrap decision) and `docs/platforms.md`
+(where each detected device value comes from) now exist; the detectors and
+the hook installer they describe are still planned.
 
 ## Conventions worth knowing before you answer a question about this repo
 
@@ -100,7 +106,8 @@ from).
 - Every PR bumps the version (`version-bump` skill). CI's `version-check` job
   blocks merge otherwise.
 - The runtime package has no third-party dependencies. Keeping it that way
-  is intentional: a login shell has to start fast and must not break.
+  is intentional: nvsh's Python entrypoint runs on every qualifying shell
+  failure and must not break when a venv or wheel breaks.
 - Agent-suggested commands must never run without human confirmation. That
   is a core design rule, so flag any proposal that violates it.
 - This file describes the repo **as it exists on disk today**. If you are
