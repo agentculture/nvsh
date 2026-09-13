@@ -458,7 +458,10 @@ def _run(argv: list[str], cwd: Path, timeout: int) -> subprocess.CompletedProces
     )
 
 
-_FINDING_PATH = re.compile(r"(?:^|\s)([\w./-]+\.(?:md|yaml|yml|toml|json)):\d+")
+#: A finding names files at the START of its detail lines (``path:line:``).
+#: Anchoring to the line start matters: claim text quoted inside a finding
+#: can itself contain ``CLAUDE.md:111-120``, which is prose, not a path.
+_FINDING_PATH = re.compile(r"^\s*([\w./-]+\.(?:md|yaml|yml|toml|json)):\d+", re.MULTILINE)
 
 
 def _finding_paths_by_line(message: str) -> set[str]:
