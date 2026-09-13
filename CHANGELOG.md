@@ -24,6 +24,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Ctrl+G streams the agent's answer on the tty instead of discarding it, in emacs and vi keymaps
 - A cold daemon start waits for the daemon to answer instead of timing out after 5 s and falling back to a one-shot run; a second autostart never spawns a rival daemon (lock file); fallback reasons are stated
 - openai-compat reads its bearer from `api_key_file` (default `$XDG_CONFIG_HOME/nvsh/api_key`, must be 0600) when the env var named by `api_key_env` is unset, so a headless Jetson over ssh needs no rc export; the auto-call rate limiter prints one line when it holds back instead of staying silent (deviation d10, reported live from orin)
+- The daemon no longer wedges behind one turn: a turn whose client disconnected is aborted (pending approval dialogs denied, backend cancelled), turns are capped at a wall clock (`NVSH_TURN_TIMEOUT`, default 300 s), queued requests are told they are waiting, and `nvsh daemon status` shows the active turn and queue (deviation d12, observed live on spark)
 - With pi, `proposal.command` is the bare tool-call command, never the rendered panel text; a command-less proposal is never executed
 
 ### Changed
