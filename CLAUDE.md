@@ -135,7 +135,7 @@ These hold whenever nvsh is set with `chsh`:
   break them.
 - **Login semantics.** Support being started as `-nvsh` (argv[0] starts with
   `-`) and `-l`. Pass login-ness on to the inner shell so `/etc/profile` and
-  `~/.profile` still load.
+  the user's profile still load.
 - **No added latency on the success path.** Import nothing heavy at startup,
   make no model call and no network I/O before the prompt, and do nothing
   extra for a command that succeeds.
