@@ -100,10 +100,45 @@ class SlashCommand:
 # ---------------------------------------------------------------------------
 
 
+#: The one-request harness override ``/ask`` accepts, in either spelling:
+#: ``/ask --agent qwen why?`` or ``/ask --agent=qwen why?``. It is what the
+#: ``@qwen`` mark at the prompt is rewritten to (deviation d23).
+AGENT_FLAG = "--agent"
+
+
+def split_agent_flag(rest: str) -> tuple[str | None, str]:
+    """Split a leading ``--agent <name>`` off ``rest``.
+
+    Only a *leading* flag counts, and the word after it is always the
+    harness name -- ``/ask`` takes free text, so scanning the whole line for
+    something that looks like a flag would mangle questions that merely
+    mention one.
+    """
+    text = (rest or "").strip()
+    body = ""
+    if text.startswith(AGENT_FLAG + "="):
+        body = text[len(AGENT_FLAG) + 1 :]
+    elif text == AGENT_FLAG or text.startswith(AGENT_FLAG + " "):
+        body = text[len(AGENT_FLAG) :].lstrip()
+    else:
+        return None, text
+    name, _sep, remainder = body.partition(" ")
+    name = name.strip()
+    return (name or None), remainder.strip()
+
+
 def _handle_ask(inv: SlashInvocation) -> int:
     from .client import ask
 
-    return ask(inv.rest, draft=inv.draft, panel=inv.panel, env=inv.env, kind=RequestKind.SLASH)
+    agent, rest = split_agent_flag(inv.rest)
+    return ask(
+        rest,
+        draft=inv.draft,
+        panel=inv.panel,
+        env=inv.env,
+        kind=RequestKind.SLASH,
+        agent=agent,
+    )
 
 
 def _handle_fix(inv: SlashInvocation) -> int:
@@ -291,6 +326,32 @@ def _complete_doctor(_args: list[str]) -> list[Item]:
     ]
 
 
+def _complete_ask(args: list[str]) -> list[Item]:
+    """``--agent`` and the harness names it takes (d23)."""
+    from .agent import registry
+
+    if args and args[0] == AGENT_FLAG:
+        return [Item(spec.name, spec.description) for spec in registry.ADAPTERS.values()]
+    return [Item(AGENT_FLAG, "answer this one request with a named harness")] + [
+        Item(spec.name, spec.description) for spec in registry.ADAPTERS.values()
+    ]
+
+
+def agent_mark_items() -> list[Item]:
+    """``@name`` entries of the first-word palette (deviation d23).
+
+    The bash layer holds no harness list either (``docs/shell-integration.md``):
+    ``__nvsh_enter`` decides that ``@qwen ...`` is a mark by finding ``@qwen``
+    in this palette, exactly as it decides ``/doctor`` is a command. Every
+    registered adapter is listed, installed or not -- an uninstalled one gets
+    the one-line "not available" refusal, which is more use than a line bash
+    answers with ``command not found``.
+    """
+    from .agent import registry
+
+    return [Item(f"@{name}", f"ask {name} this one request") for name in registry.ADAPTERS]
+
+
 def _complete_agent(args: list[str]) -> list[Item]:
     from .agent import registry
 
@@ -325,6 +386,7 @@ _COMMANDS: tuple[SlashCommand, ...] = (
         name="ask",
         handler=_handle_ask,
         description="ask the agent a free-form question with the machine's context",
+        completion=_complete_ask,
         arg_schema=(ArgSpec("text", "the question"),),
         safety=SAFETY_AGENT,
     ),
@@ -454,7 +516,9 @@ def complete(words: list[str], platform_kind: str | None = None) -> list[Item]:
     """
     kind = platform_kind if platform_kind is not None else _detect_platform_kind()
     if not words:
-        return [Item(f"/{cmd.name}", cmd.description) for cmd in visible_commands(kind)]
+        return [
+            Item(f"/{cmd.name}", cmd.description) for cmd in visible_commands(kind)
+        ] + agent_mark_items()
 
     first = words[0].lstrip("/")
     cmd = resolve(first)

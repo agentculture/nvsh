@@ -77,41 +77,111 @@ __nvsh_keymap() {
 
 # --- Enter -------------------------------------------------------------
 
+# Rewrite the current line to the hidden ` nvsh slash <slash-line>` dispatch.
+# $1 is what the operator typed (pushed to history so Up recalls it); $2 is
+# the slash line nvsh is asked to run.
+__nvsh_dispatch_line() {
+    local typed=$1 target=$2
+    history -s -- "$typed"
+    # Some dispatch handlers (nvsh doctor's in-shell checks) need
+    # state only bash itself can see. Exporting it here, ahead of
+    # every dispatch, costs nothing extra: a slash line already
+    # forks nvsh. No command name is hard-coded on this path --
+    # the dispatch target reads these three vars only if it cares.
+    export NVSH_PROMPT_COMMAND="$(declare -p PROMPT_COMMAND 2>/dev/null)"
+    # bind -p lists neither bind -x functions nor macros, so the
+    # payload carries all three sections, split by the marker
+    # nvsh.doctor_checks parses (BIND_SECTION_MARKER there; spelled
+    # out here because bash must not import Python).
+    export NVSH_BIND_P="$(
+        bind -p 2>/dev/null
+        echo '# nvsh: bind -s/-X follow'
+        bind -s 2>/dev/null
+        bind -X 2>/dev/null
+    )"
+    export NVSH_KEYMAP="$(__nvsh_keymap)"
+    # Tell __nvsh_hook (hook.bash) that the next prompt belongs to
+    # nvsh's own hidden dispatch, so a slash command that reports
+    # trouble never auto-triggers an agent turn about itself.
+    __NVSH_SLASH_DISPATCH=1
+    READLINE_LINE=" ${NVSH_BIN:-nvsh} slash ${target@Q}"
+    READLINE_POINT=${#READLINE_LINE}
+    return 0
+}
+
+# The d23 marks. `? text` asks the default agent; `@name text` asks that
+# harness for this one request. Both are explicit calls, so they are routed
+# here instead of being left to bash -- otherwise the operator gets
+# `?: command not found` before nvsh ever sees the line.
+#
+# Rules (mirrored exactly by nvsh.triggers.parse_mark, for the shells where
+# only hook.bash is sourced; see docs/shell-integration.md):
+#   ?  the next character is a space or an ASCII letter (so `?*.txt`, `?1x`
+#      and `?.config` stay globs), the line has a space or ends in `?` (so a
+#      bare `?foo` stays a glob), and text is left after the mark.
+#   @  the name is a plain word listed in the palette `nvsh complete --json`
+#      returns (the harness list lives in nvsh, never here), followed by a
+#      non-empty question.
+# Sets __NVSH_MARK_LINE to the slash line to dispatch and returns 0, else 1.
+__nvsh_mark_line() {
+    local line=$1 rest name item
+    __NVSH_MARK_LINE=
+    case $line in
+    '?'*)
+        rest=${line#\?}
+        [[ $rest == [[:space:]]* || $rest == [A-Za-z]* ]] || return 1
+        [[ $line == *[[:space:]]* || $line == *'?' ]] || return 1
+        rest=${rest#"${rest%%[![:space:]]*}"}
+        rest=${rest%"${rest##*[![:space:]]}"}
+        [[ -n $rest ]] || return 1
+        __NVSH_MARK_LINE="/ask ${rest}"
+        return 0
+        ;;
+    @*)
+        name=${line#@}
+        name=${name%%[[:space:]]*}
+        [[ $name =~ ^[A-Za-z][A-Za-z0-9_-]*$ ]] || return 1
+        rest=${line#@"${name}"}
+        [[ $rest == [[:space:]]* ]] || return 1
+        rest=${rest#"${rest%%[![:space:]]*}"}
+        rest=${rest%"${rest##*[![:space:]]}"}
+        [[ -n $rest ]] || return 1
+        __nvsh_items || return 1
+        for item in "${__NVSH_ITEMS[@]}"; do
+            if [[ $item == "@${name}" ]]; then
+                __NVSH_ITEMS=()
+                __NVSH_MARK_LINE="/ask --agent ${name} ${rest}"
+                return 0
+            fi
+        done
+        __NVSH_ITEMS=()
+        return 1
+        ;;
+    esac
+    return 1
+}
+
 __nvsh_enter() {
     local line=${READLINE_LINE:-} word item
     # Ordinary commands leave here before anything forks.
-    [[ $line == /* ]] || return 0
+    case $line in
+    '?'* | @*)
+        __nvsh_mark_line "$line" || return 0
+        __nvsh_dispatch_line "$line" "$__NVSH_MARK_LINE"
+        __NVSH_MARK_LINE=
+        return 0
+        ;;
+    /*) ;;
+    *) return 0 ;;
+    esac
     word=${line%%[[:space:]]*}
     # A path (/tmp/x) or an option-looking word is not a slash command.
     [[ $word =~ ^/[A-Za-z][A-Za-z0-9_-]*$ ]] || return 0
     __nvsh_items || return 0
     for item in "${__NVSH_ITEMS[@]}"; do
         if [[ $item == "$word" ]]; then
-            history -s -- "$line"
-            # Some dispatch handlers (nvsh doctor's in-shell checks) need
-            # state only bash itself can see. Exporting it here, ahead of
-            # every dispatch, costs nothing extra: a slash line already
-            # forks nvsh. No command name is hard-coded on this path --
-            # the dispatch target reads these three vars only if it cares.
-            export NVSH_PROMPT_COMMAND="$(declare -p PROMPT_COMMAND 2>/dev/null)"
-            # bind -p lists neither bind -x functions nor macros, so the
-            # payload carries all three sections, split by the marker
-            # nvsh.doctor_checks parses (BIND_SECTION_MARKER there; spelled
-            # out here because bash must not import Python).
-            export NVSH_BIND_P="$(
-                bind -p 2>/dev/null
-                echo '# nvsh: bind -s/-X follow'
-                bind -s 2>/dev/null
-                bind -X 2>/dev/null
-            )"
-            export NVSH_KEYMAP="$(__nvsh_keymap)"
-            # Tell __nvsh_hook (hook.bash) that the next prompt belongs to
-            # nvsh's own hidden dispatch, so a slash command that reports
-            # trouble never auto-triggers an agent turn about itself.
-            __NVSH_SLASH_DISPATCH=1
-            READLINE_LINE=" ${NVSH_BIN:-nvsh} slash ${line@Q}"
-            READLINE_POINT=${#READLINE_LINE}
             __NVSH_ITEMS=()
+            __nvsh_dispatch_line "$line" "$line"
             return 0
         fi
     done
@@ -143,6 +213,10 @@ __nvsh_ctrl_g() {
 
 # First word: merge the slash palette with normal path completion, and fall
 # through to bash's default completion for everything else.
+# Note: a first word starting with `@` is never offered the palette, because
+# bash completes `@word` as a *hostname* before any programmable completer is
+# consulted (verified on bash 5.2 with HOSTFILE set). The `@name` marks are
+# therefore Enter-only; Tab on them stays bash's hostname completion.
 __nvsh_complete_initial() {
     local cur=${COMP_WORDS[COMP_CWORD]} item
     COMPREPLY=()

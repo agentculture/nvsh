@@ -94,14 +94,16 @@ function cannot itself call `accept-line`, so the macro chain is required
 
 `__nvsh_enter` looks at `READLINE_LINE`:
 
-- a line not starting with `/` returns immediately — an ordinary command
-  costs one bash function call and **no fork**;
+- a line not starting with `/`, `?` or `@` returns immediately — an ordinary
+  command costs one bash function call and **no fork**;
 - a first word that is not `/name` (so `/tmp/x`, or a bare path with a
   second slash) passes through unchanged;
 - a first word that `nvsh complete --json` lists is rewritten to
   `" nvsh slash '<line>'"` — note the single leading space — and the
   original line is pushed with `history -s`, so `history` shows what the
   operator typed and not the dispatch.
+- a line carrying one of the marks below (`? …`, `@name …`) is rewritten the
+  same way, to `/ask …`.
 
 `/notacmd` therefore still runs as bash and still fails as bash.
 `command_not_found_handle` does **not** fire for `/doctor`, which is why
@@ -116,6 +118,68 @@ already there, and never replaces an existing value
 (`erasedups` becomes `erasedups:ignorespace`). If you unset `HISTCONTROL`
 later in your rc, re-source the file or your slash dispatches will show up
 in `history`.
+
+### Talking to the agent from the prompt
+
+Five ways in, all landing on the same request (deviation d23):
+
+| You type | What happens |
+|----------|--------------|
+| `/ask <text>` | The slash verb. `--agent <name>` (or `--agent=<name>`) makes one named harness answer this request. |
+| `? <text>` | A request to the **default** agent. |
+| `@<name> <text>` | A request answered by **that harness**, for this request only — `@pi`, `@qwen`, `@claude`, `@codex`, `@openai-compat`, i.e. any name in `nvsh.agent.registry.ADAPTERS`. |
+| `Ctrl+G` | Asks with the half-typed line as the draft, not as the question. |
+| a plain sentence (`what are the memory levels?`) | A *guess*: bash reports `command not found` and nvsh's `prose_request` heuristic recognises the shape (deviation d20). |
+
+`?` and `@name` are **explicit**, exactly like `Ctrl+G`: they are never held
+back by the automatic-call rate limiter and never consume its window. The
+plain-sentence route is a guess, so it stays rate-limited.
+
+A harness that is not installed or configured produces one line and nothing
+else — no panel, no fallback to the default:
+
+```console
+$ @qwen why is memory high?
+nvsh: @qwen is not available: 'qwen' is not on PATH
+```
+
+#### When a mark counts
+
+The rules are implemented twice — in `__nvsh_mark_line` (bash, the preferred
+route) and in `nvsh.triggers.parse_mark` (Python, the hook fallback) — and
+they are deliberately identical:
+
+- `?` — the character after the `?` is a space or an ASCII letter, **and**
+  the line either contains a space or ends in `?`, **and** something is left
+  once the mark and surrounding blanks are stripped. So `? what is the ram
+  level`, `?whats the cuda version?` and `? ram` are requests, while `?`,
+  a lone `?` with a trailing blank, `?*.txt`, `?1x`, `?.bashrc` and a bare `?foo` are left to bash as the
+  globs they look like.
+- `@name` — `name` is a plain word (a letter, then letters, digits, `_` or
+  `-`) that is a *registered* harness, followed by whitespace and a non-empty
+  question. `@`, `@pi` alone, `@foo.bar hello` and `@notaharness what is up`
+  are ordinary commands, and an address in argument position (`mail a@b.c`)
+  never starts the line, so it is never a mark.
+
+The bash side gets the harness list the same way it gets the command list:
+`@pi`, `@qwen`, … are entries of the `nvsh complete --json` palette
+(`nvsh.slash.agent_mark_items`). No name is hard-coded in the `.bash` file.
+
+#### The two routes
+
+- **Readline (preferred).** `__nvsh_enter` rewrites `? what is the ram level`
+  to `" nvsh slash '/ask what is the ram level'"` and `@pi how much ram` to
+  `" nvsh slash '/ask --agent pi how much ram'"`, pushing the original line
+  with `history -s`. Bash never runs the mark, so there is no
+  `?: command not found` on screen at all.
+- **Hook fallback.** In a shell where only `hook.bash` is sourced, bash does
+  run the line and reports 127; `nvsh hook` then classifies it with
+  `prose_request`, which returns the same question and harness name, skips
+  the rate limit because the request is explicit, and answers it.
+
+A `@name` request always runs **one-shot** rather than through the warm
+daemon: the daemon holds a session for the *configured* harness, so asking
+it would quietly answer from the default backend instead.
 
 ### Tab
 
@@ -133,6 +197,11 @@ in `history`.
 
 The command list lives in a bash variable only for the duration of one call
 and is cleared afterwards; there is no static list in the file.
+
+Tab does **not** complete the `@name` marks: bash completes a first word
+starting with `@` as a *hostname* before any programmable completer is
+consulted (checked on bash 5.2), so `@` + Tab stays bash's own behaviour and
+the marks are Enter-only.
 
 ### Ctrl+G
 

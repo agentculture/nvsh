@@ -140,8 +140,8 @@ def test_complete_unknown_command_is_empty():
 
 
 def test_complete_command_with_no_provider_is_empty():
-    # /ask has no completion provider of its own.
-    assert slash_mod.complete(["/ask", "why"], "dgx-spark") == []
+    # /help has no completion provider of its own.
+    assert slash_mod.complete(["/help", "wh"], "dgx-spark") == []
 
 
 # --- dispatch routing ------------------------------------------------------
@@ -338,3 +338,82 @@ def test_dispatch_steer_passes_the_whole_line_as_the_text(xdg, monkeypatch):
     monkeypatch.setattr(client_mod, "steer", lambda text, **kw: seen.append(text) or 0)
     assert slash_mod.dispatch('/steer just run "free -h"', platform_kind="generic") == 0
     assert seen == ['just run "free -h"']
+
+
+# --- d23: /ask --agent <name> ---------------------------------------------
+
+
+def test_complete_full_palette_offers_the_agent_marks():
+    values = {item.value for item in slash_mod.complete([], "dgx-spark")}
+    assert "@pi" in values
+    assert "@qwen" in values
+    assert "@openai-compat" in values
+
+
+def test_complete_ask_offers_the_agent_flag_and_names():
+    values = {item.value for item in slash_mod.complete(["/ask"], "dgx-spark")}
+    assert "--agent" in values
+    assert "pi" in values
+
+
+def test_dispatch_ask_agent_flag_is_split_off_the_question(xdg, monkeypatch):
+    seen = {}
+
+    def fake_ask(prompt, **kwargs):
+        seen["prompt"] = prompt
+        seen["agent"] = kwargs.get("agent")
+        return 0
+
+    monkeypatch.setattr(client_mod, "ask", fake_ask)
+    assert slash_mod.dispatch("/ask --agent pi how much ram?", platform_kind="dgx-spark") == 0
+    assert seen == {"prompt": "how much ram?", "agent": "pi"}
+
+
+def test_dispatch_ask_agent_equals_form(xdg, monkeypatch):
+    seen = {}
+
+    def fake_ask(prompt, **kwargs):
+        seen["prompt"] = prompt
+        seen["agent"] = kwargs.get("agent")
+        return 0
+
+    monkeypatch.setattr(client_mod, "ask", fake_ask)
+    assert slash_mod.dispatch("/ask --agent=qwen why?", platform_kind="dgx-spark") == 0
+    assert seen == {"prompt": "why?", "agent": "qwen"}
+
+
+def test_dispatch_ask_without_the_flag_keeps_the_whole_question(xdg, monkeypatch):
+    seen = {}
+
+    def fake_ask(prompt, **kwargs):
+        seen["prompt"] = prompt
+        seen["agent"] = kwargs.get("agent")
+        return 0
+
+    monkeypatch.setattr(client_mod, "ask", fake_ask)
+    assert slash_mod.dispatch("/ask --agent is not a flag here", platform_kind="dgx-spark") == 0
+    assert seen["agent"] == "is"  # '--agent <word>' always binds the next word
+
+
+def test_ask_with_an_unavailable_agent_prints_one_line(xdg, monkeypatch):
+    from nvsh.agent import registry
+
+    monkeypatch.setattr(registry, "installed", lambda name, which=None: name == "pi")
+    monkeypatch.setattr(client_transport, "send", _stub_send([]))
+    monkeypatch.setattr(client_transport, "one_shot", _stub_send([]))
+    p = _panel()
+    rc = slash_mod.dispatch("/ask --agent qwen why?", platform_kind="dgx-spark", panel=p)
+    lines = [ln for ln in p.out.getvalue().splitlines() if ln.strip()]
+    assert rc == 1
+    assert len(lines) == 1, lines
+    assert lines[0].startswith("nvsh: @qwen is not available: ")
+
+
+def test_ask_with_an_unknown_agent_names_the_known_ones(xdg, monkeypatch):
+    monkeypatch.setattr(client_transport, "send", _stub_send([]))
+    monkeypatch.setattr(client_transport, "one_shot", _stub_send([]))
+    p = _panel()
+    slash_mod.dispatch("/ask --agent nope why?", platform_kind="dgx-spark", panel=p)
+    out = p.out.getvalue()
+    assert "nvsh: @nope is not available: " in out
+    assert "pi" in out

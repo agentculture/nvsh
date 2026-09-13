@@ -353,6 +353,37 @@ def _ask_header(panel: Panel, state: Mapping[str, Any], question: str) -> None:
     panel.line(f"nvsh: asking the agent: {question}")
 
 
+def agent_override(config, name: str):
+    """Point *config* at one harness for a single request (deviation d23).
+
+    Returns ``(config, "")`` when ``name`` is a registered, installed
+    harness -- a copy of *config* whose provider is ``name``, so
+    :func:`nvsh.agent.registry.choose` picks it and :func:`backend_label`
+    names it -- and ``(None, line)`` otherwise, where ``line`` is the single
+    line the operator gets and the whole of nvsh's answer. A harness that is
+    not there must never be silently swapped for the default: the operator
+    asked ``@qwen`` on purpose.
+    """
+    from dataclasses import replace
+
+    from .agent import registry
+
+    if name not in registry.ADAPTERS:
+        known = ", ".join(registry.ADAPTERS)
+        return None, f"nvsh: @{name} is not available: unknown harness (known: {known})"
+    try:
+        ok = registry.installed(name)
+    except Exception as exc:  # noqa: BLE001 - a broken probe is a plain refusal
+        return None, f"nvsh: @{name} is not available: {exc}"
+    if not ok:
+        binary = registry.ADAPTERS[name].binary or name
+        return None, f"nvsh: @{name} is not available: '{binary}' is not on PATH"
+    try:
+        return replace(config, agent_provider=name), ""
+    except Exception as exc:  # noqa: BLE001
+        return None, f"nvsh: @{name} is not available: {exc}"
+
+
 def _prose_request(state: Mapping[str, Any], question: str) -> AgentRequest:
     """The request for a plain-language question typed at the prompt (d20).
 
@@ -449,7 +480,14 @@ def _send(
     shell_id: int,
     config,
     responder=None,
+    one_shot: bool = False,
 ) -> Iterable[AgentEvent]:
+    # A one-request harness override (``@name`` / ``/ask --agent``) always
+    # runs one-shot: the warm daemon holds a session for the *configured*
+    # harness and its own config, so asking it would answer from the default
+    # backend and quietly ignore the operator's choice (deviation d23).
+    if one_shot:
+        return client_transport.one_shot(request, context, config=config, responder=responder)
     return client_transport.send(
         request,
         context,
@@ -812,6 +850,7 @@ def _stream_request(
     inspections: list[tuple[str, RunResult]] | None = None,
     audit=None,
     steers: list[str] | None = None,
+    one_shot: bool = False,
 ) -> StreamResult:
     responder = client_transport.Responder(shell_id=shell_id, env=env)
     on_proposal = None
@@ -828,7 +867,15 @@ def _stream_request(
             env=env,
         )
     return panel.stream(
-        _send(request, context, env=env, shell_id=shell_id, config=config, responder=responder),
+        _send(
+            request,
+            context,
+            env=env,
+            shell_id=shell_id,
+            config=config,
+            responder=responder,
+            one_shot=one_shot,
+        ),
         on_proposal=on_proposal,
         cancel=lambda: client_transport.cancel(shell_id=shell_id, env=env),
     )
@@ -889,23 +936,38 @@ def handle_failure(
     config = _load_config()
 
     state = save_last_failure(args, env=resolved)
-    if _rate_limited(args, config, resolved):
-        _note_held_back(config, resolved, time.time())
-        return 0
-
-    shell_id = _shell_pid(resolved)
-    context = build_context(args, resolved)
 
     # A sentence typed at the prompt ("what are the memory levels?") is a
     # question, not a failed command: bash's "command not found" is an
     # artefact of where it was typed, and diagnosing `what` helps nobody.
     # It goes to the agent as an explicit request carrying the operator's
-    # own words, under its own header (deviation d20).
-    question = prose_request(str(state.get("line", "") or ""), int(state.get("exit", 0) or 0))
-    if question:
-        request = _prose_request(state, question)
+    # own words, under its own header (deviation d20). A line the operator
+    # *marked* -- `? ...` or `@name ...` (d23) -- says so outright, and like
+    # Ctrl+G it is an explicit call: it is never held back by the auto-call
+    # window, and never consumes it either. Only an unmarked line (an
+    # ordinary failure, or the d20 guess) is rate-limited, so the check has
+    # to come after the classification rather than before it.
+    marked = prose_request(str(state.get("line", "") or ""), int(state.get("exit", 0) or 0))
+    explicit = marked is not None and marked.explicit
+    if not explicit and _rate_limited(args, config, resolved):
+        _note_held_back(config, resolved, time.time())
+        return 0
+
+    one_shot = False
+    if marked is not None and marked.agent:
+        config, refusal = agent_override(config, marked.agent)
+        if config is None:
+            panel.line(refusal)
+            return 0
+        one_shot = True
+
+    shell_id = _shell_pid(resolved)
+    context = build_context(args, resolved)
+
+    if marked is not None:
+        request = _prose_request(state, marked.question)
         panel.header(
-            state["line"], state["exit"], backend_label=backend_label(config), ask=question
+            state["line"], state["exit"], backend_label=backend_label(config), ask=marked.question
         )
     else:
         request = _failure_request(state)
@@ -925,6 +987,7 @@ def handle_failure(
         inspections=inspections,
         audit=audit,
         steers=steers,
+        one_shot=one_shot,
     )
     if result.interrupted:
         return 130
@@ -941,6 +1004,7 @@ def handle_failure(
             approvals=approvals,
             inspections=[],
             audit=audit,
+            one_shot=one_shot,
         )
         if follow.interrupted:
             return 130
@@ -954,6 +1018,7 @@ def ask(
     panel: Panel | None = None,
     env: Mapping[str, str] | None = None,
     kind: RequestKind = RequestKind.EXPLICIT,
+    agent: str | None = None,
 ) -> int:
     """``/ask`` and ``Ctrl+G``: a free-form question with the machine's context.
 
@@ -961,12 +1026,28 @@ def ask(
     ``Ctrl+G``); :mod:`nvsh.slash` passes :attr:`RequestKind.SLASH` when the
     operator typed ``/ask`` at the prompt, so the two entry points stay
     distinguishable on the wire without duplicating this function.
+
+    ``agent`` names one harness to answer *this* request (``/ask --agent
+    qwen ...``, which is what the ``@qwen`` mark is rewritten to). An
+    unavailable one is a single refusal line and exit 1 -- never a silent
+    fall back to the default (deviation d23).
     """
     resolved = dict(os.environ if env is None else env)
     panel = _panel_for(panel, resolved)
+    config = _load_config()
+    if agent:
+        config, refusal = agent_override(config, agent)
+        if config is None:
+            panel.line(refusal)
+            return 1
     text = prompt
     if draft:
         text = f"{prompt}\n\nThe operator was in the middle of typing: {draft}"
+    question = (prompt or "").strip()
+    if question:
+        # Same first line as the hook's question path (d20/d22), so `? ...`
+        # reads the same whichever route carried it.
+        panel.header("", 0, backend_label=backend_label(config), ask=question)
     state = load_last_failure(resolved) or {}
     args = _args_from_state(state) if state else _args_from_state({"cwd": os.getcwd()})
     request = AgentRequest(
@@ -974,6 +1055,7 @@ def ask(
         prompt=text,
         command=str(state.get("line", "") or ""),
         failure_id=str(state.get("failure_id", "") or ""),
+        ask=question,
     )
     result = _stream_request(
         panel,
@@ -981,7 +1063,8 @@ def ask(
         build_context(args, resolved),
         env=resolved,
         shell_id=_shell_pid(resolved),
-        config=_load_config(),
+        config=config,
+        one_shot=bool(agent),
     )
     return 130 if result.interrupted else 0
 
