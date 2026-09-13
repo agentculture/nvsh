@@ -344,16 +344,16 @@ key can be mistaken for a narrower one than it is:
 
 ### Numbered stages, and picking which of them an approval covers (d26)
 
-An operator on the Spark was shown `ls /home/spark/git | grep -i orin` and
+An operator on the Spark was shown `ls /srv/models | grep -i orin` and
 told `[s] each stage exactly` — which never said what the stages *were*, and
 offered no way to approve only the `grep` half. A line with more than one
 stage now numbers them above the scope lines, and each scope family names
 the pattern it would store *per stage*, in the same order:
 
 ```text
-stages: 1 'ls /home/spark/git'  2 'grep -i orin'
-[s] exact  [S] 'ls /home/spark/git *' | 'grep -i *'  (this session)
-[u] 'ls *' | 'grep *'  [U] 'ls /home/spark/git *' | 'grep -i *'  (persisted for you)
+stages: 1 'ls /srv/models'  2 'grep -i orin'
+[s] exact  [S] 'ls /srv/models *' | 'grep -i *'  (this session)
+[u] 'ls *' | 'grep *'  [U] 'ls /srv/models *' | 'grep -i *'  (persisted for you)
 ```
 
 Each line is clipped to 80 columns with a trailing `…`. A stage no pattern
