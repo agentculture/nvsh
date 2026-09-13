@@ -8,12 +8,22 @@ agent (shell → agent), which diagnoses the problem and proposes a fix.
 
 > Works like a shell. Helps when things break. Fixes when you let it.
 
-**Status: early scaffold.** The agent-first CLI baseline (below) works. The
-shell hook itself is designed (see [`docs/architecture.md`](docs/architecture.md))
-but **in progress**, not built yet. The design is tracked in
-[#1](https://github.com/agentculture/nvsh/issues/1) (build brief) and
-[#2](https://github.com/agentculture/nvsh/issues/2) (interactive self-healing
-shell).
+**Status: hook implemented.** The bash hook (`nvsh setup`/`uninstall`/`on`/`off`),
+the per-user session daemon, the trigger table, redaction, platform
+detection, output capture, the pluggable `NvshAgent` backends (fake, Pi,
+OpenAI-compatible, Claude, Codex, Qwen), the failure panel, slash commands
+and the approve/execute/verify loop are all on disk and covered by tests —
+see [`docs/architecture.md`](docs/architecture.md) for the design and
+[`docs/verification.md`](docs/verification.md) for what has been checked on
+real hardware. Still open: the default-login-shell (`chsh`) mode stays
+parked (see "Parked: login-shell mode" in `docs/architecture.md`), an
+auto-apply mode (running a fix without confirmation) is out of scope for
+v1, and machine-level undo beyond the current approve/execute/verify loop
+is tracked as a follow-up
+([#7](https://github.com/agentculture/nvsh/issues/7)). The design is
+tracked in [#1](https://github.com/agentculture/nvsh/issues/1) (build
+brief) and [#2](https://github.com/agentculture/nvsh/issues/2) (interactive
+self-healing shell).
 
 ## Goal
 
@@ -86,17 +96,25 @@ uv run teken cli doctor . --strict    # the agent-first rubric gate CI runs
 | `learn` | Print a structured self-teaching prompt. |
 | `explain <path>` | Markdown docs for any noun/verb path. |
 | `overview` | Read-only descriptive snapshot of the agent. |
-| `doctor` | Health checks (today: agent-identity invariants; planned: platform + agent backend reachability). |
+| `doctor` | Health checks: agent-identity invariants, platform detection, agent backend configured/reachable, and (from a hooked shell) hook sourced, bindings, capture and daemon status. |
 | `cli overview` | Describe the CLI surface itself. |
+| `setup` | Render the bash hook files and insert the rc block. |
+| `uninstall` | Remove the rc block, rendered files, sockets, logs and daemon. |
+| `on` / `off` | Print the bash that rebinds / unbinds the hook in the current shell. |
+| `agent` | List, choose, or install `NvshAgent` harness backends. |
+| `approve` | Check or manage the approved-command pattern store. |
+| `capture` | Show the last captured command output. |
+| `context` | Show exactly the context that would be sent to the agent. |
+| `daemon` | Run, inspect or stop the per-user session daemon. |
+| `slash` | Dispatch one `/verb ...` line. |
+| `complete` | Tab-completion candidates. |
 
 Every command supports `--json`. Results go to stdout, and errors and
 diagnostics go to stderr; the two are never mixed. Exit codes: `0` success,
 `1` user error, `2` environment error, `3+` reserved.
 
-**In progress:** the shell verbs themselves — `setup`/`uninstall` (the bash
-hook installer), `run`, `ask`, `fix`, the trigger table, slash-command
-routing, and known-good state — are designed (`docs/architecture.md`) but
-not yet on disk. They will land as the milestones in #1 and #2 are built.
+**Verified on:** see [`docs/verification.md`](docs/verification.md) for the
+devices and scenarios this has actually been exercised against.
 
 ## Repository layout
 

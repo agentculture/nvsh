@@ -39,14 +39,19 @@ than wrapping bash in a pty; see
 default-login-shell (`chsh`) mode is a parked possible follow-up, not this
 scope. The spec is in GitHub issues #1 and #2.
 
-**Current state:** still mostly the AgentCulture scaffold, with the hook
-design now converged (`CLAUDE.md`, `docs/architecture.md`) but its
-implementation still in progress. Only the agent-first verbs (`whoami`,
-`learn`, `explain`, `overview`, `doctor`, `cli overview`) exist on disk
-today; the hook and shell verbs are not built yet.
+**Current state:** the hook design (`CLAUDE.md`, `docs/architecture.md`) is
+implemented, not just converged: the hook installer (`nvsh setup`/
+`nvsh uninstall`/`nvsh on`/`nvsh off`), the trigger table, redaction,
+platform detection, the pluggable `NvshAgent` backends, the session daemon,
+the failure panel, slash commands and the approval store are all on disk
+alongside the original agent-first verbs (`whoami`, `learn`, `explain`,
+`overview`, `doctor`, `cli overview`). Still open: the login-shell (`chsh`)
+mode is parked, auto-apply (running a fix without confirmation) is out of
+scope for v1, and machine-level undo beyond the approve/execute/verify loop
+is tracked as issue #7 — don't describe those as implemented.
 
 `CLAUDE.md` is written for a Claude Code session working *on* the repo. It is
-not your runtime prompt, but it is the fullest write-up of the planned design
+not your runtime prompt, but it is the fullest write-up of the shell design
 and the repo's conventions. Read it before any design or implementation
 task.
 
