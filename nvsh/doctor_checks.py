@@ -389,8 +389,14 @@ def check_hook_sourced(env: Mapping[str, str], current_version: str) -> dict:
 # ---------------------------------------------------------------------------
 
 _DECLARE_ARRAY_RE = re.compile(r"declare\s+-a\s+PROMPT_COMMAND=")
-_ARRAY_ELEM_RE = re.compile(r'\[(\d+)\]="((?:[^"\\]|\\.)*)"')
+#: ``declare -p`` prints an element either double-quoted or, when it holds a
+#: newline (which is how bash-preexec folds several commands into one), in
+#: ANSI-C ``$'...'`` form.
+_ARRAY_ELEM_RE = re.compile(r"\[(\d+)\]=(?:\"((?:[^\"\\]|\\.)*)\"|\$'((?:[^'\\]|\\.)*)')")
 _DECLARE_STRING_RE = re.compile(r'declare\s+--\s*PROMPT_COMMAND="((?:[^"\\]|\\.)*)"')
+
+#: The function bash-preexec installs as the first PROMPT_COMMAND command.
+BASH_PREEXEC_ENTRY = "__bp_precmd_invoke_cmd"
 
 #: The exact fix command reported when ``__nvsh_hook`` is not first.
 HOOK_FIX_COMMAND = 'PROMPT_COMMAND=(__nvsh_hook "${PROMPT_COMMAND[@]/__nvsh_hook}")  # or: nvsh on'
@@ -400,10 +406,22 @@ def _unescape_declare(text: str) -> str:
     return text.replace('\\"', '"').replace("\\\\", "\\")
 
 
+def _unescape_ansi_c(text: str) -> str:
+    return text.replace("\\n", "\n").replace("\\t", "\t").replace("\\'", "'").replace("\\\\", "\\")
+
+
 def _parse_prompt_command(text: str) -> list[str] | None:
     if _DECLARE_ARRAY_RE.search(text) or "PROMPT_COMMAND=(" in text:
         pairs = [
-            (int(index), _unescape_declare(value)) for index, value in _ARRAY_ELEM_RE.findall(text)
+            (
+                int(match.group(1)),
+                (
+                    _unescape_ansi_c(match.group(3))
+                    if match.group(3) is not None
+                    else _unescape_declare(match.group(2))
+                ),
+            )
+            for match in _ARRAY_ELEM_RE.finditer(text)
         ]
         if pairs:
             pairs.sort(key=lambda pair: pair[0])
@@ -433,12 +451,37 @@ def check_hook_first_in_prompt_command(prompt_command_text: str | None) -> dict:
             "could not parse the --prompt-command state",
             RUN_TO_HOOK_REMEDIATION,
         )
-    if elements[0] == "__nvsh_hook":
+    commands = [[part.strip().rstrip(";") for part in element.split("\n")] for element in elements]
+    occurrences = sum(part == "__nvsh_hook" for parts in commands for part in parts)
+    if occurrences > 1:
+        return _check(
+            "hook_first_in_prompt_command",
+            False,
+            "error",
+            f"__nvsh_hook appears {occurrences} times in PROMPT_COMMAND, "
+            f"it must appear once (order: {elements})",
+            HOOK_FIX_COMMAND,
+        )
+    if occurrences == 1 and commands[0][0] == "__nvsh_hook":
         return _check(
             "hook_first_in_prompt_command",
             True,
             "info",
             "__nvsh_hook is first in PROMPT_COMMAND",
+            "",
+        )
+    # bash-preexec (Ghostty on bash < 5.3, fig/amazon-q) installs its own entry
+    # first by design and folds ours in behind it; it restores `$?` for us and
+    # the hook reads per-stage statuses from BP_PIPESTATUS, so this layout is
+    # healthy. See docs/architecture.md, "PROMPT_COMMAND ordering".
+    if occurrences == 1 and commands[0][:2] == [BASH_PREEXEC_ENTRY, "__nvsh_hook"]:
+        return _check(
+            "hook_first_in_prompt_command",
+            True,
+            "info",
+            f"__nvsh_hook runs directly after {BASH_PREEXEC_ENTRY} in PROMPT_COMMAND "
+            "(bash-preexec layout; $? is restored and PIPESTATUS is read from "
+            "BP_PIPESTATUS)",
             "",
         )
     return _check(
