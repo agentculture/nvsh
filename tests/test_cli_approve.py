@@ -138,3 +138,65 @@ def test_approve_remove_reports_a_real_removal(capsys):
     main(["approve", "list", "--json"])
     listed = json.loads(capsys.readouterr().out)
     assert "nvidia-smi *" not in listed["user"]
+
+
+# --- d24: per-stage reporting and the specific scopes --------------------
+
+
+def test_approve_check_names_the_unapproved_stage(capsys):
+    rc = main(["approve", "check", "nvidia-smi -q | grep -i fan", "--json"])
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["decision"] == "ask"
+    assert payload["stage"] == "grep -i fan"
+
+
+def test_approve_check_text_names_the_unapproved_stage(capsys):
+    rc = main(["approve", "check", "nvidia-smi -q | grep -i fan"])
+    assert rc == 0
+    assert "stage: grep -i fan" in capsys.readouterr().out
+
+
+def test_approve_check_reports_no_stage_when_everything_matched(capsys):
+    rc = main(["approve", "check", "nvidia-smi -q", "--json"])
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["decision"] == "user"
+    assert payload["stage"] is None
+
+
+def test_approve_add_with_a_scope_derives_the_patterns(capsys):
+    rc = main(["approve", "add", "ssh orin uptime", "--scope", "user-specific", "--json"])
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["patterns"] == ["ssh orin *"]
+    assert payload["scope"] == "user"
+    rc = main(["approve", "list", "--json"])
+    assert "ssh orin *" in json.loads(capsys.readouterr().out)["user"]
+
+
+def test_approve_add_with_a_scope_writes_one_pattern_per_stage(capsys):
+    rc = main(["approve", "add", "ps -eo pid | head -n 20", "--scope", "user", "--json"])
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["patterns"] == ["ps *", "head *"]
+    rc = main(["approve", "check", "ps -eo pid | head -n 20", "--json"])
+    assert json.loads(capsys.readouterr().out)["decision"] == "user"
+
+
+def test_approve_add_with_a_session_scope_goes_to_the_session_store(capsys):
+    rc = main(["approve", "add", "ssh orin uptime", "--scope", "session-specific", "--json"])
+    assert rc == 0
+    capsys.readouterr()
+    rc = main(["approve", "list", "--json"])
+    payload = json.loads(capsys.readouterr().out)
+    assert "ssh orin *" in payload["session"]
+    assert "ssh orin *" not in payload["user"]
+
+
+def test_approve_add_with_a_scope_refuses_a_privileged_stage(capsys):
+    rc = main(["approve", "add", "ls | sudo tee /etc/x", "--scope", "user"])
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert err.startswith("error:")
+    assert "hint:" in err

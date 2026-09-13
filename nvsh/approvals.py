@@ -25,9 +25,30 @@ across logins. When ``XDG_RUNTIME_DIR`` is unset the store falls back to
 the system temp dir, so nvsh keeps working on a bare ssh into a Jetson
 without ever quietly promoting a session approval to a permanent one.
 
-Patterns are ``fnmatch`` globs matched against the *full* command line
-(after whitespace normalization), not just argv[0] — ``"docker ps*"``
+Patterns are ``fnmatch`` globs matched against one *stage* of the command
+line (after whitespace normalization), not just argv[0] — ``"docker ps*"``
 matches ``docker ps -a`` but not ``docker exec ...``.
+
+**Stages, and why every one of them has to match (deviation d24).** A
+command line is split on ``|``, ``&&``, ``||``, ``&``, ``;`` and newlines,
+honouring quotes, so ``ssh orin "ps | head"`` is one stage whose first
+argument is ``orin``. :meth:`Approvals.matches` requires *every* stage to
+match some approved pattern: a broad ``ls *`` can never pull
+``ls | sudo tee /etc/x`` through, and :meth:`Approvals.unapproved_stage`
+names the stage that is holding the line back. A line carrying a subshell
+or a command substitution (``(...)``, ``$(...)``, backticks) is opaque —
+what it really runs is not in its own text — so it is treated as one stage
+that no pattern may ever match.
+
+**Four scopes, two forms (deviation d24).** An operator on the Spark was
+offered ``'ssh *'`` for ``ssh orin "ps -eo ... | head -n 20"`` and found it
+far too broad. :func:`pattern_for` therefore knows two forms of each scope:
+``session``/``user`` are the d15 keys (the exact line / ``<first word> *``),
+and ``session-specific``/``user-specific`` keep the first argument as well
+(``ssh orin *``). :func:`patterns_for` applies the chosen form to every
+stage, and it is the one helper the panel's scope line, the client's store
+write, the details view and — through ``nvsh approve add --scope`` — the
+pi approval extension all share.
 
 ``add()`` refuses obviously dangerous patterns outright: a bare ``"*"``, and
 anything whose executable token can *match* ``sudo`` or ``rm`` -- literally
@@ -105,14 +126,209 @@ def command_refusal_reason(cmd: str) -> str | None:
     command rather than to the pattern, so a pattern that reached the store
     some other way (a hand-edited ``approved.toml``, a file written by an
     older nvsh) still cannot authorize a privileged or destructive command.
+
+    Deviation d24 widens it in two directions. It is applied to *every*
+    stage of the line, not only to the first, so a broad ``ls *`` can never
+    pull ``ls | sudo tee /etc/x`` through; and a line carrying a subshell or
+    a command substitution is refused outright, because what it really runs
+    is not visible in its own text.
     """
-    normalized = _normalize(cmd)
-    if not normalized:
+    if not _normalize(cmd):
         return None
-    first_word = normalized.split(" ", 1)[0]
-    if first_word in _NEVER_APPROVED_EXECUTABLES:
-        return f"'{first_word}' commands are never auto-approved"
+    if is_opaque(cmd):
+        return "a subshell or command substitution is never auto-approved"
+    for stage in stages(cmd):
+        first_word = stage.split(" ", 1)[0]
+        if first_word in _NEVER_APPROVED_EXECUTABLES:
+            return f"'{first_word}' commands are never auto-approved"
     return None
+
+
+# ---------------------------------------------------------------------------
+# stages and patterns (deviation d24)
+# ---------------------------------------------------------------------------
+
+#: The scope tokens :func:`pattern_for` and :meth:`Approvals.add` accept.
+#: ``session``/``user`` are the d15 keys (``[s]``/``[u]``); the ``-specific``
+#: pair are d24's uppercase keys (``[S]``/``[U]``), which keep the command's
+#: *first argument* in the pattern.
+SCOPES: tuple[str, ...] = ("session", "session-specific", "user", "user-specific")
+
+#: Characters that make a line opaque: whatever is inside them is a command
+#: nvsh cannot see, so the line is one stage that is never auto-approved.
+#: Backslash-escaped parens (``find ... \( ... \)``) are literal and do not
+#: count -- the scanner skips an escaped character without inspecting it.
+_OPAQUE_CHARS = "()`"
+
+
+def _scan(text: str):
+    """Yield ``(index, char, in_quote)`` over ``text``, honouring shell quoting.
+
+    One scanner for all three d24 walks (opaque detection, stage splitting,
+    raw-word splitting) so they can never disagree about what is quoted.
+    ``in_quote`` is the quote character currently open, or ``None``.
+    """
+    quote: str | None = None
+    i = 0
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        if quote:
+            if ch == "\\" and quote == '"' and i + 1 < n:
+                yield i, ch, quote
+                yield i + 1, text[i + 1], quote
+                i += 2
+                continue
+            yield i, ch, quote
+            if ch == quote:
+                quote = None
+            i += 1
+            continue
+        if ch == "\\" and i + 1 < n:
+            yield i, ch, None
+            yield i + 1, text[i + 1], "\\"  # escaped: data, never a separator
+            i += 2
+            continue
+        if ch in "'\"":
+            quote = ch
+            yield i, ch, None
+            i += 1
+            continue
+        yield i, ch, None
+        i += 1
+
+
+def is_opaque(command: str) -> bool:
+    """Does ``command`` contain a subshell, ``$(...)`` or a backtick?
+
+    Such a line is treated conservatively as one stage that no approval may
+    ever match: the commands it actually runs are inside the parentheses,
+    where a per-stage pattern cannot see them.
+    """
+    return any(ch in _OPAQUE_CHARS for _i, ch, quoted in _scan(command) if quoted is None)
+
+
+def split_stages(command: str) -> list[str]:
+    """Split ``command`` into stages on ``|``, ``&&``, ``||``, ``&``, ``;``, newline.
+
+    Quoting is honoured, so ``ssh orin "ps | head"`` is ONE stage. Each
+    stage comes back whitespace-normalized, and empty stages (a trailing
+    ``;``, ``|&``) are dropped. This is the raw splitter; :func:`stages` is
+    what callers want, because it also handles the opaque case.
+    """
+    parts: list[str] = []
+    current: list[str] = []
+    skip = -1
+    chars = list(_scan(command))
+    for index, ch, quoted in chars:
+        if index == skip:
+            continue
+        if quoted is not None:
+            current.append(ch)
+            continue
+        if ch in (";", "\n"):
+            parts.append("".join(current))
+            current = []
+            continue
+        if ch in ("|", "&"):
+            following = command[index + 1 : index + 2]
+            if following == ch:
+                skip = index + 1
+            parts.append("".join(current))
+            current = []
+            continue
+        current.append(ch)
+    parts.append("".join(current))
+    return [stage for stage in (_normalize(part) for part in parts) if stage]
+
+
+def stages(command: str) -> list[str]:
+    """The stages of ``command``: one per pipeline/list element (d24).
+
+    An opaque line (:func:`is_opaque`) is deliberately *not* split -- it
+    comes back as the single normalized line, which
+    :func:`command_refusal_reason` then refuses outright.
+    """
+    if is_opaque(command):
+        normalized = _normalize(command)
+        return [normalized] if normalized else []
+    return split_stages(command)
+
+
+def _raw_words(text: str, limit: int) -> list[str]:
+    """The first ``limit`` whitespace-separated words of ``text``, quotes kept.
+
+    Kept *raw* (``'"my host"'`` stays quoted) because the result goes into
+    an ``fnmatch`` pattern matched against the raw, whitespace-normalized
+    command line -- a de-quoted word would never match it.
+    """
+    words: list[str] = []
+    current: list[str] = []
+    for _index, ch, quoted in _scan(text):
+        if len(words) >= limit:
+            return words
+        if quoted is None and ch == " ":
+            if current:
+                words.append("".join(current))
+                current = []
+            continue
+        current.append(ch)
+    if current and len(words) < limit:
+        words.append("".join(current))
+    return words
+
+
+def base_scope(scope: str) -> str:
+    """``"session"`` or ``"user"`` -- which list ``scope`` writes into."""
+    if scope not in SCOPES:
+        raise ApprovalError(f"unknown scope: {scope!r} (expected one of {', '.join(SCOPES)})")
+    return "session" if scope.startswith("session") else "user"
+
+
+def pattern_for(command: str, scope: str) -> str:
+    """The glob ``scope`` would store for the single stage ``command``.
+
+    The one pure helper every caller shares -- the panel's scope line, the
+    client's store write, the details view and (through
+    ``nvsh approve add --scope``) the pi approval extension:
+
+    * ``session``          -- the exact line, unwidened.
+    * ``user``             -- ``"<first word> *"``: this *kind* of command.
+    * ``session-specific`` /
+      ``user-specific``    -- ``"<first word> <first argument> *"``, d24's
+      answer to an operator on the Spark who was offered ``'ssh *'`` for
+      ``ssh orin "..."`` and found it far too broad.
+
+    When the line has no second word there is nothing to be specific about,
+    so the ``-specific`` scopes fall back to their plain form.
+    """
+    base = base_scope(scope)
+    normalized = _normalize(command)
+    if not normalized:
+        return normalized
+    words = _raw_words(normalized, 2)
+    first = words[0]
+    if not scope.endswith("-specific"):
+        return normalized if base == "session" else f"{first} *"
+    if len(words) < 2:
+        return normalized if base == "session" else f"{first} *"
+    return f"{first} {words[1]} *"
+
+
+def patterns_for(command: str, scope: str) -> list[str]:
+    """One pattern per stage of ``command``, in order, deduplicated.
+
+    ``patterns_for("ps -eo pid | head -n 20", "user")`` is
+    ``["ps *", "head *"]``: approving a pipeline approves each of its
+    stages, and :meth:`Approvals.matches` then requires every stage of a
+    later candidate to match something.
+    """
+    out: list[str] = []
+    for stage in stages(command):
+        pattern = pattern_for(stage, scope)
+        if pattern and pattern not in out:
+            out.append(pattern)
+    return out
 
 
 #: Backwards-compatible private alias (this module's own callers).
@@ -272,16 +488,15 @@ class Approvals:
         matching the refusal rules, or for an unknown ``scope``, without
         modifying either list.
         """
-        if scope not in ("user", "session"):
-            raise ApprovalError(f"unknown scope: {scope!r} (expected 'user' or 'session')")
+        target_scope = base_scope(scope)
         reason = refusal_reason(pattern)
         if reason is not None:
             raise ApprovalError(f"refusing to approve {pattern!r}: {reason}")
         normalized_pattern = _normalize(pattern)
-        target = self.user_patterns if scope == "user" else self.session_patterns
+        target = self.user_patterns if target_scope == "user" else self.session_patterns
         if normalized_pattern not in target:
             target.append(normalized_pattern)
-        if scope == "session":
+        if target_scope == "session":
             self.save_session()
 
     def remove(self, pattern: str) -> bool:
@@ -302,24 +517,66 @@ class Approvals:
                     removed = True
         return removed
 
-    def matches(self, cmd: str) -> tuple[str, str | None]:
-        """Return ``(scope, pattern)`` for the first match, checking user before session.
-
-        ``scope`` is ``"user"``, ``"session"`` or ``"ask"``; ``pattern`` is the
-        matching glob, or ``None`` when nothing matched.
-        """
-        normalized = _normalize(cmd)
-        if command_refusal_reason(normalized) is not None:
-            # No stored pattern, however it got there, may pre-authorize a
-            # privileged or destructive command: the operator is always asked.
-            return "ask", None
+    def _match_stage(self, stage: str) -> tuple[str, str | None]:
+        """``(scope, pattern)`` for one stage, user patterns before session ones."""
         for pattern in self.user_patterns:
-            if fnmatch.fnmatchcase(normalized, pattern):
+            if fnmatch.fnmatchcase(stage, pattern):
                 return "user", pattern
         for pattern in self.session_patterns:
-            if fnmatch.fnmatchcase(normalized, pattern):
+            if fnmatch.fnmatchcase(stage, pattern):
                 return "session", pattern
         return "ask", None
+
+    def matches(self, cmd: str) -> tuple[str, str | None]:
+        """Return ``(scope, pattern)`` for ``cmd``, requiring *every* stage to match.
+
+        ``scope`` is ``"user"``, ``"session"`` or ``"ask"``; ``pattern`` is the
+        matching glob (the matching globs joined by ``" | "`` when the line
+        has more than one stage), or ``None`` when nothing matched.
+
+        Deviation d24: a command line is matched per stage, not as one
+        string. ``ls | sudo tee /etc/x`` is not covered by ``ls *`` -- the
+        second stage has to be approved on its own, and it never can be.
+        The reported scope is the *narrower* lifetime in play, so a line
+        whose stages are half session-approved reads as ``session``.
+        """
+        if command_refusal_reason(cmd) is not None:
+            # No stored pattern, however it got there, may pre-authorize a
+            # privileged, destructive or opaque command: the operator is
+            # always asked.
+            return "ask", None
+        stage_list = stages(cmd)
+        if not stage_list:
+            return "ask", None
+        scopes: list[str] = []
+        patterns: list[str] = []
+        for stage in stage_list:
+            scope, pattern = self._match_stage(stage)
+            if scope == "ask" or pattern is None:
+                return "ask", None
+            scopes.append(scope)
+            patterns.append(pattern)
+        return ("session" if "session" in scopes else "user"), " | ".join(patterns)
+
+    def unapproved_stage(self, cmd: str) -> str | None:
+        """The first stage of ``cmd`` that is not approved, or ``None``.
+
+        What ``nvsh approve check`` reports so an operator (or the pi
+        extension) can see *which* part of a pipeline is holding the line
+        back, instead of a bare ``ask`` for the whole thing.
+        """
+        stage_list = stages(cmd)
+        if not stage_list:
+            return None
+        if is_opaque(cmd):
+            return stage_list[0]
+        for stage in stage_list:
+            if stage.split(" ", 1)[0] in _NEVER_APPROVED_EXECUTABLES:
+                return stage
+        for stage in stage_list:
+            if self._match_stage(stage)[0] == "ask":
+                return stage
+        return None
 
     def decide(self, cmd: str) -> str:
         """Return ``"user"``, ``"session"`` or ``"ask"`` for ``cmd``."""

@@ -99,6 +99,12 @@ APPROVE = "approve"
 #: operator's answer verbatim as ``{"value": choice}``.
 APPROVE_SESSION = "session"
 APPROVE_USER = "user"
+#: Deviation d24: the uppercase keys. ``[S]``/``[U]`` approve the same kind
+#: of command *for this first argument only* -- ``ssh orin *`` rather than
+#: ``ssh *``. Spelled as the pi extension's own choice tokens too, so the
+#: client can still forward the operator's answer verbatim.
+APPROVE_SESSION_SPECIFIC = "session-specific"
+APPROVE_USER_SPECIFIC = "user-specific"
 EXPLAIN = "explain"
 DETAILS = "details"
 #: Tell the agent something. The panel reads one line at an ``nvsh> `` prompt
@@ -111,11 +117,14 @@ IGNORE = "ignore"
 #: stays available.
 REFUSED = "refused"
 
-#: The one-line key legend. Kept under 80 columns so it never wraps on a
+#: The one-line key legend. Kept within 80 columns so it never wraps on a
 #: bare ssh into a Jetson, where a wrapped legend costs the panel a line and
 #: reads as two half-legends. ``+session``/``+user`` are the abbreviation
 #: that buys the room, and still say which scope each key approves for.
-LEGEND = "[Enter] run [s] +session [u] +user [e] explain [d] details [t] tell [Esc] ignore"
+#: ``[s/S]``/``[u/U]`` are d24's two forms of each scope (the uppercase key
+#: keeps the first argument); ``[e] why`` is the four columns that paid for
+#: them, and asks the same question ``explain`` did.
+LEGEND = "[Enter] run [s/S] +session [u/U] +user [e] why [d] details [t] tell [Esc] ignore"
 
 #: The widest a panel line may get before it is truncated (the running-command
 #: line, the scope line). 80 is the narrowest terminal nvsh promises to read
@@ -133,7 +142,9 @@ _EXIT_KEYS = ("exitCode", "exit_code", "exit", "returncode")
 _ACK = {
     APPROVE: "nvsh: running ...",
     APPROVE_SESSION: "nvsh: running (approved for this session) ...",
+    APPROVE_SESSION_SPECIFIC: "nvsh: running (approved for this session) ...",
     APPROVE_USER: "nvsh: running (approved for this user) ...",
+    APPROVE_USER_SPECIFIC: "nvsh: running (approved for this user) ...",
     EXPLAIN: "nvsh: explaining ...",
     DETAILS: "nvsh: details ...",
     TELL: "",
@@ -147,14 +158,29 @@ _ACK = {
 #: argument" when it approves every argument).
 _SCOPE_ACK = {
     APPROVE_SESSION: "nvsh: running; {what} approved for this session",
+    APPROVE_SESSION_SPECIFIC: "nvsh: running; {what} approved for this session",
     APPROVE_USER: "nvsh: running; {what} approved for this user",
+    APPROVE_USER_SPECIFIC: "nvsh: running; {what} approved for this user",
 }
 
-#: How the scope line offers each key.
-_SCOPE_OFFER = {
-    APPROVE_SESSION: "[s] allows {what} for this session",
-    APPROVE_USER: "[u] allows {what} for you, persisted",
-}
+#: The two scope families, each offered on one line as its pair of keys:
+#: ``(plain scope, specific scope, plain key, specific key, lifetime)``.
+_SCOPE_FAMILIES = (
+    (APPROVE_SESSION, APPROVE_SESSION_SPECIFIC, "[s]", "[S]", "this session"),
+    (APPROVE_USER, APPROVE_USER_SPECIFIC, "[u]", "[U]", "persisted for you"),
+)
+
+
+def _clip(text: str, width: int = _SCOPE_WIDTH) -> str:
+    """``text`` truncated to ``width`` columns, with its own spacing kept.
+
+    Unlike :func:`one_line` this does *not* collapse runs of spaces: the
+    scope line uses double spaces to separate its two key offers, and
+    collapsing them would run ``[s] ...`` straight into ``[S] ...``.
+    """
+    if len(text) <= width:
+        return text
+    return text[: width - 1] + "\u2026"
 
 
 def one_line(text: str, width: int) -> str:
@@ -577,38 +603,44 @@ class Panel:
         scopes: Mapping[str, str],
         guard: Callable[[str], str | None] | None = None,
     ) -> list[str]:
-        """What ``[s]``/``[u]`` would actually store, in the operator's words.
+        """What each scope key would actually store, in the operator's words.
 
-        Operator feedback on d15: the keys looked like they approved the
-        exact argument, when ``[u]`` approves *every* argument of that
-        command. So the panel says which, per key, before the legend -- and
-        for a scope the caller's ``guard`` refuses (a privileged or
-        destructive command) it says the key is not available and why,
-        rather than promising something that will be declined.
+        One line per scope family, naming both of its keys (deviation d24):
+
+        .. code-block:: text
+
+            [s] this exact line  [S] 'ssh orin *'  (this session)
+            [u] 'ssh *'  [U] 'ssh orin *'  (persisted for you)
+
+        Operator feedback on d15 was that the keys looked like they approved
+        the exact argument, when ``[u]`` approves *every* argument; d24's
+        complaint from the Spark was the same one sharpened -- ``ssh *`` for
+        an ``ssh orin "..."`` proposal is far too broad. So the panel names
+        both forms before the legend. A family the caller's ``guard``
+        refuses (a privileged, destructive or opaque command) says so once,
+        for both of its keys, rather than promising something that will be
+        declined. Each line is clipped to 80 columns, which is what keeps a
+        long multi-stage pattern list from wrapping.
         """
-        parts: list[str] = []
-        for scope in (APPROVE_SESSION, APPROVE_USER):
-            what = scopes.get(scope)
+        lines: list[str] = []
+        for plain, specific, plain_key, specific_key, lifetime in _SCOPE_FAMILIES:
+            what = scopes.get(plain)
             if not what:
                 continue
-            key = "[s]" if scope == APPROVE_SESSION else "[u]"
-            reason = guard(scope) if guard is not None else None
+            reason = guard(plain) if guard is not None else None
             if reason:
-                parts.append(f"{key} not available: {reason}")
-            else:
-                parts.append(_SCOPE_OFFER[scope].format(what=what))
-        if not parts:
-            return []
-        joined = " \u00b7 ".join(parts)
-        if len(joined) <= _SCOPE_WIDTH:
-            return [joined]
-        return [one_line(part, _SCOPE_WIDTH) for part in parts]
+                lines.append(_clip(f"{plain_key}/{specific_key} not available: {reason}"))
+                continue
+            specific_what = scopes.get(specific) or what
+            lines.append(_clip(f"{plain_key} {what}  {specific_key} {specific_what}  ({lifetime})"))
+        return lines
 
     def show_proposal(
         self,
         proposal: Proposal,
         guard: Callable[[str], str | None] | None = None,
         scopes: Mapping[str, str] | None = None,
+        patterns: Mapping[str, str] | None = None,
     ) -> str:
         """Show ``proposal`` and return the operator's one keypress.
 
@@ -638,15 +670,20 @@ class Panel:
             # No ack: the ``nvsh> `` prompt read_tell() puts on screen *is*
             # the acknowledgement, and nothing has been decided yet.
             return TELL
-        if choice in (APPROVE_SESSION, APPROVE_USER) and guard is not None:
+        if choice in _SCOPE_ACK and guard is not None:
             reason = guard(choice)
             if reason:
                 self.line(f"nvsh: cannot approve for this {choice}: {reason}")
                 return REFUSED
-        self.acknowledge(choice, scopes)
+        self.acknowledge(choice, scopes, patterns)
         return choice
 
-    def acknowledge(self, choice: str, scopes: Mapping[str, str] | None = None) -> None:
+    def acknowledge(
+        self,
+        choice: str,
+        scopes: Mapping[str, str] | None = None,
+        patterns: Mapping[str, str] | None = None,
+    ) -> None:
         """Echo the decision the instant the key is pressed.
 
         Whatever happens next (a command, a backend round-trip, nothing)
@@ -655,7 +692,7 @@ class Panel:
         it stored, so ``[u]`` can never be mistaken for "approve this one
         argument" (operator feedback on d15).
         """
-        what = (scopes or {}).get(choice)
+        what = (patterns or {}).get(choice) or (scopes or {}).get(choice)
         if what and choice in _SCOPE_ACK:
             self.line(_SCOPE_ACK[choice].format(what=what))
             return
@@ -707,10 +744,14 @@ class Panel:
             key = _read_line_key(self.in_)
         if key in ("\r", "\n"):
             return APPROVE
-        if key in ("s", "S"):
+        if key == "s":
             return APPROVE_SESSION
-        if key in ("u", "U"):
+        if key == "S":
+            return APPROVE_SESSION_SPECIFIC
+        if key == "u":
             return APPROVE_USER
+        if key == "U":
+            return APPROVE_USER_SPECIFIC
         if key in ("e", "E"):
             return EXPLAIN
         if key in ("d", "D"):

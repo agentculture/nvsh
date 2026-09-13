@@ -10,7 +10,10 @@ into via the CLI so the approval logic lives in exactly one place —
 * ``nvsh approve add <pattern>``     — persist to ``approved.toml`` (or, with
                                         ``--session``, to the login session's
                                         runtime-dir store, which a later
-                                        process still reads and logout wipes)
+                                        process still reads and logout wipes);
+                                        with ``--scope`` the argument is a
+                                        command line and nvsh derives one
+                                        pattern per pipeline stage (d24)
 * ``nvsh approve list``              — {user: [...], session: [...]}
 * ``nvsh approve remove <pattern>``  — drop from both lists
 * ``nvsh approve audit``             — append one decision to the audit log
@@ -25,7 +28,14 @@ from __future__ import annotations
 import argparse
 
 from nvsh.agent.audit import AuditLog
-from nvsh.approvals import ApprovalError, Approvals
+from nvsh.approvals import (
+    SCOPES,
+    ApprovalError,
+    Approvals,
+    base_scope,
+    command_refusal_reason,
+    patterns_for,
+)
 from nvsh.cli._errors import EXIT_USER_ERROR, CliError
 from nvsh.cli._output import emit_result
 
@@ -33,34 +43,72 @@ from nvsh.cli._output import emit_result
 def cmd_approve_check(args: argparse.Namespace) -> int:
     approvals = Approvals.load()
     scope, pattern = approvals.matches(args.cmd)
+    # d24: a command line is decided per stage, so "ask" has a *place* --
+    # name the stage that is holding the line back rather than the whole
+    # pipeline.
+    stage = approvals.unapproved_stage(args.cmd) if scope == "ask" else None
     json_mode = bool(getattr(args, "json", False))
     if json_mode:
-        emit_result({"decision": scope, "pattern": pattern}, json_mode=True)
+        emit_result({"decision": scope, "pattern": pattern, "stage": stage}, json_mode=True)
     else:
-        text = f"decision: {scope}" + (f"\npattern: {pattern}" if pattern else "")
+        text = f"decision: {scope}"
+        if pattern:
+            text += f"\npattern: {pattern}"
+        if stage:
+            text += f"\nstage: {stage}"
         emit_result(text, json_mode=False)
     return 0
 
 
 def cmd_approve_add(args: argparse.Namespace) -> int:
+    """Approve a pattern, or -- with ``--scope`` -- a whole command line.
+
+    Two shapes, one writer (deviation d24). Without ``--scope`` the
+    positional is a glob and is stored as given, exactly as before. With
+    ``--scope`` it is a *command line*: nvsh splits it into stages and
+    derives one pattern per stage through :func:`nvsh.approvals.patterns_for`
+    -- the same helper the panel's scope line and its store write use. That
+    is what lets the pi approval extension offer the four scope choices
+    without re-implementing (or drifting from) the widening rules.
+    """
     approvals = Approvals.load()
-    scope = "session" if getattr(args, "session", False) else "user"
-    try:
-        approvals.add(args.pattern, scope=scope)
-    except ApprovalError as exc:
-        raise CliError(
-            code=EXIT_USER_ERROR,
-            message=str(exc),
-            remediation="choose a narrower pattern; 'sudo *', 'rm *' and bare '*' are refused",
-        ) from exc
+    requested = getattr(args, "scope", None)
+    if requested:
+        reason = command_refusal_reason(args.pattern)
+        if reason is not None:
+            raise CliError(
+                code=EXIT_USER_ERROR,
+                message=f"refusing to approve {args.pattern!r}: {reason}",
+                remediation="run it once instead; no scope pre-approves this command",
+            )
+        scope = base_scope(requested)
+        patterns = patterns_for(args.pattern, requested)
+        if not patterns:
+            raise CliError(
+                code=EXIT_USER_ERROR,
+                message="nothing to approve: the command line is empty",
+                remediation="pass the command line you want approved",
+            )
+    else:
+        scope = "session" if getattr(args, "session", False) else "user"
+        patterns = [args.pattern]
+    for pattern in patterns:
+        try:
+            approvals.add(pattern, scope=scope)
+        except ApprovalError as exc:
+            raise CliError(
+                code=EXIT_USER_ERROR,
+                message=str(exc),
+                remediation="choose a narrower pattern; 'sudo *', 'rm *' and bare '*' are refused",
+            ) from exc
     if scope == "user":
         approvals.save()
     json_mode = bool(getattr(args, "json", False))
-    result = {"added": args.pattern, "scope": scope}
+    result = {"added": args.pattern, "scope": scope, "patterns": patterns}
     if json_mode:
         emit_result(result, json_mode=True)
     else:
-        emit_result(f"approved ({scope}): {args.pattern}", json_mode=False)
+        emit_result(f"approved ({scope}): {' '.join(patterns)}", json_mode=False)
     return 0
 
 
@@ -142,6 +190,14 @@ def register(sub: argparse._SubParsersAction) -> None:
         action="store_true",
         help="Approve for this login session only (gone at logout).",
     )
+    add.add_argument(
+        "--scope",
+        choices=SCOPES,
+        help=(
+            "Treat the argument as a command line and derive one pattern per "
+            "stage for this scope ('-specific' keeps the first argument)."
+        ),
+    )
     add.add_argument("--json", action="store_true", help="Emit structured JSON.")
     add.set_defaults(func=cmd_approve_add)
 
@@ -160,7 +216,16 @@ def register(sub: argparse._SubParsersAction) -> None:
     audit.add_argument(
         "--decision",
         required=True,
-        choices=("user", "session", "ask", "once", "deny", "block"),
+        choices=(
+            "user",
+            "user-specific",
+            "session",
+            "session-specific",
+            "ask",
+            "once",
+            "deny",
+            "block",
+        ),
         help="The decision reached for this command.",
     )
     audit.add_argument("--json", action="store_true", help="Emit structured JSON.")

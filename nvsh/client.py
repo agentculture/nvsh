@@ -60,7 +60,9 @@ from .agent.base import AgentContext, AgentEvent, AgentRequest, Proposal, Propos
 from .panel import (
     APPROVE,
     APPROVE_SESSION,
+    APPROVE_SESSION_SPECIFIC,
     APPROVE_USER,
+    APPROVE_USER_SPECIFIC,
     DETAILS,
     EXPLAIN,
     IGNORE,
@@ -72,7 +74,12 @@ from .panel import (
 from .triggers import prose_request
 
 #: The panel choices that mean "run it, and stop asking me about this class".
-_SCOPE_CHOICES = (APPROVE_SESSION, APPROVE_USER)
+_SCOPE_CHOICES = (
+    APPROVE_SESSION,
+    APPROVE_SESSION_SPECIFIC,
+    APPROVE_USER,
+    APPROVE_USER_SPECIFIC,
+)
 
 #: Every choice that means the operator wants the command to run now.
 _RUN_CHOICES = (APPROVE,) + _SCOPE_CHOICES
@@ -630,20 +637,26 @@ def _audit(env: Mapping[str, str]):
         return None
 
 
-def scope_pattern(command: str, scope: str) -> str:
-    """The glob ``scope`` would approve for ``command``.
+def scope_patterns(command: str, scope: str) -> list[str]:
+    """The globs ``scope`` would store for ``command`` -- one per stage (d24).
 
-    ``user`` widens to ``"<first word> *"`` -- the operator is saying "this
-    kind of command is fine on this machine", and the same widening the pi
-    approval extension applies, so both paths persist the same thing. A
-    ``session`` approval stays the exact command line: it only has to stop
-    nvsh re-asking about *this* command for the rest of the login session,
-    and a narrow pattern is the cheaper mistake.
+    Delegates to :func:`nvsh.approvals.patterns_for`, the single pure helper
+    the panel's scope line, this store write, the details view and (through
+    ``nvsh approve add --scope``) the pi approval extension all share, so
+    the four can never describe or persist different things.
     """
-    if scope != APPROVE_USER:
-        return command.strip()
-    first_word = command.strip().split(None, 1)[0] if command.strip() else command
-    return f"{first_word} *"
+    from .approvals import patterns_for
+
+    return patterns_for(command, scope)
+
+
+def scope_pattern(command: str, scope: str) -> str:
+    """:func:`scope_patterns` as one string, joined by ``" | "``.
+
+    A single-stage command -- the overwhelmingly common case -- reads
+    exactly as it always did (``"ssh *"``); a pipeline reads as its stages.
+    """
+    return " | ".join(scope_patterns(command, scope))
 
 
 def scope_refusal(command: str, scope: str) -> str | None:
@@ -656,26 +669,63 @@ def scope_refusal(command: str, scope: str) -> str | None:
     ``*``). The run-once path is unaffected -- the operator can still press
     Enter and watch it happen.
     """
-    from .approvals import refusal_reason
+    from .approvals import command_refusal_reason, refusal_reason
 
     if _is_privileged(command):
         return "a command that escalates privilege is only ever run once, never pre-approved"
-    return refusal_reason(scope_pattern(command, scope))
+    # d24: every stage has to survive the policy, not just the first word --
+    # and an opaque line (a subshell, `$(...)`) survives none of it.
+    reason = command_refusal_reason(command)
+    if reason is not None:
+        return reason
+    for pattern in scope_patterns(command, scope):
+        refused = refusal_reason(pattern)
+        if refused is not None:
+            return refused
+    return None
+
+
+def _quoted(command: str, scope: str) -> str:
+    """The patterns ``scope`` would store, each in single quotes."""
+    return " ".join(f"'{pattern}'" for pattern in scope_patterns(command, scope))
+
+
+def scope_patterns_text(command: str) -> dict[str, str]:
+    """Per scope, the quoted patterns it would store -- what an ack names."""
+    return {scope: _quoted(command, scope) for scope in _SCOPE_CHOICES}
 
 
 def scope_descriptions(command: str) -> dict[str, str]:
-    """How to describe, in one phrase each, what ``[s]``/``[u]`` would store.
+    """How to describe, in one phrase each, what the four scope keys store.
 
     An operator reading the d15 keys took ``[u]`` to approve "that exact
     argument", when what it stores is ``<first word> *`` -- every argument
-    of that command, forever. So the panel is handed the words to say it
-    with, computed from the same :func:`scope_pattern` that does the
-    storing, and the details view quotes the same patterns.
+    of that command, forever. d24 is the same complaint from the Spark:
+    ``ssh *`` offered for ``ssh orin "ps ... | head"`` is far too broad, so
+    ``[S]``/``[U]`` keep the first argument. The phrases are computed from
+    the same :func:`scope_patterns` that does the storing, and the details
+    view quotes the same patterns.
+
+    When the line has no second word the specific key would store exactly
+    what its plain twin stores, and the phrase says so rather than
+    repeating the pattern as though it were different.
     """
-    return {
-        APPROVE_SESSION: "this exact line",
-        APPROVE_USER: f"'{scope_pattern(command, APPROVE_USER)}' (any arguments)",
+    from .approvals import stages
+
+    plain_session = "this exact line" if len(stages(command)) <= 1 else "each stage exactly"
+    described = {
+        APPROVE_SESSION: plain_session,
+        APPROVE_SESSION_SPECIFIC: _quoted(command, APPROVE_SESSION_SPECIFIC),
+        APPROVE_USER: _quoted(command, APPROVE_USER),
+        APPROVE_USER_SPECIFIC: _quoted(command, APPROVE_USER_SPECIFIC),
     }
+    for plain, specific, key in (
+        (APPROVE_SESSION, APPROVE_SESSION_SPECIFIC, "s"),
+        (APPROVE_USER, APPROVE_USER_SPECIFIC, "u"),
+    ):
+        if scope_patterns(command, specific) == scope_patterns(command, plain):
+            described[specific] = f"same as [{key}] (no second word)"
+    return described
 
 
 def _decide_proposal(
@@ -699,8 +749,9 @@ def _decide_proposal(
         return scope_refusal(proposal.command, scope)
 
     scopes = scope_descriptions(proposal.command)
+    patterns = scope_patterns_text(proposal.command)
     for _ in range(_MAX_PROPOSAL_ROUNDS):
-        choice = panel.show_proposal(proposal, guard=guard, scopes=scopes)
+        choice = panel.show_proposal(proposal, guard=guard, scopes=scopes, patterns=patterns)
         if choice == TELL:
             text = panel.read_tell()
             if not text:
@@ -788,11 +839,18 @@ def proposal_details(
     details = {
         "approved": approved,
         "session pattern": scope_pattern(command, APPROVE_SESSION),
+        "session-specific pattern": scope_pattern(command, APPROVE_SESSION_SPECIFIC),
         "user pattern": scope_pattern(command, APPROVE_USER),
+        "user-specific pattern": scope_pattern(command, APPROVE_USER_SPECIFIC),
     }
     refusals = [
         f"[{key}] {reason}"
-        for key, scope_name in (("s", APPROVE_SESSION), ("u", APPROVE_USER))
+        for key, scope_name in (
+            ("s", APPROVE_SESSION),
+            ("S", APPROVE_SESSION_SPECIFIC),
+            ("u", APPROVE_USER),
+            ("U", APPROVE_USER_SPECIFIC),
+        )
         for reason in [scope_refusal(command, scope_name)]
         if reason
     ]
@@ -925,22 +983,33 @@ def _proposal_handler(
 
 
 def _approve_scope(panel: Panel, approvals, command: str, scope: str) -> None:
-    """Persist the operator's ``[s]``/``[u]`` choice into the approval store."""
-    from .approvals import ApprovalError
+    """Persist the operator's scope-key choice into the approval store.
 
-    pattern = scope_pattern(command, scope)
-    try:
-        approvals.add(pattern, scope=scope)
-    except ApprovalError as exc:
-        panel.note(f"nvsh: not approved for this {scope}: {exc}")
+    d24: one pattern *per stage* of the command line, so approving
+    ``ps ... | head ...`` approves ``ps *`` and ``head *`` and nothing
+    wider. A refusal on any stage costs the operator the whole approval
+    (never the command they asked for, which still runs once).
+    """
+    from .approvals import ApprovalError, base_scope
+
+    where = base_scope(scope)
+    patterns = scope_patterns(command, scope)
+    if not patterns:
+        panel.note(f"nvsh: nothing to approve for this {where}")
         return
-    if scope == APPROVE_USER:
+    for pattern in patterns:
+        try:
+            approvals.add(pattern, scope=scope)
+        except ApprovalError as exc:
+            panel.note(f"nvsh: not approved for this {where}: {exc}")
+            return
+    if where == "user":
         try:
             approvals.save()
         except OSError as exc:  # pragma: no cover - unwritable config dir
             panel.note(f"nvsh: could not save the approval: {exc}")
             return
-    panel.note(f"nvsh: approved for this {scope}: {pattern}")
+    panel.note(f"nvsh: approved for this {where}: {' '.join(patterns)}")
 
 
 def _print_run(panel: Panel, command: str, result: RunResult) -> None:
