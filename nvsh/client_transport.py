@@ -81,6 +81,28 @@ class Responder:
         """Point answers at ``agent`` -- the one-shot, in-process backend."""
         self.agent = agent
 
+    def steer(self, text: str) -> bool:
+        """Inject ``text`` into the turn that is running now (deviation d16).
+
+        Returns ``True`` only when a backend really took it mid-turn. A
+        ``False`` is not a failure: most adapters have no mid-turn channel,
+        and the caller then sends the text as the next request in the same
+        conversation. Like :meth:`respond`, this follows the agent -- the
+        in-process one when :func:`one_shot` bound it, the daemon otherwise.
+        """
+        if not text:
+            return False
+        agent = self.agent
+        if agent is None:
+            return steer(text, shell_id=self.shell_id, env=self.env)
+        send_steer = getattr(agent, "steer", None)
+        if not callable(send_steer):
+            return False
+        try:
+            return bool(send_steer(text))
+        except Exception:  # noqa: BLE001 - a dead backend must not break the panel
+            return False
+
     def respond(self, request_id: str, fields: Mapping[str, object]) -> bool:
         """Answer dialog ``request_id``. Never raises on the failure path."""
         if not request_id:
@@ -364,6 +386,23 @@ def respond_ui(
         request_id=request_id,
         fields=dict(fields or {}),
     )
+    return any(event.kind is EventKind.STATUS for event in events)
+
+
+def steer(
+    text: str,
+    *,
+    shell_id: str | int | None = None,
+    env: Mapping[str, str] | None = None,
+) -> bool:
+    """Ask a running daemon to steer this shell's in-flight turn.
+
+    ``False`` when no daemon is listening, when this shell has no turn
+    running, or when its backend has no mid-turn channel -- every one of
+    which means the same thing to the caller: send the text as the next
+    request instead.
+    """
+    events = control("steer", shell_id=shell_id, env=env, text=text)
     return any(event.kind is EventKind.STATUS for event in events)
 
 

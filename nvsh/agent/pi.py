@@ -64,6 +64,9 @@ _QUIET_EVENT_TYPES = frozenset(
         "message_final",
         "agent_settled",
         "tool_execution_update",
+        # Routine from d16 on: every steer changes pi's steering queue, so a
+        # steered turn printed "... queue_update" twice for one instruction.
+        "queue_update",
     }
 )
 
@@ -83,6 +86,12 @@ ACK_TIMEOUT_ENV = "NVSH_PI_ACK_TIMEOUT"
 
 #: How much of pi's stderr is kept for the tail of an error message.
 _STDERR_TAIL_BYTES = 2048
+
+#: How much of the assistant text that preceded a tool call is kept as that
+#: proposal's rationale (deviation d17). Long enough for the two or three
+#: sentences a model spends saying what it found, short enough that the
+#: panel still shows a proposal and not an essay.
+_RATIONALE_LIMIT = 600
 
 
 class PiRpcError(RuntimeError):
@@ -233,6 +242,15 @@ class PiAgent(NvshAgent):
         self._closed = False
         self._write_lock = threading.Lock()
         self._ack_timeout = ack_timeout(self._env)
+        #: Assistant text streamed since the last tool result. This is what
+        #: the model said on its way to the tool call it is now asking to
+        #: run, so it is that proposal's rationale when the approval
+        #: envelope carries no ``reason`` of its own -- which, with pi
+        #: 0.85.1's bash tool (``{command, timeout}``), is always (d17).
+        self._said: list[str] = []
+        #: True between a `prompt` ack and the turn's DONE/ERROR. Only then
+        #: can a steer reach the running turn.
+        self._streaming = False
 
     # -- argv / lifecycle --------------------------------------------------
 
@@ -451,11 +469,20 @@ class PiAgent(NvshAgent):
     def run(self, request: AgentRequest, context: AgentContext) -> Iterator[AgentEvent]:
         self.start()
         self._cancelled = False
+        self._said.clear()
         prompt_text = build_prompt(request, context)
         # Acknowledged, like every other command: a prompt pi never answers
         # for is an error the operator gets to read, not silence (d14).
         self._command("prompt", message=prompt_text)
+        self._streaming = True
+        try:
+            yield from self._events()
+        finally:
+            self._streaming = False
+            self._said.clear()
 
+    def _events(self) -> Iterator[AgentEvent]:
+        """The turn's event loop, from the acked prompt to DONE/ERROR."""
         while True:
             if self._cancelled:
                 return
@@ -522,7 +549,9 @@ class PiAgent(NvshAgent):
         if msg_type == "message_update":
             ame = obj.get("assistantMessageEvent") or {}
             if ame.get("type") == "text_delta":
-                return AgentEvent(kind=EventKind.TEXT_DELTA, text=ame.get("delta", ""))
+                delta = str(ame.get("delta", ""))
+                self._said.append(delta)
+                return AgentEvent(kind=EventKind.TEXT_DELTA, text=delta)
             return None
 
         if msg_type == "tool_execution_start":
@@ -533,6 +562,9 @@ class PiAgent(NvshAgent):
             )
 
         if msg_type == "tool_execution_end":
+            # A finished tool resets the rationale window: what the model
+            # says next is about the *next* thing it wants to do (d17).
+            self._said.clear()
             return AgentEvent(
                 kind=EventKind.TOOL_RESULT,
                 tool=str(obj.get("toolName", "")),
@@ -541,7 +573,11 @@ class PiAgent(NvshAgent):
 
         if msg_type == "extension_ui_request":
             command, rationale = _proposal_fields(obj)
-            proposal = Proposal(command=command, rationale=rationale, kind=ProposalKind.FIX)
+            proposal = Proposal(
+                command=command,
+                rationale=rationale or self._rationale_text(),
+                kind=ProposalKind.FIX,
+            )
             return AgentEvent(
                 kind=EventKind.PROPOSAL,
                 proposal=proposal,
@@ -563,6 +599,46 @@ class PiAgent(NvshAgent):
         # Unknown/uninteresting event types (queue_update, turn_start, ...)
         # surface as STATUS so nothing is silently dropped.
         return AgentEvent(kind=EventKind.STATUS, text=str(msg_type or ""))
+
+    def _rationale_text(self) -> str:
+        """The assistant text since the last tool result, trimmed for a panel.
+
+        This is deviation d17's answer to ``why: (no rationale given)``:
+        pi's bash tool schema has no ``reason`` field, so the approval
+        envelope's ``reason`` is always empty and every proposal looked
+        unmotivated -- while the model had just said, in the text streaming
+        above the box, exactly why.
+        """
+        text = " ".join("".join(self._said).split())
+        if len(text) <= _RATIONALE_LIMIT:
+            return text
+        return text[: _RATIONALE_LIMIT - 1] + "\u2026"
+
+    def steer(self, text: str) -> bool:
+        """Inject ``text`` into the turn that is running now (deviation d16).
+
+        The wire shape is pi's own (``docs/pi-rpc.md``):
+        ``{"type": "prompt", "message": <text>, "streamingBehavior": "steer"}``
+        -- queued while the agent is running and delivered after the
+        current assistant turn finishes its tool calls, before the next LLM
+        call. Sending a bare ``prompt`` mid-stream is an error on pi's side,
+        so the field is never optional here.
+
+        This is the second write (after ``abort``) that is deliberately not
+        ack-waited, and for the same reason: it is only ever sent *mid-turn*,
+        when no command is outstanding, so "never pipeline" (d14) still
+        holds -- nothing is written ahead of an unacknowledged command. The
+        ack cannot be waited for here anyway: during a turn the event
+        consumer owns the stdout queue, and two readers would race for the
+        `response` line. A rejection is not lost: ``_map_event`` turns a
+        ``response`` for ``prompt`` with ``success: false`` into an ERROR
+        event the operator reads.
+        """
+        if not text or not self._streaming:
+            return False
+        if self._proc is None or self._proc.poll() is not None:
+            return False
+        return self._send({"type": "prompt", "message": text, "streamingBehavior": "steer"})
 
     def respond_ui(self, request_id: str, **fields: object) -> None:
         """Answer a pending ``extension_ui_request`` dialog.

@@ -410,7 +410,7 @@ def _ok():
 # pi) and assert the dialog is answered by the agent that raised it.
 
 
-def _one_shot_pi(monkeypatch, tmp_path, script, responses):
+def _one_shot_pi(monkeypatch, tmp_path, script, responses, commands=None):
     """Make the one-shot path build a PiAgent talking to ``tests/fakes/pi_scripted``."""
     import dataclasses
     from pathlib import Path
@@ -426,6 +426,8 @@ def _one_shot_pi(monkeypatch, tmp_path, script, responses):
     pi_env["NVSH_TEST_PI_SCRIPT"] = json.dumps(script)
     pi_env["NVSH_TEST_PI_AWAIT_UI"] = "1"
     pi_env["NVSH_TEST_PI_RESPONSES"] = str(responses)
+    if commands is not None:
+        pi_env["NVSH_TEST_PI_COMMANDS"] = str(commands)
 
     spec = dataclasses.replace(
         registry.ADAPTERS["pi"],
@@ -750,3 +752,241 @@ def test_a_successful_call_prints_no_held_back_line(xdg, monkeypatch, capsys):
     monkeypatch.setattr(client_transport, "send", _stub_send([]))
     client_mod.handle_failure(_args(xdg.tmp), panel=_panel())
     assert "held back" not in capsys.readouterr().err
+
+
+# --- d16: [t] tell -- steer the running turn ------------------------------
+
+
+def _steer_script(command: str):
+    """A dialog, then (after the steer) a second, different proposal."""
+    return [
+        {
+            "type": "message_update",
+            "assistantMessageEvent": {"type": "text_delta", "delta": "let me reinstall it. "},
+        },
+        _approval_request(command, request_id="ui-t"),
+        {
+            "type": "message_update",
+            "assistantMessageEvent": {"type": "text_delta", "delta": "ok, memory it is."},
+        },
+        {"type": "agent_end"},
+    ]
+
+
+def test_tell_key_denies_with_the_reason_and_steers_the_same_turn(xdg, monkeypatch):
+    responses = xdg.tmp / "ui-responses.jsonl"
+    commands = xdg.tmp / "pi-commands.jsonl"
+    _one_shot_pi(
+        monkeypatch,
+        xdg.tmp,
+        _steer_script("apt install -y linux-tools"),
+        responses,
+        commands=commands,
+    )
+    p = _panel("t\njust run free -h\n")
+    assert client_mod.handle_failure(_args(xdg.tmp), panel=p) == 0
+
+    assert _responses(responses) == [
+        {
+            "type": "extension_ui_response",
+            "id": "ui-t",
+            "value": "deny",
+            "reason": "just run free -h",
+        }
+    ]
+    steers = [
+        c
+        for c in _responses(commands)
+        if c.get("type") == "prompt" and c.get("streamingBehavior") == "steer"
+    ]
+    assert len(steers) == 1, _responses(commands)
+    assert steers[0]["message"] == "just run free -h"
+    text = p.out.getvalue()
+    assert "ok, memory it is." in text, "the panel must keep streaming the steered turn"
+    assert "nvsh: not run" not in text
+
+
+def test_tell_with_an_empty_line_returns_to_the_proposal(xdg, monkeypatch):
+    proposal = Proposal(command="apt install foo", rationale="install", kind=ProposalKind.FIX)
+    monkeypatch.setattr(client_transport, "send", _stub_send([], _proposal_events(proposal)))
+    executed = []
+    monkeypatch.setattr(client_mod, "_run_command", lambda cmd, **kw: executed.append(cmd) or _ok())
+    p = _panel("t\n\n\n")  # tell, empty line -> cancel, then Enter -> run once
+    assert client_mod.handle_failure(_args(xdg.tmp), panel=p) == 0
+    assert executed == ["apt install foo"]
+
+
+def test_steer_on_an_adapter_without_a_mid_turn_channel_becomes_the_next_request(xdg, monkeypatch):
+    proposal = Proposal(command="apt install foo", rationale="install", kind=ProposalKind.FIX)
+    calls = []
+    streams = [
+        _proposal_events(proposal),
+        [AgentEvent(kind=EventKind.TEXT_DELTA, text="ok"), AgentEvent(kind=EventKind.DONE)],
+    ]
+
+    def send(request, context=None, **kwargs):
+        calls.append((request, context, kwargs))
+        yield from streams[min(len(calls) - 1, len(streams) - 1)]
+
+    monkeypatch.setattr(client_transport, "send", send)
+    p = _panel("t\njust run free -h\n")
+    assert client_mod.handle_failure(_args(xdg.tmp), panel=p) == 0
+    assert len(calls) == 2, "the steer must come back as the next request"
+    follow_up = calls[1][0]
+    # Verbatim: the conversation (the daemon's session, or the adapter's own
+    # memory -- see tests/test_agent_openai_compat.py) carries the prior turn,
+    # so the client must not paraphrase the operator's words into it.
+    assert follow_up.prompt == "just run free -h"
+    assert follow_up.command == "ls /nope"
+    assert "no mid-turn channel" in p.out.getvalue()
+
+
+# --- d17: rationale, and explaining by asking -----------------------------
+
+
+def test_explain_with_a_rationale_prints_it_without_asking_the_agent(xdg, monkeypatch):
+    proposal = Proposal(command="free -h", rationale="check memory", kind=ProposalKind.FIX)
+    calls = []
+    monkeypatch.setattr(client_transport, "send", _stub_send(calls, _proposal_events(proposal)))
+    p = _panel("e\nq\n")
+    assert client_mod.handle_failure(_args(xdg.tmp), panel=p) == 0
+    text = p.out.getvalue()
+    assert "why: check memory" in text
+    assert "(no rationale given)" not in text
+    assert len(calls) == 1, "a rationale we already have must not cost a round trip"
+
+
+def test_explain_without_a_rationale_asks_the_agent_instead_of_apologising(xdg, monkeypatch):
+    responses = xdg.tmp / "ui-responses.jsonl"
+    commands = xdg.tmp / "pi-commands.jsonl"
+    script = [
+        _approval_request("apt install -y linux-tools", reason="", request_id="ui-e"),
+        {
+            "type": "message_update",
+            "assistantMessageEvent": {"type": "text_delta", "delta": "because perf is missing."},
+        },
+        {"type": "agent_end"},
+    ]
+    _one_shot_pi(monkeypatch, xdg.tmp, script, responses, commands=commands)
+    p = _panel("e\n")
+    assert client_mod.handle_failure(_args(xdg.tmp), panel=p) == 0
+    text = p.out.getvalue()
+    assert "(no rationale given)" not in text
+    assert "because perf is missing." in text
+    steers = [
+        c
+        for c in _responses(commands)
+        if c.get("type") == "prompt" and c.get("streamingBehavior") == "steer"
+    ]
+    assert len(steers) == 1
+    assert steers[0]["message"] == (
+        "Explain in two sentences why you propose: apt install -y linux-tools"
+    )
+
+
+# --- d18: details ---------------------------------------------------------
+
+
+def test_details_report_approval_patterns_backend_conversation_and_context(xdg, monkeypatch):
+    log = _log_with(xdg.tmp, b"ls: /nope: No such file\n")
+    proposal = Proposal(command="whatis ls", rationale="look it up", kind=ProposalKind.INSPECT)
+    monkeypatch.setattr(client_transport, "send", _stub_send([], _proposal_events(proposal)))
+    p = _panel("d\nq\n")
+    assert client_mod.handle_failure(_args(xdg.tmp, log=str(log)), panel=p) == 0
+    text = p.out.getvalue()
+    assert "kind: inspect" in text
+    assert "command: whatis ls" in text
+    assert "approved: no" in text
+    assert "session pattern: whatis ls" in text
+    assert "user pattern: whatis *" in text
+    assert "backend:" in text
+    assert "conversation: one-shot" in text
+    assert f"shell {os.getpid()}" in text or "shell " in text
+    assert "bytes" in text
+
+
+def test_details_name_the_matching_approval_when_there_is_one(xdg, monkeypatch):
+    (xdg.config / "nvsh").mkdir(parents=True)
+    (xdg.config / "nvsh" / "approved.toml").write_text(
+        'user_patterns = [\n  "whatis *",\n]\n', encoding="utf-8"
+    )
+    proposal = Proposal(command="whatis ls", rationale="look", kind=ProposalKind.FIX)
+    monkeypatch.setattr(client_transport, "send", _stub_send([], _proposal_events(proposal)))
+    p = _panel("d\nq\n")
+    client_mod.handle_failure(_args(xdg.tmp), panel=p)
+    assert "approved: user pattern 'whatis *'" in p.out.getvalue()
+
+
+def test_details_report_the_refusal_reason_for_a_privileged_command(xdg, monkeypatch):
+    proposal = Proposal(command="sudo nvpmodel -m 0", rationale="power", kind=ProposalKind.FIX)
+    monkeypatch.setattr(client_transport, "send", _stub_send([], _proposal_events(proposal)))
+    p = _panel("d\nq\n")
+    client_mod.handle_failure(_args(xdg.tmp), panel=p)
+    text = p.out.getvalue()
+    assert "refused:" in text
+    assert "escalates privilege" in text
+
+
+# --- d19 (panel half): the auto-inspect line names the command ------------
+
+
+def test_an_auto_inspected_command_is_announced_by_name_and_exit_code(xdg, monkeypatch):
+    (xdg.config / "nvsh").mkdir(parents=True)
+    (xdg.config / "nvsh" / "approved.toml").write_text(
+        'user_patterns = [\n  "echo *",\n]\n', encoding="utf-8"
+    )
+    proposal = Proposal(command="echo hi", rationale="look", kind=ProposalKind.INSPECT)
+    calls = []
+    streams = [
+        _proposal_events(proposal),
+        [AgentEvent(kind=EventKind.TEXT_DELTA, text="done"), AgentEvent(kind=EventKind.DONE)],
+    ]
+
+    def send(request, context=None, **kwargs):
+        calls.append((request, context, kwargs))
+        yield from streams[min(len(calls) - 1, len(streams) - 1)]
+
+    monkeypatch.setattr(client_transport, "send", send)
+    p = _panel()
+    client_mod.handle_failure(_args(xdg.tmp), panel=p)
+    text = p.out.getvalue()
+    assert "... running: echo hi" in text
+    assert "... finished (exit 0)" in text
+
+
+# --- d16: /steer ----------------------------------------------------------
+
+
+def test_slash_steer_sends_the_text_as_the_next_request_on_the_last_failure(xdg, monkeypatch):
+    client_mod.save_last_failure(_args(xdg.tmp))
+    calls = []
+    monkeypatch.setattr(client_transport, "send", _stub_send(calls))
+    monkeypatch.setattr(client_transport, "control", lambda *a, **kw: [])
+    assert client_mod.handle_slash("/steer just run free -h", panel=_panel()) == 0
+    assert len(calls) == 1
+    assert calls[0][0].prompt == "just run free -h"
+    assert calls[0][0].command == "ls /nope"
+
+
+def test_slash_steer_prefers_a_running_turn_when_there_is_one(xdg, monkeypatch):
+    client_mod.save_last_failure(_args(xdg.tmp))
+    calls = []
+    monkeypatch.setattr(client_transport, "send", _stub_send(calls))
+    seen = []
+
+    def control(kind, **kwargs):
+        seen.append((kind, kwargs.get("text")))
+        return [AgentEvent(kind=EventKind.STATUS, text="steer delivered")]
+
+    monkeypatch.setattr(client_transport, "control", control)
+    p = _panel()
+    assert client_mod.handle_slash("/steer stop and check memory", panel=p) == 0
+    assert seen == [("steer", "stop and check memory")]
+    assert calls == [], "a running turn is steered, not restarted"
+    assert "steer" in p.out.getvalue().lower()
+
+
+def test_slash_steer_without_text_is_a_user_error(xdg):
+    p = _panel()
+    assert client_mod.handle_slash("/steer", panel=p) == 1
+    assert "/steer" in p.out.getvalue()

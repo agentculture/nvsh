@@ -267,3 +267,47 @@ def test_a_resolved_key_never_appears_in_any_event(fake_server, tmp_path):
     events = _run(agent)
     text = " ".join(f"{e.text or ''} {e.error or ''}" for e in events)
     assert "file-bearer-value" not in text
+
+
+# --- d16: no mid-turn channel, so a steer becomes the next message --------
+
+
+def test_steer_reports_that_there_is_no_mid_turn_channel(fake_server):
+    base_url = f"http://127.0.0.1:{fake_server.server_port}"
+    agent = OpenAICompatAgent({"base_url": base_url})
+    agent.start()
+    try:
+        assert agent.steer("just run free -h") is False
+    finally:
+        agent.close()
+
+
+def test_a_steered_message_is_sent_as_the_next_turn_with_the_prior_one(fake_server):
+    base_url = f"http://127.0.0.1:{fake_server.server_port}"
+    agent = OpenAICompatAgent({"base_url": base_url})
+    agent.start()
+    try:
+        list(agent.run(_request(), _context()))
+        assert agent.steer("just run free -h") is False
+        steered = AgentRequest(
+            kind=RequestKind.EXPLICIT, prompt="just run free -h", command="ls /nope"
+        )
+        list(agent.run(steered, _context()))
+    finally:
+        agent.close()
+    messages = fake_server.last_body["messages"]
+    assert [m["role"] for m in messages] == ["user", "assistant", "user"]
+    assert messages[1]["content"] == "hello world", "the prior turn is the context"
+    assert "just run free -h" in messages[2]["content"]
+
+
+def test_an_unsteered_turn_is_still_one_standalone_user_message(fake_server):
+    base_url = f"http://127.0.0.1:{fake_server.server_port}"
+    agent = OpenAICompatAgent({"base_url": base_url})
+    agent.start()
+    try:
+        list(agent.run(_request(), _context()))
+        list(agent.run(_request(), _context()))
+    finally:
+        agent.close()
+    assert [m["role"] for m in fake_server.last_body["messages"]] == ["user"]

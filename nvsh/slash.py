@@ -124,6 +124,12 @@ def _handle_retry(inv: SlashInvocation) -> int:
     return retry(panel=inv.panel, env=inv.env)
 
 
+def _handle_steer(inv: SlashInvocation) -> int:
+    from .client import steer
+
+    return steer(inv.rest, panel=inv.panel, env=inv.env)
+
+
 def _handle_context(inv: SlashInvocation) -> int:
     from .client import context_show
 
@@ -338,6 +344,13 @@ _COMMANDS: tuple[SlashCommand, ...] = (
         name="retry",
         handler=_handle_retry,
         description="re-run the last failed command, after confirmation",
+        safety=SAFETY_AGENT,
+    ),
+    SlashCommand(
+        name="steer",
+        handler=_handle_steer,
+        description="tell the agent what to do instead, in the same conversation",
+        arg_schema=(ArgSpec("text", "what the agent should do instead"),),
         safety=SAFETY_AGENT,
     ),
     SlashCommand(

@@ -320,3 +320,21 @@ def test_agent_use_unknown_name_is_a_user_error(xdg):
     p = _panel()
     rc = slash_mod.dispatch("/agent use bogus", platform_kind="dgx-spark", panel=p)
     assert rc == 1
+
+
+# --- d16: /steer -----------------------------------------------------------
+
+
+def test_steer_is_registered_and_visible_everywhere():
+    cmd = slash_mod.resolve("steer")
+    assert cmd is not None
+    assert cmd.safety == slash_mod.SAFETY_AGENT
+    assert cmd.visible_on("generic")
+    assert "/steer" in [item.value for item in slash_mod.complete([], "generic")]
+
+
+def test_dispatch_steer_passes_the_whole_line_as_the_text(xdg, monkeypatch):
+    seen = []
+    monkeypatch.setattr(client_mod, "steer", lambda text, **kw: seen.append(text) or 0)
+    assert slash_mod.dispatch('/steer just run "free -h"', platform_kind="generic") == 0
+    assert seen == ['just run "free -h"']
