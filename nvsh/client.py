@@ -166,8 +166,40 @@ def _load_rate_state(env: Mapping[str, str] | None):
     return RateState(last_auto_call=float(last) if isinstance(last, (int, float)) else None)
 
 
-def _save_rate_state(state, env: Mapping[str, str] | None) -> None:
-    _write_private_json(rate_state_path(env), {"last_auto_call": state.last_auto_call})
+def _last_held_back_notice(env: Mapping[str, str] | None) -> float | None:
+    data = _read_json(rate_state_path(env)) or {}
+    value = data.get("last_held_back_notice")
+    return float(value) if isinstance(value, (int, float)) else None
+
+
+def _save_rate_state(state, env: Mapping[str, str] | None, notice: float | None = None) -> None:
+    """Persist the rate state, carrying the held-back notice flag forward."""
+    kept = _last_held_back_notice(env) if notice is None else notice
+    payload: dict = {"last_auto_call": state.last_auto_call}
+    if kept is not None:
+        payload["last_held_back_notice"] = kept
+    _write_private_json(rate_state_path(env), payload)
+
+
+def _note_held_back(config, env: Mapping[str, str] | None, now: float) -> None:
+    """Say once per window that an automatic call was held back.
+
+    Deviation d10: a silently suppressed second failure looks exactly like a
+    broken nvsh. One stderr line per window says what happened and how to
+    ask anyway; the flag that keeps it to one line lives next to the rate
+    state, so a burst of failures across separate processes stays quiet.
+    """
+    from .cli._output import emit_diagnostic
+
+    window = _rate_window(config)
+    last_notice = _last_held_back_notice(env)
+    if last_notice is not None and now - last_notice < window:
+        return
+    emit_diagnostic(
+        f"nvsh: held back (auto calls limited to 1 per {int(window)}s window); "
+        "/fix or Ctrl+G asks now"
+    )
+    _save_rate_state(_load_rate_state(env), env, notice=now)
 
 
 def _rate_window(config) -> float:
@@ -521,6 +553,7 @@ def handle_failure(
 
     state = save_last_failure(args, env=resolved)
     if _rate_limited(args, config, resolved):
+        _note_held_back(config, resolved, time.time())
         return 0
 
     shell_id = _shell_pid(resolved)

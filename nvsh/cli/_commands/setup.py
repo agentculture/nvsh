@@ -104,6 +104,28 @@ def _process_installs(
     return rows, any_ran
 
 
+def _agent_key_hint(chosen: str, cfg) -> str | None:
+    """For ``openai-compat``, say where its bearer comes from (deviation d10).
+
+    An operator who finished ``nvsh setup`` and then met an HTTP 401 had no
+    way to know nvsh was looking only at an environment variable nothing
+    exports. This line names the key file -- in placeholder spelling, never
+    a resolved path -- or, when a key already resolves, where it came from.
+    """
+    if chosen != "openai-compat":
+        return None
+    outcome = nvsh_config.resolve_bearer(cfg.agents.get("openai-compat", {}))
+    if outcome.diagnostic:
+        return outcome.diagnostic
+    if outcome.source:
+        return f"bearer from {outcome.source}"
+    return (
+        f"no bearer resolved: put the gateway's key in "
+        f"{nvsh_config.DEFAULT_KEY_FILE_DISPLAY} (mode 0600), or set "
+        "api_key_file / api_key_env under [agents.openai-compat]"
+    )
+
+
 def cmd_setup(args: argparse.Namespace) -> int:
     rc_path = _rc_path(args)
     original_text = rc_path.read_text(encoding="utf-8") if rc_path.exists() else ""
@@ -156,7 +178,7 @@ def cmd_setup(args: argparse.Namespace) -> int:
         "backup": str(backup_path) if backup_path else None,
         "shell_dir": str(shell_dir),
         "nvsh_bin": nvsh_bin,
-        "agent": {"name": chosen, "reason": reason},
+        "agent": {"name": chosen, "reason": reason, "key_hint": _agent_key_hint(chosen, cfg)},
         "installs": install_rows,
     }
 
@@ -171,6 +193,9 @@ def cmd_setup(args: argparse.Namespace) -> int:
             f"nvsh bin: {nvsh_bin}",
             f"agent: {chosen} ({reason})",
         ]
+        key_hint = result["agent"]["key_hint"]
+        if key_hint:
+            lines.append(f"  {key_hint}")
         for row in install_rows:
             lines.append(f"{row['tool']} ({row['purpose']}): {row['command']}")
             if not offer_only:

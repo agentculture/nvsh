@@ -4,6 +4,8 @@ Backs the harness chooser (see :mod:`nvsh.agent.registry`):
 
 * ``nvsh agent list``       — {adapters: [{name, installed, binary, description, configured}]}
 * ``nvsh agent use <name>`` — validates *name*, writes ``[agent] provider`` via :mod:`nvsh.config`
+  (and, for ``openai-compat``, says where to put the gateway key when no
+  bearer resolves — deviation d10)
 * ``nvsh agent install pi`` — prints the npm install command; runs it only with ``--yes``
                                or an interactive 'y' (never on its own)
 """
@@ -20,6 +22,14 @@ from nvsh import config as nvsh_config
 from nvsh.agent import registry
 from nvsh.cli._errors import EXIT_USER_ERROR, CliError
 from nvsh.cli._output import emit_result
+
+#: Where a gateway key goes when nothing exports one. The placeholder
+#: spelling, never a resolved path (d10).
+KEY_HINT = (
+    f"no bearer resolved: put the gateway's key in "
+    f"{nvsh_config.DEFAULT_KEY_FILE_DISPLAY} (mode 0600), or set api_key_file / "
+    "api_key_env under [agents.openai-compat] in config.toml"
+)
 
 
 def cmd_agent_list(args: argparse.Namespace) -> int:
@@ -51,11 +61,20 @@ def cmd_agent_use(args: argparse.Namespace) -> int:
         )
     cfg = nvsh_config.set_provider(name)
     json_mode = bool(getattr(args, "json", False))
-    result = {"provider": cfg.agent_provider}
+    result: dict = {"provider": cfg.agent_provider}
+    note = None
+    if name == "openai-compat":
+        outcome = nvsh_config.resolve_bearer(cfg.agents.get(name, {}))
+        result["bearer_source"] = outcome.source
+        note = outcome.diagnostic or (KEY_HINT if outcome.source is None else None)
+        result["note"] = note
     if json_mode:
         emit_result(result, json_mode=True)
     else:
-        emit_result(f"provider set to: {cfg.agent_provider}", json_mode=False)
+        text = f"provider set to: {cfg.agent_provider}"
+        if note:
+            text += f"\n{note}"
+        emit_result(text, json_mode=False)
     return 0
 
 

@@ -446,3 +446,43 @@ def test_hook_prints_refresh_notice_once_per_session(tmp_path, monkeypatch):
     code2, out2, err2 = _run(argv)
     assert "run 'nvsh setup' to refresh" not in err2
     assert __version__ != "0.0.1"
+
+
+# --------------------------------------------------------------------------
+# the agent choice says where the gateway key goes (deviation d10)
+# --------------------------------------------------------------------------
+
+
+def test_setup_agent_choice_documents_the_key_file_for_openai_compat(tmp_path, monkeypatch):
+    from nvsh.agent import registry
+
+    monkeypatch.setattr(registry, "choose", lambda cfg: ("openai-compat", "fallback"))
+    rc = _rc(tmp_path)
+    rc.write_text(UBUNTU_RC)
+    code, out, err = _run(["setup", "--rc", str(rc), "--no-install"])
+    assert code == 0, err
+    assert "api_key" in out
+
+
+def test_setup_agent_choice_json_carries_the_key_hint(tmp_path, monkeypatch):
+    from nvsh.agent import registry
+
+    monkeypatch.setattr(registry, "choose", lambda cfg: ("openai-compat", "fallback"))
+    rc = _rc(tmp_path)
+    rc.write_text(UBUNTU_RC)
+    code, out, err = _run(["setup", "--rc", str(rc), "--no-install", "--json"])
+    assert code == 0, err
+    payload = json.loads(out)
+    assert "api_key" in (payload["agent"]["key_hint"] or "")
+
+
+def test_setup_agent_choice_has_no_key_hint_for_other_backends(tmp_path, monkeypatch):
+    from nvsh.agent import registry
+
+    monkeypatch.setattr(registry, "choose", lambda cfg: ("pi", "on PATH"))
+    rc = _rc(tmp_path)
+    rc.write_text(UBUNTU_RC)
+    code, out, err = _run(["setup", "--rc", str(rc), "--no-install", "--json"])
+    assert code == 0, err
+    payload = json.loads(out)
+    assert payload["agent"]["key_hint"] is None

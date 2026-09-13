@@ -7,7 +7,8 @@
 #
 # nvsh never reads or stores a literal API key. Backends that need one
 # configure `api_key_env`, the NAME of an environment variable nvsh reads at
-# call time — never a key value. Setting `api_key` directly is rejected.
+# call time, or `api_key_file`, the PATH of a file holding the key — never a
+# key value. Setting `api_key` directly is rejected.
 #
 # Unknown keys (a typo, a stale option) are rejected loudly at load time
 # rather than silently ignored.
@@ -27,7 +28,21 @@ model = "associate"
 # nvsh is offline-first; a non-localhost endpoint here is out of scope for
 # this example.
 base_url = "http://localhost:8000/v1"
+#
+# Bearer resolution order, first hit wins:
+#   1. api_key_env — this environment variable, when it is set and non-empty
+#      in the shell that failed. Nothing exports it for you: an interactive
+#      shell only has it if your rc file or systemd unit sets it.
+#   2. api_key_file — a file holding the key, `~` and `$XDG_CONFIG_HOME`
+#      expanded. Must be mode 0600; nvsh refuses a file other users can read
+#      and says so (naming the file and its mode, never the key).
+#   3. the default key file, $XDG_CONFIG_HOME/nvsh/api_key (mode 0600), when
+#      it exists — the simplest place to put a gateway key:
+#        install -m 600 /dev/null "$XDG_CONFIG_HOME/nvsh/api_key"
+#        printf %s "<key>" > "$XDG_CONFIG_HOME/nvsh/api_key"
+#   4. nothing — the request goes out with no Authorization header.
 api_key_env = "NVSH_API_KEY"
+# api_key_file = "$XDG_CONFIG_HOME/nvsh/api_key"
 
 [sessions]
 # Maximum number of concurrent agent sessions this nvsh process holds open.

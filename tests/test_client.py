@@ -450,3 +450,57 @@ def test_autostart_streams_with_the_request_timeout_not_the_connect_wait(tmp_pat
             thread.join(timeout=5)
     assert events[-1].kind is EventKind.DONE
     assert seen == [37.0], f"streamed with the wrong socket timeout: {seen}"
+
+
+# --- the rate limiter says when it holds back (deviation d10) -------------
+
+
+def test_rate_limited_failure_prints_one_held_back_line(xdg, monkeypatch, capsys):
+    monkeypatch.setattr(client_transport, "send", _stub_send([]))
+    assert client_mod.handle_failure(_args(xdg.tmp), panel=_panel()) == 0
+    capsys.readouterr()
+
+    assert client_mod.handle_failure(_args(xdg.tmp), panel=_panel()) == 0
+    err = capsys.readouterr().err
+    assert "held back" in err
+    assert "/fix" in err
+    assert err.count("held back") == 1
+
+
+def test_held_back_notice_is_printed_at_most_once_per_window(xdg, monkeypatch, capsys):
+    monkeypatch.setattr(client_transport, "send", _stub_send([]))
+    client_mod.handle_failure(_args(xdg.tmp), panel=_panel())
+    client_mod.handle_failure(_args(xdg.tmp), panel=_panel())
+    capsys.readouterr()
+
+    # A burst of further failures inside the same window stays silent.
+    for _ in range(3):
+        client_mod.handle_failure(_args(xdg.tmp), panel=_panel())
+    assert "held back" not in capsys.readouterr().err
+
+
+def test_held_back_notice_returns_in_the_next_window(xdg, monkeypatch, capsys):
+    monkeypatch.setattr(client_transport, "send", _stub_send([]))
+    client_mod.handle_failure(_args(xdg.tmp), panel=_panel())
+    client_mod.handle_failure(_args(xdg.tmp), panel=_panel())
+    capsys.readouterr()
+
+    # Age both the last auto call and the notice out of the window.
+    path = client_mod.rate_state_path()
+    data = json.loads(path.read_text(encoding="utf-8"))
+    stale = data["last_auto_call"] - 10_000
+    data["last_auto_call"] = stale
+    data["last_held_back_notice"] = stale
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+    # The next failure is allowed through (no notice), the one after is held.
+    client_mod.handle_failure(_args(xdg.tmp), panel=_panel())
+    capsys.readouterr()
+    client_mod.handle_failure(_args(xdg.tmp), panel=_panel())
+    assert "held back" in capsys.readouterr().err
+
+
+def test_a_successful_call_prints_no_held_back_line(xdg, monkeypatch, capsys):
+    monkeypatch.setattr(client_transport, "send", _stub_send([]))
+    client_mod.handle_failure(_args(xdg.tmp), panel=_panel())
+    assert "held back" not in capsys.readouterr().err
