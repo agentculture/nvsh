@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-09-13T10:08:02Z",
-  "updated": "2026-09-13T12:15:20Z",
+  "updated": "2026-09-13T12:15:35Z",
   "claims": [
     {
       "id": "c1",
@@ -1427,6 +1427,17 @@
       "skipped_check": "",
       "refs": [
         "t1"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l7",
+      "code": "grader-unverified",
+      "what": "t4: tests and implementation written together, never seen failing first (red phase skipped)",
+      "skipped_check": "red phase of TDD",
+      "refs": [
+        "t4"
       ],
       "origin": "llm",
       "status": "proposed"
