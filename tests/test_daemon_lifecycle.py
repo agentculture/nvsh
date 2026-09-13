@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import socket
 import subprocess  # nosec B404 - fixed argv, no shell
 import sys
 import time
@@ -21,10 +22,14 @@ import pytest
 
 from nvsh import client_transport
 from nvsh import daemon as daemon_mod
-from nvsh.agent.base import AgentEvent, AgentRequest, RequestKind
+from nvsh.agent.base import AgentEvent, AgentRequest, EventKind, RequestKind
 from nvsh.config import Config
 
 FAKES = Path(__file__).parent / "fakes"
+
+pytestmark = pytest.mark.skipif(
+    not hasattr(socket, "AF_UNIX"), reason="the daemon needs unix domain sockets"
+)
 
 
 def _env(tmp_path: Path) -> dict[str, str]:
@@ -89,8 +94,9 @@ def _drain(events: Iterator[AgentEvent]) -> list[AgentEvent]:
     return list(events)
 
 
-def _spawn_daemon(env: dict[str, str], *, idle_timeout: float = 30.0) -> subprocess.Popen:
-    proc = subprocess.Popen(  # nosec B603 - fixed argv
+def _launch_daemon(env: dict[str, str], *, idle_timeout: float = 30.0) -> subprocess.Popen:
+    """Start ``python -m nvsh.daemon --foreground`` without waiting for it."""
+    return subprocess.Popen(  # nosec B603 - fixed argv
         [
             sys.executable,
             "-m",
@@ -104,8 +110,59 @@ def _spawn_daemon(env: dict[str, str], *, idle_timeout: float = 30.0) -> subproc
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
+
+
+def _spawn_daemon(env: dict[str, str], *, idle_timeout: float = 30.0) -> subprocess.Popen:
+    proc = _launch_daemon(env, idle_timeout=idle_timeout)
     assert wait_for(lambda: daemon_mod.is_running(env), 10.0), "daemon never listened"
     return proc
+
+
+def _kill(*procs: subprocess.Popen) -> None:
+    for proc in procs:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=5)
+
+
+def _slow_pi(tmp_path: Path, delay: float) -> Path:
+    """Write a ``pi`` stub that takes *delay* seconds to come up.
+
+    Stands in for a cold backend (pi loading node, a model warming up): the
+    process exists at once but says nothing for *delay* seconds. Returns the
+    directory to put in front of ``PATH``.
+    """
+    bindir = tmp_path / "slowbin"
+    bindir.mkdir(exist_ok=True)
+    stub = bindir / "pi"
+    stub.write_text(
+        "#!/usr/bin/env python3\n"
+        "import os, sys, time\n"
+        f"time.sleep({delay!r})\n"
+        f"os.execv(sys.executable, [sys.executable, {str(FAKES / 'pi')!r}] + sys.argv[1:])\n",
+        encoding="utf-8",
+    )
+    stub.chmod(0o755)
+    return bindir
+
+
+def _stub_one_shot(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make the one-shot fallback cheap, loud and offline.
+
+    The real fallback reaches the operator's own configured backend
+    (``one_shot`` loads config from the process environment), which is
+    neither deterministic nor offline under CI.
+    """
+
+    def fake_one_shot(request, context=None, **kwargs):
+        yield AgentEvent(kind=EventKind.STATUS, text="one-shot stub")
+        yield AgentEvent(kind=EventKind.DONE)
+
+    monkeypatch.setattr(client_transport, "one_shot", fake_one_shot)
+
+
+def _statuses(events: list[AgentEvent]) -> list[str]:
+    return [event.text for event in events if event.kind is EventKind.STATUS]
 
 
 # --- daemon process lifecycle ---------------------------------------------
@@ -211,3 +268,86 @@ def test_sessions_max_two_starts_a_second_pi(
         thread.join(timeout=5)
     assert "switch_session" not in pi_commands(env)
     assert wait_for(lambda: live_pis(env) == [])
+
+
+# --- autostart: wait for an answer, start exactly one daemon, say why -----
+#
+# Regression tests for deviation d7 (docs/verification.md, row v7): after
+# `nvsh daemon stop`, the first qualifying failure printed
+# `daemon connection lost: timed out` and answered one-shot, and several
+# orphan daemons accumulated against one socket.
+
+
+def test_autostart_waits_for_a_cold_backend_instead_of_falling_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A backend slower than the connect wait must still be served warm."""
+    env = _env(tmp_path)
+    env["PATH"] = f"{_slow_pi(tmp_path, 6.0)}:{env['PATH']}"
+    _stub_one_shot(monkeypatch)
+    try:
+        events = _drain(client_transport.send(_failure("boom"), shell_id="1", env=env))
+        texts = _statuses(events)
+        assert not any("one-shot" in text for text in texts), f"fell back: {texts}"
+        assert not any("connection lost" in text for text in texts), f"gave up: {texts}"
+        state = client_transport.status(env=env)
+        assert state["running"] is True
+        assert state["conversations"]["1"]["requests"] == 1, "the daemon must have served it"
+    finally:
+        client_transport.stop(env=env)
+        wait_for(lambda: live_pis(env) == [])
+
+
+def test_a_second_daemon_refuses_while_another_holds_the_lock(tmp_path: Path) -> None:
+    """Losing the single-instance lock must exit, not orphan the live daemon."""
+    env = _env(tmp_path)
+    first = _spawn_daemon(env)
+    # What a client sees mid-flight if the socket file goes missing: the old
+    # code simply bound a fresh socket and left `first` orphaned.
+    daemon_mod.socket_path(env).unlink()
+    second = _launch_daemon(env)
+    try:
+        try:
+            returncode = second.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            pytest.fail("a second daemon kept running while another held the lock")
+        assert returncode != 0, "the loser must exit non-zero"
+        assert first.poll() is None, "the live daemon must survive"
+    finally:
+        _kill(first, second)
+
+
+def test_autostart_never_starts_a_rival_daemon_and_says_why(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With a daemon already holding the lock, autostart must not spawn one."""
+    env = _env(tmp_path)
+    env["NVSH_DAEMON_START_TIMEOUT"] = "1.0"
+    first = _spawn_daemon(env)
+    sock = daemon_mod.socket_path(env)
+    try:
+        sock.unlink()
+        _stub_one_shot(monkeypatch)
+        events = _drain(client_transport.send(_failure("boom"), shell_id="1", env=env))
+        texts = _statuses(events)
+        assert not sock.exists(), "a rival daemon bound a fresh socket"
+        assert any("did not answer within 1s" in text for text in texts), texts
+        assert any("one-shot stub" in text for text in texts), texts
+        assert first.poll() is None
+    finally:
+        _kill(first)
+
+
+def test_fallback_reports_that_the_daemon_never_started(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The one-shot fallback must name the reason, not just happen."""
+    env = _env(tmp_path)
+    env["NVSH_DAEMON_START_TIMEOUT"] = "0.5"
+    monkeypatch.setattr(daemon_mod, "spawn", lambda *a, **k: 0)  # nothing ever starts
+    _stub_one_shot(monkeypatch)
+    events = _drain(client_transport.send(_failure("boom"), shell_id="1", env=env))
+    texts = _statuses(events)
+    assert any("daemon did not start within 0.5s" in text for text in texts), texts
+    assert any("one-shot stub" in text for text in texts), texts
+    assert not daemon_mod.socket_path(env).exists()

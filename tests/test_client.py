@@ -369,3 +369,84 @@ def test_fix_without_a_recorded_failure_says_so(xdg, monkeypatch):
     assert client_mod.fix(panel=p) == 1
     assert "no recorded failure" in p.out.getvalue()
     assert calls == []
+
+
+# --- transport timeouts (deviation d7) -----------------------------------
+
+
+def _tiny_daemon(path, stop):
+    """A listener that accepts and answers control lines, and nothing else.
+
+    Stands in for a daemon that is up and accepting but whose cold backend
+    has not produced a first token yet.
+    """
+    import socket as _socket
+
+    server = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+    server.bind(str(path))
+    server.listen(8)
+    server.settimeout(0.05)
+    try:
+        while not stop.is_set():
+            try:
+                conn, _ = server.accept()
+            except OSError:
+                continue
+            with conn:
+                try:
+                    stream = conn.makefile("rwb")
+                    stream.readline()
+                    stream.write(b'{"kind": "status", "text": "{}"}\n{"kind": "done"}\n')
+                    stream.flush()
+                except OSError:  # a client that hung up early
+                    continue
+    finally:
+        server.close()
+
+
+def test_autostart_streams_with_the_request_timeout_not_the_connect_wait(tmp_path, monkeypatch):
+    """The socket handed to the stream must carry the request timeout.
+
+    Deviation d7's root cause: after an autostart the client streamed on a
+    socket whose timeout was the 5 s connect wait, so any backend slower
+    than that raised ``timed out`` on the very first read.
+    """
+    import threading
+
+    from nvsh import daemon as daemon_mod
+    from nvsh.agent.base import AgentRequest
+
+    env = {"XDG_RUNTIME_DIR": str(tmp_path / "run"), "HOME": str(tmp_path)}
+    sock_path = daemon_mod.socket_path(env)
+    sock_path.parent.mkdir(parents=True, exist_ok=True)
+    stop = threading.Event()
+    thread = threading.Thread(target=_tiny_daemon, args=(sock_path, stop), daemon=True)
+
+    def fake_spawn(*args, **kwargs):
+        thread.start()
+        return 4242
+
+    seen: list[float | None] = []
+
+    def fake_stream(sock, payload):
+        if payload.get("kind") != "ping":  # the hello has its own short wait
+            seen.append(sock.gettimeout())
+        yield AgentEvent(kind=EventKind.DONE)
+
+    monkeypatch.setattr(daemon_mod, "spawn", fake_spawn)
+    monkeypatch.setattr(client_transport, "_stream", fake_stream)
+    try:
+        events = list(
+            client_transport.send(
+                AgentRequest(kind=RequestKind.FAILURE, command="ls /nope", exit_code=2),
+                shell_id="1",
+                env=env,
+                timeout=37.0,
+            )
+        )
+    finally:
+        stop.set()
+        if thread.is_alive():
+            thread.join(timeout=5)
+    assert events[-1].kind is EventKind.DONE
+    assert seen == [37.0], f"streamed with the wrong socket timeout: {seen}"

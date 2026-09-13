@@ -9,27 +9,58 @@ the spec (claims c43, c51) and in `docs/architecture.md`.
 
 - **Never started at shell start.** The hook client starts the daemon lazily
   on the first qualifying failure (`send(..., autostart=True)`), which
-  spawns `python -m nvsh.daemon --foreground` detached.
+  spawns `python -m nvsh.daemon --foreground` detached — but only when no
+  daemon holds the lock (below).
+- **An autostart waits for an answer, not for a file.** After spawning, the
+  client sends `ping` on a fresh connection until the daemon *answers*, up
+  to `$NVSH_DAEMON_START_TIMEOUT` seconds (default 10). A socket file that
+  exists, or a `connect()` that succeeds, only proves something bound the
+  path; a daemon still inside its imports has both.
+- **One daemon per user, enforced by a lock.** The daemon takes a
+  non-blocking `flock` on `daemon.lock` next to the socket and holds it for
+  its whole life. A daemon that cannot take it exits immediately (exit 2)
+  and touches nothing — in particular it never unlinks the live daemon's
+  socket, which is how orphan daemons used to pile up against one socket.
+  Only the daemon that bound the socket removes it at teardown.
 - **Stopped by the last shell.** Bash's `EXIT` trap sends `unregister`; when
   the last registered shell leaves, the daemon closes its agents, unlinks
   the socket and exits.
 - **Stopped when idle.** With no request for `--idle-timeout` seconds
   (default 900) the daemon shuts down the same way.
-- **Stale sockets are reaped.** At start the daemon tries to connect to an
-  existing socket: if the connect fails it unlinks it and binds; if it
-  succeeds another daemon owns it and this one refuses to start (exit 2).
-- **Never blocks a diagnosis.** If the socket is missing, the connect fails
-  or the stream breaks, the client runs the request **one-shot** in its own
-  process via `nvsh.agent.registry.choose()`.
+- **Stale sockets are reaped.** Holding the lock, the daemon tries to
+  connect to an existing socket: if the connect fails it unlinks it and
+  binds; if it succeeds another daemon owns it and this one refuses to
+  start (exit 2).
+- **Never blocks a diagnosis.** If the daemon genuinely cannot serve the
+  request, the client runs it **one-shot** in its own process via
+  `nvsh.agent.registry.choose()` — always preceded by a `status` event
+  saying why: `daemon did not start within 10s`, `daemon did not answer
+  within 10s`, `could not start a daemon: …`, `daemon refused the
+  connection`, or `daemon connection lost: …`.
 
 ## Socket and log
 
 | What | Where | Mode |
 | --- | --- | --- |
 | Socket | `$XDG_RUNTIME_DIR/nvsh/daemon.sock` (else `<tmp>/nvsh-<uid>/daemon.sock`) | `0600`, directory `0700` |
+| Lock | `daemon.lock` beside the socket | `0600` |
 | Log | `$XDG_STATE_HOME/nvsh/daemon.log` (else the user's local state directory, `nvsh/daemon.log` under `.local/state`) | `0600` |
 
 The daemon never writes to a terminal.
+
+## Timeouts
+
+Three different waits, deliberately kept apart — conflating the first two is
+what made every cold session pay a timeout and answer one-shot:
+
+| Wait | Default | Override |
+| --- | --- | --- |
+| `connect()` on an existing socket | 5 s | — |
+| Autostart: daemon accepts *and answers* a `ping` | 10 s | `$NVSH_DAEMON_START_TIMEOUT` |
+| One read while streaming a request's events | 120 s | `send(..., timeout=…)` |
+
+The stream timeout has to cover a **cold** backend's first token (pi loading
+node, a model warming up), which is far longer than any connect.
 
 ## Wire protocol
 
@@ -128,7 +159,8 @@ for event in client_transport.send(
     shell_id=shell_pid,          # defaults to os.getpid()
     env=None,                 # defaults to os.environ
     config=None,              # defaults to nvsh.config.load()
-    autostart=True,           # start a daemon if none is listening
+    autostart=True,           # start a daemon if none holds the lock
+    timeout=120.0,            # per-read stream timeout, not the connect wait
 ):
     render(event)
 ```
