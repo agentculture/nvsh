@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-09-13T10:08:02Z",
-  "updated": "2026-09-13T13:59:43Z",
+  "updated": "2026-09-13T14:25:05Z",
   "claims": [
     {
       "id": "c1",
@@ -1538,6 +1538,51 @@
       "id": "l16",
       "code": "control-absent",
       "what": "d2: the six bash-preexec hook tests are skipif-gated on /usr/share/ghostty/.../bash-preexec.sh, so on a CI runner without Ghostty they skip silently and the PIPESTATUS regression is guarded only on machines that have that file; the agent's first repro also assumed ghostty.bash loads bash-preexec (it does not on bash 5.2 here) before reading ghostty.bash:266-313",
+      "skipped_check": "",
+      "refs": [],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l17",
+      "code": "provenance-missing",
+      "what": "t19: the committed spark demo recording is an earlier successful run, not the last supervised one (the final re-record produced no agent output in 100 s); the recorder's early pty close was never root-caused",
+      "skipped_check": "",
+      "refs": [],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l18",
+      "code": "assumption-for-measurement",
+      "what": "t19: 'capture path inside tmux PASS (by construction)' is an inference from the code plus a correct slice, not an observed pipe-pane log; the echo step was mangled by the driver",
+      "skipped_check": "",
+      "refs": [],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l19",
+      "code": "grader-unverified",
+      "what": "t19: test_success_path_overhead_under_5ms was never seen failing and its 0.055 ms delta is two orders under the bound, so its sensitivity to a real 5 ms regression is unverified; test_time_to_first_agent_text first failed silently on a persisted rate limit",
+      "skipped_check": "",
+      "refs": [],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l20",
+      "code": "grader-unverified",
+      "what": "t19: candidate v3 (doctor bindings_present false negative) was inferred from behaviour without reading nvsh/doctor_checks.py; /doctor rows recorded as PARTIAL rather than pass/fail",
+      "skipped_check": "",
+      "refs": [],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l21",
+      "code": "control-absent",
+      "what": "t19: nvsh setup --yes was run in a throwaway HOME on orin and issued three sudo apt-get attempts (all refused, nothing changed) despite the no-sudo instruction; the control on remote side effects was the missing password, not the procedure",
       "skipped_check": "",
       "refs": [],
       "origin": "llm",

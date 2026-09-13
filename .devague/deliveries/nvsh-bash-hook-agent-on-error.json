@@ -2,7 +2,7 @@
   "plan_slug": "nvsh-bash-hook-agent-on-error",
   "schema_version": 2,
   "created": "2026-09-13T13:17:31Z",
-  "updated": "2026-09-13T13:51:20Z",
+  "updated": "2026-09-13T14:25:04Z",
   "deviations": [
     {
       "id": "d1",
@@ -33,6 +33,109 @@
       "status": "proposed",
       "classification": "needs-follow-up",
       "seq": 2
+    },
+    {
+      "id": "d3",
+      "what": "v1: under Ghostty the failing command's 133;D arrives after __nvsh_hook runs, so capture._locate_last_region falls back to the previous command's C..D region and the agent diagnoses the wrong output; fix: treat the last open C.. region (C after the last D) as the current command's slice",
+      "task_ref": "t19",
+      "reason": "observed on spark: nvsh context --show reported the previous command's output for ls /nope; thor/orin correct because nvsh owns OSC 133 there",
+      "affects": [
+        "t8",
+        "c28",
+        "c47"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "classification": "needs-follow-up",
+      "seq": 3
+    },
+    {
+      "id": "d4",
+      "what": "v3/v8: doctor bindings_present is a false negative in a shell whose Enter macro just dispatched /doctor (all three machines), agent_reachable prints the backend's full endpoint URL, and the summary prints healthy while checks print FAIL; fix in nvsh/doctor_checks.py",
+      "task_ref": "t19",
+      "reason": "observed on spark, thor and orin at nvsh 0.9.2",
+      "affects": [
+        "t17",
+        "c49",
+        "c21"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "classification": "needs-follow-up",
+      "seq": 4
+    },
+    {
+      "id": "d5",
+      "what": "v4: the hidden ' nvsh slash /doctor' dispatch exiting 1 (unhealthy) is treated as a qualifying failure and nvsh answers its own diagnostic with an agent turn; fix: the hook/trigger table never auto-triggers on nvsh's own hidden slash dispatch",
+      "task_ref": "t19",
+      "reason": "observed on spark and orin",
+      "affects": [
+        "t20",
+        "t14",
+        "c4"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "classification": "needs-follow-up",
+      "seq": 5
+    },
+    {
+      "id": "d6",
+      "what": "v5: Ctrl+G prints the banner and discards the answer because readline.bash sends nvsh slash /ask to /dev/null; fix: run /ask against the tty after restoring readline",
+      "task_ref": "t19",
+      "reason": "observed on all three machines; the same /ask typed by hand streams a panel",
+      "affects": [
+        "t7",
+        "c5",
+        "c32"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "classification": "needs-follow-up",
+      "seq": 6
+    },
+    {
+      "id": "d7",
+      "what": "v7: every cold session pays 'daemon connection lost: timed out' then a one-shot fallback on its first failure (spark, thor, orin), so the first answer runs outside the daemon; fix: the client waits for the autostarted daemon's socket to accept before giving up",
+      "task_ref": "t19",
+      "reason": "reproduced deliberately after nvsh daemon stop; not pi- or Ghostty-specific",
+      "affects": [
+        "t12",
+        "c43"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "classification": "needs-follow-up",
+      "seq": 7
+    },
+    {
+      "id": "d8",
+      "what": "v9: with pi, proposal.command carries the rendered panel text ('nvsh: run this command?\\ncommand: ...') instead of the bare command, so Enter would run the wrong thing and the panel renders nested; fix in the pi adapter's proposal extraction",
+      "task_ref": "t19",
+      "reason": "confirmed in the audit log on spark",
+      "affects": [
+        "t9",
+        "t11",
+        "c48"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "classification": "risky",
+      "seq": 8
+    },
+    {
+      "id": "d9",
+      "what": "v6: nvsh setup --yes runs the helper installs (npm -g pi on thor; sudo apt-get on orin, refused without a password) as d1 specified, which sits in tension with 'propose, don't run' and 'auto-apply refuses sudo'; no code change proposed, flagged for the operator's decision",
+      "task_ref": "t19",
+      "reason": "observed on thor and orin; nothing was installed",
+      "affects": [
+        "t21",
+        "c48"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "classification": "risky",
+      "seq": 9
     }
   ],
   "evidence": [],
