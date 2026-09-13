@@ -100,7 +100,9 @@ _DOCTOR = """\
 
 Checks the agent-identity invariants `steward doctor` verifies:
 prompt-file-present and backend-consistency (`claude` → `CLAUDE.md`), plus a
-skills-present check. Exits 1 when unhealthy.
+skills-present check, plus the shell/backend checks below. Exits 1 when
+unhealthy — but an info-severity failed check (see below) never makes
+`healthy` false on its own.
 
 prompt-file-present requires the *resident* prompt the declared backend
 actually reads. Other harness prompt files recognized under the same backend
@@ -108,10 +110,42 @@ name (`AGENTS.override.md`, `.pi/SYSTEM.md`, `QWEN.md`) belong to
 interactively available harnesses the mesh daemon never loads; they are
 reported by the informational harness-prompts check and never substituted.
 
+## Shell/backend checks (`nvsh.doctor_checks`)
+
+These run unconditionally, including from a wheel install with no
+`culture.yaml` (the prompt-file checks above are skipped there, these are
+not):
+
+- `platform_detected` — `nvsh.platform.detect()` found a non-generic kind.
+- `agent_configured` — `config.toml` loaded and `[agent] provider` names a
+  known adapter.
+- `agent_reachable` — probes the configured backend's `/models` endpoint
+  (3s timeout, bearer read from `api_key_env` at call time, never printed).
+  Distinguishes `pi-missing` (pi not on PATH), `endpoint-unreachable`
+  (refused/timeout), `endpoint-401` (bad/missing key) and "endpoint
+  unknown" (nothing configured), each with its own remediation.
+- `hook_sourced`, `hook_first_in_prompt_command`, `bindings_present` — read
+  state a hooked bash passes on the command line (see "the `/doctor`
+  invocation" in `docs/shell-integration.md`): `NVSH_HOOK_VERSION`,
+  `--prompt-command` (`declare -p PROMPT_COMMAND` output) and `--bind-p`
+  (`bind -p` output) plus `--keymap`. Outside a hooked shell that state is
+  absent, so these report `passed=false, severity=info` with the
+  remediation "run /doctor from a hooked shell" instead of failing health.
+- `capture_active` — `NVSH_LOG`/`TMUX` from the environment; reports
+  `script: <path>` or `tmux: <path>`, or a warning when capture is off.
+- `daemon_status` — `nvsh.daemon.is_running()`; always `severity=info`,
+  since "not running" is the normal idle state.
+- `terminfo_present` — `infocmp $TERM` (or a `TERMINFO`/`TERMINFO_DIRS`/
+  `~/.terminfo`/system search); missing gives the
+  `infocmp -x <TERM> | ssh <host> -- tic -x -` remediation, run from the
+  machine that has the terminfo entry.
+
 ## Usage
 
     nvsh doctor
     nvsh doctor --json
+    nvsh doctor --json --prompt-command "$(declare -p PROMPT_COMMAND)" \\
+        --bind-p "$(bind -p)" --keymap "$(bind -V | grep keymap | awk '{print $2}')"
 """
 
 _CLI = """\

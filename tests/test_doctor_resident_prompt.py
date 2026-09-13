@@ -34,6 +34,12 @@ def _diagnose_in(root: Path, backend: str, monkeypatch: pytest.MonkeyPatch) -> d
     )
     (root / ".claude" / "skills" / "cicd").mkdir(parents=True)
     (root / ".claude" / "skills" / "cicd" / "SKILL.md").write_text("x", encoding="utf-8")
+    # These tests are only about the resident-prompt invariants; task t17's
+    # doctor extension checks (platform/backend/in-shell) are covered in
+    # tests/test_doctor_checks.py and tests/test_cli_doctor_extensions.py,
+    # and stubbed out here so this file stays hermetic to this machine's
+    # real network/agent config.
+    monkeypatch.setattr(doctor_mod, "_new_checks", lambda **_kwargs: [])
     return doctor_mod._diagnose()
 
 

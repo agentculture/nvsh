@@ -148,6 +148,43 @@ is what `\C-m` binds, so feeding LF would bypass the whole layer. Tab tests
 set `show-all-if-ambiguous` so a single Tab prints the candidate list. The
 suite skips when no pty is available.
 
+## `/doctor`
+
+`/doctor` is one of the palette entries `nvsh complete --json` returns (see
+above), routed through the same Enter-macro dispatch as every other slash
+command — but its handler needs state only bash itself can see: the live
+`PROMPT_COMMAND` array and the active readline bindings. `nvsh doctor`
+(`nvsh/doctor_checks.py`, task t17) never shells out to read that state
+itself; bash hands it over as three flags. The exact invocation the `/doctor`
+slash handler runs is:
+
+```bash
+nvsh doctor --prompt-command "$(declare -p PROMPT_COMMAND)" \
+    --bind-p "$(bind -p)" \
+    --keymap "$(bind -V | grep keymap | awk '{print $2}')"
+```
+
+- `--prompt-command` is `declare -p PROMPT_COMMAND`'s own output (array or
+  string form); `hook_first_in_prompt_command` parses it to confirm
+  `__nvsh_hook` is element `[0]`, exactly as `__nvsh_hook_install` (in
+  `nvsh/shell/hook.bash`) placed it.
+- `--bind-p` is plain `bind -p` output for whichever keymap is currently
+  active (not `bind -m <keymap> -p` — `readline.bash` registers every
+  binding across all three keymaps, so the active keymap's own `bind -p` is
+  enough); `bindings_present` looks for the `\C-x\C-n` dispatch binding, the
+  `\C-m` Enter macro and the `\C-g` binding described above.
+- `--keymap` is read from `bind -V`'s `keymap` line, one of `emacs`,
+  `vi-insert` or `vi-command`, and only labels the `bindings_present`
+  message — it does not change which bindings are checked, since `bind -p`
+  already reflects the active keymap.
+
+Run `nvsh doctor` (or `nvsh doctor --json`) with none of these flags — from a
+plain terminal, a script, or over `nvsh explain doctor` — and the in-shell
+checks (`hook_sourced`, `hook_first_in_prompt_command`, `bindings_present`)
+report `passed=false, severity=info` with the remediation "run /doctor from
+a hooked shell" rather than failing `healthy`, since that state genuinely
+cannot exist outside a hooked bash.
+
 ## Installation: `nvsh setup` and the rc block
 
 `nvsh setup` (`nvsh/cli/_commands/setup.py`, rc editing logic in
