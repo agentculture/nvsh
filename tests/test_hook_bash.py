@@ -503,6 +503,34 @@ def test_prefilter_skips_interactive_programs(tmp_path, fake_nvsh):
     assert fake_nvsh.count == 0
 
 
+def test_prefilter_skips_nvsh_own_slash_dispatch(tmp_path, fake_nvsh):
+    """d5: readline.bash flags its hidden ` nvsh slash ...` line; the hook
+    consumes the flag and never answers nvsh's own diagnostic."""
+
+    debug = tmp_path / "hook-debug.log"
+    env = fake_nvsh.env(tmp_path, NVSH_HOOK_DEBUG_FILE=str(debug))
+    out = _run_bash(
+        [
+            _source(),
+            "__NVSH_SLASH_DISPATCH=1; (exit 1)",
+            'echo "FLAG=[${__NVSH_SLASH_DISPATCH:-}]"',
+        ],
+        env,
+    )
+    # The hook still ran for that prompt...
+    assert any(ln.startswith("1\t") for ln in debug.read_text().splitlines())
+    # ...but called nothing, and cleared the flag so the next failure is real.
+    assert fake_nvsh.count == 0
+    assert "FLAG=[]" in out
+
+
+def test_slash_dispatch_flag_is_one_shot(tmp_path, fake_nvsh):
+    env = fake_nvsh.env(tmp_path)
+    _run_bash([_source(), "__NVSH_SLASH_DISPATCH=1; (exit 1)", "ls /nvsh-no-such-dir"], env)
+    assert fake_nvsh.count == 1
+    assert fake_nvsh.calls[0][0] == "hook"
+
+
 def test_prefilter_does_not_refire_on_a_redrawn_prompt(tmp_path, fake_nvsh):
     env = fake_nvsh.env(tmp_path)
     _run_bash([_source(), "ls /nvsh-no-such-dir", "__nvsh_hook", "__nvsh_hook"], env)

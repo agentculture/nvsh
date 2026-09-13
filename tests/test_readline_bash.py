@@ -31,6 +31,7 @@ import pytest
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 READLINE_BASH = os.path.join(REPO_ROOT, "nvsh", "shell", "readline.bash")
+HOOK_BASH = os.path.join(REPO_ROOT, "nvsh", "shell", "hook.bash")
 FAKE_DIR = os.path.join(REPO_ROOT, "tests", "fakes")
 
 PROMPT = "@nvsh@ "
@@ -155,6 +156,44 @@ def start(tmp_path, env_extra=None, source=True, pre=(), post=()):
     return sh
 
 
+def shim(tmp_path, *, doctor_exit=0):
+    """A louder fake ``nvsh``, first on PATH ahead of ``tests/fakes/nvsh``.
+
+    It logs every invocation to ``$NVSH_SHIM_LOG`` (so "was the hook's client
+    path invoked?" is answerable), prints a marker on a ``slash`` dispatch (so
+    "did the panel reach the tty?" is answerable), and can make the
+    ``/doctor`` dispatch exit non-zero — the d5 case, where nvsh's own hidden
+    dispatch reports a failure. Everything else is delegated to the shared
+    fake, which still answers ``complete --json``.
+    """
+    bindir = tmp_path / "shimbin"
+    bindir.mkdir(exist_ok=True)
+    log = tmp_path / "shim.log"
+    log.write_text("")
+    script = bindir / "nvsh"
+    body = (
+        "#!/bin/sh\n"
+        'printf "CALL %s\\n" "$*" >> "$NVSH_SHIM_LOG"\n'
+        'case "$1" in\n'
+        "slash)\n"
+        '    printf "NVSH-PANEL draft=[%s] line=[%s]\\n" "${NVSH_DRAFT:-}" "$2"\n'
+        '    case "$2" in "/doctor") exit __DOCTOR_EXIT__ ;; esac\n'
+        "    exit 0 ;;\n"
+        "hook)\n"
+        "    exit 0 ;;\n"
+        "esac\n"
+        'exec __FAKE_DIR__/nvsh "$@"\n'
+    )
+    body = body.replace("__DOCTOR_EXIT__", str(doctor_exit)).replace("__FAKE_DIR__", FAKE_DIR)
+    script.write_text(body)
+    script.chmod(0o755)
+    env = {
+        "PATH": os.pathsep.join([str(bindir), FAKE_DIR, os.environ.get("PATH", "/usr/bin:/bin")]),
+        "NVSH_SHIM_LOG": str(log),
+    }
+    return env, log
+
+
 @pytest.fixture
 def sh(tmp_path):
     shell = start(tmp_path)
@@ -201,7 +240,7 @@ def test_non_slash_lines_pass_through(tmp_path, mode):
 
 
 @pytest.mark.parametrize("mode", ["emacs", "vi"])
-def test_ctrl_g_fires_and_restores_the_line(tmp_path, mode):
+def test_ctrl_g_dispatches_with_the_draft(tmp_path, mode):
     sh = start(tmp_path, post=(["set -o vi"] if mode == "vi" else []))
     try:
         mark = sh.mark()
@@ -211,8 +250,62 @@ def test_ctrl_g_fires_and_restores_the_line(tmp_path, mode):
         assert "nvsh (Ctrl+G)" in out
         assert any(r.startswith("slash /ask") for r in sh.records())
         assert "draft echo restored" in sh.records()
-        out = sh.run("")
-        assert "restored" in out
+        # d6: the draft is not lost -- it is pushed with `history -s`, so the
+        # operator can recall it after the panel.
+        mark = sh.mark()
+        sh.send("history 3\r", settle=0.6)
+        assert "echo restored" in sh.since(mark)
+    finally:
+        sh.close()
+
+
+@pytest.mark.parametrize("mode", ["emacs", "vi"])
+def test_ctrl_g_streams_the_answer_on_the_tty(tmp_path, mode):
+    """d6: Ctrl+G must deliver the agent's answer, not swallow it.
+
+    The dispatch has to leave the bind -x callback (readline owns the tty
+    there) and run as a real command line, exactly as the Enter macro does
+    for a typed slash line.
+    """
+    env, log = shim(tmp_path)
+    sh = start(tmp_path, env_extra=env, post=(["set -o vi"] if mode == "vi" else []))
+    try:
+        mark = sh.mark()
+        sh.send("echo restored", settle=0.2)
+        sh.send("\x07", settle=1.0)
+        out = sh.since(mark, settle=0.5)
+        assert "nvsh (Ctrl+G)" in out
+        assert "NVSH-PANEL" in out, out
+        assert "draft=[echo restored]" in out, out
+        assert "line=[/ask]" in out, out
+        # the shell is still usable afterwards
+        assert "still-alive" in sh.run("echo still-alive")
+        # and the dispatch line itself stays out of history
+        mark = sh.mark()
+        sh.send("history 5\r", settle=0.6)
+        assert "nvsh slash" not in sh.since(mark)
+    finally:
+        sh.close()
+
+
+def test_hidden_slash_dispatch_never_auto_triggers(tmp_path):
+    """d5: a failing hidden dispatch must not make nvsh answer its own panel."""
+    env, log = shim(tmp_path, doctor_exit=1)
+    debug = tmp_path / "hook-debug"
+    env = dict(env, NVSH_CAPTURE="0", NVSH_HOOK_DEBUG_FILE=str(debug))
+    sh = start(tmp_path, env_extra=env, pre=["source %s" % HOOK_BASH])
+    try:
+        sh.run("/doctor", settle=1.0)
+        calls = log.read_text()
+        assert "CALL slash /doctor" in calls, calls
+        assert "CALL hook" not in calls, calls
+        # the hook really did run for that prompt (so the assertion above is
+        # not vacuous): it recorded the failing status.
+        assert debug.exists()
+        assert any(ln.startswith("1\t") for ln in debug.read_text().splitlines()), debug.read_text()
+        # ...and a genuine failure still reaches the client.
+        sh.run("nvsh-definitely-not-a-command", settle=1.0)
+        assert "CALL hook" in log.read_text()
     finally:
         sh.close()
 
@@ -287,6 +380,21 @@ def test_erroring_hook_still_accepts_the_line(tmp_path):
 
 
 # -- bindings, keymaps, kill switch, idempotence -------------------------
+
+
+def test_slash_dispatch_exports_every_bind_section(sh, tmp_path):
+    """`bind -p` lists neither bind -x functions nor macros, so the payload
+    doctor reads carries all three sections behind a known marker."""
+    out = tmp_path / "bind-p.txt"
+    sh.run(
+        "READLINE_LINE=/doctor; __nvsh_enter; printf '%%s\\n' \"$NVSH_BIND_P\" > %s" % out,
+        settle=0.8,
+    )
+    text = out.read_text()
+    assert "# nvsh: bind -s/-X follow" in text
+    assert "__nvsh_enter" in text, text
+    assert "__nvsh_ctrl_g" in text, text
+    assert r"\C-m" in text
 
 
 def test_binds_every_keymap(sh):

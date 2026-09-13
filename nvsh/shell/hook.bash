@@ -24,6 +24,11 @@
 #   NVSH_INTERACTIVE_PROGRAMS    space-separated first-word skip list
 #   NVSH_BIN                     name/path of the nvsh entrypoint
 #   NVSH_HOOK_DEBUG_FILE         append "<exit>\t<PIPESTATUS>" per prompt
+#
+# Shell variables (not environment knobs):
+#   __NVSH_SLASH_DISPATCH        set by readline.bash on the hidden
+#                                ` nvsh slash ...` line it accepts for the
+#                                operator; consumed here, never auto-triggers
 
 # --- kill switch and preconditions ----------------------------------------
 
@@ -133,6 +138,18 @@ __nvsh_hook() {
 
     [[ -n ${__NVSH_OSC133_OWNED:-} ]] && printf '\033]133;D;%s\a' "${__nvsh_status}"
 
+    # nvsh's own hidden slash dispatch is never an operator command failing.
+    # `__nvsh_enter` / `__nvsh_ctrl_g` (readline.bash) set this flag on the
+    # line they rewrite to ` nvsh slash ...`, immediately before accept-line,
+    # so the very next prompt is that dispatch's. Consume it (one-shot: a
+    # plain assignment, no fork) and stop, or a `/doctor` that reports an
+    # unhealthy check would make nvsh answer its own diagnostic with a full
+    # agent turn.
+    if [[ -n ${__NVSH_SLASH_DISPATCH:-} ]]; then
+        __NVSH_SLASH_DISPATCH=
+        return 0
+    fi
+
     # Cheap bash-side pre-filter. Everything below the exit-code test runs
     # only on a failure, so a successful command pays one function call.
     case ${__nvsh_status} in
@@ -239,7 +256,7 @@ __nvsh_hook_unload() {
         done
         PROMPT_COMMAND=("${__nvsh_rest[@]}")
     fi
-    unset __NVSH_HOOK_LOADED __NVSH_OSC133_OWNED __NVSH_LAST_HISTCMD
+    unset __NVSH_HOOK_LOADED __NVSH_OSC133_OWNED __NVSH_LAST_HISTCMD __NVSH_SLASH_DISPATCH
     return 0
 }
 

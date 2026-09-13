@@ -59,6 +59,30 @@ nvsh slash '/ask why is memory high?'
 exported as `NVSH_DRAFT`, so the agent gets the unfinished command as
 context without it being sent as a question.
 
+#### Exit status
+
+`nvsh slash` exits **0 whenever a registered, visible command actually ran**,
+whatever that command reported — a `/doctor` that finds an unhealthy check
+still exits 0, and the finding is in the panel (and in `--json`'s
+`exit_code`, which stays the verb's own result). Only an *unhandled* line —
+an unknown command, one hidden on this platform, or an empty one — is a user
+error and exits 1.
+
+The reason is the hook: the dispatch is a real command line at the
+operator's prompt, so a non-zero status there is a failing command as far as
+`__nvsh_hook` is concerned, and nvsh would answer its own diagnostic with a
+full agent turn. Two independent guards stop that, and each works alone:
+
+- `__nvsh_enter` and `__nvsh_ctrl_g` set the shell variable
+  `__NVSH_SLASH_DISPATCH=1` immediately before the macro's `accept-line`, so
+  the very next prompt is known to be nvsh's own. `__nvsh_hook` consumes the
+  flag (a plain assignment — no fork, and one-shot, so the failure *after* a
+  slash command still triggers normally) and returns before the trigger
+  pre-filter. Nothing is passed through the environment and nothing is
+  written to disk.
+- `nvsh slash`'s exit status above, which also covers an operator who types
+  `nvsh slash "/doctor"` by hand (leading space or not).
+
 ## What each key does
 
 ### Enter
@@ -112,10 +136,27 @@ and is cleared afterwards; there is no static list in the file.
 
 ### Ctrl+G
 
-`bind -x '"\C-g": __nvsh_ctrl_g'` saves `READLINE_LINE` / `READLINE_POINT`,
-prints a one-line panel marker, dispatches `/ask` with the draft, and
-restores the line and point, so the half-typed command is still there
-afterwards.
+`C-g` is bound to the macro `"\C-x\C-g\C-j"`, the same shape as Enter: the
+`bind -x` callback `__nvsh_ctrl_g` on `\C-x\C-g`, then `accept-line`.
+
+The callback never talks to the agent itself. A `bind -x` function runs
+while readline owns the tty, so a panel streamed from inside one is mangled
+at best — and when its output is redirected away (as it was through nvsh
+0.9.2) `Ctrl+G` prints its marker and silently discards the answer. Instead
+the callback:
+
+- prints the one-line `⚡ nvsh (Ctrl+G): asking the agent` marker,
+- stashes the typed line in the shell variable `__NVSH_DRAFT` (a stash, not
+  an inlined argument, keeps the visible line short and needs no quoting),
+- pushes that line with `history -s`, so the half-typed command is one `Up`
+  away after the panel,
+- sets `__NVSH_SLASH_DISPATCH=1` (see "Exit status" above), and
+- rewrites `READLINE_LINE` to the hidden
+  `" NVSH_DRAFT=$__NVSH_DRAFT nvsh slash \"/ask\""`.
+
+The macro's `accept-line` then runs that as an ordinary command line, so the
+answer streams on the tty exactly as a typed `/ask` does, with job control
+and `Ctrl+C` working normally. The leading space keeps it out of history.
 
 ## Keymaps
 
@@ -128,8 +169,9 @@ fire after `set -o vi`; a vi-insert keymap binding does.
 - `NVSH_DISABLE=1` in the environment makes sourcing the file a complete
   no-op: no bindings, no `complete` registration, no `HISTCONTROL` change.
 - `__nvsh_readline_unbind` (behind `nvsh off`) restores `C-m` to
-  `accept-line`, removes the dispatch sequence and `C-g` in all three
-  keymaps, and removes the `-I` and per-command completions.
+  `accept-line`, removes both dispatch sequences (`\C-x\C-n`, `\C-x\C-g`)
+  and `C-g` in all three keymaps, and removes the `-I` and per-command
+  completions.
 - Sourcing twice is a no-op, guarded by `__NVSH_READLINE_LOADED`.
 
 ## Degrade, never lock
