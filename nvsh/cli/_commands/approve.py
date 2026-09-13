@@ -11,12 +11,18 @@ into via the CLI so the approval logic lives in exactly one place —
                                         in memory only for this process)
 * ``nvsh approve list``              — {user: [...], session: [...]}
 * ``nvsh approve remove <pattern>``  — drop from both lists
+* ``nvsh approve audit``             — append one decision to the audit log
+                                        (used by the pi approval extension,
+                                        ``nvsh/agent/pi_ext/approval.ts``, a
+                                        pure forwarder that never decides
+                                        policy itself)
 """
 
 from __future__ import annotations
 
 import argparse
 
+from nvsh.agent.audit import AuditLog
 from nvsh.approvals import ApprovalError, Approvals
 from nvsh.cli._errors import EXIT_USER_ERROR, CliError
 from nvsh.cli._output import emit_result
@@ -84,6 +90,27 @@ def cmd_approve_remove(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_approve_audit(args: argparse.Namespace) -> int:
+    """Append one ``{tool, command}`` decision to the audit log.
+
+    Called by ``nvsh/agent/pi_ext/approval.ts`` after every branch (allow,
+    once, session, user, deny/block) so every tool call the extension
+    forwards a decision on is recorded, even one it never asked the
+    operator about (an existing user/session match).
+    """
+    entry = AuditLog().record(
+        "tool_call",
+        proposal={"tool": args.tool, "command": args.command},
+        decision=args.decision,
+    )
+    json_mode = bool(getattr(args, "json", False))
+    if json_mode:
+        emit_result({"recorded": True, "ts": entry["ts"]}, json_mode=True)
+    else:
+        emit_result(f"recorded: {args.tool} {args.command!r} -> {args.decision}", json_mode=False)
+    return 0
+
+
 def _no_verb(args: argparse.Namespace) -> int:
     return cmd_approve_list(args)
 
@@ -116,3 +143,15 @@ def register(sub: argparse._SubParsersAction) -> None:
     rm.add_argument("pattern", help="The pattern to remove.")
     rm.add_argument("--json", action="store_true", help="Emit structured JSON.")
     rm.set_defaults(func=cmd_approve_remove)
+
+    audit = noun_sub.add_parser("audit", help="Append one tool-call decision to the audit log.")
+    audit.add_argument("--tool", required=True, help="The tool name, e.g. 'bash'.")
+    audit.add_argument("--command", required=True, help="The full command line.")
+    audit.add_argument(
+        "--decision",
+        required=True,
+        choices=("user", "session", "ask", "once", "deny", "block"),
+        help="The decision reached for this command.",
+    )
+    audit.add_argument("--json", action="store_true", help="Emit structured JSON.")
+    audit.set_defaults(func=cmd_approve_audit)

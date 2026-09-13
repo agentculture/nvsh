@@ -152,6 +152,7 @@ Two scopes:
     nvsh approve add "docker logs *" --session
     nvsh approve list --json
     nvsh approve remove "docker logs *"
+    nvsh approve audit --tool bash --command "nvidia-smi -L" --decision user
 """
 
 _APPROVE_CHECK = """\
@@ -206,6 +207,24 @@ Removes a pattern from both the persisted `user_patterns` and the in-memory
 ## Usage
 
     nvsh approve remove "docker logs *"
+"""
+
+_APPROVE_AUDIT = """\
+# nvsh approve audit --tool <tool> --command <cmd> --decision <decision>
+
+Appends one `{tool, command}` decision to the audit log
+(`$XDG_STATE_HOME/nvsh/audit.jsonl`, mode 0600). This is what
+`nvsh/agent/pi_ext/approval.ts` — the pi approval extension — calls after
+every branch (an existing user/session match, "once", "session", "user", or
+a deny/block), so the extension stays a pure forwarder: all policy is
+Python's (`nvsh.approvals`), the extension never decides anything itself.
+
+`--decision` is one of `user`, `session`, `ask`, `once`, `deny`, `block`.
+
+## Usage
+
+    nvsh approve audit --tool bash --command "nvidia-smi -L" --decision user
+    nvsh approve audit --tool bash --command "apt install foo" --decision ask --json
 """
 
 _CAPTURE = """\
@@ -312,6 +331,7 @@ ENTRIES: dict[tuple[str, ...], str] = {
     ("approve", "add"): _APPROVE_ADD,
     ("approve", "list"): _APPROVE_LIST,
     ("approve", "remove"): _APPROVE_REMOVE,
+    ("approve", "audit"): _APPROVE_AUDIT,
     ("capture",): _CAPTURE,
     ("capture", "show"): _CAPTURE,
     ("agent",): _AGENT,
