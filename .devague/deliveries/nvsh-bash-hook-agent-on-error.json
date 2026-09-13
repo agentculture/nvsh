@@ -2,7 +2,7 @@
   "plan_slug": "nvsh-bash-hook-agent-on-error",
   "schema_version": 2,
   "created": "2026-09-13T13:17:31Z",
-  "updated": "2026-09-13T14:25:04Z",
+  "updated": "2026-09-13T15:04:01Z",
   "deviations": [
     {
       "id": "d1",
@@ -136,6 +136,22 @@
       "status": "proposed",
       "classification": "risky",
       "seq": 9
+    },
+    {
+      "id": "d10",
+      "what": "operator on orin: a failing command produced 'nvsh: HTTP 401 invalid_api_key' because openai-compat only reads its bearer from the env var named by api_key_env, which is exported nowhere in a real interactive shell; the second failure printed nothing (silent rate limit). Fix: [agents.<name>] api_key_file = <0600 path> (default $XDG_CONFIG_HOME/nvsh/api_key when present) read by the adapter and doctor, never logged; the rate limiter prints one line saying it held back and how to ask manually",
+      "task_ref": "t19",
+      "reason": "reported by the operator from a live orin ssh session during verification",
+      "affects": [
+        "t10",
+        "t17",
+        "c16",
+        "c40"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "classification": "needs-follow-up",
+      "seq": 10
     }
   ],
   "evidence": [],
