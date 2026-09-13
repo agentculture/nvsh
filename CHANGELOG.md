@@ -26,6 +26,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - openai-compat reads its bearer from `api_key_file` (default `$XDG_CONFIG_HOME/nvsh/api_key`, must be 0600) when the env var named by `api_key_env` is unset, so a headless Jetson over ssh needs no rc export; the auto-call rate limiter prints one line when it holds back instead of staying silent (deviation d10, reported live from orin)
 - The daemon no longer wedges behind one turn: a turn whose client disconnected is aborted (pending approval dialogs denied, backend cancelled), turns are capped at a wall clock (`NVSH_TURN_TIMEOUT`, default 300 s), queued requests are told they are waiting, and `nvsh daemon status` shows the active turn and queue (deviation d12, observed live on spark)
 - In the one-shot fallback, Enter/Esc on a proposal answers the in-process agent's dialog (it used to go to the absent daemon, so nothing ran); pi's rpc lifecycle events no longer print as `... agent_start` lines (deviation d11, observed live on spark)
+- The panel repaints a dim `... waiting for the agent (Ns)` line while the backend is silent (plain single line off a tty), acknowledges every proposal key immediately (`nvsh: running ...` / explaining / details / ignored), and renders a fallback as a visible `nvsh: falling back - <reason>` line (deviation d13, operator report)
 - With pi, `proposal.command` is the bare tool-call command, never the rendered panel text; a command-less proposal is never executed
 
 ### Changed
