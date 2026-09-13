@@ -27,6 +27,7 @@ import fcntl
 import json
 import logging
 import os
+import select
 import socket
 import socketserver
 import subprocess  # nosec B404 - fixed argv, no shell
@@ -54,6 +55,23 @@ DEFAULT_IDLE_TIMEOUT = 900.0
 
 #: How often the idle watchdog wakes up.
 _WATCHDOG_INTERVAL = 0.1
+
+#: Wall-clock seconds one agent turn may take before the daemon aborts it.
+#: Generous on purpose -- a cold local model on a Jetson can think for
+#: minutes -- but finite, because a turn that never ends blocks every other
+#: shell (deviation d12).
+DEFAULT_TURN_TIMEOUT = 300.0
+
+#: Environment override for that cap, in seconds (tests use a small value).
+TURN_TIMEOUT_ENV = "NVSH_TURN_TIMEOUT"
+
+#: How often the per-turn watcher checks the owning client and the cap.
+_TURN_WATCH_INTERVAL = 0.05
+
+#: How often a queued request re-announces that it is still waiting. Well
+#: under the client's stream timeout (120 s), so a queued client keeps
+#: receiving bytes instead of timing out in silence.
+_QUEUE_NOTICE_INTERVAL = 15.0
 
 #: Control kinds that carry no agent request.
 _CONTROL_KINDS = frozenset(
@@ -130,6 +148,26 @@ def lock_held(env: Mapping[str, str] | None = None) -> bool:
         return False
     finally:
         os.close(fd)
+
+
+def turn_timeout(env: Mapping[str, str] | None = None) -> float:
+    """How long one agent turn may run before it is aborted, in seconds.
+
+    ``$NVSH_TURN_TIMEOUT`` overrides :data:`DEFAULT_TURN_TIMEOUT`. Junk or
+    non-positive values fall back to the default rather than disabling the
+    cap: "no cap" is exactly the state deviation d12 wedged in.
+    """
+    resolved = _resolve_env(env)
+    try:
+        value = float(resolved.get(TURN_TIMEOUT_ENV, ""))
+    except (TypeError, ValueError):
+        return DEFAULT_TURN_TIMEOUT
+    return value if value > 0 else DEFAULT_TURN_TIMEOUT
+
+
+#: Module-level alias, so :class:`Daemon` can resolve the cap from the
+#: environment inside a method whose parameter shadows ``turn_timeout``.
+_turn_timeout_from_env = turn_timeout
 
 
 def log_path(env: Mapping[str, str] | None = None) -> Path:
@@ -262,6 +300,76 @@ class _Slot:
     last_used: float = field(default_factory=time.monotonic)
 
 
+def _peer_is_gone(connection: socket.socket | None) -> bool:
+    """Has the client on *connection* closed it (EOF, reset, or a half-close)?
+
+    A closed or reset peer makes the socket readable with nothing to read;
+    the client only ever sends one line, which the handler has already
+    consumed, so readable-with-data means a live (if chatty) client. Probing
+    uses ``MSG_PEEK`` so nothing is ever taken off the stream. ``None`` --
+    an in-process caller with no socket -- is never "gone".
+    """
+    if connection is None:
+        return False
+    try:
+        readable, _, _ = select.select([connection], [], [], 0)
+    except (OSError, ValueError):
+        return True
+    if not readable:
+        return False
+    try:
+        peeked = connection.recv(1, socket.MSG_PEEK | socket.MSG_DONTWAIT)
+    except BlockingIOError:
+        return False
+    except OSError:
+        return True
+    return not peeked
+
+
+@dataclass
+class _ActiveTurn:
+    """The one agent turn currently running, and how to end it from outside.
+
+    The daemon serves one agent request at a time (pi steers one-at-a-time,
+    and a shared process must never interleave two conversations), so this
+    object *is* the thing every other shell is waiting on. It carries what a
+    watcher thread needs to end it without touching the handler thread that
+    is blocked inside ``agent.run()``: the slot to cancel, the ids of any
+    approval dialogs that have to be answered first, and a flag the handler
+    reads to tell an abort apart from a normal finish.
+    """
+
+    shell: str
+    slot: _Slot
+    started: float = field(default_factory=time.time)
+    since: float = field(default_factory=time.monotonic)
+    pending_ui: list[str] = field(default_factory=list)
+    aborted: str = ""
+    finished: threading.Event = field(default_factory=threading.Event)
+
+    def elapsed(self) -> float:
+        return max(0.0, time.monotonic() - self.since)
+
+    def snapshot(self) -> dict:
+        return {"shell": self.shell, "started": self.started, "elapsed": self.elapsed()}
+
+
+@dataclass
+class _Waiter:
+    """One request queued behind :class:`_ActiveTurn`."""
+
+    shell: str
+    started: float = field(default_factory=time.time)
+    since: float = field(default_factory=time.monotonic)
+
+    def snapshot(self) -> dict:
+        return {
+            "shell": self.shell,
+            "started": self.started,
+            "waiting": max(0.0, time.monotonic() - self.since),
+        }
+
+
 AgentFactory = Callable[[], NvshAgent]
 WhichFn = Callable[[str], Optional[str]]
 
@@ -293,7 +401,7 @@ class _Handler(socketserver.StreamRequestHandler):
         except (ValueError, UnicodeDecodeError) as exc:
             self._write(AgentEvent(kind=EventKind.ERROR, error=f"bad request: {exc}"))
             return
-        for event in owner.handle_message(message):
+        for event in owner.handle_message(message, connection=self.connection):
             if not self._write(event):
                 owner.cancel_shell(str(message.get("shell", "")))
                 return
@@ -323,11 +431,17 @@ class Daemon:
         env: Mapping[str, str] | None = None,
         agent_factory: AgentFactory | None = None,
         idle_timeout: float = DEFAULT_IDLE_TIMEOUT,
+        turn_timeout: float | None = None,
         which: WhichFn | None = None,
     ) -> None:
         self.config = config if config is not None else Config()
         self.env: Mapping[str, str] = dict(_resolve_env(env))
         self.idle_timeout = float(idle_timeout)
+        self.turn_timeout = (
+            float(turn_timeout)
+            if turn_timeout is not None and turn_timeout > 0
+            else _turn_timeout_from_env(self.env)
+        )
         self._agent_factory = agent_factory
         self._which = which
 
@@ -341,6 +455,8 @@ class Daemon:
         self._backend_reason = ""
         self._fallback_notice = ""
         self._notified: set[str] = set()
+        self._active: _ActiveTurn | None = None
+        self._waiting: list[_Waiter] = []
 
         self._server: _Server | None = None
         self._lock_fd: int | None = None
@@ -590,6 +706,94 @@ class Daemon:
             except Exception as exc:  # noqa: BLE001
                 self._log.warning("cancel failed: %s", exc)
 
+    # -- the active turn (deviation d12) -----------------------------------
+
+    def active_turn(self) -> dict | None:
+        """The turn currently holding the agent, or ``None`` when idle."""
+        with self._lock:
+            return self._active.snapshot() if self._active is not None else None
+
+    def _abort_turn(self, turn: _ActiveTurn, why: str, detail: str) -> None:
+        """End *turn* from outside the thread that is blocked inside it.
+
+        Order matters: a turn parked on an approval dialog is not waiting on
+        the model at all, so the dialog is denied *first* (otherwise the
+        adapter has nothing to cancel and stays parked), then the adapter is
+        cancelled, then the conversation is left idle. Every step is
+        best-effort -- an adapter that raises here must not keep the run lock
+        held for everyone else.
+        """
+        with self._lock:
+            if turn.aborted:
+                return
+            turn.aborted = why
+            pending = list(turn.pending_ui)
+        self._log.info("aborting shell %s's turn: %s", turn.shell, detail)
+
+        agent = turn.slot.agent
+        respond = getattr(agent, "respond_ui", None)
+        if callable(respond):
+            for request_id in pending:
+                try:
+                    respond(request_id, cancelled=True)
+                except Exception as exc:  # noqa: BLE001 - abort must not raise
+                    self._log.warning("denying dialog %s failed: %s", request_id, exc)
+        try:
+            agent.cancel()
+        except Exception as exc:  # noqa: BLE001
+            self._log.warning("cancel failed: %s", exc)
+
+        with self._lock:
+            conversation = self._conversations.get(turn.shell)
+            if conversation is not None:
+                conversation.pending_proposal = None
+                conversation.sleeping = True
+
+    def _watch_turn(self, turn: _ActiveTurn, connection: socket.socket | None) -> None:
+        """Abort *turn* when its client goes away or it outruns the cap.
+
+        Runs in its own thread because the thread that owns the turn is
+        parked inside ``agent.run()`` and cannot notice either condition.
+        """
+        deadline = turn.since + self.turn_timeout
+        while not turn.finished.wait(_TURN_WATCH_INTERVAL):
+            if _peer_is_gone(connection):
+                self._abort_turn(turn, "client-gone", "its client closed the connection")
+                return
+            if time.monotonic() >= deadline:
+                self._abort_turn(
+                    turn, "timeout", f"it ran past the {self.turn_timeout:g}s turn cap"
+                )
+                return
+
+    def _wait_for_the_agent(self, shell: str) -> Iterator[AgentEvent]:
+        """Take the run lock, telling the caller out loud while it waits.
+
+        Yields a ``status`` event *before* the first blocking wait and again
+        every :data:`_QUEUE_NOTICE_INTERVAL`, so a queued client keeps
+        receiving bytes and never hits its stream timeout in silence --
+        which is how the wedge showed up as ``daemon connection lost``.
+        """
+        if self._run_lock.acquire(blocking=False):
+            return
+        waiter = _Waiter(shell)  # positional: bandit B604 trips on any `shell=` kwarg
+        with self._lock:
+            self._waiting.append(waiter)
+        try:
+            yield AgentEvent(kind=EventKind.STATUS, text=self._busy_notice())
+            while not self._run_lock.acquire(timeout=_QUEUE_NOTICE_INTERVAL):
+                yield AgentEvent(kind=EventKind.STATUS, text=self._busy_notice(still=True))
+        finally:
+            with self._lock:
+                if waiter in self._waiting:
+                    self._waiting.remove(waiter)
+
+    def _busy_notice(self, *, still: bool = False) -> str:
+        with self._lock:
+            busy = self._active.shell if self._active is not None else "?"
+        lead = "still waiting" if still else "waiting"
+        return f"{lead} for the agent (busy with shell {busy})"
+
     # -- message handling --------------------------------------------------
 
     def state(self) -> dict:
@@ -612,10 +816,21 @@ class Daemon:
                 "backend_reason": self._backend_reason,
                 "fallback_notice": self._fallback_notice,
                 "idle_timeout": self.idle_timeout,
+                "turn_timeout": self.turn_timeout,
+                "active_turn": self._active.snapshot() if self._active is not None else None,
+                "queued": [waiter.snapshot() for waiter in self._waiting],
             }
 
-    def handle_message(self, message: Mapping[str, object]) -> Iterator[AgentEvent]:
-        """Handle one decoded request line, yielding the events to stream back."""
+    def handle_message(
+        self, message: Mapping[str, object], *, connection: socket.socket | None = None
+    ) -> Iterator[AgentEvent]:
+        """Handle one decoded request line, yielding the events to stream back.
+
+        ``connection`` is the client's socket when there is one; the daemon
+        watches it for the duration of an agent turn so a client that walks
+        away releases the agent instead of wedging every other shell behind
+        it (deviation d12).
+        """
         self._last_activity = time.monotonic()
         shell = str(message.get("shell", "") or "")
         kind = str(message.get("kind", "") or "")
@@ -634,7 +849,7 @@ class Daemon:
 
         request = request_from_dict(message.get("request"))  # type: ignore[arg-type]
         context = context_from_dict(message.get("context"))  # type: ignore[arg-type]
-        yield from self._run(shell, request, context)
+        yield from self._run(shell, request, context, connection=connection)
 
     def _handle_control(
         self, kind: str, shell: str, message: Mapping[str, object]
@@ -705,53 +920,104 @@ class Daemon:
         if not delivered:
             yield AgentEvent(kind=EventKind.ERROR, error="no agent is waiting for a UI response")
             return
+        with self._lock:
+            # Answered: an abort must not deny this dialog a second time.
+            if self._active is not None and request_id in self._active.pending_ui:
+                self._active.pending_ui.remove(request_id)
         yield AgentEvent(kind=EventKind.STATUS, text=f"ui response {request_id} delivered")
         yield AgentEvent(kind=EventKind.DONE)
 
     def _run(
-        self, shell: str, request: AgentRequest, context: AgentContext
+        self,
+        shell: str,
+        request: AgentRequest,
+        context: AgentContext,
+        *,
+        connection: socket.socket | None = None,
     ) -> Iterator[AgentEvent]:
         # One request at a time: pi itself steers one-at-a-time, and a single
-        # shared agent process must never interleave two conversations.
-        with self._run_lock:
-            try:
-                slot, conversation = self._acquire(shell)
-            except Exception as exc:  # noqa: BLE001 - a backend that won't start
-                self._log.warning("could not start an agent: %s", exc)
-                yield AgentEvent(kind=EventKind.ERROR, error=f"no agent available: {exc}")
-                return
+        # shared agent process must never interleave two conversations. The
+        # wait is announced out loud, and the turn it waits for is watched,
+        # so "one at a time" can never become "one, forever" (d12).
+        yield from self._wait_for_the_agent(shell)
+        try:
+            yield from self._run_locked(shell, request, context, connection)
+        finally:
+            self._run_lock.release()
 
-            if self._fallback_notice and shell not in self._notified:
-                self._notified.add(shell)
-                yield AgentEvent(kind=EventKind.STATUS, text=self._fallback_notice)
+    def _run_locked(
+        self,
+        shell: str,
+        request: AgentRequest,
+        context: AgentContext,
+        connection: socket.socket | None,
+    ) -> Iterator[AgentEvent]:
+        try:
+            slot, conversation = self._acquire(shell)
+        except Exception as exc:  # noqa: BLE001 - a backend that won't start
+            self._log.warning("could not start an agent: %s", exc)
+            yield AgentEvent(kind=EventKind.ERROR, error=f"no agent available: {exc}")
+            return
 
-            conversation.requests += 1
-            turn = {"prompt": request.prompt, "text": ""}
-            conversation.transcript.append(turn)
-            conversation.pending_proposal = None
-            saw_terminal = False
-            try:
-                for event in slot.agent.run(request, context):
-                    self._last_activity = time.monotonic()
-                    if event.kind is EventKind.TEXT_DELTA and event.text:
-                        turn["text"] += event.text
-                    elif event.kind is EventKind.PROPOSAL and event.proposal is not None:
-                        conversation.pending_proposal = {
-                            "command": event.proposal.command,
-                            "rationale": event.proposal.rationale,
-                            "kind": event.proposal.kind.value,
-                        }
-                    saw_terminal = event.kind in (EventKind.DONE, EventKind.ERROR)
-                    yield event
-                    if saw_terminal:
-                        break
-            except Exception as exc:  # noqa: BLE001 - adapter crash must not kill us
-                self._log.warning("agent run failed: %s", exc)
-                yield AgentEvent(kind=EventKind.ERROR, error=f"agent error: {exc}")
-                return
-            if not saw_terminal:
-                yield AgentEvent(kind=EventKind.DONE)
-            self._last_activity = time.monotonic()
+        if self._fallback_notice and shell not in self._notified:
+            self._notified.add(shell)
+            yield AgentEvent(kind=EventKind.STATUS, text=self._fallback_notice)
+
+        conversation.requests += 1
+        turn = {"prompt": request.prompt, "text": ""}
+        conversation.transcript.append(turn)
+        conversation.pending_proposal = None
+
+        active = _ActiveTurn(shell, slot)  # positional: see _Waiter above
+        with self._lock:
+            self._active = active
+        watcher = threading.Thread(target=self._watch_turn, args=(active, connection), daemon=True)
+        watcher.start()
+
+        saw_terminal = False
+        try:
+            for event in slot.agent.run(request, context):
+                self._last_activity = time.monotonic()
+                if event.kind is EventKind.TEXT_DELTA and event.text:
+                    turn["text"] += event.text
+                elif event.kind is EventKind.PROPOSAL and event.proposal is not None:
+                    conversation.pending_proposal = {
+                        "command": event.proposal.command,
+                        "rationale": event.proposal.rationale,
+                        "kind": event.proposal.kind.value,
+                    }
+                    request_id = str(event.args.get("request_id") or "")
+                    if request_id:
+                        with self._lock:
+                            active.pending_ui.append(request_id)
+                saw_terminal = event.kind in (EventKind.DONE, EventKind.ERROR)
+                yield event
+                if saw_terminal:
+                    break
+                if active.aborted:
+                    break
+        except Exception as exc:  # noqa: BLE001 - adapter crash must not kill us
+            self._log.warning("agent run failed: %s", exc)
+            yield AgentEvent(kind=EventKind.ERROR, error=f"agent error: {exc}")
+            return
+        finally:
+            active.finished.set()
+            with self._lock:
+                if self._active is active:
+                    self._active = None
+
+        if active.aborted == "timeout":
+            yield AgentEvent(
+                kind=EventKind.ERROR,
+                error=(
+                    f"the agent turn was aborted after {self.turn_timeout:g}s "
+                    f"(daemon turn cap; raise ${TURN_TIMEOUT_ENV} if this backend "
+                    "legitimately needs longer)"
+                ),
+            )
+        elif not saw_terminal:
+            yield AgentEvent(kind=EventKind.DONE)
+        self._last_activity = time.monotonic()
 
 
 # --- foreground entry point ------------------------------------------------

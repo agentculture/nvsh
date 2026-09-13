@@ -71,6 +71,18 @@ def cmd_daemon_status(args: argparse.Namespace) -> int:
         f"shells: {', '.join(state.get('shells', [])) or 'none'}",
         f"agents: {state.get('agents')}",
     ]
+    active = state.get("active_turn")
+    if active:
+        lines.append(
+            f"active turn: shell {active.get('shell')} "
+            f"({float(active.get('elapsed', 0.0)):.1f}s elapsed)"
+        )
+    queued = state.get("queued") or []
+    if queued:
+        waiting = ", ".join(
+            f"{item.get('shell')} ({float(item.get('waiting', 0.0)):.1f}s)" for item in queued
+        )
+        lines.append(f"queued: {waiting}")
     notice = state.get("fallback_notice")
     if notice:
         lines.append(f"note: {notice}")
