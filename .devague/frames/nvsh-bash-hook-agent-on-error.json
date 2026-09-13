@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-09-13T10:08:02Z",
-  "updated": "2026-09-13T12:13:52Z",
+  "updated": "2026-09-13T12:15:20Z",
   "claims": [
     {
       "id": "c1",
@@ -1416,6 +1416,17 @@
       "skipped_check": "red phase of TDD",
       "refs": [
         "t6"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l6",
+      "code": "provenance-missing",
+      "what": "t1: claim-id to bullet mapping (c2,c18,c27,c28,c43,c51) not traced into docs/architecture.md; content sourced from the brief's synthesized facts and scope entries s4-s6,s15-s19 instead",
+      "skipped_check": "",
+      "refs": [
+        "t1"
       ],
       "origin": "llm",
       "status": "proposed"
