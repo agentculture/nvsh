@@ -63,9 +63,10 @@ import sys
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Callable, Iterable, Mapping, TextIO
+from typing import Callable, Iterable, Mapping, Sequence, TextIO
 
 from .agent.base import AgentEvent, EventKind, Proposal
+from .approvals import parse_stages
 
 #: The panel's fixed width for its ASCII boxes.
 _BOX_WIDTH = 72
@@ -311,6 +312,11 @@ class Panel:
         self._waiting_plain = False
         self._waiting_since = 0.0
         self._waiting_paused = True
+        # d26: which pipeline stages the last scope keypress should cover.
+        # ``None`` means "not asked" (a single-stage command, or a key that
+        # stores nothing); a list is what the ``stages [all,1,2]: `` prompt
+        # read back, and the caller stores exactly those stages.
+        self.stage_choice: list[int] | None = None
 
     # -- low-level writing -------------------------------------------------
 
@@ -598,6 +604,55 @@ class Panel:
         for label, value in (details or {}).items():
             self.line(f"{label}: {value}")
 
+    def stages_line(self, stages: Sequence[str]) -> str:
+        """``stages: 1 'ls /tmp/git'  2 'grep -i orin'`` -- what the numbers mean.
+
+        Deviation d26. The d24 scope line told an operator on the Spark that
+        ``[s]`` approved "each stage exactly" without ever showing what the
+        stages *were*, and offered no way to approve only one of them. This
+        line numbers them, and those numbers are what the
+        ``stages [all,1,2]: `` prompt then reads back.
+
+        The panel formats what it is given and judges nothing: the caller
+        renders each token (the client quotes an approvable stage and passes
+        ``(not approvable)`` for one no pattern may ever cover). Clipped to
+        80 columns like every other scope line.
+        """
+        numbered = "  ".join(f"{n} {token}" for n, token in enumerate(stages, 1))
+        return _clip(f"stages: {numbered}")
+
+    def read_stages(self, count: int) -> list[int]:
+        """Ask which stages the approval just pressed should cover (d26).
+
+        One *cooked* line, read exactly the way :meth:`read_tell` reads a
+        sentence -- the operator is typing, so the tty driver must do the
+        echo, the backspace and the kill-line, and the terminal is already
+        back in cooked mode by the time this runs.
+
+        Everything that is not an explicit, valid pick means **all** stages,
+        which is what the pre-d26 keypress always did: an empty line, the
+        word ``all``, EOF, Ctrl+C, and a second unreadable answer after one
+        re-ask. A stage prompt must never cost the operator their approval.
+        """
+        every = list(range(1, count + 1))
+        choices = ",".join(["all"] + [str(n) for n in every])
+        for attempt in range(2):
+            self.write(f"stages [{choices}]: ")
+            previous = _install_sigint(_interrupt_handler)
+            try:
+                raw = self._read_line()
+            except (KeyboardInterrupt, _Interrupted):
+                self.line()
+                return every
+            finally:
+                _restore_sigint(previous)
+            picked = parse_stages(raw.strip(), count)
+            if picked:
+                return picked
+            if attempt == 0:
+                self.line(f"nvsh: type 'all' or stage numbers 1-{count}")
+        return every
+
     def scope_lines(
         self,
         scopes: Mapping[str, str],
@@ -641,6 +696,8 @@ class Panel:
         guard: Callable[[str], str | None] | None = None,
         scopes: Mapping[str, str] | None = None,
         patterns: Mapping[str, str] | None = None,
+        stages: Sequence[str] | None = None,
+        stage_patterns: Mapping[str, Sequence[str]] | None = None,
     ) -> str:
         """Show ``proposal`` and return the operator's one keypress.
 
@@ -659,9 +716,23 @@ class Panel:
         and ``refused`` comes back so the caller can ask again with
         run-once still on the table. Re-asking after ``e``/``d``/``refused``
         is the caller's job -- this method reports one keypress and returns.
+
+        ``stages`` (deviation d26) is one rendered token per pipeline stage.
+        With more than one, the panel prints the numbered ``stages:`` line
+        above the scope lines and, after a scope key, asks which of them the
+        approval should cover. The answer lands on :attr:`stage_choice` --
+        the keypress itself stays this method's return value, because the
+        caller's five other branches (``e``/``d``/``t``/refused/ignore) do
+        not have stages -- and the ack then names only the patterns that
+        were actually stored. Whichever stages were picked, the *proposal*
+        still runs once: the keypress approved this execution, and storing
+        is only about future turns.
         """
+        self.stage_choice = None
         self.render_proposal(proposal)
         s = self.style
+        if stages and len(stages) > 1:
+            self.line(f"{s.dim}{self.stages_line(stages)}{s.reset}")
         for line in self.scope_lines(scopes or {}, guard):
             self.line(f"{s.dim}{line}{s.reset}")
         self.line(LEGEND)
@@ -675,7 +746,11 @@ class Panel:
             if reason:
                 self.line(f"nvsh: cannot approve for this {choice}: {reason}")
                 return REFUSED
-        self.acknowledge(choice, scopes, patterns)
+        if choice in _SCOPE_ACK and stages and len(stages) > 1:
+            self.stage_choice = self.read_stages(len(stages))
+        self.acknowledge(
+            choice, scopes, patterns, stage_patterns, self.stage_choice, len(stages or ())
+        )
         return choice
 
     def acknowledge(
@@ -683,6 +758,9 @@ class Panel:
         choice: str,
         scopes: Mapping[str, str] | None = None,
         patterns: Mapping[str, str] | None = None,
+        stage_patterns: Mapping[str, Sequence[str]] | None = None,
+        chosen: Sequence[int] | None = None,
+        total: int = 0,
     ) -> None:
         """Echo the decision the instant the key is pressed.
 
@@ -691,7 +769,17 @@ class Panel:
         the keypress registered at all. A scope key's ack names the pattern
         it stored, so ``[u]`` can never be mistaken for "approve this one
         argument" (operator feedback on d15).
+
+        When the operator picked a *subset* of a pipeline's stages (d26) the
+        ack names exactly those patterns and says which stages they came
+        from -- ``'grep -i *' approved for this session (stage 2 of 2)`` --
+        so the line can never over-report what was stored. Picking every
+        stage is the pre-d26 case and keeps the pre-d26 wording.
         """
+        subset = self._stage_ack(choice, stage_patterns, chosen, total)
+        if subset:
+            self.line(subset)
+            return
         what = (patterns or {}).get(choice) or (scopes or {}).get(choice)
         if what and choice in _SCOPE_ACK:
             self.line(_SCOPE_ACK[choice].format(what=what))
@@ -699,6 +787,25 @@ class Panel:
         text = _ACK.get(choice, _ACK[IGNORE])
         if text:
             self.line(text)
+
+    @staticmethod
+    def _stage_ack(
+        choice: str,
+        stage_patterns: Mapping[str, Sequence[str]] | None,
+        chosen: Sequence[int] | None,
+        total: int,
+    ) -> str | None:
+        """The d26 ack line for a partial stage pick, or ``None``."""
+        if choice not in _SCOPE_ACK or not chosen or total < 2 or len(chosen) >= total:
+            return None
+        available = (stage_patterns or {}).get(choice) or ()
+        picked = [available[n - 1] for n in chosen if 1 <= n <= len(available)]
+        if not picked:
+            return None
+        numbers = ",".join(str(n) for n in chosen)
+        noun = "stage" if len(chosen) == 1 else "stages"
+        line = _SCOPE_ACK[choice].format(what=" ".join(picked))
+        return f"{line} ({noun} {numbers} of {total})"
 
     def read_tell(self) -> str:
         """Read one line at an ``nvsh> `` prompt; ``""`` means "never mind".

@@ -200,3 +200,46 @@ def test_approve_add_with_a_scope_refuses_a_privileged_stage(capsys):
     err = capsys.readouterr().err
     assert err.startswith("error:")
     assert "hint:" in err
+
+
+# --- d26: --stages restricts a --scope approval to some of the stages -----
+
+
+def test_approve_add_stages_stores_only_the_chosen_stage(capsys):
+    rc = main(
+        ["approve", "add", "ps -eo pid | head -n 20", "--scope", "user", "--stages", "2", "--json"]
+    )
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["patterns"] == ["head *"]
+    assert payload["stages"] == [2]
+    rc = main(["approve", "list", "--json"])
+    stored = json.loads(capsys.readouterr().out)["user"]
+    assert "head *" in stored
+    assert "ps *" not in stored
+
+
+def test_approve_add_stages_accepts_a_comma_list_and_the_word_all(capsys):
+    rc = main(
+        ["approve", "add", "ps -x | head -n 2", "--scope", "user", "--stages", "1,2", "--json"]
+    )
+    assert rc == 0
+    assert json.loads(capsys.readouterr().out)["patterns"] == ["ps *", "head *"]
+    rc = main(["approve", "add", "df -h | wc -l", "--scope", "user", "--stages", "all", "--json"])
+    assert rc == 0
+    assert json.loads(capsys.readouterr().out)["patterns"] == ["df *", "wc *"]
+
+
+def test_approve_add_stages_rejects_an_out_of_range_stage(capsys):
+    rc = main(["approve", "add", "ps -x | head -n 2", "--scope", "user", "--stages", "3"])
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert err.startswith("error:")
+    assert "hint:" in err
+
+
+def test_approve_add_stages_requires_a_scope(capsys):
+    rc = main(["approve", "add", "ps *", "--stages", "1"])
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "--scope" in err

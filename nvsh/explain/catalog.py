@@ -204,6 +204,11 @@ approval for this user; the uppercase key of each pair stores the specific
 form. All four are refused for a command that escalates privilege, for an
 opaque line, and for any pattern `add` itself refuses.
 
+On a line with more than one stage the panel numbers the stages and then
+asks which of them the approval covers (`stages [all,1,2]: `); only those
+stages are stored, and the command still runs once whatever was picked.
+`--stages` is that same choice from the CLI.
+
 ## Usage
 
     nvsh approve check "nvidia-smi -q"
@@ -211,6 +216,7 @@ opaque line, and for any pattern `add` itself refuses.
     nvsh approve add "docker logs *"
     nvsh approve add "docker logs *" --session
     nvsh approve add "ssh orin uptime" --scope user-specific
+    nvsh approve add "ls /etc | grep -i net" --scope user --stages 2
     nvsh approve list --json
     nvsh approve remove "docker logs *"
     nvsh approve audit --tool bash --command "nvidia-smi -L" --decision user
@@ -247,6 +253,14 @@ pattern per stage (the `-specific` scopes keep each stage's first argument).
 This is the single writer the pi approval extension calls, so the widening
 rules live in exactly one place.
 
+`--stages` narrows a `--scope` approval to some of those stages: `all` (the
+default), a single number, or a comma- or space-separated list, numbered
+from 1 in the order the panel shows them. It is the operator's answer to the
+panel's `stages [all,1,2]: ` prompt, which the pi extension forwards here
+after splitting it off the `<scope>:<stages>` value pi's `ctx.ui.select`
+carries back. A number past the end of the line, or `--stages` without
+`--scope`, is a user error and nothing is written.
+
 Refused outright (raises a user error, nothing is written): `sudo *`, `rm *`,
 a bare `*`, any pattern starting with `sudo` or `rm`, and — under `--scope`
 — any command line with a privileged stage or a command substitution.
@@ -257,6 +271,7 @@ a bare `*`, any pattern starting with `sudo` or `rm`, and — under `--scope`
     nvsh approve add "docker logs *" --session
     nvsh approve add "ssh orin uptime" --scope user-specific
     nvsh approve add "ps -eo pid | head -n 20" --scope user
+    nvsh approve add "ps -eo pid | head -n 20" --scope user --stages 2
 """
 
 _APPROVE_LIST = """\
