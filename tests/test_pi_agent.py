@@ -58,7 +58,8 @@ def test_build_argv_contains_hygiene_flags_in_order(tmp_path):
     argv = agent.build_argv()
 
     assert argv[0] == "pi"
-    assert "--mode" in argv and argv[argv.index("--mode") + 1] == "rpc"
+    assert "--mode" in argv
+    assert argv[argv.index("--mode") + 1] == "rpc"
 
     hygiene = [
         "--no-context-files",
@@ -294,6 +295,44 @@ def test_killed_process_yields_error_and_does_not_hang(tmp_path):
     assert finished, "run() hung after the pi process crashed"
     assert events, "expected at least one event before the crash was detected"
     assert events[-1].kind == EventKind.ERROR
+
+
+class _ExitedProc:
+    """Stands in for a pi process that has already exited."""
+
+    def __init__(self, code: int = 3) -> None:
+        self._code = code
+        self.stdin = None
+
+    def poll(self):
+        return self._code
+
+
+def test_events_already_queued_when_pi_exits_are_drained_before_the_exit(tmp_path):
+    """A fast final burst must not be lost to the process-exited report."""
+    agent = PiAgent(pi_path="pi", env=_env(tmp_path))
+    agent._proc = _ExitedProc()
+    agent._queue.put(
+        {
+            "type": "message_update",
+            "assistantMessageEvent": {"type": "text_delta", "delta": "half a thought"},
+        }
+    )
+    events = list(agent._events())
+    assert [event.kind for event in events] == [EventKind.TEXT_DELTA, EventKind.ERROR]
+    assert events[0].text == "half a thought"
+    assert "exited with code 3" in events[-1].error
+
+
+def test_a_queued_error_event_ends_the_stream_instead_of_the_generic_exit(tmp_path):
+    """pi's own last words beat 'pi process exited' when it left both."""
+    agent = PiAgent(pi_path="pi", env=_env(tmp_path))
+    agent._proc = _ExitedProc()
+    agent._queue.put({"type": "error", "error": "model refused the request"})
+    agent._queue.put({"type": "agent_end"})
+    events = list(agent._events())
+    assert [event.kind for event in events] == [EventKind.ERROR]
+    assert events[0].error == "model refused the request"
 
 
 def test_no_file_under_dot_pi_agent_sessions(tmp_path):

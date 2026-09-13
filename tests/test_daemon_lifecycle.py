@@ -212,7 +212,8 @@ def test_first_failure_autostarts_exactly_one_daemon(tmp_path: Path) -> None:
         assert status["running"] is True
         assert wait_for(lambda: len(live_pis(env)) == 1)
         _drain(client_transport.send(_failure("again"), shell_id="1", env=env))
-        assert live_pis(env) and len(live_pis(env)) == 1, "one daemon, one pi"
+        assert live_pis(env), "the pi must still be alive"
+        assert len(live_pis(env)) == 1, "one daemon, one pi"
     finally:
         client_transport.stop(env=env)
         wait_for(lambda: live_pis(env) == [])
@@ -307,11 +308,10 @@ def test_a_second_daemon_refuses_while_another_holds_the_lock(tmp_path: Path) ->
     daemon_mod.socket_path(env).unlink()
     second = _launch_daemon(env)
     try:
-        try:
-            returncode = second.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            pytest.fail("a second daemon kept running while another held the lock")
-        assert returncode != 0, "the loser must exit non-zero"
+        assert wait_for(
+            lambda: second.poll() is not None, timeout=10
+        ), "a second daemon kept running while another held the lock"
+        assert second.returncode != 0, "the loser must exit non-zero"
         assert first.poll() is None, "the live daemon must survive"
     finally:
         _kill(first, second)

@@ -84,49 +84,70 @@ class OpenAICompatAgent(NvshAgent):
         self._last_reply = ""
         req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
 
-        try:
-            # url's scheme is validated above (http/https only); base_url is
-            # config-supplied, never user/network-controlled at this call site.
-            self._response = urllib.request.urlopen(req, timeout=5)  # nosec B310
-        except urllib.error.HTTPError as exc:
-            body = exc.read().decode("utf-8", errors="replace") if exc.fp else ""
-            yield AgentEvent(kind=EventKind.ERROR, error=f"HTTP {exc.code}: {body or exc.reason}")
-            return
-        except urllib.error.URLError as exc:
-            yield AgentEvent(kind=EventKind.ERROR, error=f"connection failed: {exc.reason}")
-            return
-        except OSError as exc:
-            yield AgentEvent(kind=EventKind.ERROR, error=f"connection failed: {exc}")
+        failure = self._open_stream(req)
+        if failure is not None:
+            yield failure
             return
 
         try:
-            for raw_line in self._response:
-                if self._cancelled:
-                    return
-                line = raw_line.decode("utf-8", errors="replace").strip()
-                if not line or not line.startswith("data:"):
-                    continue
-                data = line[len("data:") :].strip()
-                if data == "[DONE]":
-                    yield AgentEvent(kind=EventKind.DONE)
-                    return
-                try:
-                    obj = json.loads(data)
-                except json.JSONDecodeError:
-                    continue
-                choices = obj.get("choices") or []
-                if not choices:
-                    continue
-                delta = choices[0].get("delta") or {}
-                text = delta.get("content")
-                if text:
-                    self._last_reply += text
-                    yield AgentEvent(kind=EventKind.TEXT_DELTA, text=text)
-            # Stream closed without an explicit [DONE] -- treat as done anyway.
-            if not self._cancelled:
-                yield AgentEvent(kind=EventKind.DONE)
+            yield from self._stream_events()
         finally:
             self._close_response()
+
+    def _open_stream(self, req: urllib.request.Request) -> AgentEvent | None:
+        """Open the SSE stream, or return the ERROR event that says why not."""
+        try:
+            # url's scheme is validated by run() (http/https only); base_url
+            # is config-supplied, never user/network-controlled here.
+            self._response = urllib.request.urlopen(req, timeout=5)  # nosec B310
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace") if exc.fp else ""
+            return AgentEvent(kind=EventKind.ERROR, error=f"HTTP {exc.code}: {body or exc.reason}")
+        except urllib.error.URLError as exc:
+            return AgentEvent(kind=EventKind.ERROR, error=f"connection failed: {exc.reason}")
+        except OSError as exc:
+            return AgentEvent(kind=EventKind.ERROR, error=f"connection failed: {exc}")
+        return None
+
+    @staticmethod
+    def _sse_data(raw_line: bytes) -> str | None:
+        """The payload of one ``data:`` line, or ``None`` for a line to skip."""
+        line = raw_line.decode("utf-8", errors="replace").strip()
+        if not line or not line.startswith("data:"):
+            return None
+        return line[len("data:") :].strip()
+
+    @staticmethod
+    def _content_delta(data: str) -> str | None:
+        """The assistant text in one SSE chunk, or ``None`` if it carries none."""
+        try:
+            obj = json.loads(data)
+        except json.JSONDecodeError:
+            return None
+        choices = obj.get("choices") or []
+        if not choices:
+            return None
+        delta = choices[0].get("delta") or {}
+        return delta.get("content") or None
+
+    def _stream_events(self) -> Iterator[AgentEvent]:
+        """Map the open SSE stream to events, ending in DONE either way."""
+        for raw_line in self._response:
+            if self._cancelled:
+                return
+            data = self._sse_data(raw_line)
+            if data is None:
+                continue
+            if data == "[DONE]":
+                yield AgentEvent(kind=EventKind.DONE)
+                return
+            text = self._content_delta(data)
+            if text:
+                self._last_reply += text
+                yield AgentEvent(kind=EventKind.TEXT_DELTA, text=text)
+        # Stream closed without an explicit [DONE] -- treat as done anyway.
+        if not self._cancelled:
+            yield AgentEvent(kind=EventKind.DONE)
 
     def _messages(self, prompt: str) -> list[dict[str, str]]:
         """This request's messages, with any steered text after the prior turn.

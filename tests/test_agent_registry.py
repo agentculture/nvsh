@@ -37,7 +37,8 @@ def test_adapter_spec_shape():
     assert spec.name == "pi"
     assert spec.binary == "pi"
     assert callable(spec.factory)
-    assert isinstance(spec.description, str) and spec.description
+    assert isinstance(spec.description, str)
+    assert spec.description
     assert spec.needs_node is True
 
 
@@ -157,7 +158,7 @@ def test_choose_orin_without_node_selects_openai_compat_with_reason():
 
 
 def test_no_harness_message_offers_both_options():
-    message = registry.no_harness_message(which=_which_all_missing)
+    message = registry.no_harness_message()
     assert "install pi" in message
     assert "choose another harness" in message
     assert "nvsh agent use" in message

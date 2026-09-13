@@ -253,7 +253,8 @@ def test_a_turn_longer_than_the_cap_is_aborted_and_reported(tmp_path: Path) -> N
         daemon.shutdown()
 
     assert events[-1].kind is EventKind.ERROR
-    assert "1" in events[-1].error and "turn" in events[-1].error.lower()
+    assert "1" in events[-1].error
+    assert "turn" in events[-1].error.lower()
     assert agent.cancels >= 1
     assert 0.9 <= elapsed < 6.0, f"the cap fired after {elapsed:.2f}s"
 

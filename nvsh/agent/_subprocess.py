@@ -119,16 +119,7 @@ class SubprocessAgent(NvshAgent):
                     return
             if self._cancelled:
                 return
-            rc = self._proc.wait()
-            if rc != 0:
-                if drain is not None:
-                    drain.join(timeout=_STDERR_JOIN_TIMEOUT)
-                stderr = "".join(tail)
-                yield AgentEvent(
-                    kind=EventKind.ERROR, error=stderr.strip() or f"{argv[0]} exited {rc}"
-                )
-            else:
-                yield AgentEvent(kind=EventKind.DONE)
+            yield self._exit_event(argv, tail, drain)
         finally:
             # Terminating closes the child's end of the pipe, so the drain
             # thread sees EOF and returns; join it so no reader outlives the
@@ -136,6 +127,23 @@ class SubprocessAgent(NvshAgent):
             self._terminate_if_running()
             if drain is not None:
                 drain.join(timeout=_STDERR_JOIN_TIMEOUT)
+
+    def _exit_event(
+        self, argv: list[str], tail: deque[str], drain: threading.Thread | None
+    ) -> AgentEvent:
+        """How the child finished: DONE on 0, else ERROR quoting its stderr.
+
+        The drain thread is joined only on the failure path, and only then,
+        because that is the one case whose message needs the whole tail.
+        """
+        assert self._proc is not None
+        rc = self._proc.wait()
+        if rc == 0:
+            return AgentEvent(kind=EventKind.DONE)
+        if drain is not None:
+            drain.join(timeout=_STDERR_JOIN_TIMEOUT)
+        stderr = "".join(tail)
+        return AgentEvent(kind=EventKind.ERROR, error=stderr.strip() or f"{argv[0]} exited {rc}")
 
     def cancel(self) -> None:
         self._cancelled = True

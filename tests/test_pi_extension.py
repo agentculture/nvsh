@@ -72,7 +72,8 @@ def test_extension_registers_tool_call_handler():
 
 def test_extension_forwards_to_nvsh_approve_check():
     text = _read_extension()
-    assert "approve" in text and "check" in text
+    assert "approve" in text
+    assert "check" in text
     # argv built as an array, not a shell string.
     assert "spawnSync" in text
     assert '"approve"' in text
@@ -100,7 +101,8 @@ def test_extension_never_builds_a_pattern_itself():
     place that derives a pattern from a command line."""
     text = _read_extension()
     assert "firstWord" not in text
-    assert "` *`" not in text and '" *"' not in text
+    assert "` *`" not in text
+    assert '" *"' not in text
 
 
 def test_extension_forwards_every_scope_choice_to_approve_add():
@@ -180,7 +182,7 @@ def test_extension_select_payload_is_a_json_envelope_with_the_raw_command():
 def test_extension_checks_and_audits_the_same_raw_command():
     """check/add/audit all receive the bare `command` variable, not a message."""
     text = _read_extension()
-    assert 'const command = String((event.input && event.input.command) || "");' in text
+    assert 'const command = String(event.input?.command || "");' in text
     assert "checkCommand(command)" in text
     for call in ("audit(command,", "audit(command,"):
         assert call in text
@@ -210,7 +212,7 @@ def test_default_approval_extension_path_absolute_and_exists():
 # -- Python-level policy scenarios (what the extension forwards to) --------
 
 
-@pytest.fixture()
+@pytest.fixture
 def policy_env(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
@@ -477,7 +479,8 @@ def test_node_extension_blocks_and_names_the_failure_when_nvsh_cannot_be_run(tmp
     out = _drive_extension(tmp_path, ["whatis ls"], nvsh_bin=missing, choice="user")
     assert out["selects"] == [], "a broken nvsh must never reach the operator's panel"
     result = out["results"][0]
-    assert result and result["block"] is True
+    assert result
+    assert result["block"] is True
     assert str(missing) in result["reason"]
     assert "could not run" in result["reason"]
 
@@ -487,7 +490,8 @@ def test_node_extension_names_the_failure_when_the_approval_write_cannot_run(tmp
     script, _log = _scripted_nvsh(tmp_path, decision="ask", add_status=1)
     out = _drive_extension(tmp_path, ["whatis ls"], nvsh_bin=script, choice="user")
     result = out["results"][0]
-    assert result and result["block"] is True
+    assert result
+    assert result["block"] is True
     assert "refused" in result["reason"]
 
 

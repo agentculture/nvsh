@@ -190,8 +190,12 @@ def install_offer(name: str, which: WhichFn = shutil.which, prompt: PromptFn = i
     return None
 
 
-def no_harness_message(which: WhichFn = shutil.which) -> str:
-    """Failure-panel text offered when no harness is installed at all."""
+def no_harness_message() -> str:
+    """Failure-panel text offered when no harness is installed at all.
+
+    Takes no ``which``: the two options are the same whatever is on PATH --
+    this text is only ever shown once nothing was found.
+    """
     return (
         "No harness is installed. Options:\n"
         "  - install pi\n"

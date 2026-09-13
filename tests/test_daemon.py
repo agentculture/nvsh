@@ -272,7 +272,8 @@ def test_context_reaches_the_agent(tmp_path: Path) -> None:
         _collect(client_transport.send(_failure(), ctx, shell_id="9", env=env, autostart=False))
     finally:
         daemon.shutdown()
-    assert seen and seen[0].platform == "dgx-spark"
+    assert seen
+    assert seen[0].platform == "dgx-spark"
     assert seen[0].output == "boom"
 
 
