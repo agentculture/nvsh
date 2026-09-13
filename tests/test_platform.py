@@ -63,8 +63,8 @@ SPARK_WHICH = {
     "nvidia-smi": "/usr/bin/nvidia-smi",
     "dpkg-query": "/usr/bin/dpkg-query",
     "tmux": "/usr/bin/tmux",
-    "pi": "/home/spark/.nvm/versions/node/v24.13.1/bin/pi",
-    "spark": "/home/spark/.local/bin/spark",
+    "pi": "/usr/local/lib/node/bin/pi",
+    "spark": "/usr/local/bin/spark",
     # nvpmodel deliberately absent on Spark
 }
 
