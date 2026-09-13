@@ -261,6 +261,44 @@ Python's (`nvsh.approvals`), the extension never decides anything itself.
     nvsh approve audit --tool bash --command "apt install foo" --decision ask --json
 """
 
+_CONTEXT = """\
+# nvsh context
+
+Prints **exactly** the bytes nvsh would send to the agent for the last
+recorded failure — the prompt text `nvsh.agent.pi.build_prompt` builds from
+the request and the assembled `AgentContext`. Nothing is summarised, and
+nothing is added on the way to the backend.
+
+The context has four parts:
+
+- the failed command and its exit code;
+- the **platform block** from `nvsh.platform.detect()`: every value nvsh
+  looked for, present or absent, each with the file or command it came from
+  (`render_block()`), so a wrong fact is traceable to its source;
+- the **cwd**;
+- the **output slice** for that command from `nvsh.capture.last_slice`,
+  already bounded (64 KB), escape-stripped and redacted. The session log's
+  own path never appears.
+
+Redaction runs before anything leaves the process, so `--show` is also the
+honest way to check what a redaction rule did: `--json` lists the rules that
+fired in `redaction_rules`.
+
+With no recorded failure the verb still prints the platform block, so the
+machine's detected facts can be inspected at any time.
+
+## Usage
+
+    nvsh context --show
+    nvsh context --show --json
+
+## See also
+
+- `nvsh explain capture` — where the output slice comes from.
+- `nvsh explain approve` — the "propose, don't run" side of the same flow.
+"""
+
+
 _CAPTURE = """\
 # nvsh capture
 
@@ -554,6 +592,8 @@ ENTRIES: dict[tuple[str, ...], str] = {
     ("approve", "audit"): _APPROVE_AUDIT,
     ("capture",): _CAPTURE,
     ("capture", "show"): _CAPTURE,
+    ("context",): _CONTEXT,
+    ("context", "show"): _CONTEXT,
     ("agent",): _AGENT,
     ("agent", "list"): _AGENT_LIST,
     ("agent", "use"): _AGENT_USE,

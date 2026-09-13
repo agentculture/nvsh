@@ -66,6 +66,7 @@ def _build_parser() -> argparse.ArgumentParser:
     from nvsh.cli._commands import approve as _approve_group
     from nvsh.cli._commands import capture as _capture_cmd
     from nvsh.cli._commands import cli as _cli_group
+    from nvsh.cli._commands import context as _context_cmd
     from nvsh.cli._commands import daemon as _daemon_group
     from nvsh.cli._commands import doctor as _doctor_cmd
     from nvsh.cli._commands import explain as _explain_cmd
@@ -95,6 +96,7 @@ def _build_parser() -> argparse.ArgumentParser:
     _cli_group.register(sub)
     _approve_group.register(sub)
     _capture_cmd.register(sub)
+    _context_cmd.register(sub)
     _agent_group.register(sub)
     _daemon_group.register(sub)
     _setup_group.register(sub)

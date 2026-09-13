@@ -130,6 +130,42 @@ into a wrapper process, and no PTY-transparency problem to solve.
   shell, and `nvsh uninstall` restores `$HOME/.bashrc` from its backup and
   removes the hook file, runtime sockets, and logs.
 
+## The failure client and the panel
+
+`nvsh hook` is a thin verb: it classifies the event and, on `ask`, hands off
+to `nvsh/client.py`, which owns everything up to the operator's prompt
+coming back.
+
+- **The failure is recorded first**, as 0600 JSON under
+  `$XDG_STATE_HOME/nvsh/last-failure.json`, before the agent is contacted at
+  all — so `/fix` still finds it when the backend is down or the operator
+  presses Ctrl+C.
+- **The rate limit lives on disk.** `nvsh hook` is a fresh process on every
+  failure, so an in-memory `RateState` is always empty; the persisted state
+  in `$XDG_STATE_HOME/nvsh/rate.json` is what actually holds the window.
+- **One prompt composer, shared by every backend**
+  (`nvsh/agent/prompt.py`). `nvsh context --show` prints exactly the bytes
+  that composer produces for the recorded failure — command, exit code, the
+  platform block with every value's source, cwd, and the redacted output
+  slice — so what the operator is shown is what the model is sent, for `pi`,
+  the subprocess harnesses and the OpenAI-compatible adapter alike.
+- **The panel never consults a terminal capability database.** Colour is a
+  handful of literal SGR constants, switched off entirely under `NO_COLOR`,
+  `TERM=dumb`, or a non-tty, so an ssh in from Ghostty to a machine with no
+  matching terminfo entry renders plain readable text instead of failing.
+  The first `text_delta` is written and flushed as it arrives.
+- **Proposals are decided by one keypress**: Enter runs, `e` explains, `d`
+  shows details, Esc ignores. A read-only `inspect` proposal that already
+  matches the operator's approval patterns is run by the client itself
+  (10 s timeout) and its redacted output fed back as one follow-up prompt;
+  anything privileged (`sudo`, `doas`, `pkexec`) is never auto-run, whatever
+  the patterns say.
+- **Ctrl+C while streaming** cancels the agent run, restores termios, prints
+  one line and returns 130 — with the failure still recorded for `/fix`.
+- `NVSH_NO_DAEMON=1` keeps the client one-shot (no background process),
+  which is also how the air-gapped test reaches a localhost endpoint with
+  every non-loopback socket refused.
+
 ## What this retires
 
 This decision retires the PTY-wrapper design recorded in `CLAUDE.md`,

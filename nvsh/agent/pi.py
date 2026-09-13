@@ -35,6 +35,7 @@ from .base import (
     Proposal,
     ProposalKind,
 )
+from .prompt import build_prompt as _build_prompt
 
 #: How long a single queue.Queue.get() waits before re-checking process
 #: liveness and the cancellation flag. Keeps run() responsive to a killed
@@ -87,28 +88,10 @@ def default_approval_extension_path() -> Path:
     return Path(str(importlib.resources.files("nvsh.agent") / "pi_ext" / "approval.ts"))
 
 
-def build_prompt(request: AgentRequest, context: AgentContext) -> str:
-    """Build the prompt text sent to pi for one request, folding in context.
-
-    Keeps this out of :meth:`PiAgent.run` so it is trivially testable on its
-    own and so a caller can preview exactly what would be sent (mirrors
-    ``--show-context`` elsewhere in nvsh).
-    """
-    lines: list[str] = []
-    if request.command:
-        lines.append(f"Command: {request.command}")
-    if request.exit_code is not None:
-        lines.append(f"Exit code: {request.exit_code}")
-    if context.platform:
-        lines.append(f"Platform: {context.platform}")
-    if context.cwd:
-        lines.append(f"cwd: {context.cwd}")
-    if context.output:
-        lines.append("Output:")
-        lines.append(context.output)
-    if request.prompt:
-        lines.append(request.prompt)
-    return "\n".join(lines) if lines else request.prompt
+#: The prompt text sent to pi for one request, context folded in. Shared
+#: verbatim with every other adapter (see :mod:`nvsh.agent.prompt`) so what
+#: ``nvsh context --show`` prints is what each backend actually sends.
+build_prompt = _build_prompt
 
 
 class PiAgent(NvshAgent):

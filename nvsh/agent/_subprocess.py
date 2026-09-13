@@ -14,18 +14,14 @@ import subprocess  # nosec B404 - fixed argv lists below, no shell=True
 from typing import Iterator
 
 from .base import AgentContext, AgentEvent, AgentRequest, EventKind, NvshAgent
+from .prompt import build_prompt as _build_prompt
 
-
-def build_prompt(request: AgentRequest, context: AgentContext) -> str:
-    """Compose one prompt string from a request + context (shared by all three)."""
-    if request.prompt:
-        return request.prompt
-    parts = [f"command: {request.command}"]
-    if request.exit_code is not None:
-        parts.append(f"exit_code: {request.exit_code}")
-    if context.output:
-        parts.append(f"output:\n{context.output}")
-    return "\n".join(parts)
+#: Every backend composes its prompt with the *same* function, so the bytes
+#: ``nvsh context --show`` prints are the bytes each adapter sends. Composing
+#: it twice (once here, once in ``pi``) let the device context be dropped
+#: whenever a caller also supplied a prompt -- which the failure client
+#: always does -- so the platform block never reached these backends.
+build_prompt = _build_prompt
 
 
 class SubprocessAgent(NvshAgent):

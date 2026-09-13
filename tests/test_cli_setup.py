@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import sys
 from contextlib import redirect_stderr, redirect_stdout
 
 import pytest
@@ -237,22 +238,38 @@ def test_hook_skip_for_sigint():
     assert code == 0
 
 
-def test_hook_ask_without_client_prints_placeholder():
-    code, out, err = _run(
-        [
-            "hook",
-            "--exit",
-            "2",
-            "--pipestatus",
-            "2",
-            "--line",
-            "ls /nope",
-            "--cwd",
-            "/tmp",
-            "--log",
-            "",
-        ]
-    )
+_HOOK_ARGV = [
+    "hook",
+    "--exit",
+    "2",
+    "--pipestatus",
+    "2",
+    "--line",
+    "ls /nope",
+    "--cwd",
+    "/tmp",
+    "--log",
+    "",
+]
+
+
+def test_hook_ask_hands_off_to_the_failure_client(monkeypatch):
+    """A qualifying failure reaches nvsh.client.handle_failure (task t13)."""
+    import nvsh.client
+
+    seen = []
+    monkeypatch.setattr(nvsh.client, "handle_failure", lambda args: seen.append(args) or 0)
+    code, _out, _err = _run(list(_HOOK_ARGV))
+    assert code == 0
+    assert len(seen) == 1
+    assert seen[0].line == "ls /nope"
+    assert seen[0].exit == 2
+
+
+def test_hook_degrades_when_the_client_is_missing(monkeypatch):
+    """A broken/absent client must never swallow the failure silently."""
+    monkeypatch.setitem(sys.modules, "nvsh.client", None)
+    code, _out, err = _run(list(_HOOK_ARGV))
     assert code == 0
     assert "ls /nope" in err
     assert "exit 2" in err
