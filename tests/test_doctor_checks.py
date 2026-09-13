@@ -15,6 +15,7 @@ import json
 import socket
 import threading
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from nvsh import doctor_checks
 from nvsh.config import Config
@@ -110,10 +111,11 @@ def test_agent_reachable_pi_reads_base_url_from_models_json(tmp_path):
     check = doctor_checks.check_agent_reachable(
         cfg, which=lambda name: "/usr/bin/pi", home=tmp_path
     )
-    # Nothing listens on port 1 -> unreachable, but this proves the base_url
-    # from models.json was actually used to build the probe URL.
+    # Nothing listens on port 1 -> unreachable. The check names *where* the
+    # base_url came from; it never prints the URL itself (d4b).
     assert check["passed"] is False
-    assert "127.0.0.1:1" in check["remediation"]
+    assert doctor_checks.PI_MODELS_JSON_SOURCE in check["message"]
+    assert "127.0.0.1" not in _all_check_text(check)
 
 
 def _free_port() -> int:
@@ -185,7 +187,91 @@ def test_agent_reachable_unreachable_closed_port():
     check = doctor_checks.check_agent_reachable(cfg, timeout=1.0)
     assert check["passed"] is False
     assert "endpoint-unreachable" in check["message"]
-    assert str(port) in check["remediation"]
+    assert "[agents.openai-compat]" in check["message"]
+    assert str(port) not in _all_check_text(check)
+
+
+# --- agent_reachable: the endpoint URL never leaves the process (d4b) --------
+
+
+def _assert_no_endpoint_in_check(check: dict, base_url: str) -> None:
+    """No URL, scheme, host or port in *any* user-facing field of the check."""
+    text = _all_check_text(check)
+    assert "http" not in text.lower(), text
+    assert "127.0.0.1" not in text, text
+    assert urlsplit(base_url).netloc not in text, text
+
+
+def test_agent_reachable_200_never_prints_the_endpoint_url():
+    server, thread, base_url = _serve(200)
+    try:
+        cfg = Config(
+            agent_provider="openai-compat", agents={"openai-compat": {"base_url": base_url}}
+        )
+        check = doctor_checks.check_agent_reachable(cfg)
+        assert check["passed"] is True
+        assert check["message"] == "endpoint reachable (base_url from [agents.openai-compat])"
+        _assert_no_endpoint_in_check(check, base_url)
+    finally:
+        server.shutdown()
+        thread.join()
+
+
+def test_agent_reachable_200_with_bearer_names_the_env_var_not_the_url(monkeypatch):
+    server, thread, base_url = _serve(200)
+    try:
+        monkeypatch.setenv("NVSH_TEST_KEY", "example-fake-bearer-value")
+        cfg = Config(
+            agent_provider="openai-compat",
+            agents={"openai-compat": {"base_url": base_url, "api_key_env": "NVSH_TEST_KEY"}},
+        )
+        check = doctor_checks.check_agent_reachable(cfg)
+        assert check["message"] == (
+            "endpoint reachable (base_url from [agents.openai-compat], "
+            "bearer from $NVSH_TEST_KEY)"
+        )
+        _assert_no_endpoint_in_check(check, base_url)
+    finally:
+        server.shutdown()
+        thread.join()
+
+
+def test_agent_reachable_401_never_prints_the_endpoint_url():
+    server, thread, base_url = _serve(401)
+    try:
+        cfg = Config(
+            agent_provider="openai-compat", agents={"openai-compat": {"base_url": base_url}}
+        )
+        check = doctor_checks.check_agent_reachable(cfg)
+        assert "endpoint-401" in check["message"]
+        _assert_no_endpoint_in_check(check, base_url)
+    finally:
+        server.shutdown()
+        thread.join()
+
+
+def test_agent_reachable_other_status_never_prints_the_endpoint_url():
+    server, thread, base_url = _serve(503)
+    try:
+        cfg = Config(
+            agent_provider="openai-compat", agents={"openai-compat": {"base_url": base_url}}
+        )
+        check = doctor_checks.check_agent_reachable(cfg)
+        assert check["passed"] is False
+        assert "503" in check["message"]
+        _assert_no_endpoint_in_check(check, base_url)
+    finally:
+        server.shutdown()
+        thread.join()
+
+
+def test_agent_reachable_unreachable_never_prints_the_endpoint_url():
+    port = _free_port()
+    base_url = f"http://127.0.0.1:{port}"
+    cfg = Config(agent_provider="openai-compat", agents={"openai-compat": {"base_url": base_url}})
+    check = doctor_checks.check_agent_reachable(cfg, timeout=1.0)
+    assert check["passed"] is False
+    _assert_no_endpoint_in_check(check, base_url)
 
 
 # --- agent_reachable: pi's apiKey in models.json (coordinator follow-up) -----
@@ -429,6 +515,33 @@ _REAL_BIND_P = r"""
 "\C-x\C-n": __nvsh_enter
 """
 
+#: What a bash that only exports ``bind -p`` hands over (d4a). Captured from
+#: ``bash --norc --noprofile -i`` on a pty with ``nvsh/shell/readline.bash``
+#: sourced: the nvsh bindings are all there in the shell, but ``bind -p``
+#: lists neither ``bind -x`` functions nor macros, so NONE of the three
+#: entries appear -- and ``\C-m`` has vanished from ``bind -p`` entirely
+#: because it now holds a macro.
+_BIND_P_ONLY_PAYLOAD = r"""
+"\C-a": beginning-of-line
+"\C-e": end-of-line
+"\C-x\C-g": abort
+"\C-x\C-r": re-read-init-file
+"\C-x\C-u": undo
+"""
+
+#: What a bash that exports all three dumps hands over (``bind -p``, then the
+#: marker, then ``bind -s`` and ``bind -X``). Captured from the same pty run:
+#: note ``bind -X`` quotes the shell command, which the old substring check
+#: did not allow for.
+_FULL_BIND_PAYLOAD = (
+    _BIND_P_ONLY_PAYLOAD
+    + doctor_checks.BIND_SECTION_MARKER
+    + "\n"
+    + '"\\C-m": "\\C-x\\C-n\\C-j"\n'
+    + '"\\C-g": "__nvsh_ctrl_g"\n'
+    + '"\\C-x\\C-n": "__nvsh_enter"\n'
+)
+
 
 def test_bindings_present_absent_is_info():
     check = doctor_checks.check_bindings_present(None, "emacs")
@@ -441,11 +554,36 @@ def test_bindings_present_passes_with_real_bind_p_output():
     assert check["passed"] is True
 
 
+def test_bindings_present_passes_with_the_real_three_dump_payload():
+    """d4a: ``bind -X`` quotes the function name; the check must accept it."""
+    check = doctor_checks.check_bindings_present(_FULL_BIND_PAYLOAD, "emacs")
+    assert check["passed"] is True, check
+    assert check["severity"] == "info"
+
+
+def test_bindings_present_bind_p_only_payload_cannot_verify_and_is_info():
+    """d4a: a bind -p-only export proves nothing either way -- never a FAIL."""
+    check = doctor_checks.check_bindings_present(_BIND_P_ONLY_PAYLOAD, "emacs")
+    assert check["passed"] is False
+    assert check["severity"] == "info", check
+    assert "bind -x" in check["message"]
+    assert "nvsh setup" in check["remediation"]
+
+
 def test_bindings_present_fails_when_entries_missing():
-    check = doctor_checks.check_bindings_present('"\\C-a": beginning-of-line', "vi-insert")
+    text = _BIND_P_ONLY_PAYLOAD + doctor_checks.BIND_SECTION_MARKER + "\n"
+    check = doctor_checks.check_bindings_present(text, "vi-insert")
     assert check["passed"] is False
     assert check["severity"] == "error"
     assert "vi-insert" in check["message"]
+
+
+def test_bindings_present_fails_when_only_some_entries_are_bound():
+    text = _BIND_P_ONLY_PAYLOAD + '"\\C-x\\C-n": "__nvsh_enter"\n'
+    check = doctor_checks.check_bindings_present(text, "emacs")
+    assert check["passed"] is False
+    assert check["severity"] == "error"
+    assert "__nvsh_ctrl_g" in check["message"]
 
 
 # --- capture_active ------------------------------------------------------------

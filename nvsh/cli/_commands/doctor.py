@@ -228,6 +228,19 @@ def _diagnose(
     return {"healthy": healthy, "checks": checks}
 
 
+def _failure_mark(check: dict[str, object]) -> str:
+    """The text-mode marker for a check that did not pass.
+
+    Deviation d4c: ``healthy`` ignores info-severity checks (running outside
+    a hooked shell is not a failure), but the text report used to print
+    ``[FAIL]`` for them anyway — so ``nvsh doctor`` said "healthy" over four
+    ``[FAIL]`` lines on a non-hooked shell. The rule that keeps the two
+    consistent: ``[FAIL]`` appears **only** for the checks that actually
+    flip ``healthy`` — exactly those whose severity is not ``info``.
+    """
+    return "info" if check["severity"] == "info" else "FAIL"
+
+
 def cmd_doctor(args: argparse.Namespace) -> int:
     report = _diagnose(
         prompt_command_text=getattr(args, "prompt_command", None),
@@ -241,7 +254,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         status = "healthy" if report["healthy"] else "unhealthy"
         lines = [f"nvsh doctor: {status}", ""]
         for check in report["checks"]:
-            mark = "ok" if check["passed"] else "FAIL"
+            mark = "ok" if check["passed"] else _failure_mark(check)
             lines.append(f"[{mark}] {check['id']}: {check['message']}")
             if not check["passed"] and check["remediation"]:
                 lines.append(f"  hint: {check['remediation']}")
