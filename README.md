@@ -1,84 +1,59 @@
 # nvsh
 
-nvsh: an agent-first shell for NVIDIA Jetson, DGX Spark and RTX Spark. Runs your commands like a normal shell; when a command fails, it hands the error and context to an agent (shell -> agent) to diagnose and propose a fix.
+**An agent-first shell for NVIDIA Jetson, DGX Spark and RTX Spark.** It runs
+your commands like a normal shell. When a command fails, it hands the error
+and device context to an agent (shell → agent), which diagnoses the problem
+and proposes a fix.
 
-## What you get
+> Works like a shell. Helps when things break. Fixes when you let it.
 
-- **An agent-first CLI** cited from [teken](https://github.com/agentculture/teken)
-  (`afi-cli`) — the runtime package has no third-party dependencies.
-- **A mesh identity** — `culture.yaml` (`suffix` + `backend`) and the matching
-  resident prompt file (`CLAUDE.md`, since this template runs
-  `backend: claude`). The mesh resident is one of **two separate
-  selections** over this clone — see
-  [Two selections, not one](#two-selections-not-one) below.
-- **Four harness prompt files**, one per agent harness, each read by exactly
-  one of them (see [Prompt files by harness](#prompt-files-by-harness) below).
-  All four harnesses are usable interactively regardless of which one
-  `culture.yaml` names as the mesh resident.
-- **The canonical guildmaster skill kit** (11 skills) under `.claude/skills/`,
-  vendored cite-don't-import. See [`docs/skill-sources.md`](docs/skill-sources.md).
-- **A build + deploy baseline** — pytest, lint, the agent-first rubric gate, and
-  PyPI Trusted Publishing wired into GitHub Actions.
+**Status: early scaffold.** The agent-first CLI baseline (below) works. The
+shell itself is not built yet. The design is tracked in
+[#1](https://github.com/agentculture/nvsh/issues/1) (build brief) and
+[#2](https://github.com/agentculture/nvsh/issues/2) (interactive self-healing
+shell).
 
-## Prompt files by harness
+## Goal
 
-Four harnesses, four root files, no shared base — each file is read by
-exactly one harness:
+nvsh is meant to be **usable as your default login shell** (`chsh`) on
+Jetson and DGX Spark machines:
 
-| Harness | File(s) |
-|---------|---------|
-| Claude Code | [`CLAUDE.md`](CLAUDE.md) |
-| Pi / associate | [`AGENTS.override.md`](AGENTS.override.md) + [`.pi/SYSTEM.md`](.pi/SYSTEM.md) |
-| colleague | [`AGENTS.colleague.md`](AGENTS.colleague.md) |
-| Qwen Code | [`QWEN.md`](QWEN.md) |
+- **A shell first.** A thin PTY layer around your real `bash`, so parsing,
+  job control, completion, aliases and rc files work as they always have. A
+  command that succeeds gets no added latency and no model call.
+- **An agent second.** The agent is called only on a real failure (non-zero
+  exit, traceback, CUDA OOM, container or service failure, missing binary)
+  or when you ask for it (`nvsh ask`, `Ctrl+G`). Exit codes that aren't
+  errors, such as Ctrl-C, SIGPIPE, or `grep` finding nothing, don't trigger
+  it, and automatic calls are rate-limited.
+- **Propose, don't run.** You get a diagnosis and a proposed fix, then
+  accept, edit or reject it. Nothing the agent suggests runs without your
+  confirmation. After an approved fix, nvsh can retry the command and check
+  that it worked.
+- **NVIDIA-aware.** Platform detection (JetPack/L4T, DGX OS/GB10, RTX),
+  CUDA / TensorRT / driver versions, unified memory, `nvpmodel` and the
+  container runtime are attached to each diagnosis.
+- **Offline by default, pluggable.** The agent backend sits behind an
+  adapter: a local model on the same box first (Nemotron initially), with
+  the Culture mesh or a hosted API as options.
+- **Private by default.** Secrets are redacted before anything leaves the
+  process, and `--show-context` shows exactly what would be sent.
+- **Safe as a login shell.** `scp`, `rsync`, `ssh host cmd` and other
+  non-interactive sessions pass straight through to the real shell. If nvsh
+  itself fails, it falls back to that shell instead of locking you out.
 
-**Claude Code** — `CLAUDE.md` is the fullest write-up of the repo's
-conventions; read it first.
+nvsh is not a new POSIX shell. It is not an autonomous agent that runs
+commands by itself, and it doesn't replace `jetson-cli` / `dgx-spark-cli`
+(it calls them when they are installed).
 
-**Pi / associate** — `AGENTS.override.md` replaces this directory's
-`AGENTS.md`/`CLAUDE.md` in Pi's context layer, so Pi does not inherit
-`CLAUDE.md`. `.pi/SYSTEM.md` replaces Pi's default system prompt with the
-non-coding `associate` identity (read/find/summarize only).
-
-**colleague** — colleague's prompt cascade is `AGENTS.md` →
-`AGENTS.colleague.md` → `AGENTS.colleague.<model>.md`. This repo ships only
-the middle layer: there is no `AGENTS.md` (a shared base across harnesses was
-considered and rejected) and no per-model override file.
-
-**Qwen Code** — Qwen Code reads `QWEN.md` and `AGENTS.md`; since there is no
-`AGENTS.md`, `QWEN.md` is its sole source of guidance.
-
-There is intentionally **no `AGENTS.md`** at the root — each harness gets an
-unrelated file rather than cascading from a shared base.
-
-## Two selections, not one
-
-It is tempting to read "switch harness" as one decision. It is actually two,
-and this template exists partly to keep them separate:
-
-1. **The interactive harness** — which binary you run (`claude`, `pi`,
-   `colleague`, `qwen`). `cd` into the clone and run any of them; all four
-   are live simultaneously, and none of them requires editing a file or
-   flipping a switch. A harness can be force-selected for one invocation
-   (e.g. a CI smoke check) without ever touching `culture.yaml` — see
-   [`docs/automation-contract.md`](docs/automation-contract.md).
-2. **The mesh resident** — the single `backend` `culture.yaml` declares,
-   which is what the Culture daemon starts and what `steward doctor`
-   checks. `guild harness use <name>` changes only this.
-
-`culture.yaml`'s `backend` affects (2) only. It never affects which harness
-you can invoke interactively in (1). See
-[`docs/harness-selection.md`](docs/harness-selection.md) for the full
-writeup, including who reads this config and why existing siblings are not
-retrofitted by this arc.
-
-## Quickstart
+## Quickstart (development)
 
 ```bash
 uv sync
 uv run pytest -n auto                 # run the test suite
-uv run nvsh whoami  # identity from culture.yaml
-uv run nvsh learn   # self-teaching prompt (add --json)
+uv run nvsh whoami                    # identity from culture.yaml
+uv run nvsh doctor                    # health checks
+uv run nvsh learn                     # self-teaching prompt (add --json)
 uv run teken cli doctor . --strict    # the agent-first rubric gate CI runs
 ```
 
@@ -90,30 +65,36 @@ uv run teken cli doctor . --strict    # the agent-first rubric gate CI runs
 | `learn` | Print a structured self-teaching prompt. |
 | `explain <path>` | Markdown docs for any noun/verb path. |
 | `overview` | Read-only descriptive snapshot of the agent. |
-| `doctor` | Check the agent-identity invariants (prompt-file-present, backend-consistency). |
+| `doctor` | Health checks (today: agent-identity invariants; planned: platform + agent backend reachability). |
 | `cli overview` | Describe the CLI surface itself. |
 
-Every command supports `--json`. Results go to stdout, errors/diagnostics to
-stderr (never mixed). Exit codes: `0` success, `1` user error, `2` environment
-error, `3+` reserved.
+Every command supports `--json`. Results go to stdout, and errors and
+diagnostics go to stderr; the two are never mixed. Exit codes: `0` success,
+`1` user error, `2` environment error, `3+` reserved.
 
-## Make it your own
+The shell verbs, including the interactive shell, `run`, `ask`,
+`init bash|zsh`, install/uninstall as login shell, and known-good state, will
+be added as the milestones in #1 and #2 land.
 
-1. Rename the package `nvsh/` and the `nvsh`
-   CLI/dist name throughout `pyproject.toml`, the package, `tests/`,
-   `sonar-project.properties`, and this `README.md`. The name is hard-coded in
-   ~100 places, so list every occurrence first — see the `git grep` discovery
-   command in [`CLAUDE.md`](CLAUDE.md), the authoritative rename procedure.
-2. Edit `culture.yaml` with your `suffix` and `backend`.
-3. Rewrite `CLAUDE.md` for your agent and run `/init`. Rewrite the other three
-   harness files (`AGENTS.override.md` + `.pi/SYSTEM.md`, `AGENTS.colleague.md`,
-   `QWEN.md`) too if your agent uses those harnesses — don't let them drift out
-   of sync with `CLAUDE.md`.
-4. Re-vendor only the skills you need from guildmaster (see
-   [`docs/skill-sources.md`](docs/skill-sources.md)).
+## Repository layout
 
-See [`CLAUDE.md`](CLAUDE.md) for the full conventions (version-bump-every-PR,
-the `cicd` PR lane, deploy setup).
+nvsh is an [AgentCulture](https://github.com/agentculture) mesh agent built
+from the culture-agent-template:
+
+- `culture.yaml` holds the mesh identity (`suffix: nvsh`, `backend: claude`).
+- One prompt file per agent harness, with no shared base:
+  `CLAUDE.md` for Claude Code, `AGENTS.override.md` + `.pi/SYSTEM.md` for
+  Pi/associate, `AGENTS.colleague.md` for colleague, and `QWEN.md` for Qwen
+  Code. There is deliberately no `AGENTS.md`. See
+  [`docs/harness-selection.md`](docs/harness-selection.md) and
+  [`docs/automation-contract.md`](docs/automation-contract.md).
+- `.claude/skills/` holds the guildmaster skill kit, vendored
+  cite-don't-import. See [`docs/skill-sources.md`](docs/skill-sources.md).
+- CI covers pytest, lint, secret scanning, the agent-first rubric gate, a
+  per-harness smoke check, and PyPI Trusted Publishing.
+
+Every PR bumps the version. See [`CLAUDE.md`](CLAUDE.md) for the full
+contributor conventions.
 
 ## License
 

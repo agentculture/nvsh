@@ -12,14 +12,14 @@ from nvsh import __version__
 from nvsh.cli._output import emit_result
 
 _TEXT = """\
-nvsh — a clonable template for AgentCulture mesh agents.
+nvsh — an agent-first shell for NVIDIA Jetson, DGX Spark and RTX Spark.
 
 Purpose
 -------
-Scaffold for a new Culture mesh agent: an agent-first CLI (cited from the teken
-`python-cli` reference), an identity (culture.yaml + CLAUDE.md), the canonical
-guildmaster skill kit under .claude/skills/, and a deploy/CI baseline. Clone it,
-rename the package, and edit culture.yaml to mint a new agent.
+Runs your commands like a normal shell; when a command fails, it hands the
+error and device context to an agent (shell -> agent) to diagnose and propose
+a fix, which the human confirms before anything runs. Early scaffold: the
+agent-first verbs below exist today; the shell itself is planned (issues #1, #2).
 
 Commands
 --------
@@ -52,7 +52,10 @@ def _as_json_payload() -> dict[str, object]:
     return {
         "tool": "nvsh",
         "version": __version__,
-        "purpose": "Clonable scaffold for a new AgentCulture mesh agent.",
+        "purpose": (
+            "Agent-first shell for NVIDIA Jetson, DGX Spark and RTX Spark: runs commands "
+            "normally and hands failures to an agent to diagnose and propose a fix."
+        ),
         "commands": [
             {"path": ["whoami"], "summary": "Identity probe from culture.yaml."},
             {"path": ["learn"], "summary": "Self-teaching prompt."},

@@ -71,7 +71,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     parser = _CliArgumentParser(
         prog="nvsh",
-        description="nvsh — a clonable template for AgentCulture mesh agents.",
+        description="nvsh — an agent-first shell for NVIDIA Jetson, DGX Spark and RTX Spark.",
     )
     parser.add_argument(
         "--version",
