@@ -225,13 +225,17 @@ class RcPath:
         real = Path(os.path.realpath(lexical))
         root = _home_root(home)
 
-        if _within(lexical, root):
-            if not _within(real, root):
-                raise RcPathError(
-                    f"refusing to edit {lexical}: it is a symlink leading outside {root}"
-                )
-        else:
-            _require_caller_owns(real)
+        # The rc file lives directly in the operator's home (c36: the block
+        # goes into $HOME/.bashrc). Anything else is refused, and the path the
+        # I/O uses is rebuilt from the trusted root plus the file's *name* so
+        # no operator-supplied directory component ever reaches open().
+        if not _within(lexical, root) or lexical.parent != root:
+            raise RcPathError(
+                f"refusing to edit {lexical}: the rc file must sit directly under {root}"
+            )
+        if not _within(real, root):
+            raise RcPathError(f"refusing to edit {lexical}: it is a symlink leading outside {root}")
+        real = root / os.path.basename(os.fspath(real))
 
         if real.exists():
             if not real.is_file():

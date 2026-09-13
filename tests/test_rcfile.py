@@ -6,6 +6,8 @@ memory (or under ``tmp_path``) and passes it straight to the pure functions.
 
 from __future__ import annotations
 
+import pytest
+
 from nvsh import rcfile
 
 UBUNTU_GUARD = """\
@@ -50,6 +52,12 @@ def _block():
 # --------------------------------------------------------------------------
 # find_insert_point
 # --------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _home_is_tmp(tmp_path, monkeypatch):
+    """RcPath only edits files directly under $HOME; point HOME at the sandbox."""
+    monkeypatch.setenv("HOME", str(tmp_path))
 
 
 def test_finds_point_after_case_dash_guard():

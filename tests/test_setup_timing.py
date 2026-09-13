@@ -76,7 +76,7 @@ def test_setup_does_not_meaningfully_slow_down_prompt_startup(tmp_path, capsys, 
     monkeypatch.setattr(setup_cmd.render, "resolve_nvsh_bin", lambda: "/bin/true")
     home = tmp_path / "home"
     home.mkdir()
-    rc = tmp_path / "fakerc"
+    rc = home / "fakerc"
     rc.write_text(_heavy_fake_rc())
     assert find_insert_point(rc.read_text()) > 0  # sanity: guard was found
 

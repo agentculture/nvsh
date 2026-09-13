@@ -81,7 +81,7 @@ def test_clean_venv_install_runs_nvsh_setup(built_wheel, tmp_path):
 
     home = tmp_path / "home"
     home.mkdir()
-    rc = tmp_path / "fakerc"
+    rc = home / "fakerc"
     rc.write_text(
         "# If not running interactively, don't do anything\n"
         "case $- in\n    *i*) ;;\n      *) return;;\nesac\n"

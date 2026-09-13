@@ -174,7 +174,7 @@ def test_every_verb_works_without_pi_tmux_fzf_spark_on_path(
     stripped_path = _build_stripped_path(tmp_path)
     home = tmp_path / "home"
     home.mkdir()
-    rc_file = tmp_path / "rc"
+    rc_file = home / "rc"
 
     monkeypatch.setenv("PATH", stripped_path)
     monkeypatch.setenv("HOME", str(home))

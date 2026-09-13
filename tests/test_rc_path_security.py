@@ -48,19 +48,29 @@ def test_existing_home_bashrc_is_accepted_and_readable(home):
 
 
 def test_rc_inside_a_temp_home_is_accepted(home):
-    target = home / "sub" / "custom-rc"
+    target = home / "custom-rc"
     rc = rcfile.RcPath.validate(target)
     rc.write_text("# hi\n")
     assert target.read_text(encoding="utf-8") == "# hi\n"
 
 
-def test_owned_path_outside_home_is_accepted(home, tmp_path):
-    # An operator may deliberately point --rc at a file outside $HOME; it is
-    # allowed only when they own it and its directory is not world-writable.
+def test_path_outside_home_is_refused(home, tmp_path):
+    # The rc file must sit directly under $HOME (spec c36); a path elsewhere
+    # is refused even when the caller owns it, so no operator-supplied
+    # directory ever reaches the writes.
     outside = tmp_path / "elsewhere" / "fakerc"
     outside.parent.mkdir()
     outside.write_text("# rc\n", encoding="utf-8")
-    assert rcfile.RcPath.validate(outside).path == outside
+    with pytest.raises(rcfile.RcPathError, match="directly under"):
+        rcfile.RcPath.validate(outside)
+
+
+def test_nested_path_under_home_is_refused(home):
+    nested = home / "dotfiles" / ".bashrc"
+    nested.parent.mkdir()
+    nested.write_text("# rc\n", encoding="utf-8")
+    with pytest.raises(rcfile.RcPathError, match="directly under"):
+        rcfile.RcPath.validate(nested)
 
 
 # --- refused --------------------------------------------------------------
