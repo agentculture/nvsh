@@ -2,7 +2,7 @@
   "plan_slug": "nvsh-bash-hook-agent-on-error",
   "schema_version": 2,
   "created": "2026-09-13T13:17:31Z",
-  "updated": "2026-09-13T16:15:44Z",
+  "updated": "2026-09-13T16:19:24Z",
   "deviations": [
     {
       "id": "d1",
@@ -309,6 +309,22 @@
       "status": "proposed",
       "classification": "needs-follow-up",
       "seq": 20
+    },
+    {
+      "id": "d21",
+      "what": "operator on spark: after pressing [u] on a 'whatis ...' proposal (approved.toml gained 'whatis *' and 'nvsh approve check \"whatis lsmem 2>&1\"' answers user), the next whatis tool calls in the same turn still raised the approval dialog; the pi extension's pre-check does not see the persisted approval. Fix: find what the extension executes as nvsh and with which env/config dir inside the daemon-spawned pi, make it consult the same store the panel writes (pass NVSH_BIN and XDG_CONFIG_HOME through), and re-check after the operator's answer so the widened pattern applies to the rest of the turn",
+      "task_ref": "t19",
+      "reason": "operator on 2026-09-13: 'It would be great to allow the base command (like in this case, run whatis *)' with a transcript showing repeated dialogs after [u]",
+      "affects": [
+        "t11",
+        "t9",
+        "c25",
+        "c50"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "classification": "risky",
+      "seq": 21
     }
   ],
   "evidence": [],
