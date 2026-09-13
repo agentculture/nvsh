@@ -25,8 +25,9 @@ from pathlib import Path
 
 from nvsh import __version__
 from nvsh import config as nvsh_config
-from nvsh import installers, rcfile
+from nvsh import installers, rcfile, runtimedir
 from nvsh.agent import registry
+from nvsh.cli._errors import EXIT_USER_ERROR, CliError
 from nvsh.cli._output import emit_diagnostic, emit_result
 from nvsh.shell import render
 from nvsh.triggers import TriggerEvent, decide
@@ -40,15 +41,37 @@ def _default_rc() -> Path:
     return Path.home() / ".bashrc"
 
 
-def _rc_path(args: argparse.Namespace) -> Path:
+def _rc_path(args: argparse.Namespace) -> rcfile.RcPath:
+    """The validated rc file this invocation may touch.
+
+    ``--rc`` is operator input that ends up in ``open()``/``write_text()``,
+    so it never reaches the filesystem as a bare string: every read, write
+    and backup below goes through the :class:`nvsh.rcfile.RcPath` returned
+    here, which has already rejected ``..`` traversal, symlinks escaping
+    ``$HOME``, foreign-owned files outside ``$HOME`` and non-regular files.
+    """
     rc = getattr(args, "rc", None)
-    return Path(rc) if rc else _default_rc()
+    try:
+        return rcfile.RcPath.validate(rc if rc else _default_rc())
+    except rcfile.RcPathError as exc:
+        raise CliError(
+            code=EXIT_USER_ERROR,
+            message=str(exc),
+            remediation=(
+                "pass --rc with a regular file you own, inside your home "
+                "directory and with no '..' components"
+            ),
+        ) from exc
 
 
 def _runtime_dir() -> Path:
-    xdg = os.environ.get("XDG_RUNTIME_DIR")
-    base = Path(xdg) if xdg else Path("/tmp")  # nosec B108 - matches hook.bash's own fallback
-    return base / "nvsh"
+    """``$XDG_RUNTIME_DIR/nvsh``, else the per-uid ``<tmp>/nvsh-<uid>`` fallback.
+
+    Shared with :mod:`nvsh.capture` and ``nvsh/shell/hook.bash`` through
+    :mod:`nvsh.runtimedir`, which also owns the ownership/mode check that
+    makes a world-writable temp dir safe to fall back to.
+    """
+    return runtimedir.runtime_dir(os.environ)
 
 
 def _build_block(shell_dir: Path, nvsh_bin: str) -> str:
@@ -128,7 +151,7 @@ def _agent_key_hint(chosen: str, cfg) -> str | None:
 
 def cmd_setup(args: argparse.Namespace) -> int:
     rc_path = _rc_path(args)
-    original_text = rc_path.read_text(encoding="utf-8") if rc_path.exists() else ""
+    original_text = rc_path.read_text()
 
     shell_dir = render.render_shell_files()
     nvsh_bin = render.resolve_nvsh_bin()
@@ -141,9 +164,8 @@ def cmd_setup(args: argparse.Namespace) -> int:
     changed = new_text != original_text
     if changed:
         if rc_path.exists():
-            backup_path = rcfile.write_backup(rc_path, original_text)
-        rc_path.parent.mkdir(parents=True, exist_ok=True)
-        rc_path.write_text(new_text, encoding="utf-8")
+            backup_path = rc_path.write_backup(original_text)
+        rc_path.write_text(new_text)
 
     cfg = nvsh_config.load()
     chosen, reason = registry.choose(cfg)
@@ -229,14 +251,14 @@ def _stop_daemon(nvsh_bin: str) -> bool:
 
 def cmd_uninstall(args: argparse.Namespace) -> int:
     rc_path = _rc_path(args)
-    original_text = rc_path.read_text(encoding="utf-8") if rc_path.exists() else ""
+    original_text = rc_path.read_text()
 
     stripped_text, removed, edited = rcfile.remove_block(original_text)
 
     restored_from_backup = None
     if removed:
         if edited:
-            backup = rcfile.newest_backup(rc_path)
+            backup = rc_path.newest_backup()
             if backup is not None:
                 new_text = backup.read_text(encoding="utf-8")
                 restored_from_backup = str(backup)
@@ -245,7 +267,7 @@ def cmd_uninstall(args: argparse.Namespace) -> int:
         else:
             new_text = stripped_text
         if new_text != original_text:
-            rc_path.write_text(new_text, encoding="utf-8")
+            rc_path.write_text(new_text)
 
     shell_dir = render.data_dir() / "shell"
     removed_files = []
@@ -315,24 +337,26 @@ def _on_bash() -> str:
     )
 
 
-def _print_toggle(args: argparse.Namespace, action: str, bash: str) -> int:
+def _print_toggle(args: argparse.Namespace, action: str, bash: str) -> None:
+    """Print the toggle's bash in whichever of the three shapes was asked for."""
     if getattr(args, "shell", False):
         emit_result(bash, json_mode=False)
-        return 0
+        return
     json_mode = bool(getattr(args, "json", False))
     if json_mode:
         emit_result({"action": action, "eval": bash}, json_mode=True)
     else:
         emit_result(f'run: eval "$(nvsh {action})"\n{bash}', json_mode=False)
-    return 0
 
 
 def cmd_off(args: argparse.Namespace) -> int:
-    return _print_toggle(args, "off", _off_bash())
+    _print_toggle(args, "off", _off_bash())
+    return 0
 
 
 def cmd_on(args: argparse.Namespace) -> int:
-    return _print_toggle(args, "on", _on_bash())
+    _print_toggle(args, "on", _on_bash())
+    return 0
 
 
 # --------------------------------------------------------------------------
@@ -354,9 +378,9 @@ def _maybe_print_refresh_notice() -> None:
     if notice_file.exists():
         return
     try:
-        notice_file.parent.mkdir(parents=True, exist_ok=True)
+        runtimedir.ensure_private(notice_file.parent)
         notice_file.write_text("1", encoding="utf-8")
-    except OSError:
+    except (OSError, runtimedir.RuntimeDirError):
         pass
     emit_diagnostic(f"nvsh: hook files are from {hook_version}, run 'nvsh setup' to refresh")
 

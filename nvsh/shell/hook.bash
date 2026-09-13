@@ -58,8 +58,14 @@ __nvsh_capture_start() {
     [[ -n ${NVSH_WRAPPED:-} ]] && return 0
     [[ -n ${NVSH_LOG:-} ]] && return 0
 
-    local __nvsh_dir=${XDG_RUNTIME_DIR:-/tmp}/nvsh
+    # Per-uid fallback, never a shared ${TMPDIR}/nvsh another user could
+    # create first; matches nvsh.runtimedir.fallback_dir().
+    local __nvsh_dir=${XDG_RUNTIME_DIR:+${XDG_RUNTIME_DIR}/nvsh}
+    __nvsh_dir=${__nvsh_dir:-${TMPDIR:-/tmp}/nvsh-${UID}}
     (umask 077 && mkdir -p "${__nvsh_dir}") || return 0
+    # Refuse a directory that is not ours (a symlink, or another user's):
+    # nvsh.runtimedir.ensure_private() refuses exactly the same things.
+    [[ -d ${__nvsh_dir} && ! -L ${__nvsh_dir} && -O ${__nvsh_dir} ]] || return 0
     local __nvsh_log=${__nvsh_dir}/$$.log
     (umask 077 && : >"${__nvsh_log}") || return 0
     export NVSH_LOG=${__nvsh_log}
