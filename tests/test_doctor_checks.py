@@ -407,8 +407,18 @@ def test_bindings_present_fails_when_entries_missing():
 # --- capture_active ------------------------------------------------------------
 
 
-def test_capture_active_missing_env_is_warning():
+def test_capture_active_missing_env_outside_hook_is_info():
+    # No NVSH_HOOK_VERSION either: this is a plain, un-hooked shell, so the
+    # absence of capture is expected, not a problem — info, not warning.
     check = doctor_checks.check_capture_active({})
+    assert check["passed"] is False
+    assert check["severity"] == "info"
+
+
+def test_capture_active_missing_log_inside_hook_is_warning():
+    # NVSH_HOOK_VERSION present but NVSH_LOG absent: hooked shell that
+    # should be capturing but isn't — that is a real warning.
+    check = doctor_checks.check_capture_active({"NVSH_HOOK_VERSION": "0.9.2"})
     assert check["passed"] is False
     assert check["severity"] == "warning"
 

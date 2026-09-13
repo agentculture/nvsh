@@ -4,9 +4,9 @@ This is a short, in-repo summary of `pi --mode rpc`'s wire protocol, kept
 next to `nvsh/agent/pi.py` (`PiAgent`) and `tests/fakes/pi` /
 `tests/fakes/pi_scripted` so both have a reference that does not depend on a
 local Pi.dev install. It is distilled in our own words from the shipped
-`docs/rpc.md` in `@earendil-works/pi-coding-agent` (pi 0.84.2, installed at
-`~/.nvm/versions/node/v24.13.1/lib/node_modules/@earendil-works/pi-coding-agent/docs/rpc.md`
-on this box) — read that file for the authoritative, complete protocol.
+`docs/rpc.md` in `@earendil-works/pi-coding-agent` (pi 0.84.2, installed via
+nvm's global `node_modules` under the operator's home directory on this
+box) — read that file for the authoritative, complete protocol.
 Field names below are quoted exactly as they appear on the wire.
 
 ## Framing
