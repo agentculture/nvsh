@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-09-13T10:08:02Z",
-  "updated": "2026-09-13T12:26:22Z",
+  "updated": "2026-09-13T12:46:13Z",
   "claims": [
     {
       "id": "c1",
@@ -1460,6 +1460,29 @@
       "skipped_check": "",
       "refs": [
         "t7"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l10",
+      "code": "grader-unverified",
+      "what": "t12: test_stale_socket_is_reaped first passed for the wrong reason (waited on socket file existence, which the stale file already satisfied); rewritten to wait on a real connect",
+      "skipped_check": "",
+      "refs": [
+        "t12"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l11",
+      "code": "control-absent",
+      "what": "t9/t10 merge: registry._make_pi called PiAgent positionally while PiAgent.__init__ is keyword-only; no test exercised the registry->PiAgent path, so the TypeError reached t12",
+      "skipped_check": "registry factory smoke test for every adapter",
+      "refs": [
+        "t9",
+        "t10"
       ],
       "origin": "llm",
       "status": "proposed"
