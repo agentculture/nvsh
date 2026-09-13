@@ -60,7 +60,9 @@ from .panel import (
     APPROVE_USER,
     DETAILS,
     EXPLAIN,
+    IGNORE,
     REFUSED,
+    TELL,
     Panel,
     StreamResult,
 )
@@ -77,6 +79,16 @@ INSPECT_TIMEOUT = 10.0
 
 #: How many times the panel re-asks after ``e``/``d`` before giving up.
 _MAX_PROPOSAL_ROUNDS = 4
+
+#: What :func:`_decide_proposal` returns when the operator steered the agent
+#: instead of deciding: nothing runs, nothing is denied twice, and the
+#: conversation carries on with the operator's text in it (deviation d16).
+STEERED = "steered"
+
+#: What ``[e]`` asks the agent when the proposal came with no rationale and
+#: there is a conversation to ask in (deviation d17). Two sentences, because
+#: this answer is read at a failing prompt, not in a report.
+EXPLAIN_PROPOSAL_PROMPT = "Explain in two sentences why you propose: {command}"
 
 #: The default prompts. Kept as constants because ``nvsh context --show``
 #: has to reproduce the failure prompt byte for byte.
@@ -500,24 +512,146 @@ def scope_refusal(command: str, scope: str) -> str | None:
     return refusal_reason(scope_pattern(command, scope))
 
 
-def _decide_proposal(panel: Panel, proposal: Proposal) -> str:
-    """Ask the operator, re-showing the proposal after ``e``/``d``/a refusal."""
+def scope_descriptions(command: str) -> dict[str, str]:
+    """How to describe, in one phrase each, what ``[s]``/``[u]`` would store.
+
+    An operator reading the d15 keys took ``[u]`` to approve "that exact
+    argument", when what it stores is ``<first word> *`` -- every argument
+    of that command, forever. So the panel is handed the words to say it
+    with, computed from the same :func:`scope_pattern` that does the
+    storing, and the details view quotes the same patterns.
+    """
+    return {
+        APPROVE_SESSION: "this exact line",
+        APPROVE_USER: f"'{scope_pattern(command, APPROVE_USER)}' (any arguments)",
+    }
+
+
+def _decide_proposal(
+    panel: Panel,
+    proposal: Proposal,
+    *,
+    details: Mapping[str, str] | None = None,
+    inject=None,
+) -> str:
+    """Ask the operator, re-showing the proposal after ``e``/``d``/``t``/a refusal.
+
+    ``inject`` is how this proposal's conversation can be talked to: it
+    takes one line of text, denies the pending dialog with it as the reason
+    and puts the text into the same conversation (mid-turn where the
+    backend has a channel, as the next request where it does not). It is
+    ``None`` when there is no conversation to talk to, and then ``[t]`` and
+    an empty-rationale ``[e]`` degrade to saying so rather than pretending.
+    """
 
     def guard(scope: str) -> str | None:
         return scope_refusal(proposal.command, scope)
 
+    scopes = scope_descriptions(proposal.command)
     for _ in range(_MAX_PROPOSAL_ROUNDS):
-        choice = panel.show_proposal(proposal, guard=guard)
+        choice = panel.show_proposal(proposal, guard=guard, scopes=scopes)
+        if choice == TELL:
+            text = panel.read_tell()
+            if not text:
+                continue  # Ctrl+C or an empty line: back to the proposal
+            if inject is None:
+                panel.note("nvsh: no conversation to steer; ignoring it instead")
+                return IGNORE
+            inject(text)
+            return STEERED
         if choice == EXPLAIN:
-            panel.explain_proposal(proposal)
-            continue
+            if proposal.rationale or inject is None:
+                panel.explain_proposal(proposal)
+                continue
+            # d17: never print "(no rationale given)" when the agent that
+            # made the proposal is right there and can be asked.
+            panel.note("... asking the agent why")
+            inject(EXPLAIN_PROPOSAL_PROMPT.format(command=proposal.command))
+            return STEERED
         if choice == DETAILS:
-            panel.detail_proposal(proposal)
+            panel.detail_proposal(proposal, details)
             continue
         if choice == REFUSED:
             continue
         return choice
-    return "ignore"
+    return IGNORE
+
+
+def backend_label(config) -> str:
+    """``<harness>/<model>`` -- who the panel is about to wait on (d22).
+
+    An operator watching a silent panel could not tell whether nvsh was
+    talking to the local pi, a remote model, or nothing at all. The harness
+    comes from the same :func:`nvsh.agent.registry.choose` the transport
+    will use; the model from that harness's own config block (pi's
+    ``[agents.pi] model``, openai-compat's ``model``). A harness with no
+    configured model is named alone rather than with a guess.
+    """
+    try:
+        from .agent import registry
+
+        name, _reason = registry.choose(config)
+    except Exception:  # noqa: BLE001 - the header must never block a diagnosis
+        name = str(getattr(config, "agent_provider", "") or "")
+    if not name:
+        return ""
+    try:
+        model = str((config.agents.get(name) or {}).get("model") or "")
+    except Exception:  # noqa: BLE001
+        model = ""
+    return f"{name}/{model}" if model else name
+
+
+def _conversation_label(responder, env: Mapping[str, str]) -> str:
+    """``daemon``/``one-shot`` plus the shell id, from what the client knows."""
+    shell = _shell_pid(env)
+    if getattr(responder, "agent", None) is not None:
+        return f"one-shot, shell {shell}"
+    if not client_transport.daemon_socket_path(env).exists():
+        return f"one-shot, shell {shell}"
+    return f"daemon, shell {shell}"
+
+
+def proposal_details(
+    proposal: Proposal,
+    *,
+    approvals,
+    context: AgentContext,
+    config,
+    responder,
+    env: Mapping[str, str],
+) -> dict[str, str]:
+    """Everything ``[d]`` should show and the panel cannot know (d18).
+
+    The old details view printed the kind, the command and the rationale --
+    all three already on screen in the box above it. What an operator
+    actually needs before pressing a key is whether this command is already
+    approved and under which pattern, the exact patterns ``[s]``/``[u]``
+    would store (and why one of them may be refused), which backend and
+    conversation proposed it, and how much of their terminal output went
+    out with the question.
+    """
+    command = proposal.command
+    scope, pattern = approvals.matches(command) if command else ("ask", None)
+    approved = "no" if scope == "ask" or not pattern else f"{scope} pattern '{pattern}'"
+    details = {
+        "approved": approved,
+        "session pattern": scope_pattern(command, APPROVE_SESSION),
+        "user pattern": scope_pattern(command, APPROVE_USER),
+    }
+    refusals = [
+        f"[{key}] {reason}"
+        for key, scope_name in (("s", APPROVE_SESSION), ("u", APPROVE_USER))
+        for reason in [scope_refusal(command, scope_name)]
+        if reason
+    ]
+    if refusals:
+        details["refused"] = "; ".join(refusals)
+    details["backend"] = backend_label(config) or "unknown"
+    details["conversation"] = _conversation_label(responder, env)
+    sent = len(context.output.encode("utf-8", errors="replace")) if context.output else 0
+    details["output"] = f"{sent} bytes of redacted output sent to the model"
+    return details
 
 
 def _proposal_handler(
@@ -527,6 +661,10 @@ def _proposal_handler(
     inspections: list[tuple[str, RunResult]],
     responder,
     audit,
+    steers: list[str] | None = None,
+    context: AgentContext | None = None,
+    config=None,
+    env: Mapping[str, str] | None = None,
 ):
     """Answer one proposal, sending the answer wherever the dialog came from.
 
@@ -536,6 +674,8 @@ def _proposal_handler(
     to :class:`nvsh.client_transport.Responder`, which is pointed at the
     daemon socket or at the one-shot, in-process agent as appropriate.
     """
+
+    resolved_env = dict(os.environ if env is None else env)
 
     def handle(proposal: Proposal, event: AgentEvent) -> None:
         command = proposal.command
@@ -549,8 +689,9 @@ def _proposal_handler(
             and approvals.decide(command) in ("user", "session")
         )
         if auto:
-            panel.note(f"... running {command}")
+            panel.running(command)
             result = _run_command(command, timeout=INSPECT_TIMEOUT)
+            panel.finished(result.exit_code)
             inspections.append((command, result))
             if audit is not None:
                 audit.record(event="decision", proposal=proposal, decision="auto-inspect")
@@ -559,9 +700,50 @@ def _proposal_handler(
                 responder.respond(request_id, {"value": "once"})
             return
 
-        choice = _decide_proposal(panel, proposal)
+        def inject(text: str) -> None:
+            """Put ``text`` into *this* conversation (deviation d16).
+
+            The steer goes out first and the deny second, in that order for
+            two reasons: while the dialog is open the backend is provably
+            still streaming (so a mid-turn steer is accepted rather than
+            starting a fresh turn), and the deny is an unacknowledged write
+            -- writing it first would leave a command in flight behind an
+            un-acked one, which is exactly what d14 forbids.
+
+            The reason rides on the deny as well as in the steer. pi 0.85.1
+            reduces an ``extension_ui_response`` to its ``value`` before the
+            extension sees it (``docs/pi-rpc.md``), so today only the steer
+            reaches the model -- but a backend that does pass the whole
+            response gets the operator's words as the block reason for free.
+            """
+            delivered = responder.steer(text)
+            if request_id:
+                responder.respond(request_id, {"value": "deny", "reason": text})
+            if delivered:
+                panel.note("nvsh: steering the agent ...")
+            elif steers is not None:
+                steers.append(text)
+                panel.note("nvsh: no mid-turn channel; asking next instead ...")
+            else:
+                panel.note("nvsh: the agent could not be steered")
+
+        details = None
+        if context is not None:
+            details = proposal_details(
+                proposal,
+                approvals=approvals,
+                context=context,
+                config=config,
+                responder=responder,
+                env=resolved_env,
+            )
+        choice = _decide_proposal(panel, proposal, details=details, inject=inject)
         if audit is not None:
             audit.record(event="decision", proposal=proposal, decision=choice)
+        if choice == STEERED:
+            # The dialog is already answered and the conversation carries the
+            # operator's words; nothing to run and nothing more to say.
+            return
         if choice not in _RUN_CHOICES:
             if request_id:
                 responder.respond(request_id, {"value": "deny"})
@@ -629,6 +811,7 @@ def _stream_request(
     approvals=None,
     inspections: list[tuple[str, RunResult]] | None = None,
     audit=None,
+    steers: list[str] | None = None,
 ) -> StreamResult:
     responder = client_transport.Responder(shell_id=shell_id, env=env)
     on_proposal = None
@@ -639,12 +822,31 @@ def _stream_request(
             inspections=inspections,
             responder=responder,
             audit=audit,
+            steers=steers,
+            context=context,
+            config=config,
+            env=env,
         )
     return panel.stream(
         _send(request, context, env=env, shell_id=shell_id, config=config, responder=responder),
         on_proposal=on_proposal,
         cancel=lambda: client_transport.cancel(shell_id=shell_id, env=env),
     )
+
+
+def _follow_up_prompt(inspections: list[tuple[str, RunResult]], steers: list[str]) -> str:
+    """The one prompt that carries everything the last turn produced back.
+
+    An inspection's output and the operator's steer can both come out of a
+    single turn (``[t]`` after an auto-run inspector), and they belong in
+    one follow-up: two requests would be two turns, and the second would
+    have lost the first's answer.
+    """
+    parts = []
+    if inspections:
+        parts.append(_inspection_prompt(inspections))
+    parts.extend(steers)
+    return "\n\n".join(parts)
 
 
 def _inspection_prompt(inspections: list[tuple[str, RunResult]]) -> str:
@@ -702,12 +904,15 @@ def handle_failure(
     question = prose_request(str(state.get("line", "") or ""), int(state.get("exit", 0) or 0))
     if question:
         request = _prose_request(state, question)
-        _ask_header(panel, state, question)
+        panel.header(
+            state["line"], state["exit"], backend_label=backend_label(config), ask=question
+        )
     else:
         request = _failure_request(state)
-        panel.header(state["line"], state["exit"])
+        panel.header(state["line"], state["exit"], backend_label=backend_label(config))
     approvals = _load_approvals()
     inspections: list[tuple[str, RunResult]] = []
+    steers: list[str] = []
     audit = _audit(resolved)
     result = _stream_request(
         panel,
@@ -719,14 +924,23 @@ def handle_failure(
         approvals=approvals,
         inspections=inspections,
         audit=audit,
+        steers=steers,
     )
     if result.interrupted:
         return 130
 
-    if inspections:
-        follow_up = _failure_request(state, prompt=_inspection_prompt(inspections))
+    if inspections or steers:
+        follow_up = _failure_request(state, prompt=_follow_up_prompt(inspections, steers))
         follow = _stream_request(
-            panel, follow_up, context, env=resolved, shell_id=shell_id, config=config
+            panel,
+            follow_up,
+            context,
+            env=resolved,
+            shell_id=shell_id,
+            config=config,
+            approvals=approvals,
+            inspections=[],
+            audit=audit,
         )
         if follow.interrupted:
             return 130
@@ -779,18 +993,63 @@ def _on_last_failure(prompt: str, panel: Panel | None, env: Mapping[str, str] | 
     if not state:
         panel.line("nvsh: no recorded failure yet")
         return 1
+    config = _load_config()
+    context = build_context(_args_from_state(state), resolved)
+    shell_id = _shell_pid(resolved)
+    approvals = _load_approvals()
+    audit = _audit(resolved)
+    steers: list[str] = []
     result = _stream_request(
         panel,
         _failure_request(state, prompt=prompt),
-        build_context(_args_from_state(state), resolved),
+        context,
         env=resolved,
-        shell_id=_shell_pid(resolved),
-        config=_load_config(),
-        approvals=_load_approvals(),
+        shell_id=shell_id,
+        config=config,
+        approvals=approvals,
         inspections=[],
-        audit=_audit(resolved),
+        audit=audit,
+        steers=steers,
     )
-    return 130 if result.interrupted else 0
+    if result.interrupted:
+        return 130
+    if steers:
+        follow = _stream_request(
+            panel,
+            _failure_request(state, prompt=_follow_up_prompt([], steers)),
+            context,
+            env=resolved,
+            shell_id=shell_id,
+            config=config,
+            approvals=approvals,
+            inspections=[],
+            audit=audit,
+        )
+        if follow.interrupted:
+            return 130
+    return 0
+
+
+def steer(text: str, *, panel: Panel | None = None, env: Mapping[str, str] | None = None) -> int:
+    """``/steer <text>``: tell the agent something without a proposal on screen.
+
+    The same move the proposal prompt's ``[t]`` makes, from the shell
+    prompt instead: if a turn is running (this shell's, in the daemon) the
+    text is injected into it mid-turn and this returns at once; otherwise
+    it becomes the next request in the same conversation, carrying the last
+    recorded failure as its context, and the answer streams into the panel
+    as usual (deviation d16).
+    """
+    resolved = dict(os.environ if env is None else env)
+    panel = _panel_for(panel, resolved)
+    message = (text or "").strip()
+    if not message:
+        panel.line("nvsh: /steer <text> (tell the agent what to do instead)")
+        return 1
+    if client_transport.steer(message, shell_id=_shell_pid(resolved), env=resolved):
+        panel.note("nvsh: steered the running turn")
+        return 0
+    return _on_last_failure(message, panel, resolved)
 
 
 def fix(*, panel: Panel | None = None, env: Mapping[str, str] | None = None) -> int:
@@ -928,10 +1187,13 @@ def handle_slash(
         return explain(panel=panel, env=resolved)
     if verb == "retry":
         return retry(panel=panel, env=resolved)
+    if verb == "steer":
+        return steer(rest, panel=panel, env=resolved)
     if verb == "context":
         return context_show(json_mode=False, env=resolved)
 
     _panel_for(panel, resolved).line(
-        f"nvsh: unknown slash command '/{verb}' " "(try /ask, /fix, /explain, /retry, /context)"
+        f"nvsh: unknown slash command '/{verb}' "
+        "(try /ask, /fix, /explain, /retry, /steer, /context)"
     )
     return 1

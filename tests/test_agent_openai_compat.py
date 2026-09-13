@@ -284,3 +284,48 @@ def test_system_brief_is_sent_as_the_system_message(fake_server):
     assert [m["role"] for m in messages] == ["system", "user"]
     assert messages[0]["content"] == build_system_prompt(_context())
     assert messages[1]["content"] == build_prompt(_request(), _context())
+
+
+# --- d16: no mid-turn channel, so a steer becomes the next message --------
+
+
+def test_steer_reports_that_there_is_no_mid_turn_channel(fake_server):
+    base_url = f"http://127.0.0.1:{fake_server.server_port}"
+    agent = OpenAICompatAgent({"base_url": base_url})
+    agent.start()
+    try:
+        assert agent.steer("just run free -h") is False
+    finally:
+        agent.close()
+
+
+def test_a_steered_message_is_sent_as_the_next_turn_with_the_prior_one(fake_server):
+    base_url = f"http://127.0.0.1:{fake_server.server_port}"
+    agent = OpenAICompatAgent({"base_url": base_url})
+    agent.start()
+    try:
+        list(agent.run(_request(), _context()))
+        assert agent.steer("just run free -h") is False
+        steered = AgentRequest(
+            kind=RequestKind.EXPLICIT, prompt="just run free -h", command="ls /nope"
+        )
+        list(agent.run(steered, _context()))
+    finally:
+        agent.close()
+    messages = fake_server.last_body["messages"]
+    # d19's system brief leads; d16's prior exchange precedes the steer.
+    assert [m["role"] for m in messages] == ["system", "user", "assistant", "user"]
+    assert messages[2]["content"] == "hello world", "the prior turn is the context"
+    assert "just run free -h" in messages[3]["content"]
+
+
+def test_an_unsteered_turn_is_still_one_standalone_user_message(fake_server):
+    base_url = f"http://127.0.0.1:{fake_server.server_port}"
+    agent = OpenAICompatAgent({"base_url": base_url})
+    agent.start()
+    try:
+        list(agent.run(_request(), _context()))
+        list(agent.run(_request(), _context()))
+    finally:
+        agent.close()
+    assert [m["role"] for m in fake_server.last_body["messages"]] == ["system", "user"]

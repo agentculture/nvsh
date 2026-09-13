@@ -183,10 +183,10 @@ def test_respond_ui_writes_extension_ui_response(tmp_path):
 
 
 def test_unknown_wire_event_maps_to_status(tmp_path):
-    # queue_update is a real pi event type PiAgent does not special-case.
+    # compaction_start is a real pi event type PiAgent does not special-case.
     agent = PiAgent(pi_path="pi_scripted", env=_env(tmp_path))
     agent._env["NVSH_TEST_PI_SCRIPT"] = json.dumps(
-        [{"type": "queue_update", "steering": []}, {"type": "agent_end"}]
+        [{"type": "compaction_start"}, {"type": "agent_end"}]
     )
     agent.start()
     try:
@@ -194,8 +194,22 @@ def test_unknown_wire_event_maps_to_status(tmp_path):
     finally:
         agent.close()
     assert events[0].kind == EventKind.STATUS
-    assert events[0].text == "queue_update"
+    assert events[0].text == "compaction_start"
     assert events[-1].kind == EventKind.DONE
+
+
+def test_a_steering_queue_update_is_not_panel_material(tmp_path):
+    """d16: every steer changes pi's queue; the panel already said it steered."""
+    agent = PiAgent(pi_path="pi_scripted", env=_env(tmp_path))
+    agent._env["NVSH_TEST_PI_SCRIPT"] = json.dumps(
+        [{"type": "queue_update", "steering": ["free -h"]}, {"type": "agent_end"}]
+    )
+    agent.start()
+    try:
+        events = list(agent.run(_request(), _context()))
+    finally:
+        agent.close()
+    assert [e.kind for e in events] == [EventKind.DONE]
 
 
 # -- d11: rpc lifecycle bookkeeping is not panel material -------------------
@@ -699,3 +713,127 @@ def test_child_env_passes_an_existing_xdg_runtime_dir_through(tmp_path):
     env = _env(tmp_path, XDG_RUNTIME_DIR=str(runtime))
     agent = PiAgent(pi_path="pi", env=env)
     assert agent._env["XDG_RUNTIME_DIR"] == str(runtime)
+
+
+# --- d17: the assistant text before a tool call is the proposal's rationale
+
+
+def _proposal_from(tmp_path, script):
+    agent = PiAgent(pi_path="pi_scripted", env=_env(tmp_path))
+    agent._env["NVSH_TEST_PI_SCRIPT"] = json.dumps(script)
+    agent.start()
+    try:
+        events = list(agent.run(_request(), _context()))
+    finally:
+        agent.close()
+    return [e for e in events if e.kind == EventKind.PROPOSAL]
+
+
+def _delta(text: str) -> dict:
+    return {
+        "type": "message_update",
+        "assistantMessageEvent": {"type": "text_delta", "delta": text},
+    }
+
+
+def test_text_streamed_before_a_tool_call_becomes_the_rationale(tmp_path):
+    script = [
+        _delta("`perf` is not installed. "),
+        _delta("The package that ships it is linux-tools."),
+        _approval_request("apt install -y linux-tools", reason=""),
+        {"type": "agent_end"},
+    ]
+    proposals = _proposal_from(tmp_path, script)
+    assert proposals[0].proposal.rationale == (
+        "`perf` is not installed. The package that ships it is linux-tools."
+    )
+
+
+def test_only_the_text_since_the_last_tool_result_counts(tmp_path):
+    script = [
+        _delta("first let me look around."),
+        {"type": "tool_execution_start", "toolName": "bash", "args": {"command": "ls"}},
+        {"type": "tool_execution_end", "toolName": "bash", "result": {"output": "x"}},
+        _delta("now I know what is missing."),
+        _approval_request("apt install -y linux-tools", reason=""),
+        {"type": "agent_end"},
+    ]
+    proposals = _proposal_from(tmp_path, script)
+    assert proposals[0].proposal.rationale == "now I know what is missing."
+
+
+def test_the_envelope_reason_still_wins_over_the_streamed_text(tmp_path):
+    script = [
+        _delta("some thinking out loud."),
+        _approval_request("free -h", reason="check memory pressure"),
+        {"type": "agent_end"},
+    ]
+    proposals = _proposal_from(tmp_path, script)
+    assert proposals[0].proposal.rationale == "check memory pressure"
+
+
+def test_a_long_rationale_is_trimmed_to_six_hundred_characters(tmp_path):
+    script = [
+        _delta("x" * 1200),
+        _approval_request("free -h", reason=""),
+        {"type": "agent_end"},
+    ]
+    rationale = _proposal_from(tmp_path, script)[0].proposal.rationale
+    assert len(rationale) <= 600
+    assert rationale.endswith("…")
+
+
+def test_the_rationale_buffer_is_cleared_between_runs(tmp_path):
+    agent = PiAgent(pi_path="pi_scripted", env=_env(tmp_path))
+    agent._env["NVSH_TEST_PI_SCRIPT"] = json.dumps(
+        [_delta("only for the first turn."), {"type": "agent_end"}]
+    )
+    agent.start()
+    try:
+        list(agent.run(_request(), _context()))
+        assert agent._rationale_text() == ""
+    finally:
+        agent.close()
+
+
+# --- d16: steering a running turn ----------------------------------------
+
+
+def test_steer_writes_a_prompt_with_streaming_behavior_steer(tmp_path):
+    commands = tmp_path / "commands.jsonl"
+    agent = PiAgent(pi_path="pi_scripted", env=_env(tmp_path))
+    agent._env["NVSH_TEST_PI_COMMANDS"] = str(commands)
+    agent._env["NVSH_TEST_PI_SCRIPT"] = json.dumps(
+        [_approval_request("apt install -y linux-tools"), {"type": "agent_end"}]
+    )
+    agent._env["NVSH_TEST_PI_AWAIT_UI"] = "1"
+    agent.start()
+    try:
+        stream = agent.run(_request(), _context())
+        event = next(e for e in stream if e.kind == EventKind.PROPOSAL)
+        assert event.proposal is not None
+        assert agent.steer("just run free -h") is True
+        agent.respond_ui("ui-7", value="deny", reason="just run free -h")
+        list(stream)
+    finally:
+        agent.close()
+    sent = [json.loads(line) for line in commands.read_text(encoding="utf-8").splitlines() if line]
+    steers = [c for c in sent if c.get("type") == "prompt" and "streamingBehavior" in c]
+    assert steers == [
+        {"type": "prompt", "message": "just run free -h", "streamingBehavior": "steer"}
+    ]
+
+
+def test_steer_is_refused_when_no_turn_is_running(tmp_path):
+    agent = PiAgent(pi_path="pi_scripted", env=_env(tmp_path))
+    agent._env["NVSH_TEST_PI_SCRIPT"] = json.dumps([{"type": "agent_end"}])
+    agent.start()
+    try:
+        assert agent.steer("too late") is False
+    finally:
+        agent.close()
+
+
+def test_steer_on_a_closed_agent_is_false_and_never_raises(tmp_path):
+    agent = PiAgent(pi_path="pi_scripted", env=_env(tmp_path))
+    assert agent.steer("nobody is listening") is False

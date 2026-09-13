@@ -691,6 +691,28 @@ exact command shown (`nvsh.client.retry`), then reports pass/fail with
     nvsh slash "/retry"
 """
 
+_STEER_SLASH = """\
+# nvsh slash /steer <text>
+
+Tells the agent what to do instead, in the conversation it is already
+having (`nvsh.client.steer`). The same move the proposal prompt's `[t]`
+key makes, from the shell prompt instead of from a panel.
+
+If this shell has a turn running, the text is injected into it mid-turn —
+for pi that is an rpc `prompt` carrying `streamingBehavior: "steer"` (see
+`docs/pi-rpc.md`), delivered after the current assistant turn finishes its
+tool calls — and the command returns at once. Otherwise the text becomes
+the next request in the same conversation, with the last recorded failure
+as its context, and the answer streams into the panel.
+
+Nothing is ever run by steering: the agent may propose again, and that
+proposal goes through the same panel as any other.
+
+## Usage
+
+    nvsh slash "/steer just run free -h"
+"""
+
 _CONTEXT_SLASH = """\
 # nvsh slash /context [--show|--json]
 
@@ -848,6 +870,7 @@ ENTRIES: dict[tuple[str, ...], str] = {
     ("slash", "fix"): _FIX,
     ("slash", "explain"): _EXPLAIN_SLASH,
     ("slash", "retry"): _RETRY_SLASH,
+    ("slash", "steer"): _STEER_SLASH,
     ("slash", "context"): _CONTEXT_SLASH,
     ("slash", "agent"): _AGENT_SLASH,
     ("slash", "help"): _HELP_SLASH,

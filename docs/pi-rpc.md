@@ -39,6 +39,18 @@ are written and it always waits, bounded by `$NVSH_PI_ACK_TIMEOUT`
 (default 20 s) — a bound that expires is an error naming pi's exit code and
 the redacted tail of its stderr, never silence.
 
+**Two writes are deliberately not ack-waited, and neither breaks the rule
+above.** `abort` (`cancel()` must return inside a second) and the mid-turn
+steer (`steer()`, deviation d16) are only ever written *during* a turn,
+which is precisely when no command is outstanding — the `prompt` that
+started the turn was acknowledged before the first event arrived. Nothing
+is written ahead of an unacknowledged command, so neither can reproduce
+d14. They cannot wait for an ack in any case: during a turn the event
+consumer owns pi's stdout queue, and a second reader would race it for the
+`response` line. A rejected steer is still surfaced, not swallowed —
+`_map_event` turns a `response` for `prompt` with `success: false` into an
+`error` event the operator reads.
+
 `PiAgent` sends:
 
 - `{"type": "get_state"}` — the handshake, sent once at `start()`. Its
@@ -50,9 +62,17 @@ the redacted tail of its stderr, never silence.
   `success: false` means the prompt was rejected outright (rare) — a
   rejected/failed turn after acceptance instead shows up in the event
   stream, not a second response.
-- `{"type": "abort"}` — cancel the current turn. The one deliberately
-  unacknowledged write: `cancel()` must return inside a second, and it is
-  only ever sent mid-turn, with no command outstanding.
+- `{"type": "prompt", "message": "<text>", "streamingBehavior": "steer"}` —
+  **steer the turn that is already running** (`PiAgent.steer()`, deviation
+  d16). pi's own wording: during streaming a `prompt` *must* carry
+  `streamingBehavior`, and `"steer"` queues the message to be delivered
+  "after the current assistant turn finishes executing its tool calls,
+  before the next LLM call" (`"followUp"` waits for the agent to stop
+  instead). A bare `prompt` written mid-stream is rejected outright. pi
+  also has a dedicated `{"type": "steer", "message": ...}` command with the
+  same delivery rule; nvsh uses the `prompt` form so one command shape
+  covers both the idle and the mid-turn case.
+- `{"type": "abort"}` — cancel the current turn.
 - `{"type": "new_session"}` / `{"type": "switch_session", "sessionPath": "<path>"}`
   — start fresh / resume a stored session (`PiAgent.new_session()` /
   `.switch_session()`, driven by the session daemon). **pi names its own
@@ -87,13 +107,16 @@ Events have no `id` (except `bash_execution_update`, unused here). The ones
 - A malformed line (fails `json.loads`) → `EventKind.ERROR`.
 - Per-turn lifecycle and progress bookkeeping — `agent_start`,
   `turn_start`/`turn_end`, `message_start`/`message_end`, `message_final`,
-  `agent_settled`, `tool_execution_update` — → no event at all. These only
+  `agent_settled`, `tool_execution_update`, `queue_update` — → no event at
+  all. These only
   say the rpc loop is running; rendering them put `... agent_start`,
   `... turn_start`, `... message_start`, `... message_end` and three
   `... tool_execution_update` lines per tool call into the operator's panel
   (deviation d11), which is noise at a failing prompt. The panel already
   says which tool is running and when it finished.
-- Anything else — `queue_update`, `compaction_start`/`compaction_end`,
+  `queue_update` joined them in d16: every steer changes pi's steering
+  queue, so a single steered instruction printed `... queue_update` twice.
+- Anything else — `compaction_start`/`compaction_end`,
   `auto_retry_*`, `extension_error`, etc. — → `EventKind.STATUS` with `text`
   set to the raw `"type"` value, so an event type nvsh has not seen before
   is still never silently dropped.
@@ -203,6 +226,18 @@ and before `--provider`/`--model`. Consequences worth knowing:
 - The brief is composed from `nvsh.platform.detect()` at argv-build time,
   because argv exists before any request does. Detection failing is not
   fatal: the brief falls back to its generic playbook.
+
+**Extra fields on the response do not reach the extension.** pi's rpc mode
+resolves a `select` to `r.value` alone (measured in pi 0.85.1,
+`dist/modes/rpc/rpc-mode.js`: the `select` wrapper maps the response to
+`"cancelled" in r ? undefined : r.value`), so the `"reason"` nvsh sends
+alongside `{"value": "deny"}` when the operator steers is dropped before
+`approval.ts` can turn it into a `block` reason. nvsh sends it regardless
+— it costs nothing and a backend that does pass the whole response through
+gets the operator's words for free — and delivers the same words to the
+model where they *are* guaranteed to land: as a steering message on the
+same conversation, written before the deny so the turn is provably still
+streaming when it is queued.
 
 ## What `PiAgent` never sends
 

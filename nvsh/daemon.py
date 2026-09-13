@@ -76,7 +76,17 @@ _QUEUE_NOTICE_INTERVAL = 15.0
 
 #: Control kinds that carry no agent request.
 _CONTROL_KINDS = frozenset(
-    {"register", "unregister", "cancel", "ui_response", "status", "stop", "ping", "undo"}
+    {
+        "register",
+        "unregister",
+        "cancel",
+        "ui_response",
+        "steer",
+        "status",
+        "stop",
+        "ping",
+        "undo",
+    }
 )
 
 _LOGGER_NAME = "nvsh.daemon"
@@ -954,6 +964,10 @@ class Daemon:
             yield from self._handle_ui_response(shell, message)
             return
 
+        if kind == "steer":
+            yield from self._handle_steer(shell, message)
+            return
+
         if kind in ("status", "ping"):
             yield AgentEvent(kind=EventKind.STATUS, text=json.dumps(self.state()))
             yield AgentEvent(kind=EventKind.DONE)
@@ -963,6 +977,38 @@ class Daemon:
         yield AgentEvent(kind=EventKind.STATUS, text="stopping")
         yield AgentEvent(kind=EventKind.DONE)
         self.shutdown()
+
+    def _handle_steer(self, shell: str, message: Mapping[str, object]) -> Iterator[AgentEvent]:
+        """Inject the operator's text into this shell's running turn (d16).
+
+        Mirrors :meth:`_handle_ui_response`: the turn is held by another
+        thread parked inside ``agent.run()``, and the only thing that can
+        reach it is the adapter itself. An adapter with no mid-turn channel
+        (or a shell with no turn running) answers ``False``, which comes
+        back as an ``error`` -- the client then sends the text as the next
+        request rather than believing it landed.
+        """
+        text = str(message.get("text", "") or "")
+        if not text:
+            yield AgentEvent(kind=EventKind.ERROR, error="steer needs text")
+            return
+        with self._lock:
+            slots = [slot for slot in self._slots if slot.shell == shell] or list(self._slots)
+        delivered = False
+        for slot in slots:
+            send_steer = getattr(slot.agent, "steer", None)
+            if not callable(send_steer):
+                continue
+            try:
+                delivered = bool(send_steer(text)) or delivered
+            except Exception as exc:  # noqa: BLE001 - a steer must never wedge the daemon
+                self._log.warning("steer failed: %s", exc)
+        if not delivered:
+            yield AgentEvent(kind=EventKind.ERROR, error="no running turn to steer")
+            return
+        self._log.info("steered shell %s's turn", shell)
+        yield AgentEvent(kind=EventKind.STATUS, text=f"steer delivered to {shell}")
+        yield AgentEvent(kind=EventKind.DONE)
 
     def _handle_ui_response(
         self, shell: str, message: Mapping[str, object]

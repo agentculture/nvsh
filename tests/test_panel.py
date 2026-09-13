@@ -139,7 +139,9 @@ def test_tool_call_says_which_tool_is_running():
         )
     )
     text = out.getvalue()
-    assert "... running tool: bash" in text
+    # d19: the command itself, not only the tool name (the exit code is
+    # unknown here, so the finished line keeps the old wording).
+    assert "... running: nvidia-smi" in text
     assert "... tool bash finished" in text
 
 
@@ -568,3 +570,314 @@ def test_guard_is_not_consulted_for_the_run_once_key():
 
     assert p.show_proposal(_proposal(), guard=guard) == panel_mod.APPROVE
     assert seen == []
+
+
+# --- d16: [t] tell -------------------------------------------------------
+
+
+def test_legend_offers_the_tell_key_on_one_80_column_line():
+    out = io.StringIO()
+    p = _panel(out=out, in_=io.StringIO("q\n"), isatty=False)
+    p.show_proposal(_proposal())
+    legend = [ln for ln in out.getvalue().splitlines() if ln.startswith("[Enter]")][0]
+    assert len(legend) <= 80, f"legend is {len(legend)} columns: {legend!r}"
+    for token in ("[Enter] run", "[s] +session", "[u] +user", "[e] explain"):
+        assert token in legend, legend
+    for token in ("[d] details", "[t] tell", "[Esc] ignore"):
+        assert token in legend, legend
+    positions = [legend.index(t) for t in ("[Enter]", "[s]", "[u]", "[e]", "[d]", "[t]", "[Esc]")]
+    assert positions == sorted(positions), legend
+
+
+@pytest.mark.parametrize("typed", ["t\n", "T\n"])
+def test_show_proposal_reads_the_tell_key_without_acknowledging_a_run(typed):
+    out = io.StringIO()
+    p = _panel(out=out, in_=io.StringIO(typed), isatty=False)
+    assert p.show_proposal(_proposal()) == panel_mod.TELL
+    assert "nvsh: running" not in out.getvalue()
+
+
+def test_read_tell_prompts_and_returns_the_typed_line():
+    out = io.StringIO()
+    p = _panel(out=out, in_=io.StringIO("just run free -h\n"), isatty=False)
+    assert p.read_tell() == "just run free -h"
+    assert "nvsh> " in out.getvalue()
+
+
+def test_read_tell_treats_an_empty_line_as_a_cancel():
+    p = _panel(out=io.StringIO(), in_=io.StringIO("\n"), isatty=False)
+    assert p.read_tell() == ""
+
+
+def test_tell_key_then_a_line_is_read_in_cooked_mode_on_a_real_tty():
+    """``t`` is one raw keypress; the sentence after it is a cooked line read."""
+    master, slave = pty.openpty()
+
+    def typist():
+        # After the panel has entered raw mode: tty.setraw uses TCSAFLUSH, so
+        # a key queued before the proposal appeared would be discarded.
+        time.sleep(0.3)
+        os.write(master, b"t")
+        time.sleep(0.3)
+        os.write(master, b"just run free -h\n")
+
+    thread = threading.Thread(target=typist, daemon=True)
+    try:
+        with os.fdopen(slave, "rb", buffering=0) as tty_in:
+            out = io.StringIO()
+            p = panel_mod.Panel(out=out, in_=tty_in, env={}, isatty=True)
+            thread.start()
+            assert p.show_proposal(_proposal()) == panel_mod.TELL
+            assert p.read_tell() == "just run free -h"
+    finally:
+        thread.join(timeout=5)
+        os.close(master)
+
+
+def test_read_tell_on_a_tty_leaves_the_terminal_in_cooked_mode():
+    import termios
+
+    master, slave = pty.openpty()
+    typist = threading.Timer(0.2, lambda: os.write(master, b"hello\n"))
+    typist.start()
+    try:
+        with os.fdopen(slave, "rb", buffering=0) as tty_in:
+            p = panel_mod.Panel(out=io.StringIO(), in_=tty_in, env={}, isatty=True)
+            before = termios.tcgetattr(tty_in.fileno())
+            assert p.read_tell() == "hello"
+            assert termios.tcgetattr(tty_in.fileno()) == before
+    finally:
+        typist.cancel()
+        os.close(master)
+
+
+# --- d18: details --------------------------------------------------------
+
+
+def test_detail_proposal_prints_kind_command_rationale_and_every_extra():
+    out = io.StringIO()
+    p = _panel(out=out)
+    p.detail_proposal(
+        Proposal(command="free -h", rationale="check memory", kind=ProposalKind.INSPECT),
+        details={
+            "approved": "no",
+            "session pattern": "free -h",
+            "user pattern": "free *",
+            "backend": "pi",
+            "conversation": "daemon, shell 4242",
+            "output": "812 bytes (redacted)",
+        },
+    )
+    text = out.getvalue()
+    for line in (
+        "kind: inspect",
+        "command: free -h",
+        "rationale: check memory",
+        "approved: no",
+        "session pattern: free -h",
+        "user pattern: free *",
+        "backend: pi",
+        "conversation: daemon, shell 4242",
+        "output: 812 bytes (redacted)",
+    ):
+        assert line in text, text
+
+
+def test_detail_proposal_without_extras_is_the_old_three_lines():
+    out = io.StringIO()
+    p = _panel(out=out)
+    p.detail_proposal(Proposal(command="free -h", rationale="mem", kind=ProposalKind.INSPECT))
+    assert out.getvalue().splitlines() == [
+        "kind: inspect",
+        "command: free -h",
+        "rationale: mem",
+    ]
+
+
+# --- d19 (panel half): the running command and the exit code -------------
+
+
+def test_tool_call_shows_the_bare_command_not_only_the_tool_name():
+    out = io.StringIO()
+    p = _panel(out=out)
+    p.stream(
+        iter(
+            [
+                AgentEvent(kind=EventKind.TOOL_CALL, tool="bash", args={"command": "nvidia-smi"}),
+                AgentEvent(
+                    kind=EventKind.TOOL_RESULT, tool="bash", result={"output": "", "exitCode": 0}
+                ),
+                AgentEvent(EventKind.DONE),
+            ]
+        )
+    )
+    text = out.getvalue()
+    assert "... running: nvidia-smi" in text
+    assert "... finished (exit 0)" in text
+    assert "running tool: bash" not in text
+
+
+def test_tool_call_without_a_command_still_names_the_tool():
+    out = io.StringIO()
+    p = _panel(out=out)
+    p.stream(
+        iter(
+            [
+                AgentEvent(kind=EventKind.TOOL_CALL, tool="read_file", args={"path": "/etc/x"}),
+                AgentEvent(kind=EventKind.TOOL_RESULT, tool="read_file", result={"output": "x"}),
+                AgentEvent(EventKind.DONE),
+            ]
+        )
+    )
+    text = out.getvalue()
+    assert "... running tool: read_file" in text
+    assert "... tool read_file finished" in text
+
+
+def test_a_long_running_command_is_truncated_to_one_hundred_columns():
+    out = io.StringIO()
+    p = _panel(out=out)
+    command = "echo " + "x" * 300
+    p.stream(
+        iter(
+            [
+                AgentEvent(kind=EventKind.TOOL_CALL, tool="bash", args={"command": command}),
+                AgentEvent(EventKind.DONE),
+            ]
+        )
+    )
+    line = [ln for ln in out.getvalue().splitlines() if ln.startswith("... running: ")][0]
+    body = line[len("... running: ") :]
+    assert len(body) == 100, line
+    assert body.endswith("…")
+
+
+def test_a_multiline_running_command_is_shown_on_one_line():
+    out = io.StringIO()
+    p = _panel(out=out)
+    p.stream(
+        iter(
+            [
+                AgentEvent(
+                    kind=EventKind.TOOL_CALL, tool="bash", args={"command": "echo a\necho b"}
+                ),
+                AgentEvent(EventKind.DONE),
+            ]
+        )
+    )
+    lines = [ln for ln in out.getvalue().splitlines() if "running" in ln]
+    assert lines == ["... running: echo a echo b"]
+
+
+@pytest.mark.parametrize("key", ["exitCode", "exit_code", "exit", "returncode"])
+def test_a_nonzero_exit_code_is_reported_however_the_backend_spells_it(key):
+    out = io.StringIO()
+    p = _panel(out=out)
+    p.stream(
+        iter(
+            [
+                AgentEvent(kind=EventKind.TOOL_RESULT, tool="bash", result={key: 127}),
+                AgentEvent(EventKind.DONE),
+            ]
+        )
+    )
+    assert "... finished (exit 127)" in out.getvalue()
+
+
+def test_running_and_finished_helpers_are_callable_for_locally_run_commands():
+    out = io.StringIO()
+    p = _panel(out=out)
+    p.running("free -h")
+    p.finished(0)
+    assert out.getvalue() == "... running: free -h\n... finished (exit 0)\n"
+
+
+# --- d16 (operator feedback on d15): say what a scope key would store -----
+
+
+_SCOPES = {"session": "this exact line", "user": "'whatis *' (any arguments)"}
+
+
+def test_scope_line_says_what_each_key_would_store_before_the_legend():
+    out = io.StringIO()
+    p = _panel(out=out, in_=io.StringIO("q\n"), isatty=False)
+    p.show_proposal(Proposal("whatis ls", "look it up", ProposalKind.INSPECT), scopes=_SCOPES)
+    lines = out.getvalue().splitlines()
+    scope_lines = [ln for ln in lines if ln.startswith("[s] ") or ln.startswith("[u] ")]
+    assert scope_lines, lines
+    blob = " ".join(scope_lines)
+    assert "this exact line" in blob
+    assert "'whatis *' (any arguments)" in blob
+    assert "for this session" in blob
+    assert "persisted" in blob
+    for line in scope_lines:
+        assert len(line) <= 80, f"{len(line)} columns: {line!r}"
+    legend_at = lines.index(panel_mod.LEGEND)
+    assert max(lines.index(ln) for ln in scope_lines) < legend_at
+
+
+def test_a_refused_scope_is_named_as_unavailable_instead_of_promised():
+    out = io.StringIO()
+    p = _panel(out=out, in_=io.StringIO("q\n"), isatty=False)
+    p.show_proposal(
+        Proposal("sudo nvpmodel -m 0", "power", ProposalKind.FIX),
+        guard=lambda scope: None if scope == "session" else "never pre-approved",
+        scopes=_SCOPES,
+    )
+    text = out.getvalue()
+    assert "[u] not available: never pre-approved" in text
+    assert "[s] allows this exact line" in text
+
+
+def test_no_scope_line_when_the_caller_passes_no_scopes():
+    out = io.StringIO()
+    p = _panel(out=out, in_=io.StringIO("q\n"), isatty=False)
+    p.show_proposal(_proposal())
+    lines = out.getvalue().splitlines()
+    assert [ln for ln in lines if ln.startswith("[s] ")] == []
+
+
+@pytest.mark.parametrize(
+    "typed,ack",
+    [
+        ("s\n", "nvsh: running; this exact line approved for this session"),
+        ("u\n", "nvsh: running; 'whatis *' (any arguments) approved for this user"),
+    ],
+)
+def test_scope_acks_name_the_stored_pattern(typed, ack):
+    out = io.StringIO()
+    p = _panel(out=out, in_=io.StringIO(typed), isatty=False)
+    p.show_proposal(Proposal("whatis ls", "look", ProposalKind.INSPECT), scopes=_SCOPES)
+    lines = [line for line in out.getvalue().splitlines() if line.strip()]
+    assert lines[-1] == ack, lines
+
+
+# --- d22: the header says which backend is being asked -------------------
+
+
+def test_header_names_the_backend_it_is_forwarding_to():
+    out = io.StringIO()
+    p = _panel(out=out)
+    p.header("ls /nope", 2, backend_label="pi/associate")
+    assert out.getvalue() == "nvsh: ls /nope failed (exit 2), forwarding to pi/associate\n"
+
+
+def test_header_without_a_backend_label_is_the_bare_failure_line():
+    out = io.StringIO()
+    p = _panel(out=out)
+    p.header("ls /nope", 2)
+    assert out.getvalue() == "nvsh: ls /nope failed (exit 2)\n"
+
+
+def test_header_ask_form_names_the_backend_and_the_question():
+    out = io.StringIO()
+    p = _panel(out=out)
+    p.header("", 0, backend_label="pi/associate", ask="why is memory high?")
+    assert out.getvalue() == "nvsh: asking pi/associate: why is memory high?\n"
+
+
+def test_header_ask_form_without_a_label_still_reads_as_a_sentence():
+    out = io.StringIO()
+    p = _panel(out=out)
+    p.header("", 0, ask="why is memory high?")
+    assert out.getvalue() == "nvsh: asking: why is memory high?\n"

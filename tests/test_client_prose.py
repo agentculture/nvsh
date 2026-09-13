@@ -52,7 +52,7 @@ def test_a_typed_question_becomes_an_explicit_request(xdg, monkeypatch):
     assert request.kind is RequestKind.EXPLICIT
     assert request.prompt == "what are the memory levels?"
     assert request.command == ""
-    assert "nvsh: asking the agent: what are the memory levels?" in out
+    assert "nvsh: asking pi/associate: what are the memory levels?" in out
     assert "failed (exit 127)" not in out
 
 
@@ -80,7 +80,7 @@ def test_the_ask_form_is_handed_to_the_panel_header_once_it_takes_one(xdg, monke
     seen = {}
 
     class _AskPanel(panel_mod.Panel):
-        def header(self, command, exit_code, ask=None):
+        def header(self, command, exit_code, ask=None, backend_label=""):
             seen["args"] = (command, exit_code, ask)
 
     def send(request, context=None, **kwargs):

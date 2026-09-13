@@ -197,6 +197,18 @@ class NvshAgent(abc.ABC):
     def run(self, request: AgentRequest, context: AgentContext) -> Iterator[AgentEvent]:
         """Stream events for one request. Must respect a pending ``cancel()``."""
 
+    def steer(self, text: str) -> bool:
+        """Deliver ``text`` into the turn that is running right now.
+
+        Returns ``True`` when the backend really took it mid-turn, and
+        ``False`` when it has no such channel -- the caller then sends the
+        text as the next request in the conversation instead, with the
+        prior turn as context (deviation d16). Deliberately *not* abstract:
+        "no mid-turn channel" is a legitimate, complete answer, and an
+        adapter that cannot steer should not have to say so in code.
+        """
+        return False
+
     @abc.abstractmethod
     def cancel(self) -> None:
         """Ask the in-flight ``run()`` to stop yielding further events."""

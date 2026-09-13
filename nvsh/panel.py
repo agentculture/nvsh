@@ -101,6 +101,11 @@ APPROVE_SESSION = "session"
 APPROVE_USER = "user"
 EXPLAIN = "explain"
 DETAILS = "details"
+#: Tell the agent something. The panel reads one line at an ``nvsh> `` prompt
+#: (cooked mode) and the caller injects it into the *same* conversation
+#: (deviation d16): a proposal the operator does not want is worth more as a
+#: correction than as a silent "ignore".
+TELL = "tell"
 IGNORE = "ignore"
 #: A scope key the caller's ``guard`` refused. The caller re-asks; run-once
 #: stays available.
@@ -110,7 +115,18 @@ REFUSED = "refused"
 #: bare ssh into a Jetson, where a wrapped legend costs the panel a line and
 #: reads as two half-legends. ``+session``/``+user`` are the abbreviation
 #: that buys the room, and still say which scope each key approves for.
-LEGEND = "[Enter] run  [s] +session  [u] +user  [e] explain  [d] details  [Esc] ignore"
+LEGEND = "[Enter] run [s] +session [u] +user [e] explain [d] details [t] tell [Esc] ignore"
+
+#: The widest a panel line may get before it is truncated (the running-command
+#: line, the scope line). 80 is the narrowest terminal nvsh promises to read
+#: on; 100 is what d19 asks of the running-command line specifically.
+_SCOPE_WIDTH = 80
+_COMMAND_WIDTH = 100
+
+#: Keys a tool result may spell its exit status with. pi's bash tool says
+#: ``exitCode``; other backends (and nvsh's own runner) spell it differently,
+#: and a result with none of them simply has no exit code to report.
+_EXIT_KEYS = ("exitCode", "exit_code", "exit", "returncode")
 
 #: What the panel prints the instant a proposal key is pressed. Worded so it
 #: never collides with the caller's own outcome lines (``nvsh: not run``).
@@ -120,8 +136,50 @@ _ACK = {
     APPROVE_USER: "nvsh: running (approved for this user) ...",
     EXPLAIN: "nvsh: explaining ...",
     DETAILS: "nvsh: details ...",
+    TELL: "",
     IGNORE: "nvsh: ignored",
 }
+
+#: How each scope key describes, in the ack, what it just stored. Filled in
+#: from the caller's ``scopes`` mapping; the bare wording above is the
+#: fallback for a caller that did not say (operator feedback on d15: the
+#: old ack never named the pattern, so ``[u]`` read as "approve this exact
+#: argument" when it approves every argument).
+_SCOPE_ACK = {
+    APPROVE_SESSION: "nvsh: running; {what} approved for this session",
+    APPROVE_USER: "nvsh: running; {what} approved for this user",
+}
+
+#: How the scope line offers each key.
+_SCOPE_OFFER = {
+    APPROVE_SESSION: "[s] allows {what} for this session",
+    APPROVE_USER: "[u] allows {what} for you, persisted",
+}
+
+
+def one_line(text: str, width: int) -> str:
+    """``text`` collapsed onto one line and truncated to ``width`` columns."""
+    flat = " ".join(str(text).split())
+    if len(flat) <= width:
+        return flat
+    return flat[: width - 1] + "\u2026"
+
+
+def tool_exit_code(result: object) -> int | None:
+    """The exit status a tool result reports, or ``None`` when it reports none."""
+    if not isinstance(result, Mapping):
+        return None
+    for key in _EXIT_KEYS:
+        value = result.get(key)
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, int):
+            return value
+        if isinstance(value, str):
+            text = value.strip()
+            if text.lstrip("-").isdigit():
+                return int(text)
+    return None
 
 
 def is_fallback_status(text: str) -> bool:
@@ -273,10 +331,64 @@ class Panel:
             return
         self.note(f"... {text}")
 
-    def header(self, command: str, exit_code: int) -> None:
-        """The panel's first line: what failed and with which status."""
+    def running(self, command: str) -> None:
+        """Say which command is running -- the command, not the tool (d19).
+
+        ``... running tool: bash`` told the operator nothing they could act
+        on: every proposal nvsh forwards runs through the bash tool, so the
+        line was the same whatever the agent was doing. One bare command
+        line, collapsed onto one line and truncated at 100 columns, says it.
+        """
+        self.note(f"... running: {one_line(command, _COMMAND_WIDTH)}")
+
+    def finished(self, exit_code: int) -> None:
+        """Say how the command that was running ended (d19)."""
+        self.note(f"... finished (exit {exit_code})")
+
+    def tool_call(self, tool: str, command: object = None) -> None:
+        """One ``tool_call`` event: the command when there is one, else the tool."""
+        if isinstance(command, str) and command.strip():
+            self.running(command)
+            return
+        self.note(f"... running tool: {tool}")
+
+    def tool_result(self, tool: str, exit_code: int | None) -> None:
+        """One ``tool_result`` event: the exit code when the backend gave one."""
+        if exit_code is None:
+            self.note(f"... tool {tool} finished")
+            return
+        self.finished(exit_code)
+
+    def header(
+        self,
+        command: str,
+        exit_code: int,
+        *,
+        backend_label: str = "",
+        ask: str | None = None,
+    ) -> None:
+        """The panel's first line: what nvsh is doing, and who it is asking.
+
+        Two forms (deviation d22, after an operator could not tell which
+        backend the panel was waiting on):
+
+        * a failure -- ``nvsh: <command> failed (exit N), forwarding to
+          <backend>``;
+        * a question the operator typed at the prompt (d20) -- ``nvsh:
+          asking <backend>: <text>``.
+
+        ``backend_label`` is the caller's ``<harness>/<model>`` string; an
+        empty one simply drops the clause, so a panel that does not know
+        which backend will serve it still prints a complete first line.
+        """
         s = self.style
-        self.line(f"{s.bold}{s.red}nvsh:{s.reset} {command} failed (exit {exit_code})")
+        lead = f"{s.bold}{s.red}nvsh:{s.reset}"
+        if ask is not None:
+            who = f" {backend_label}" if backend_label else ""
+            self.line(f"{lead} asking{who}: {ask}")
+            return
+        tail = f", forwarding to {backend_label}" if backend_label else ""
+        self.line(f"{lead} {command} failed (exit {exit_code}){tail}")
 
     # -- the waiting indicator ---------------------------------------------
 
@@ -377,9 +489,9 @@ class Panel:
                             started_text = False
                         self.status(event.text)
                 elif event.kind is EventKind.TOOL_CALL:
-                    self.note(f"... running tool: {event.tool}")
+                    self.tool_call(event.tool, (event.args or {}).get("command"))
                 elif event.kind is EventKind.TOOL_RESULT:
-                    self.note(f"... tool {event.tool} finished")
+                    self.tool_result(event.tool, tool_exit_code(event.result))
                 elif event.kind is EventKind.PROPOSAL and event.proposal is not None:
                     if started_text:
                         self.line()
@@ -443,17 +555,60 @@ class Panel:
         """Print why the agent proposed this (the ``e`` key's answer)."""
         self.line(f"why: {proposal.rationale or '(no rationale given)'}")
 
-    def detail_proposal(self, proposal: Proposal) -> None:
-        """Print the proposal's full fields (the ``d`` key's answer)."""
+    def detail_proposal(self, proposal: Proposal, details: Mapping[str, str] | None = None) -> None:
+        """Print everything nvsh knows about this proposal (the ``d`` key).
+
+        The proposal's own three fields, then whatever the caller knows and
+        the panel cannot: the approval state and the exact patterns
+        ``[s]``/``[u]`` would store, which backend and conversation the
+        proposal came from, and how many redacted bytes of output went to
+        the model (deviation d18 -- the old three lines repeated what the
+        box above already showed).
+        """
         kind = getattr(proposal.kind, "value", str(proposal.kind))
         self.line(f"kind: {kind}")
         self.line(f"command: {proposal.command}")
         self.line(f"rationale: {proposal.rationale}")
+        for label, value in (details or {}).items():
+            self.line(f"{label}: {value}")
+
+    def scope_lines(
+        self,
+        scopes: Mapping[str, str],
+        guard: Callable[[str], str | None] | None = None,
+    ) -> list[str]:
+        """What ``[s]``/``[u]`` would actually store, in the operator's words.
+
+        Operator feedback on d15: the keys looked like they approved the
+        exact argument, when ``[u]`` approves *every* argument of that
+        command. So the panel says which, per key, before the legend -- and
+        for a scope the caller's ``guard`` refuses (a privileged or
+        destructive command) it says the key is not available and why,
+        rather than promising something that will be declined.
+        """
+        parts: list[str] = []
+        for scope in (APPROVE_SESSION, APPROVE_USER):
+            what = scopes.get(scope)
+            if not what:
+                continue
+            key = "[s]" if scope == APPROVE_SESSION else "[u]"
+            reason = guard(scope) if guard is not None else None
+            if reason:
+                parts.append(f"{key} not available: {reason}")
+            else:
+                parts.append(_SCOPE_OFFER[scope].format(what=what))
+        if not parts:
+            return []
+        joined = " \u00b7 ".join(parts)
+        if len(joined) <= _SCOPE_WIDTH:
+            return [joined]
+        return [one_line(part, _SCOPE_WIDTH) for part in parts]
 
     def show_proposal(
         self,
         proposal: Proposal,
         guard: Callable[[str], str | None] | None = None,
+        scopes: Mapping[str, str] | None = None,
     ) -> str:
         """Show ``proposal`` and return the operator's one keypress.
 
@@ -474,24 +629,76 @@ class Panel:
         is the caller's job -- this method reports one keypress and returns.
         """
         self.render_proposal(proposal)
+        s = self.style
+        for line in self.scope_lines(scopes or {}, guard):
+            self.line(f"{s.dim}{line}{s.reset}")
         self.line(LEGEND)
         choice = self._read_choice()
+        if choice == TELL:
+            # No ack: the ``nvsh> `` prompt read_tell() puts on screen *is*
+            # the acknowledgement, and nothing has been decided yet.
+            return TELL
         if choice in (APPROVE_SESSION, APPROVE_USER) and guard is not None:
             reason = guard(choice)
             if reason:
                 self.line(f"nvsh: cannot approve for this {choice}: {reason}")
                 return REFUSED
-        self.acknowledge(choice)
+        self.acknowledge(choice, scopes)
         return choice
 
-    def acknowledge(self, choice: str) -> None:
+    def acknowledge(self, choice: str, scopes: Mapping[str, str] | None = None) -> None:
         """Echo the decision the instant the key is pressed.
 
         Whatever happens next (a command, a backend round-trip, nothing)
         can take seconds; the operator must not be left wondering whether
-        the keypress registered at all.
+        the keypress registered at all. A scope key's ack names the pattern
+        it stored, so ``[u]`` can never be mistaken for "approve this one
+        argument" (operator feedback on d15).
         """
-        self.line(_ACK.get(choice, _ACK[IGNORE]))
+        what = (scopes or {}).get(choice)
+        if what and choice in _SCOPE_ACK:
+            self.line(_SCOPE_ACK[choice].format(what=what))
+            return
+        text = _ACK.get(choice, _ACK[IGNORE])
+        if text:
+            self.line(text)
+
+    def read_tell(self) -> str:
+        """Read one line at an ``nvsh> `` prompt; ``""`` means "never mind".
+
+        Deliberately a *cooked* line read, not the raw single keypress the
+        proposal keys use: the operator is typing a sentence, so the tty
+        driver must do the echoing, the backspace and the kill-line. The
+        terminal is already back in cooked mode by the time this runs
+        (``_read_key`` restores it with ``TCSADRAIN``), so nothing here
+        changes termios at all.
+
+        Ctrl+C cancels back to the proposal rather than ending the panel:
+        for the length of the read, SIGINT is *this* method's, not the
+        stream's -- the stream's handler would cancel the agent's turn,
+        which is the opposite of what an operator who mistyped wants.
+        """
+        self.write("nvsh> ")
+        previous = _install_sigint(_interrupt_handler)
+        try:
+            raw = self._read_line()
+        except (KeyboardInterrupt, _Interrupted):
+            self.line()
+            return ""
+        finally:
+            _restore_sigint(previous)
+        return raw.strip()
+
+    def _read_line(self) -> str:
+        try:
+            raw = self.in_.readline()
+        except (KeyboardInterrupt, _Interrupted):
+            raise
+        except Exception:  # noqa: BLE001 - a closed stdin is simply "nothing typed"
+            return ""
+        if isinstance(raw, bytes):
+            return raw.decode("utf-8", errors="replace")
+        return str(raw or "")
 
     def _read_choice(self) -> str:
         if self.isatty:
@@ -508,6 +715,8 @@ class Panel:
             return EXPLAIN
         if key in ("d", "D"):
             return DETAILS
+        if key in ("t", "T"):
+            return TELL
         return IGNORE
 
 
@@ -563,6 +772,11 @@ def _restore_termios(stream: object, saved) -> None:
     import termios
 
     _quiet(termios.tcsetattr, fd, termios.TCSADRAIN, attrs)
+
+
+def _interrupt_handler(_signum: int, _frame: object) -> None:
+    """SIGINT while the panel is reading a line: cancel the read, nothing else."""
+    raise KeyboardInterrupt()
 
 
 def _install_sigint(handler):

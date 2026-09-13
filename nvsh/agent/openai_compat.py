@@ -38,6 +38,14 @@ class OpenAICompatAgent(NvshAgent):
         self._cancelled = False
         self._closed = False
         self._response = None
+        #: The last completed exchange, kept only so a steered message has
+        #: the prior turn as its context (deviation d16). One turn, not a
+        #: transcript: this adapter is stateless by design and nvsh's own
+        #: context block carries the machine facts.
+        self._last_prompt = ""
+        self._last_reply = ""
+        #: Operator text handed to :meth:`steer` and not yet sent.
+        self._pending_steer: list[str] = []
 
     def start(self) -> None:
         self._cancelled = False
@@ -63,16 +71,17 @@ class OpenAICompatAgent(NvshAgent):
             yield AgentEvent(kind=EventKind.STATUS, text=key_diagnostic)
 
         prompt = build_prompt(request, context)
+        messages = self._messages(prompt)
         payload = json.dumps(
             {
                 "model": self._model,
-                "messages": [
-                    {"role": "system", "content": build_system_prompt(context)},
-                    {"role": "user", "content": prompt},
-                ],
+                "messages": [{"role": "system", "content": build_system_prompt(context)}]
+                + messages,
                 "stream": True,
             }
         ).encode("utf-8")
+        self._last_prompt = prompt
+        self._last_reply = ""
         req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
 
         try:
@@ -111,12 +120,46 @@ class OpenAICompatAgent(NvshAgent):
                 delta = choices[0].get("delta") or {}
                 text = delta.get("content")
                 if text:
+                    self._last_reply += text
                     yield AgentEvent(kind=EventKind.TEXT_DELTA, text=text)
             # Stream closed without an explicit [DONE] -- treat as done anyway.
             if not self._cancelled:
                 yield AgentEvent(kind=EventKind.DONE)
         finally:
             self._close_response()
+
+    def _messages(self, prompt: str) -> list[dict[str, str]]:
+        """This request's messages, with any steered text after the prior turn.
+
+        There is no mid-turn channel here (one HTTP request per turn), so
+        the operator's correction arrives as the *next* request. What this
+        adapter adds is the thing only it still has: the previous exchange,
+        sent ahead of it so the model can tell what it is being corrected
+        about (deviation d16). Without it the correction would read as a
+        fresh, contextless instruction.
+        """
+        steered = bool(self._pending_steer)
+        self._pending_steer = []
+        if not steered or not self._last_prompt:
+            return [{"role": "user", "content": prompt}]
+        return [
+            {"role": "user", "content": self._last_prompt},
+            {"role": "assistant", "content": self._last_reply},
+            {"role": "user", "content": prompt},
+        ]
+
+    def steer(self, text: str) -> bool:
+        """No mid-turn channel: remember to carry the prior turn forward.
+
+        Always ``False`` -- the caller is told plainly that the text did not
+        reach the running turn, so it sends it as the next request rather
+        than pretending the agent has already read it. All this records is
+        that the next request *is* a correction, which is what makes the
+        previous exchange worth sending with it.
+        """
+        if text:
+            self._pending_steer.append(text)
+        return False
 
     def cancel(self) -> None:
         self._cancelled = True

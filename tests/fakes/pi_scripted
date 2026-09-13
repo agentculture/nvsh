@@ -24,19 +24,28 @@ Two optional environment knobs make the fake behave like a *real* dialog
 * ``NVSH_TEST_PI_RESPONSES=<path>`` -- append every ``extension_ui_response``
   command received, one JSON object per line, so a test can assert on what
   the client actually sent back.
+* ``NVSH_TEST_PI_COMMANDS=<path>`` -- append *every* command line received,
+  one JSON object per line, so a test can assert on the mid-turn steer
+  (``{"type": "prompt", "streamingBehavior": "steer", ...}``) the client
+  writes while a dialog is open (deviation d16). A steering prompt is
+  acknowledged like any other prompt and never re-runs the script.
 
 While awaiting an answer the fake gives up after ``NVSH_TEST_PI_UI_TIMEOUT``
 seconds (default 10) and emits an ``error`` event, so a *broken* client fails
 the test quickly instead of hanging the suite -- which is exactly what d11
-looked like in the terminal.
+looked like in the terminal. That deadline is a watchdog *thread*, not a
+``select`` on stdin: the client legitimately writes two command lines
+back to back (the d16 steer, then the deny), both land in one read, and
+``select`` would then report "nothing to read" while the second line was
+already sitting in Python's own buffer.
 """
 
 from __future__ import annotations
 
 import json
 import os
-import select
 import sys
+import threading
 import uuid
 from pathlib import Path
 
@@ -66,12 +75,20 @@ def emit(obj: dict) -> None:
     sys.stdout.flush()
 
 
-def record(cmd: dict) -> None:
-    path = os.environ.get("NVSH_TEST_PI_RESPONSES")
+def _append(variable: str, cmd: dict) -> None:
+    path = os.environ.get(variable)
     if not path:
         return
     with open(path, "a", encoding="utf-8") as handle:
         handle.write(json.dumps(cmd) + "\n")
+
+
+def record(cmd: dict) -> None:
+    _append("NVSH_TEST_PI_RESPONSES", cmd)
+
+
+def record_command(cmd: dict) -> None:
+    _append("NVSH_TEST_PI_COMMANDS", cmd)
 
 
 def emit_script(events: list, await_ui: bool) -> tuple:
@@ -94,11 +111,23 @@ def main() -> None:
     sent = False
     pending: list = []
     awaiting = False
+    watchdog: threading.Timer | None = None
+
+    def give_up() -> None:
+        emit({"type": "error", "error": f"no extension_ui_response within {ui_timeout:g}s"})
+        os._exit(0)
+
+    def watch(now_awaiting: bool) -> threading.Timer | None:
+        if watchdog is not None:
+            watchdog.cancel()
+        if not now_awaiting:
+            return None
+        timer = threading.Timer(ui_timeout, give_up)
+        timer.daemon = True
+        timer.start()
+        return timer
 
     while True:
-        if awaiting and not select.select([sys.stdin], [], [], ui_timeout)[0]:
-            emit({"type": "error", "error": f"no extension_ui_response within {ui_timeout:g}s"})
-            return
         raw_line = sys.stdin.readline()
         if not raw_line:
             return
@@ -111,16 +140,19 @@ def main() -> None:
             continue
 
         cmd_type = cmd.get("type")
+        record_command(cmd)
         if cmd_type == "prompt":
             emit({"id": cmd.get("id"), "type": "response", "command": "prompt", "success": True})
             if not sent:
                 sent = True
                 pending, awaiting = emit_script(script, await_ui)
+                watchdog = watch(awaiting)
         elif cmd_type == "abort":
             emit({"id": cmd.get("id"), "type": "response", "command": "abort", "success": True})
         elif cmd_type == "extension_ui_response":
             record(cmd)
             pending, awaiting = emit_script(pending, await_ui)
+            watchdog = watch(awaiting)
         else:
             data: dict = {}
             if cmd_type == "new_session":
