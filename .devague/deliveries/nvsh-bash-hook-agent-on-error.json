@@ -2,7 +2,7 @@
   "plan_slug": "nvsh-bash-hook-agent-on-error",
   "schema_version": 2,
   "created": "2026-09-13T13:17:31Z",
-  "updated": "2026-09-13T13:17:31Z",
+  "updated": "2026-09-13T13:51:20Z",
   "deviations": [
     {
       "id": "d1",
@@ -18,6 +18,21 @@
       "status": "approved",
       "classification": "acceptable",
       "seq": 1
+    },
+    {
+      "id": "d2",
+      "what": "t19 verification: under Ghostty, bash-preexec (sourced by ghostty.bash) always places __bp_precmd_invoke_cmd ahead of __nvsh_hook, so the 'nvsh first in PROMPT_COMMAND' criterion cannot hold there and PIPESTATUS reaches the hook as a single element (false | true -> 0). Fix: __nvsh_hook reads BP_PIPESTATUS when bash-preexec ran first (it preserves $? and exposes the copy); the t19 criterion becomes 'nvsh hook present once, and pipeline PIPESTATUS correct with and without bash-preexec'",
+      "task_ref": "t19",
+      "reason": "measured on spark with a copy of the real rc: declare -p PROMPT_COMMAND=[0]=$'__bp_precmd_invoke_cmd\\n__nvsh_hook\\n__fig_post_prompt\\n__bp_interactive_mode'; NVSH_HOOK_DEBUG_FILE shows 0<TAB>0 for 'false | true'",
+      "affects": [
+        "t20",
+        "c26",
+        "h19"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "classification": "needs-follow-up",
+      "seq": 2
     }
   ],
   "evidence": [],

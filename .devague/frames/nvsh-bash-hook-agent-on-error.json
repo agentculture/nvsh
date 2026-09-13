@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-09-13T10:08:02Z",
-  "updated": "2026-09-13T13:28:50Z",
+  "updated": "2026-09-13T13:59:43Z",
   "claims": [
     {
       "id": "c1",
@@ -1531,6 +1531,15 @@
       "refs": [
         "t14"
       ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l16",
+      "code": "control-absent",
+      "what": "d2: the six bash-preexec hook tests are skipif-gated on /usr/share/ghostty/.../bash-preexec.sh, so on a CI runner without Ghostty they skip silently and the PIPESTATUS regression is guarded only on machines that have that file; the agent's first repro also assumed ghostty.bash loads bash-preexec (it does not on bash 5.2 here) before reading ghostty.bash:266-313",
+      "skipped_check": "",
+      "refs": [],
       "origin": "llm",
       "status": "proposed"
     }
