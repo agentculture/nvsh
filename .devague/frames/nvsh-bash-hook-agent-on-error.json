@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-09-13T10:08:02Z",
-  "updated": "2026-09-13T17:56:15Z",
+  "updated": "2026-09-13T19:20:12Z",
   "claims": [
     {
       "id": "c1",
@@ -1655,6 +1655,15 @@
       "id": "l29",
       "code": "grader-unverified",
       "what": "Qodo fix #13 (rate-limit lock): implementation written before the test, so the red was only the missing rate_lock_path symbol, and concurrency is asserted via a second process observing the lock rather than two racing hooks",
+      "skipped_check": "",
+      "refs": [],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l30",
+      "code": "assumption-for-measurement",
+      "what": "Sonar batch B: the agent chased a phantom regression for a long stretch (two full suites collided in one worktree; a long TMPDIR pushed AF_UNIX socket paths past 108 bytes) instead of reading one traceback with -x; six orphaned test daemons resulted and were killed by PID",
       "skipped_check": "",
       "refs": [],
       "origin": "llm",
