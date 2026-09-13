@@ -40,10 +40,11 @@ from __future__ import annotations
 import fnmatch
 import os
 import re
-import tempfile
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from nvsh import runtimedir
 
 #: Shipped as the starting ``user_patterns`` for a fresh install — narrow,
 #: read-only-ish diagnostic commands an operator is unlikely to mind
@@ -115,7 +116,7 @@ def runtime_dir() -> Path:
     candidate = Path(f"/run/user/{uid}")
     if candidate.is_dir():
         return candidate / "nvsh"
-    return Path(tempfile.gettempdir()) / f"nvsh-{uid}"
+    return runtimedir.fallback_dir(uid)
 
 
 def _default_session_path() -> Path:

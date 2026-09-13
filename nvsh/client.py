@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 import subprocess  # nosec B404 - argv is always ["bash", "-c", <approved command>]
 import time
@@ -73,6 +74,18 @@ _SCOPE_CHOICES = (APPROVE_SESSION, APPROVE_USER)
 
 #: Every choice that means the operator wants the command to run now.
 _RUN_CHOICES = (APPROVE,) + _SCOPE_CHOICES
+
+#: The decision recorded when an unprivileged, read-only proposal already
+#: matches a stored approval pattern, so nvsh runs it without re-asking.
+AUTO_INSPECT = "auto-inspect"
+
+#: Every decision :func:`_approved_command` accepts as "the operator said yes".
+_APPROVED_DECISIONS = _RUN_CHOICES + (AUTO_INSPECT,)
+
+#: Control bytes that must never appear in a command nvsh is about to run:
+#: C0 minus tab/newline/carriage-return, plus DEL. A proposal carrying an
+#: escape sequence or a NUL is malformed or hostile, never approved.
+_CONTROL_BYTES_RE = re.compile(r"[\x00-\x08\x0b-\x0c\x0e-\x1f\x7f]")
 
 #: How long an auto-run read-only inspector may take before it is killed.
 INSPECT_TIMEOUT = 10.0
@@ -426,12 +439,65 @@ class RunResult:
     stderr: str = ""
 
 
-def _run_command(command: str, timeout: float | None = None, login: bool = False) -> RunResult:
-    """Run ``command`` through bash, capturing its output.
+class UnapprovedCommandError(RuntimeError):
+    """A command tried to reach the executor without a decided approval behind it."""
 
-    The argv is always ``["bash", "-c"/"-lc", command]`` -- never
-    ``shell=True``, never an environment variable, and never anything the
-    operator has not approved.
+
+def _approved_command(proposal: Proposal, decision: str) -> str:
+    """The trust boundary: the *only* way a string may reach :func:`_run_command`.
+
+    nvsh runs the exact line the operator approved -- the spec requires it,
+    so the argv stays ``["bash", "-c", <line>]`` and is never rewritten. What
+    makes that safe is where the line comes from, and this function is the
+    one place that is checked:
+
+    * it must be the ``command`` of a :class:`~nvsh.agent.base.Proposal` --
+      the object the panel rendered and the operator saw, never a string
+      taken from ``argv``, an environment variable or an agent's raw output;
+    * *decision* must be one of the tokens :func:`_decide_proposal` returns
+      for an explicit keypress (``[y]``/``[s]``/``[u]``) or the
+      :data:`AUTO_INSPECT` token, which is only reachable for a read-only,
+      unprivileged proposal that already matches a stored approval pattern
+      (see :mod:`nvsh.approvals`);
+    * the line must have a body and must not carry control bytes -- a NUL or
+      an escape sequence in a proposal is a malformed or hostile proposal,
+      never something the operator meant to approve, and the panel could not
+      have shown it faithfully either.
+
+    Every run is recorded by the audit log at its call sites. A refusal
+    raises :class:`UnapprovedCommandError` rather than running anything.
+    """
+    if not isinstance(proposal, Proposal):
+        raise UnapprovedCommandError("only a Proposal the operator saw may be run")
+    if decision not in _APPROVED_DECISIONS:
+        raise UnapprovedCommandError(f"command not approved (decision: {decision!r})")
+    command = proposal.command
+    if not isinstance(command, str) or not command.strip():
+        raise UnapprovedCommandError("an approved proposal must carry a command")
+    if _CONTROL_BYTES_RE.search(command):
+        raise UnapprovedCommandError("refusing a command carrying control bytes")
+    return command
+
+
+def _run_approved(
+    proposal: Proposal,
+    decision: str,
+    *,
+    timeout: float | None = None,
+    login: bool = False,
+) -> RunResult:
+    """Run the command of an approved *proposal*. The only caller of the executor."""
+    return _run_command(_approved_command(proposal, decision), timeout=timeout, login=login)
+
+
+def _run_command(command: str, timeout: float | None = None, login: bool = False) -> RunResult:
+    """Run an already-approved ``command`` through bash, capturing its output.
+
+    Private, and reached only through :func:`_run_approved` /
+    :func:`_approved_command`: the argv is always
+    ``["bash", "-c"/"-lc", command]`` -- never ``shell=True``, never an
+    environment variable, and never anything the operator has not approved
+    with a keypress at the panel.
     """
     argv = ["bash", "-lc" if login else "-c", command]
     try:
@@ -728,11 +794,11 @@ def _proposal_handler(
         )
         if auto:
             panel.running(command)
-            result = _run_command(command, timeout=INSPECT_TIMEOUT)
+            result = _run_approved(proposal, AUTO_INSPECT, timeout=INSPECT_TIMEOUT)
             panel.finished(result.exit_code)
             inspections.append((command, result))
             if audit is not None:
-                audit.record(event="decision", proposal=proposal, decision="auto-inspect")
+                audit.record(event="decision", proposal=proposal, decision=AUTO_INSPECT)
                 audit.record(event="outcome", proposal=proposal, outcome=result.exit_code)
             if request_id:
                 responder.respond(request_id, {"value": "once"})
@@ -801,7 +867,7 @@ def _proposal_handler(
             # is the authority and may still refuse -- a refusal must cost the
             # operator the approval, never the command they asked for.
             _approve_scope(panel, approvals, command, choice)
-        result = _run_command(command)
+        result = _run_approved(proposal, choice)
         if audit is not None:
             audit.record(
                 event="outcome", proposal=proposal, decision=choice, outcome=result.exit_code
@@ -1182,7 +1248,7 @@ def retry(
         return 0
     if choice in _SCOPE_CHOICES:
         _approve_scope(panel, _load_approvals(), command, choice)
-    result = _run_command(command, login=True)
+    result = _run_approved(proposal, choice, login=True)
     if result.stdout:
         panel.write(result.stdout)
     if result.stderr:

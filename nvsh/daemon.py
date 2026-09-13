@@ -33,12 +33,13 @@ import socket
 import socketserver
 import subprocess  # nosec B404 - fixed argv, no shell
 import sys
-import tempfile
 import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Iterator, Mapping, Optional
+
+from nvsh import runtimedir
 
 from .agent.base import (
     AgentContext,
@@ -118,11 +119,7 @@ def runtime_dir(env: Mapping[str, str] | None = None) -> Path:
     Never a hard-coded path, and never a directory shared between users:
     without ``XDG_RUNTIME_DIR`` we fall back to ``<tmp>/nvsh-<uid>``.
     """
-    resolved = _resolve_env(env)
-    xdg = resolved.get("XDG_RUNTIME_DIR")
-    if xdg:
-        return Path(xdg) / "nvsh"
-    return Path(tempfile.gettempdir()) / f"nvsh-{os.getuid()}"
+    return runtimedir.runtime_dir(_resolve_env(env))
 
 
 def socket_path(env: Mapping[str, str] | None = None) -> Path:

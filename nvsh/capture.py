@@ -47,6 +47,7 @@ import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from nvsh import runtimedir
 from nvsh.redact import redact_report
 
 #: Default cap on the bytes handed back by :func:`last_slice`: half becomes
@@ -132,14 +133,14 @@ def _no_capture(source: str) -> Slice:
 
 
 def _runtime_dir(env: dict) -> Path:
-    """``$XDG_RUNTIME_DIR/nvsh``, falling back to ``/tmp/nvsh-<uid>`` (0700)."""
-    xdg = env.get("XDG_RUNTIME_DIR")
-    if xdg:
-        return Path(xdg) / "nvsh"
-    # Per-uid, not a shared/predictable path an attacker could pre-create:
-    # open_session_log() still creates this directory mode 0700 and the log
-    # file mode 0600 before anything is written to it.
-    return Path(f"/tmp/nvsh-{os.getuid()}")  # nosec B108
+    """``$XDG_RUNTIME_DIR/nvsh``, falling back to ``<tmp>/nvsh-<uid>`` (0700).
+
+    Both halves come from :mod:`nvsh.runtimedir`, the one helper that owns
+    the fallback shape and the "this directory is really ours" check, so
+    capture, ``nvsh setup``, the daemon and the approval store can never
+    disagree about where the session scratch directory is.
+    """
+    return runtimedir.runtime_dir(env)
 
 
 def session_log_path(env: dict, pid: int) -> Path:
@@ -199,8 +200,10 @@ def open_session_log(env: dict, pid: int) -> LogHandle | None:
         return None
 
     path = session_log_path(env, pid)
-    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    os.chmod(path.parent, 0o700)
+    # Refuses (RuntimeDirError) when the directory is a symlink, is owned by
+    # another uid, or cannot be tightened to 0700 -- which is what makes the
+    # world-writable temp-dir fallback safe to use at all.
+    runtimedir.ensure_private(path.parent)
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     os.close(fd)
     os.chmod(path, 0o600)
