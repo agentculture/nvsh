@@ -2,7 +2,7 @@
   "plan_slug": "nvsh-bash-hook-agent-on-error",
   "schema_version": 2,
   "created": "2026-09-13T13:17:31Z",
-  "updated": "2026-09-13T15:17:03Z",
+  "updated": "2026-09-13T15:18:15Z",
   "deviations": [
     {
       "id": "d1",
@@ -168,6 +168,22 @@
       "status": "proposed",
       "classification": "risky",
       "seq": 11
+    },
+    {
+      "id": "d12",
+      "what": "operator on spark: after one shell's Ctrl+G /ask turn (t19 test at 18:01) stayed active in the daemon, every later failure request from other shells queued behind it and hit the client timeout ('daemon connection lost: timed out') for 15+ minutes while 'nvsh daemon status' answered instantly; the daemon serializes agent requests with no per-request wall-clock cap, no abort when the requesting client disconnects, and no cancel of a pending approval dialog whose client is gone. Fix: abort the backend turn and cancel its dialog when the client socket closes, cap a turn at a configurable wall clock, and keep control requests out of the queue",
+      "task_ref": "t19",
+      "reason": "daemon status at 18:15 showed 5 shells, 1 agent, conversation 3422579 active with 1 request since 18:01; later shells never got a 'new conversation' log line",
+      "affects": [
+        "t12",
+        "c43",
+        "c51",
+        "c46"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "classification": "risky",
+      "seq": 12
     }
   ],
   "evidence": [],
