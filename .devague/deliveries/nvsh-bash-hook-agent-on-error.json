@@ -2,7 +2,7 @@
   "plan_slug": "nvsh-bash-hook-agent-on-error",
   "schema_version": 2,
   "created": "2026-09-13T13:17:31Z",
-  "updated": "2026-09-13T16:19:24Z",
+  "updated": "2026-09-13T16:23:46Z",
   "deviations": [
     {
       "id": "d1",
@@ -325,6 +325,20 @@
       "status": "proposed",
       "classification": "risky",
       "seq": 21
+    },
+    {
+      "id": "d22",
+      "what": "operator: the panel header must make the hand-off explicit and name the harness and model: 'nvsh: <line> failed (exit N), forwarding to pi/associate' for failures and 'nvsh: asking pi/associate: <sentence>' for prose requests (qwen/<model> etc. when another harness is chosen); the label comes from the chosen adapter and its configured model",
+      "task_ref": "t19",
+      "reason": "operator on 2026-09-13: 'Can you change it so it is clear it defers to an agent? ... or what harness and model chosen'",
+      "affects": [
+        "t13",
+        "c32"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "classification": "acceptable",
+      "seq": 22
     }
   ],
   "evidence": [],
