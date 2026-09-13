@@ -24,7 +24,7 @@ from typing import Iterator
 from urllib.parse import urlsplit
 
 from ..config import resolve_bearer
-from ._subprocess import build_prompt
+from ._subprocess import build_prompt, build_system_prompt
 from .base import AgentContext, AgentEvent, AgentRequest, Capabilities, EventKind, NvshAgent
 
 
@@ -66,7 +66,10 @@ class OpenAICompatAgent(NvshAgent):
         payload = json.dumps(
             {
                 "model": self._model,
-                "messages": [{"role": "user", "content": prompt}],
+                "messages": [
+                    {"role": "system", "content": build_system_prompt(context)},
+                    {"role": "user", "content": prompt},
+                ],
                 "stream": True,
             }
         ).encode("utf-8")

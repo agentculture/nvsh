@@ -9,7 +9,7 @@ a non-zero exit yields ``ERROR`` with stderr as the message.
 
 from __future__ import annotations
 
-from ._subprocess import SubprocessAgent, build_prompt
+from ._subprocess import SubprocessAgent, build_prompt, build_system_prompt
 from .base import AgentContext, AgentEvent, AgentRequest, Capabilities, EventKind
 
 _STATUS_PREFIX = "[status] "
@@ -20,7 +20,13 @@ class QwenAgent(SubprocessAgent):
 
     def _argv(self, request: AgentRequest, context: AgentContext) -> list[str]:
         prompt = build_prompt(request, context)
-        return [self.binary, "-p", prompt]
+        return [
+            self.binary,
+            "--append-system-prompt",
+            build_system_prompt(context),
+            "-p",
+            prompt,
+        ]
 
     def _parse_line(self, line: str) -> AgentEvent | None:
         if not line:

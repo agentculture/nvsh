@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import json
 
-from ._subprocess import SubprocessAgent, build_prompt
+from ._subprocess import SubprocessAgent, build_full_prompt
 from .base import AgentContext, AgentEvent, AgentRequest, Capabilities, EventKind
 
 
@@ -23,7 +23,10 @@ class CodexAgent(SubprocessAgent):
     binary = "codex"
 
     def _argv(self, request: AgentRequest, context: AgentContext) -> list[str]:
-        prompt = build_prompt(request, context)
+        # ``codex exec`` has no --system-prompt/--append-system-prompt flag
+        # (checked against the installed CLI's --help), so the system brief
+        # leads the prompt text itself.
+        prompt = build_full_prompt(request, context)
         return [self.binary, "exec", "--json", prompt]
 
     def _parse_line(self, line: str) -> AgentEvent | None:

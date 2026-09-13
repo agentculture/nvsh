@@ -64,6 +64,7 @@ from .panel import (
     Panel,
     StreamResult,
 )
+from .triggers import prose_request
 
 #: The panel choices that mean "run it, and stop asking me about this class".
 _SCOPE_CHOICES = (APPROVE_SESSION, APPROVE_USER)
@@ -317,6 +318,44 @@ def build_request(kind: RequestKind, args: Any, prompt: str | None = None) -> Ag
             int(getattr(args, "exit", 0)) if getattr(args, "exit", None) is not None else None
         ),
         failure_id=str(getattr(args, "failure_id", "") or ""),
+    )
+
+
+def _ask_header(panel: Panel, state: Mapping[str, Any], question: str) -> None:
+    """Print the "this was a question" header, however the panel spells it.
+
+    ``Panel.header`` is owned elsewhere and is growing an ``ask`` form of
+    its own; this call site uses it as soon as its signature accepts an
+    ``ask`` keyword and prints the plain line until then, so the two changes
+    can land in either order without one breaking the other.
+    """
+    import inspect
+
+    try:
+        accepts_ask = "ask" in inspect.signature(panel.header).parameters
+    except (TypeError, ValueError):  # pragma: no cover - a non-introspectable panel
+        accepts_ask = False
+    if accepts_ask:
+        panel.header(str(state.get("line", "") or ""), int(state.get("exit", 0) or 0), ask=question)
+        return
+    panel.line(f"nvsh: asking the agent: {question}")
+
+
+def _prose_request(state: Mapping[str, Any], question: str) -> AgentRequest:
+    """The request for a plain-language question typed at the prompt (d20).
+
+    ``command``/``exit_code`` are deliberately left empty: there is no
+    failed command to diagnose, so the prompt the adapters compose carries
+    the operator's sentence and the detected machine facts, and nothing
+    about ``what: command not found``.
+    """
+    return AgentRequest(
+        kind=RequestKind.EXPLICIT,
+        prompt=question,
+        command="",
+        exit_code=None,
+        failure_id=str(state.get("failure_id", "") or ""),
+        ask=question,
     )
 
 
@@ -654,9 +693,19 @@ def handle_failure(
 
     shell_id = _shell_pid(resolved)
     context = build_context(args, resolved)
-    request = _failure_request(state)
 
-    panel.header(state["line"], state["exit"])
+    # A sentence typed at the prompt ("what are the memory levels?") is a
+    # question, not a failed command: bash's "command not found" is an
+    # artefact of where it was typed, and diagnosing `what` helps nobody.
+    # It goes to the agent as an explicit request carrying the operator's
+    # own words, under its own header (deviation d20).
+    question = prose_request(str(state.get("line", "") or ""), int(state.get("exit", 0) or 0))
+    if question:
+        request = _prose_request(state, question)
+        _ask_header(panel, state, question)
+    else:
+        request = _failure_request(state)
+        panel.header(state["line"], state["exit"])
     approvals = _load_approvals()
     inspections: list[tuple[str, RunResult]] = []
     audit = _audit(resolved)
@@ -807,12 +856,19 @@ def context_show(
 ) -> int:
     """``nvsh context --show``: print exactly the bytes that would be sent.
 
-    The bytes are the prompt text :func:`nvsh.agent.pi.build_prompt` builds
-    from the request and context -- the same function every adapter's
-    ``run()`` feeds its backend -- so what is printed is what the model
-    sees, not a summary of it.
+    The bytes are the system brief
+    (:func:`nvsh.agent.prompt.build_system_prompt` -- who the agent is, the
+    rules it works under, and the playbook for the detected platform) and
+    then the prompt text :func:`nvsh.agent.pi.build_prompt` builds from the
+    request and context -- the same two functions every adapter's ``run()``
+    feeds its backend, one through a system-prompt channel and one as the
+    turn's prompt -- so what is printed is what the model sees, not a
+    summary of it. Both halves are already redacted: the brief is a
+    constant plus the detected platform block, and the failure context went
+    through :mod:`nvsh.redact` in :func:`build_context`.
     """
     from .agent.pi import build_prompt
+    from .agent.prompt import build_full_prompt, build_system_prompt
     from .cli._output import emit_result
 
     resolved = dict(os.environ if env is None else env)
@@ -821,6 +877,7 @@ def context_show(
     context = build_context(args, resolved)
     request = _failure_request(state) if state else _failure_request({})
     prompt = build_prompt(request, context)
+    system_prompt = build_system_prompt(context)
     if json_mode:
         emit_result(
             {
@@ -832,13 +889,14 @@ def context_show(
                 "shell_pid": context.shell_pid,
                 "output": context.output,
                 "redaction_rules": list(context.redaction_report),
+                "system_prompt": system_prompt,
                 "prompt": prompt,
             },
             json_mode=True,
             stream=out,
         )
     else:
-        emit_result(prompt, json_mode=False, stream=out)
+        emit_result(build_full_prompt(request, context), json_mode=False, stream=out)
     return 0
 
 

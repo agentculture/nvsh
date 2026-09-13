@@ -152,6 +152,29 @@ def default_approval_extension_path() -> Path:
 build_prompt = _build_prompt
 
 
+def default_system_prompt() -> str:
+    """The system brief for *this* machine, composed once per pi process.
+
+    pi takes ``--append-system-prompt <text>`` (verified against the
+    installed CLI's ``--help``, pi 0.85.x; documented in ``docs/pi-rpc.md``),
+    so the brief is a launch flag: it costs its tokens once for the session
+    instead of riding every turn's prompt. The detected platform block is
+    read here rather than taken from a request's :class:`AgentContext`
+    because argv is built before any request exists -- and it is the same
+    machine either way. Detection failing is not fatal: the brief degrades
+    to its generic playbook.
+    """
+    from .prompt import build_system_prompt
+
+    try:
+        from ..platform import detect
+
+        block = detect().render_block()
+    except Exception:  # noqa: BLE001 - a generic brief beats no brief
+        block = ""
+    return build_system_prompt(AgentContext(platform=block))
+
+
 def _approval_envelope(obj: Mapping[str, object]) -> dict | None:
     """Parse the approval extension's JSON envelope out of a dialog request.
 
@@ -207,8 +230,12 @@ class PiAgent(NvshAgent):
         env: Mapping[str, str] | None = None,
         session_dir: str | Path | None = None,
         extension_path: str | Path | None = None,
+        system_prompt: str | None = None,
     ) -> None:
         self._pi_path = pi_path
+        #: Resolved lazily in build_argv() so constructing a PiAgent never
+        #: runs platform detection (tests construct one per case).
+        self._system_prompt = system_prompt
         self._env: dict[str, str] = dict(os.environ if env is None else env)
 
         defaults = _default_pi_agent_config()
@@ -241,9 +268,12 @@ class PiAgent(NvshAgent):
 
         Order matches the spec's acceptance criterion verbatim: mode, then
         the hygiene flags, then ``--session-dir``, then ``-e <extension>``,
-        then ``--provider``/``--model`` (never an API key -- pi reads its
-        own ``models.json``).
+        then ``--append-system-prompt`` (the system brief, once for the
+        session -- deviation d19), then ``--provider``/``--model`` (never an
+        API key -- pi reads its own ``models.json``).
         """
+        if self._system_prompt is None:
+            self._system_prompt = default_system_prompt()
         argv = [
             self._pi_path,
             "--mode",
@@ -257,6 +287,8 @@ class PiAgent(NvshAgent):
             str(self._session_dir),
             "-e",
             str(self._extension_path),
+            "--append-system-prompt",
+            self._system_prompt,
         ]
         if self._provider:
             argv += ["--provider", str(self._provider)]
@@ -448,10 +480,19 @@ class PiAgent(NvshAgent):
 
     # -- running -------------------------------------------------------
 
+    def _prompt_for(self, request: AgentRequest, context: AgentContext) -> str:
+        """One turn's prompt: the facts block only.
+
+        The system brief is *not* repeated here -- pi already holds it for
+        the whole session through ``--append-system-prompt`` in
+        :meth:`build_argv`.
+        """
+        return build_prompt(request, context)
+
     def run(self, request: AgentRequest, context: AgentContext) -> Iterator[AgentEvent]:
         self.start()
         self._cancelled = False
-        prompt_text = build_prompt(request, context)
+        prompt_text = self._prompt_for(request, context)
         # Acknowledged, like every other command: a prompt pi never answers
         # for is an error the operator gets to read, not silence (d14).
         self._command("prompt", message=prompt_text)

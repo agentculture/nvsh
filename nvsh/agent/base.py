@@ -66,6 +66,12 @@ class AgentRequest:
     command: str = ""
     exit_code: int | None = None
     failure_id: str = ""
+    #: The operator's own sentence when the "failed command" was actually a
+    #: plain-language question typed at the prompt (deviation d20). Empty
+    #: for a real failure. Presentation-only: the prompt already carries the
+    #: question, and this is what lets the panel say "asking the agent: ..."
+    #: instead of "<line> failed (exit 127)".
+    ask: str = ""
 
 
 @dataclass(frozen=True)

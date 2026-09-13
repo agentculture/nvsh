@@ -222,3 +222,82 @@ def _tokenize(text: str) -> list[str]:
 
 def _pattern_matches(output: str, patterns: tuple[str, ...]) -> bool:
     return any(pattern in output for pattern in patterns if pattern)
+
+
+# ---------------------------------------------------------------------------
+# prose at the prompt (deviation d20)
+# ---------------------------------------------------------------------------
+
+#: Exit status bash reports for a word it could not resolve to a command.
+COMMAND_NOT_FOUND = 127
+
+#: First words that make a line a question or an instruction rather than an
+#: attempt at a command. Kept small and deliberately boring: a false
+#: positive costs one oddly-framed agent call, but a false positive on a
+#: real command name would hide a genuine failure, so nothing here is
+#: plausible as the name of a program.
+QUESTION_WORDS: frozenset[str] = frozenset(
+    {
+        "what",
+        "whats",
+        "why",
+        "how",
+        "when",
+        "where",
+        "which",
+        "who",
+        "is",
+        "are",
+        "was",
+        "were",
+        "do",
+        "does",
+        "did",
+        "can",
+        "could",
+        "should",
+        "would",
+        "show",
+        "tell",
+        "explain",
+        "check",
+        "please",
+        "help",
+    }
+)
+
+#: Any of these anywhere in the line means the operator was writing shell,
+#: not prose: a pipeline, a redirect, a substitution, a glob, a separator.
+_SHELL_METACHARS = "|&;<>(){}[]$`\\*!~="
+
+
+def prose_request(line: str, exit_code: int) -> str | None:
+    """Return the question ``line`` asks, or ``None`` if it is a command.
+
+    The operator types ``what are the memory levels?`` at a bash prompt.
+    Bash says ``what: command not found`` and exits 127. That is not a
+    failure to diagnose -- it is a question to answer, and nvsh should hand
+    it to the agent as one (deviation d20).
+
+    Pure and heuristic by necessity: the hook hands over the line and the
+    status, not the operator's ``PATH``, aliases or functions, so this
+    decides from shape alone. It is deliberately conservative -- it fires
+    only on exit 127, only on three or more words, only when no shell
+    metacharacter or path separator appears, and only when the line either
+    ends in ``?`` or opens with one of :data:`QUESTION_WORDS`. Anything
+    else stays a failure.
+    """
+    text = (line or "").strip()
+    if exit_code != COMMAND_NOT_FOUND or not text:
+        return None
+    if any(char in text for char in _SHELL_METACHARS):
+        return None
+    words = text.split()
+    if len(words) < 3:
+        return None
+    first = words[0]
+    if "/" in first or "." in first or not first.isalpha():
+        return None
+    if not (text.endswith("?") or first.lower() in QUESTION_WORDS):
+        return None
+    return text
