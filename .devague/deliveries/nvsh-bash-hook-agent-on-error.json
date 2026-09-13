@@ -1,0 +1,26 @@
+{
+  "plan_slug": "nvsh-bash-hook-agent-on-error",
+  "schema_version": 2,
+  "created": "2026-09-13T13:17:31Z",
+  "updated": "2026-09-13T13:17:31Z",
+  "deviations": [
+    {
+      "id": "d1",
+      "what": "nvsh setup also detects missing helper tools (uv, tmux; pi via npm) and offers to install them; on confirmation setup runs the install itself (apt/snap/npm), so orin gets uv and tmux from the setup flow instead of manual steps",
+      "task_ref": "t21",
+      "reason": "operator request during wave 5 (2026-09-13): orin has no uv and no tmux; thor has npm but no pi; the plan's setup only printed the pi offer",
+      "affects": [
+        "t21",
+        "t19",
+        "c16"
+      ],
+      "origin": "user",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 1
+    }
+  ],
+  "evidence": [],
+  "deltas": [],
+  "supersessions": []
+}
