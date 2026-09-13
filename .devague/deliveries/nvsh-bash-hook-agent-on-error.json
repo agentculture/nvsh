@@ -2,7 +2,7 @@
   "plan_slug": "nvsh-bash-hook-agent-on-error",
   "schema_version": 2,
   "created": "2026-09-13T13:17:31Z",
-  "updated": "2026-09-13T15:04:01Z",
+  "updated": "2026-09-13T15:17:03Z",
   "deviations": [
     {
       "id": "d1",
@@ -152,6 +152,22 @@
       "status": "proposed",
       "classification": "needs-follow-up",
       "seq": 10
+    },
+    {
+      "id": "d11",
+      "what": "operator on spark: in the one-shot pi fallback, Enter on a proposal does nothing because client._proposal_handler answers via client_transport.respond_ui (a daemon control message) while the agent runs in-process, so pi's approval dialog is never answered; also pi's rpc lifecycle events (agent_start, turn_start, message_start/end, tool bash) leak into the panel as '... <name>' status lines. Fix: the handler answers whichever agent owns the dialog (in-process responder in one-shot), and lifecycle events are not rendered as status",
+      "task_ref": "t19",
+      "reason": "reported by the operator from a live spark Ghostty session: proposal rendered, Enter had no visible effect",
+      "affects": [
+        "t13",
+        "t9",
+        "c48",
+        "c32"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "classification": "risky",
+      "seq": 11
     }
   ],
   "evidence": [],
