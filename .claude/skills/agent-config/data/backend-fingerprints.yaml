@@ -1,0 +1,50 @@
+# Backend fingerprint registry. Vendored from steward's agent-config skill
+# (cite-don't-import) via guildmaster; this repo owns its copy. Read here by
+# the sibling scripts/show.sh (bash). Upstream steward also reads it from a
+# Python detector; this template has no parallel detector, so only the
+# `backends:` prompt mapping below is load-bearing. It is one of the three
+# harness registries tests/test_harness_registries.py holds in agreement —
+# keep it in sync with upstream when re-syncing.
+#
+# `prompt`        — the backend's system-prompt file(s), as a repo-relative
+#                   path. May be a single scalar (legacy, still supported for
+#                   vendored copies) or a LIST: a backend matches if ANY of
+#                   its listed prompts is present on disk. The list form
+#                   exists because four agent harnesses occupy only two
+#                   backend names — Qwen Code runs on `acp` (QWEN.md) and
+#                   associate/Pi runs on `colleague` (AGENTS.override.md as
+#                   context plus .pi/SYSTEM.md as the system prompt). Values
+#                   may be nested paths, not just root filenames.
+# `steering`      — files/dirs distinctive enough to attribute to this backend.
+# `shared_steering` — files/dirs that belong to NO specific backend. A repo
+#                   declared as any backend may have these without triggering a
+#                   mismatch. `.agents` is a generic Culture agent-config
+#                   convention. `.claude/settings.json` and
+#                   `.claude/settings.local.json` are generic Claude Code
+#                   (editor/CLI) workspace config files — they appear in any
+#                   repo that uses Claude Code as the development tool,
+#                   regardless of the agent backend, so they must never be used
+#                   to infer the backend or flag a mismatch. The claude backend
+#                   is identified solely by its `CLAUDE.md` prompt file.
+#                   `.github/copilot-instructions.md` is generic GitHub Copilot
+#                   editor/IDE config — any repo may have it regardless of the
+#                   declared agent backend, so it must not trigger a mismatch.
+#                   `.colleague` is the colleague CLI's gitignored bookkeeping
+#                   dir — it appears in ANY repo where `colleague` / the
+#                   ask-colleague skill has run, regardless of the agent
+#                   backend, so it is generic residue, not a `colleague`-backend
+#                   fingerprint. The colleague backend is identified solely by
+#                   its prompt files. `.pi` is the associate/Pi harness's
+#                   config dir — it holds that harness's own system prompt
+#                   (.pi/SYSTEM.md) and can appear alongside any declared
+#                   backend, so it must never trigger a foreign-steering
+#                   mismatch.
+backends:
+  claude:  { prompt: CLAUDE.md, steering: [] }
+  codex:   { prompt: AGENTS.md, steering: [".codex"] }
+  acp:     { prompt: [AGENTS.md, QWEN.md], steering: [".kiro"] }
+  copilot: { prompt: AGENTS.md, steering: [] }
+  gemini:  { prompt: GEMINI.md, steering: [".gemini"] }
+  colleague: { prompt: [AGENTS.colleague.md, AGENTS.override.md, .pi/SYSTEM.md], steering: [] }
+shared_steering: [".agents", ".claude/settings.json", ".claude/settings.local.json", ".github/copilot-instructions.md", ".colleague", ".pi"]
+prompt_fallback: AGENTS.md

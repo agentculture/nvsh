@@ -1,0 +1,172 @@
+name: Tests
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    # Promote SONAR_TOKEN to job env so the SonarCloud step can gate on
+    # `env.SONAR_TOKEN != ''` — `secrets.*` isn't allowed in `if:`. This
+    # makes the step a no-op on fork PRs (where the secret isn't injected)
+    # and on any repo that hasn't configured the token yet.
+    env:
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          # Sonar needs full git history for accurate "new code" blame attribution.
+          fetch-depth: 0
+
+      - uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4
+
+      - run: uv python install 3.12
+
+      - run: uv sync
+
+      - run: uv run pytest -n auto --cov=culture_agent_template --cov-report=xml:coverage.xml --cov-report=term -v
+
+      - name: SonarCloud Scan
+        if: env.SONAR_TOKEN != ''
+        uses: SonarSource/sonarqube-scan-action@fd88b7d7ccbaefd23d8f36f73b59db7a3d246602 # v6
+        env:
+          SONAR_HOST_URL: https://sonarcloud.io
+
+  lint:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: scan for committed secrets and non-localhost endpoints
+        run: python3 scripts/scan-secrets.py
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '20'
+
+      - uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4
+
+      - run: uv python install 3.12
+
+      - run: uv sync
+
+      - name: black --check
+        run: uv run black --check culture_agent_template tests
+
+      - name: isort --check
+        run: uv run isort --check-only culture_agent_template tests
+
+      - name: flake8
+        run: uv run flake8 culture_agent_template tests
+
+      - name: bandit
+        run: uv run bandit -c pyproject.toml -r culture_agent_template
+
+      - name: markdownlint-cli2
+        run: |
+          npm install -g markdownlint-cli2@0.21.0
+          markdownlint-cli2 "**/*.md" "#node_modules" "#.local" "#.claude/skills" "#.teken"
+
+      - name: afi rubric gate
+        run: uv run teken cli doctor . --strict
+
+  harness-smoke:
+    # All four harnesses (Claude Code, Pi/associate, colleague, Qwen Code) are
+    # live for interactive use over the same clone at all times, so all four
+    # configs must be correct at all times. Nothing else in CI checks more than
+    # the one config `culture.yaml`'s declared backend uses.
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4
+
+      - run: uv python install 3.12
+
+      - run: uv sync
+
+      # `--stage all` runs three stages and prints exactly which of them really
+      # ran here:
+      #   config    — always runs; the load-bearing per-harness check.
+      #   toolchain — steward doctor + four `guild create` dry-runs, fetched
+      #               from PyPI with uvx.
+      #   live      — the four documented harness invocations. A stock runner
+      #               ships none of those CLIs, so this stage SKIPS and says so
+      #               under "NOT VERIFIED"; it is never counted as a pass.
+      # `--require config` makes a skipped config stage a hard failure.
+      #
+      # The script writes results to stdout and diagnostics (the NOT VERIFIED
+      # and WAIVED expansions, and any failure detail) to stderr, per the
+      # repo's CLI contract. Both are folded into the step summary with `2>&1`
+      # so the run's honesty about what it did NOT verify stays visible there.
+      - name: per-harness smoke check
+        shell: bash
+        run: |
+          set -o pipefail
+          uv run python scripts/harness-smoke.py --stage all --require config 2>&1 \
+            | tee -a "$GITHUB_STEP_SUMMARY"
+
+  version-check:
+    # Only run on PR events. On push to main after a merged PR, the comparison
+    # would always fail (PR_VERSION == MAIN_VERSION because HEAD and origin/main
+    # point at the same commit). Restricting the trigger avoids that.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+
+      - run: git fetch origin main
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+
+      - name: Check version bump
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # AgentCulture rule: every PR bumps the version — even docs/config/CI.
+          # See CLAUDE.md and the version-bump skill for rationale.
+          PR_VERSION=$(python3 -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+          MAIN_VERSION=$(git show origin/main:pyproject.toml 2>/dev/null | python3 -c "import sys,tomllib; print(tomllib.loads(sys.stdin.read())['project']['version'])" 2>/dev/null || echo "")
+
+          if [ -z "$MAIN_VERSION" ]; then
+            echo "No pyproject.toml on main yet — skipping version check (initial scaffold)."
+            exit 0
+          fi
+
+          if [ "$PR_VERSION" = "$MAIN_VERSION" ]; then
+            MARKER="<!-- version-check -->"
+            BODY="⚠️ **Version not bumped** — \`pyproject.toml\` still has \`$PR_VERSION\` (same as main). Bump before merging to avoid a failed PyPI publish.
+
+          $MARKER"
+
+            EXISTING=$(gh api repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/comments \
+              --jq '.[] | select(.body | contains("<!-- version-check -->")) | .id' | head -1)
+
+            if [ -n "$EXISTING" ]; then
+              gh api repos/${{ github.repository }}/issues/comments/$EXISTING \
+                -X PATCH -f body="$BODY" > /dev/null
+            else
+              gh pr comment ${{ github.event.pull_request.number }} --body "$BODY" || true
+            fi
+
+            echo "::error::Version $PR_VERSION matches main. Bump before merging."
+            exit 1
+          else
+            echo "Version bumped: $MAIN_VERSION -> $PR_VERSION"
+          fi

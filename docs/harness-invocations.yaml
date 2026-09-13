@@ -1,0 +1,112 @@
+# Machine-readable automation contract (t11).
+#
+# Selecting a harness in a clone of this template is cd-into-the-repo-and-
+# run-the-binary: all four harnesses below are live simultaneously over the
+# SAME clone, independent of what `culture.yaml` declares as the mesh
+# resident. This file is the single source of truth for the invocation that
+# force-selects each one and proves it resolved THIS clone's config file(s).
+#
+# Consumers:
+#   - docs/automation-contract.md renders this table in prose.
+#   - the per-harness CI smoke check (t12) runs these `binary` + `args`
+#     verbatim.
+# Edit only here — docs and CI both read this file so they cannot drift
+# apart (acceptance criterion 2).
+#
+# Contract per entry:
+#   binary:      executable name resolved from PATH.
+#   args:        argv passed after the binary, in order, as a list.
+#   resolves:    the clone-local config file(s) this invocation proves load.
+#   read_only:   true means the invocation makes no repo-tool calls; false
+#                means it is a model turn that may reason about tools but is
+#                run with tool access minimized (see notes).
+#   notes:       why these exact flags, including any surprising resolution
+#                behavior discovered while writing this contract.
+#
+# All four invocations were verified empirically (2026-09-06) to leave
+# `git status --porcelain` empty in this worktree. See
+# docs/automation-contract.md for the literal transcripts.
+
+harnesses:
+  claude:
+    binary: claude
+    args:
+      - "-p"
+      - "Answer with exactly one word, yes or no: does CLAUDE.md describe this project as culture-agent-template?"
+    resolves:
+      - CLAUDE.md
+    read_only: true
+    notes: >-
+      -p/--print runs one non-interactive turn and exits. CLAUDE.md
+      auto-discovery is claude's default behavior when run inside a
+      directory that ships CLAUDE.md; no extra flag opts in (only --bare
+      opts back out, and --bare is not used here). A yes/no probe is used
+      instead of an open-ended one for a deterministic CI assertion.
+      Verified twice: "Yes", "Yes".
+
+  pi:
+    binary: pi
+    args:
+      - "-p"
+      - "--approve"
+      - "--no-tools"
+      - "Answer with exactly one word, yes or no: does your system prompt say your role mirrors the associate role defined in lobes-cli?"
+    resolves:
+      - AGENTS.override.md
+      - .pi/SYSTEM.md
+    read_only: true
+    notes: >-
+      -p (non-interactive) and --approve are BOTH required. Pi's context
+      files (AGENTS.override.md, replacing AGENTS.md/CLAUDE.md for this
+      directory per the Pi README's "Context Files" section) load
+      unconditionally, but its project-local .pi/ resources
+      (.pi/SYSTEM.md) are gated by project trust, and non-interactive runs
+      fall back to defaultProjectTrust: ask == ignore those resources
+      unless overridden. AGENTS.override.md's own prose already names
+      "associate" and ".pi/SYSTEM.md", so a naive probe about the role name
+      alone is not decisive (both --approve and --no-approve answered
+      "associate" from context-file text). The lobes-cli attribution used
+      here appears ONLY in .pi/SYSTEM.md, never in AGENTS.override.md, so it
+      isolates the trust-gated file specifically. Verified: with --approve,
+      "yes"/"yes" (twice); without --approve, "UNKNOWN" / an unresolved
+      tool-seeking reply (never an affirmative "yes") — see
+      docs/automation-contract.md for the full comparison. --no-tools keeps
+      the run read-only for the smoke check.
+
+  qwen:
+    binary: qwen
+    args:
+      - "--approval-mode"
+      - "plan"
+      - "--output-format"
+      - "text"
+      - "Answer with exactly one word, yes or no: does QWEN.md describe this project as culture-agent-template?"
+    resolves:
+      - QWEN.md
+    read_only: true
+    notes: >-
+      A bare positional prompt runs one-shot and exits by default (the
+      deprecated -p/--prompt flag is not needed). --approval-mode plan
+      keeps the run analyze-only (no file edits or shell commands).
+      --output-format text avoids qwen's default TUI framing so CI can
+      match stdout directly. QWEN.md discovery is automatic in a directory
+      that ships QWEN.md. An open-ended "what is the project name" probe
+      answered inconsistently across runs ("QWEN.md" once, then
+      "culture-agent-template"), so a yes/no probe is used for a
+      deterministic CI assertion. Verified twice: "Yes", "Yes".
+
+  colleague:
+    binary: colleague
+    args:
+      - "agents"
+      - "list"
+    resolves:
+      - AGENTS.colleague.md
+    read_only: true
+    notes: >-
+      Deterministic, no-model-call CLI introspection: it prints the
+      resolved AGENTS instruction layer(s) for this clone rather than
+      taking a chat turn, so it is the cheapest and most direct proof that
+      AGENTS.colleague.md (not a bare AGENTS.md, which this template does
+      not ship) is what colleague's prompt cascade resolves here. Verified
+      output: "colleague\tAGENTS.colleague.md".

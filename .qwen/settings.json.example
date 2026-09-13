@@ -1,0 +1,12 @@
+{
+  "//": "Copy this file to .qwen/settings.json and fill in your own values. Never commit the real file with a live baseUrl or credential.",
+  "modelProviders": {
+    "openai": [
+      {
+        "id": "example-model",
+        "envKey": "EXAMPLE_API_KEY",
+        "baseUrl": "http://localhost:8000/v1"
+      }
+    ]
+  }
+}
