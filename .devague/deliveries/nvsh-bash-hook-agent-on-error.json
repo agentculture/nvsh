@@ -2,7 +2,7 @@
   "plan_slug": "nvsh-bash-hook-agent-on-error",
   "schema_version": 2,
   "created": "2026-09-13T13:17:31Z",
-  "updated": "2026-09-13T17:04:30Z",
+  "updated": "2026-09-13T17:33:17Z",
   "deviations": [
     {
       "id": "d1",
@@ -355,6 +355,22 @@
       "status": "proposed",
       "classification": "needs-follow-up",
       "seq": 23
+    },
+    {
+      "id": "d24",
+      "what": "operator: the approval keys widen too much for commands like 'ssh orin \"ps ... | head\"' ([u] offers 'ssh *'). Add uppercase [S]/[U] that approve the specific form '<command> <first argument> *' (e.g. 'ssh orin *'), keep lowercase as the broad form, show both patterns in the scope line; and split pipelines/chains on |, && and ; so each stage gets its own pattern and the check requires every stage to be approved (a broad 'ls *' no longer covers 'ls * | sudo ...')",
+      "task_ref": "t19",
+      "reason": "operator on 2026-09-13: 'It would have helped to be ssh orin, but I am forced for generics... Can shift (uppercase U, S) be just this specific command? And separated by pipelines when relevant'",
+      "affects": [
+        "t13",
+        "t5",
+        "c50",
+        "c25"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "classification": "needs-follow-up",
+      "seq": 128
     }
   ],
   "evidence": [
