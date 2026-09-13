@@ -188,6 +188,144 @@ def test_agent_reachable_unreachable_closed_port():
     assert str(port) in check["remediation"]
 
 
+# --- agent_reachable: pi's apiKey in models.json (coordinator follow-up) -----
+
+
+class _BearerGatedHandler(http.server.BaseHTTPRequestHandler):
+    """200 only with the exact expected bearer; 401 otherwise (no bearer, wrong bearer)."""
+
+    expected_bearer = ""
+
+    def do_GET(self):  # noqa: N802 - stdlib method name
+        auth = self.headers.get("Authorization", "")
+        if auth == f"Bearer {self.expected_bearer}":
+            self.send_response(200)
+        else:
+            self.send_response(401)
+        self.end_headers()
+        self.wfile.write(b"{}")
+
+    def log_message(self, *_args):  # silence test output
+        pass
+
+
+def _serve_bearer_gated(expected_bearer: str):
+    port = _free_port()
+    handler = type(
+        "BearerGatedHandler", (_BearerGatedHandler,), {"expected_bearer": expected_bearer}
+    )
+    server = http.server.HTTPServer(("127.0.0.1", port), handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    return server, thread, f"http://127.0.0.1:{port}"
+
+
+def _write_pi_models_json(home: Path, provider: str, api_key: str, base_url: str) -> None:
+    models = home / ".pi" / "agent" / "models.json"
+    models.parent.mkdir(parents=True)
+    models.write_text(
+        json.dumps({"providers": {provider: {"baseUrl": base_url, "apiKey": api_key}}}),
+        encoding="utf-8",
+    )
+
+
+def _all_check_text(check: dict) -> str:
+    return json.dumps(check)
+
+
+def test_agent_reachable_pi_uses_literal_api_key_from_models_json(tmp_path):
+    secret = "example-fake-bearer-not-a-real-key-value"
+    server, thread, base_url = _serve_bearer_gated(secret)
+    try:
+        _write_pi_models_json(tmp_path, "nemotron", secret, base_url)
+        cfg = Config(
+            agent_provider="pi", agents={"pi": {"provider": "nemotron", "model": "associate"}}
+        )
+
+        check = doctor_checks.check_agent_reachable(
+            cfg, which=lambda name: "/usr/bin/pi", home=tmp_path
+        )
+
+        assert check["passed"] is True
+        assert check["severity"] == "info"
+        assert secret not in _all_check_text(check)
+        assert "models.json" in check["message"]
+    finally:
+        server.shutdown()
+        thread.join()
+
+
+def test_agent_reachable_pi_resolves_env_ref_api_key_from_models_json(tmp_path, monkeypatch):
+    secret = "example-fake-envref-not-a-real-key-value"
+    monkeypatch.setenv("NVSH_PI_TEST_KEY", secret)
+    server, thread, base_url = _serve_bearer_gated(secret)
+    try:
+        _write_pi_models_json(tmp_path, "nemotron", "$NVSH_PI_TEST_KEY", base_url)
+        cfg = Config(
+            agent_provider="pi", agents={"pi": {"provider": "nemotron", "model": "associate"}}
+        )
+
+        check = doctor_checks.check_agent_reachable(
+            cfg, which=lambda name: "/usr/bin/pi", home=tmp_path
+        )
+
+        assert check["passed"] is True
+        assert check["severity"] == "info"
+        assert secret not in _all_check_text(check)
+        assert "NVSH_PI_TEST_KEY" in check["message"]
+    finally:
+        server.shutdown()
+        thread.join()
+
+
+def test_agent_reachable_pi_without_bearer_gets_401_without_leaking_absence_of_key(tmp_path):
+    server, thread, base_url = _serve_bearer_gated("only-this-exact-key-passes")
+    try:
+        _write_pi_models_json(tmp_path, "nemotron", "wrong-key", base_url)
+        cfg = Config(
+            agent_provider="pi", agents={"pi": {"provider": "nemotron", "model": "associate"}}
+        )
+
+        check = doctor_checks.check_agent_reachable(
+            cfg, which=lambda name: "/usr/bin/pi", home=tmp_path
+        )
+
+        assert check["passed"] is False
+        assert "endpoint-401" in check["message"]
+        assert "wrong-key" not in _all_check_text(check)
+        assert "only-this-exact-key-passes" not in _all_check_text(check)
+    finally:
+        server.shutdown()
+        thread.join()
+
+
+def test_agent_reachable_pi_401_with_no_api_key_names_models_json(tmp_path):
+    server, thread, base_url = _serve(401)
+    try:
+        models = tmp_path / ".pi" / "agent" / "models.json"
+        models.parent.mkdir(parents=True)
+        models.write_text(
+            json.dumps({"providers": {"nemotron": {"baseUrl": base_url}}}), encoding="utf-8"
+        )
+        cfg = Config(
+            agent_provider="pi", agents={"pi": {"provider": "nemotron", "model": "associate"}}
+        )
+
+        check = doctor_checks.check_agent_reachable(
+            cfg, which=lambda name: "/usr/bin/pi", home=tmp_path
+        )
+
+        assert check["passed"] is False
+        assert "endpoint-401" in check["message"]
+        assert "models.json" in check["remediation"]
+        assert "nemotron" in check["remediation"]
+        assert "$HOME" in check["remediation"]
+        assert "~" not in check["remediation"]
+    finally:
+        server.shutdown()
+        thread.join()
+
+
 # --- hook_sourced -------------------------------------------------------------
 
 

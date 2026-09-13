@@ -119,69 +119,125 @@ def check_agent_configured(config: Config | None, config_error: str | None) -> d
 # ---------------------------------------------------------------------------
 
 
-def _extract_base_url(data: object, provider_name: object) -> str | None:
-    """Best-effort extraction of one provider's ``baseUrl`` from pi's models.json.
+#: Literal-string form used in every user-facing message/remediation --
+#: never a real ``~/``-expanded path (the steward portability check flags
+#: ``~/.`` paths in committed text; see docs/... and memory
+#: "steward-portability-home-paths").
+_PI_MODELS_JSON = "$HOME/.pi/agent/models.json"
 
-    pi's own schema for ``~/.pi/agent/models.json`` is not part of nvsh's
-    contract (nvsh only ever reads it, read-only, and never prints a key),
-    so this accepts the handful of shapes a provider table plausibly takes:
-    a top-level or ``providers`` mapping keyed by provider name, or a list of
-    provider objects carrying ``id``/``name`` and ``baseUrl``.
+#: Matches an env-ref apiKey value: ``$VAR`` or ``${VAR}``.
+_ENV_REF_RE = re.compile(r"^\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?$")
+
+
+def _find_provider_entry(data: object, provider_name: object) -> dict | None:
+    """Best-effort lookup of one provider's table in pi's models.json.
+
+    pi's own schema for ``$HOME/.pi/agent/models.json`` is not part of
+    nvsh's contract (nvsh only ever reads it, read-only, and never prints a
+    key), so this accepts the handful of shapes a provider table plausibly
+    takes: a top-level or ``providers`` mapping keyed by provider name, or a
+    list of provider objects carrying ``id``/``name``.
     """
 
-    def _from_mapping(mapping: object) -> str | None:
+    def _from_mapping(mapping: object) -> dict | None:
         if not isinstance(mapping, dict) or not provider_name:
             return None
         entry = mapping.get(provider_name)
-        if isinstance(entry, dict) and entry.get("baseUrl"):
-            return str(entry["baseUrl"])
-        return None
+        return entry if isinstance(entry, dict) else None
 
-    def _from_list(items: object) -> str | None:
+    def _from_list(items: object) -> dict | None:
         if not isinstance(items, list):
             return None
         for entry in items:
             if not isinstance(entry, dict):
                 continue
             if entry.get("id") == provider_name or entry.get("name") == provider_name:
-                if entry.get("baseUrl"):
-                    return str(entry["baseUrl"])
+                return entry
         return None
 
     if isinstance(data, dict):
         found = _from_mapping(data)
-        if found:
+        if found is not None:
             return found
         providers = data.get("providers")
         found = _from_mapping(providers) or _from_list(providers)
-        if found:
+        if found is not None:
             return found
-    found = _from_list(data)
-    if found:
-        return found
-    return None
+    return _from_list(data)
 
 
-def _pi_base_url(config: Config, home: Path) -> str | None:
-    pi_settings = config.agents.get("pi", {})
-    base_url = pi_settings.get("base_url")
-    if base_url:
-        return str(base_url)
-
-    provider_name = pi_settings.get("provider")
+def _load_pi_models(home: Path) -> object | None:
+    """Read and parse ``$HOME/.pi/agent/models.json``, or ``None`` on any miss."""
     models_path = home / ".pi" / "agent" / "models.json"
     try:
         text = models_path.read_text(encoding="utf-8")
     except OSError:
         return None
     try:
-        data = json.loads(text)
+        return json.loads(text)
     except ValueError:
         return None
-    return _extract_base_url(data, provider_name)
 
 
-def _probe_endpoint(base_url: str, api_key_env: str | None, timeout: float) -> dict:
+def _resolve_pi_api_key(raw: object) -> tuple[str | None, str | None]:
+    """Resolve a models.json ``apiKey`` field to ``(bearer, source_label)``.
+
+    Supports a literal key or an env-ref (``$VAR`` / ``${VAR}``, resolved
+    from ``os.environ``). ``source_label`` describes where the bearer came
+    from for a check message -- ``"models.json"`` or ``"$VAR"`` -- and never
+    carries the key value or any prefix of it. Returns ``(None, None)`` when
+    there is nothing usable (missing, empty, or an env-ref to an unset var).
+    """
+    if not raw:
+        return None, None
+    text = str(raw).strip()
+    if not text:
+        return None, None
+    match = _ENV_REF_RE.match(text)
+    if match:
+        var = match.group(1)
+        value = os.environ.get(var)
+        return (value, f"${var}") if value else (None, None)
+    return text, "models.json"
+
+
+def _pi_endpoint_info(
+    config: Config, home: Path
+) -> tuple[str | None, str | None, str | None, str | None]:
+    """Return ``(base_url, bearer, bearer_source, provider_name)`` for the pi provider.
+
+    ``base_url`` prefers config's own ``[agents.pi] base_url`` over
+    models.json's. ``bearer``/``bearer_source`` come only from models.json's
+    ``apiKey`` for the configured provider (pi's config.toml has no
+    ``api_key_env`` -- its bearer always lives in models.json).
+    """
+    pi_settings = config.agents.get("pi", {})
+    provider_name = pi_settings.get("provider")
+    base_url_raw = pi_settings.get("base_url")
+    base_url = str(base_url_raw) if base_url_raw else None
+
+    entry = _find_provider_entry(_load_pi_models(home), provider_name)
+
+    if not base_url and entry:
+        raw_base_url = entry.get("baseUrl")
+        if raw_base_url:
+            base_url = str(raw_base_url)
+
+    bearer, bearer_source = (None, None)
+    if entry:
+        bearer, bearer_source = _resolve_pi_api_key(entry.get("apiKey"))
+
+    return base_url, bearer, bearer_source, provider_name
+
+
+def _probe_endpoint(
+    base_url: str,
+    bearer: str | None,
+    bearer_source: str | None,
+    timeout: float,
+    *,
+    remediation_401: str,
+) -> dict:
     url = base_url.rstrip("/") + "/models"
     scheme = urllib.parse.urlsplit(url).scheme
     if scheme not in ("http", "https"):
@@ -194,10 +250,8 @@ def _probe_endpoint(base_url: str, api_key_env: str | None, timeout: float) -> d
         )
 
     headers: dict[str, str] = {}
-    if api_key_env:
-        key = os.environ.get(api_key_env)
-        if key:
-            headers["Authorization"] = f"Bearer {key}"
+    if bearer:
+        headers["Authorization"] = f"Bearer {bearer}"
 
     request = urllib.request.Request(url, headers=headers, method="GET")
     try:
@@ -216,27 +270,25 @@ def _probe_endpoint(base_url: str, api_key_env: str | None, timeout: float) -> d
             f"check that the endpoint at {base_url} is running and reachable " "from this machine",
         )
 
+    bearer_note = f" (bearer from {bearer_source})" if bearer_source else ""
+
     if status == 401:
-        remediation = (
-            f"set {api_key_env} to a valid API key"
-            if api_key_env
-            else "configure api_key_env in config.toml (or update the bearer key in "
-            "~/.pi/agent/models.json for pi) with a valid key"
-        )
         return _check(
             "agent_reachable",
             False,
             "error",
-            f"endpoint returned 401 Unauthorized (endpoint-401): {base_url}",
-            remediation,
+            f"endpoint returned 401 Unauthorized (endpoint-401): {base_url}{bearer_note}",
+            remediation_401,
         )
     if status == 200:
-        return _check("agent_reachable", True, "info", f"endpoint reachable: {base_url}", "")
+        return _check(
+            "agent_reachable", True, "info", f"endpoint reachable: {base_url}{bearer_note}", ""
+        )
     return _check(
         "agent_reachable",
         False,
         "warning",
-        f"endpoint {base_url} responded with HTTP {status}",
+        f"endpoint {base_url} responded with HTTP {status}{bearer_note}",
         "",
     )
 
@@ -259,15 +311,24 @@ def check_agent_reachable(
                 "configured provider is pi, but 'pi' is not on PATH (pi-missing)",
                 "nvsh agent install pi, or nvsh agent use openai-compat",
             )
-        base_url = _pi_base_url(config, home)
-        # pi's own bearer key lives in ~/.pi/agent/models.json, never in
-        # nvsh's config.toml, so there is no api_key_env to name here.
-        api_key_env = None
+        base_url, bearer, bearer_source, provider_name = _pi_endpoint_info(config, home)
+        provider_label = provider_name or "the configured provider"
+        if bearer:
+            remediation_401 = f"update apiKey for provider {provider_label} in {_PI_MODELS_JSON}"
+        else:
+            remediation_401 = f"add apiKey for provider {provider_label} in {_PI_MODELS_JSON}"
     elif provider == "openai-compat":
         settings = config.agents.get("openai-compat", {})
         base_url_raw = settings.get("base_url")
         base_url = str(base_url_raw) if base_url_raw else None
         api_key_env = settings.get("api_key_env")
+        bearer = os.environ.get(api_key_env) if api_key_env else None
+        bearer_source = f"${api_key_env}" if bearer else None
+        remediation_401 = (
+            f"set {api_key_env} to a valid API key"
+            if api_key_env
+            else "configure api_key_env in config.toml with a valid key's env var name"
+        )
     else:
         return _check(
             "agent_reachable",
@@ -283,10 +344,12 @@ def check_agent_reachable(
             False,
             "warning",
             f"endpoint unknown for provider '{provider}'; nothing to probe",
-            "set base_url in config.toml, or ~/.pi/agent/models.json for pi",
+            f"set base_url in config.toml, or {_PI_MODELS_JSON} for pi",
         )
 
-    return _probe_endpoint(base_url, api_key_env, timeout)
+    return _probe_endpoint(
+        base_url, bearer, bearer_source, timeout, remediation_401=remediation_401
+    )
 
 
 # ---------------------------------------------------------------------------
