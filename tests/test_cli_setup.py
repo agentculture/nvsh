@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import sys
 from contextlib import redirect_stderr, redirect_stdout
+from pathlib import Path
 
 import pytest
 
@@ -245,6 +247,11 @@ def test_setup_reruns_agent_choice_after_installing_pi(tmp_path, monkeypatch):
     def fake_run(argv, **kwargs):
         if argv[:2] == ["npm", "install"]:
             state["pi_installed"] = True
+            # The harness chooser looks pi up on the real PATH (its `which` is a
+            # def-time default); a CI runner has no pi, so the fake one appears.
+            monkeypatch.setenv(
+                "PATH", str(Path(__file__).parent / "fakes") + os.pathsep + os.environ["PATH"]
+            )
         import subprocess as _sp
 
         return _sp.CompletedProcess(args=argv, returncode=0, stdout="", stderr="")

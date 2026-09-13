@@ -1,0 +1,9 @@
+# GitGuardian: the redactor's test corpus and its tests contain deliberately
+# synthetic secrets (EXAMPLE tokens, a placeholder OpenSSH key body) that the
+# redactor must scrub. They are not credentials; scripts/scan-secrets.py
+# self-excludes the same two files.
+version: 2
+secret:
+  ignored-paths:
+    - tests/fixtures/redact_corpus.txt
+    - tests/test_redact.py

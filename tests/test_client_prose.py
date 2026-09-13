@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import io
+import os
 import types
+from pathlib import Path
 
 import pytest
 
@@ -20,6 +22,9 @@ def xdg(tmp_path, monkeypatch):
     monkeypatch.setenv("NVSH_NO_DAEMON", "1")
     monkeypatch.setattr(client_mod, "_platform_block", lambda: "platform: dgx-spark")
     return tmp_path
+
+
+FAKES_DIR = str(Path(__file__).parent / "fakes")
 
 
 def _args(tmp_path, line, exit_code):
@@ -41,6 +46,9 @@ def _run(xdg, monkeypatch, line, exit_code):
         yield AgentEvent(kind=EventKind.DONE)
 
     monkeypatch.setattr(client_transport, "send", send)
+    # The header names the chosen harness; pin it to the fake pi on PATH so the
+    # label does not depend on whether the runner has a real pi installed.
+    monkeypatch.setenv("PATH", FAKES_DIR + os.pathsep + os.environ.get("PATH", ""))
     out = io.StringIO()
     panel = panel_mod.Panel(out=out, in_=io.StringIO(), env={}, isatty=False)
     client_mod.handle_failure(_args(xdg, line, exit_code), panel=panel)
