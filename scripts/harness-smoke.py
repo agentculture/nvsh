@@ -113,6 +113,27 @@ STEWARD_WAIVED_PORTABILITY_PATHS = frozenset(
     }
 )
 
+#: Dated devague records — frame/plan/delivery state and the specs, plans and
+#: delivery summaries exported from them — quote the operator's real files
+#: (``~/.bashrc``, ``~/.pi/agent/models.json``) because that is what the
+#: decisions were about. They are records, not configuration nvsh reads, and
+#: the method forbids hand-editing them, so a portability finding confined to
+#: these prefixes is WAIVED (reported, never silently dropped).
+STEWARD_WAIVED_PORTABILITY_PREFIXES = (
+    ".devague/",
+    "docs/specs/",
+    "docs/plans/",
+    "docs/deliveries/",
+)
+
+
+def steward_portability_waivable(path: str) -> bool:
+    """Is a steward portability finding on *path* a known-accepted one?"""
+    return path in STEWARD_WAIVED_PORTABILITY_PATHS or path.startswith(
+        STEWARD_WAIVED_PORTABILITY_PREFIXES
+    )
+
+
 PASS, FAIL, SKIP, WAIVED = "PASS", "FAIL", "SKIP", "WAIVED"
 
 
@@ -501,7 +522,7 @@ def check_steward_doctor(repo: Path, timeout: int) -> Result:
         check = str(finding.get("check", "?"))
         message = str(finding.get("message", ""))
         paths = set(_FINDING_PATH.findall(message))
-        if check == "portability" and paths and paths <= STEWARD_WAIVED_PORTABILITY_PATHS:
+        if check == "portability" and paths and all(map(steward_portability_waivable, paths)):
             waived.append(f"{check} ({', '.join(sorted(paths))})")
         else:
             unexpected.append(f"{check}: {message.strip()[:300]}")
