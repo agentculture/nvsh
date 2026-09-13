@@ -57,7 +57,7 @@ class _SSEHandler(BaseHTTPRequestHandler):
         self.wfile.flush()
 
 
-@pytest.fixture()
+@pytest.fixture
 def fake_server():
     server = ThreadingHTTPServer(("127.0.0.1", 0), _SSEHandler)
     server.last_auth_header = None

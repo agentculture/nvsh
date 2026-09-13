@@ -490,7 +490,7 @@ class PiAgent(NvshAgent):
             try:
                 self._proc.stdin.write(line)
                 self._proc.stdin.flush()
-            except (BrokenPipeError, ValueError, OSError):
+            except (ValueError, OSError):  # OSError covers BrokenPipeError
                 return False
         return True
 
@@ -521,6 +521,18 @@ class PiAgent(NvshAgent):
             raise PiRpcError(f"could not send {command} to pi{self._exit_detail()}")
         return self._await_response(command, self._ack_timeout if timeout is None else timeout)
 
+    def _ack_or_none(self, obj: dict, command: str) -> dict | None:
+        """*obj* if it is the ``response`` ack for *command*, else ``None``.
+
+        Raises :class:`PiRpcError` when it is the ack and pi rejected the
+        command -- a rejection is never something to keep waiting through.
+        """
+        if obj.get("type") != "response" or obj.get("command") != command:
+            return None
+        if not obj.get("success", True):
+            raise PiRpcError(f"pi rejected {command}: {obj.get('error', 'no reason given')}")
+        return obj
+
     def _await_response(self, command: str, timeout: float) -> dict:
         carried: list = []
         deadline = time.monotonic() + timeout
@@ -546,12 +558,9 @@ class PiAgent(NvshAgent):
                         f"pi closed its output before acknowledging {command}"
                         f"{self._exit_detail()}"
                     )
-                if obj.get("type") == "response" and obj.get("command") == command:
-                    if not obj.get("success", True):
-                        raise PiRpcError(
-                            f"pi rejected {command}: {obj.get('error', 'no reason given')}"
-                        )
-                    return obj
+                ack = self._ack_or_none(obj, command)
+                if ack is not None:
+                    return ack
                 carried.append(obj)
         finally:
             self._held.extendleft(reversed(carried))
@@ -584,25 +593,9 @@ class PiAgent(NvshAgent):
 
     def _events(self) -> Iterator[AgentEvent]:
         """The turn's event loop, from the acked prompt to DONE/ERROR."""
-        while True:
-            if self._cancelled:
-                return
+        while not self._cancelled:
             if self._proc is not None and self._proc.poll() is not None:
-                # Process has exited. Drain anything already queued first so
-                # a fast final burst of events (including a real error
-                # event) is not lost, then report the exit.
-                event = self._drain_one_nowait()
-                if event is not None:
-                    yield event
-                    if self._cancelled:
-                        return
-                    if event.kind in (EventKind.DONE, EventKind.ERROR):
-                        return
-                    continue
-                yield AgentEvent(
-                    kind=EventKind.ERROR,
-                    error=f"pi process exited{self._exit_detail()}",
-                )
+                yield from self._post_exit_events()
                 return
 
             try:
@@ -610,20 +603,37 @@ class PiAgent(NvshAgent):
             except queue.Empty:
                 continue
 
-            if obj is None:
-                yield AgentEvent(
-                    kind=EventKind.ERROR, error="pi process stdout closed unexpectedly"
-                )
-                return
-
-            event = self._map_event(obj)
+            event = self._live_event(obj)
             if event is None:
                 continue
             yield event
-            if self._cancelled:
+            if self._cancelled or event.kind in (EventKind.DONE, EventKind.ERROR):
                 return
+
+    def _post_exit_events(self) -> Iterator[AgentEvent]:
+        """What pi still owes once its process has exited.
+
+        Drains anything already queued first, so a fast final burst of
+        events (including a real error event) is not lost, then reports the
+        exit itself.
+        """
+        while not self._cancelled:
+            event = self._drain_one_nowait()
+            if event is None:
+                yield AgentEvent(
+                    kind=EventKind.ERROR,
+                    error=f"pi process exited{self._exit_detail()}",
+                )
+                return
+            yield event
             if event.kind in (EventKind.DONE, EventKind.ERROR):
                 return
+
+    def _live_event(self, obj: Any) -> AgentEvent | None:
+        """One queued object as an event: the EOF sentinel is an error."""
+        if obj is None:
+            return AgentEvent(kind=EventKind.ERROR, error="pi process stdout closed unexpectedly")
+        return self._map_event(obj)
 
     def _drain_one_nowait(self) -> AgentEvent | None:
         if self._held:
@@ -637,23 +647,43 @@ class PiAgent(NvshAgent):
             return None
         return self._map_event(obj)
 
+    def _response_event(self, obj: dict) -> AgentEvent | None:
+        """A command ack is not an event -- unless it rejected the prompt."""
+        if obj.get("command") == "prompt" and not obj.get("success", True):
+            return AgentEvent(kind=EventKind.ERROR, error=str(obj.get("error", "prompt rejected")))
+        return None
+
+    def _message_update_event(self, obj: dict) -> AgentEvent | None:
+        """Assistant text deltas, also kept as the next proposal's rationale."""
+        ame = obj.get("assistantMessageEvent") or {}
+        if ame.get("type") != "text_delta":
+            return None
+        delta = str(ame.get("delta", ""))
+        self._said.append(delta)
+        return AgentEvent(kind=EventKind.TEXT_DELTA, text=delta)
+
+    def _ui_request_event(self, obj: dict) -> AgentEvent:
+        """One ``extension_ui_request`` dialog as a PROPOSAL the panel can show."""
+        command, rationale = _proposal_fields(obj)
+        proposal = Proposal(
+            command=command,
+            rationale=rationale or self._rationale_text(),
+            kind=ProposalKind.FIX,
+        )
+        return AgentEvent(
+            kind=EventKind.PROPOSAL,
+            proposal=proposal,
+            args={"request_id": obj.get("id"), "method": obj.get("method")},
+        )
+
     def _map_event(self, obj: dict) -> AgentEvent | None:
         msg_type = obj.get("type")
 
         if msg_type == "response":
-            if obj.get("command") == "prompt" and not obj.get("success", True):
-                return AgentEvent(
-                    kind=EventKind.ERROR, error=str(obj.get("error", "prompt rejected"))
-                )
-            return None  # command acks are not events
+            return self._response_event(obj)
 
         if msg_type == "message_update":
-            ame = obj.get("assistantMessageEvent") or {}
-            if ame.get("type") == "text_delta":
-                delta = str(ame.get("delta", ""))
-                self._said.append(delta)
-                return AgentEvent(kind=EventKind.TEXT_DELTA, text=delta)
-            return None
+            return self._message_update_event(obj)
 
         if msg_type == "tool_execution_start":
             return AgentEvent(
@@ -673,17 +703,7 @@ class PiAgent(NvshAgent):
             )
 
         if msg_type == "extension_ui_request":
-            command, rationale = _proposal_fields(obj)
-            proposal = Proposal(
-                command=command,
-                rationale=rationale or self._rationale_text(),
-                kind=ProposalKind.FIX,
-            )
-            return AgentEvent(
-                kind=EventKind.PROPOSAL,
-                proposal=proposal,
-                args={"request_id": obj.get("id"), "method": obj.get("method")},
-            )
+            return self._ui_request_event(obj)
 
         if msg_type == "agent_end":
             return AgentEvent(kind=EventKind.DONE)
@@ -792,6 +812,23 @@ class PiAgent(NvshAgent):
         if self._proc is not None and self._proc.poll() is None:
             self._send({"type": "abort"})
 
+    @staticmethod
+    def _wait_out(proc: subprocess.Popen) -> None:
+        """Wait for *proc*, escalating politely: wait, terminate, kill.
+
+        Each rung gets its own ``_CLOSE_WAIT_SECONDS``; a process that
+        survives even ``kill()`` is left alone rather than waited on forever
+        (a reaped-by-someone-else child would hang teardown).
+        """
+        for escalate in (None, proc.terminate, proc.kill):
+            if escalate is not None:
+                escalate()
+            try:
+                proc.wait(timeout=_CLOSE_WAIT_SECONDS)
+                return
+            except subprocess.TimeoutExpired:
+                continue
+
     def close(self) -> None:
         """Idempotent teardown: close stdin, wait, then escalate to kill."""
         if self._closed:
@@ -803,26 +840,14 @@ class PiAgent(NvshAgent):
         try:
             if proc.stdin is not None:
                 proc.stdin.close()
-        except (BrokenPipeError, ValueError, OSError):
+        except (ValueError, OSError):  # OSError covers BrokenPipeError
             pass
 
         if proc.poll() is None:
-            try:
-                proc.wait(timeout=_CLOSE_WAIT_SECONDS)
-            except subprocess.TimeoutExpired:
-                proc.terminate()
-                try:
-                    proc.wait(timeout=_CLOSE_WAIT_SECONDS)
-                except subprocess.TimeoutExpired:
-                    proc.kill()
-                    try:
-                        proc.wait(timeout=_CLOSE_WAIT_SECONDS)
-                    except subprocess.TimeoutExpired:
-                        pass
-        if self._reader_thread is not None:
-            self._reader_thread.join(timeout=_CLOSE_WAIT_SECONDS)
-        if self._stderr_thread is not None:
-            self._stderr_thread.join(timeout=_CLOSE_WAIT_SECONDS)
+            self._wait_out(proc)
+        for thread in (self._reader_thread, self._stderr_thread):
+            if thread is not None:
+                thread.join(timeout=_CLOSE_WAIT_SECONDS)
         self._proc = None
 
     def capabilities(self) -> Capabilities:

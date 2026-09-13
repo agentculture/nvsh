@@ -43,7 +43,8 @@ def test_system_brief_states_identity_and_rules():
     assert "bash tool" in lowered
     assert "sudo" in lowered
     # never investigate the harness itself -- the d19 failure mode
-    assert "pi" in lowered and "harness" in lowered
+    assert "pi" in lowered
+    assert "harness" in lowered
     # d20: a plain-language question is a request to do the work
     assert "never answer a question with a list of commands" in lowered
     assert "one-line diagnosis" in lowered
@@ -52,15 +53,19 @@ def test_system_brief_states_identity_and_rules():
 def test_playbook_is_chosen_by_detected_kind():
     spark = build_system_prompt(_context("dgx-spark"))
     jetson = build_system_prompt(_context("jetson"))
-    assert "GB10" in spark and "tegrastats" not in spark
-    assert "tegrastats" in jetson and "nvpmodel" in jetson
-    assert "/proc/meminfo" in spark and "/proc/meminfo" in jetson
+    assert "GB10" in spark
+    assert "tegrastats" not in spark
+    assert "tegrastats" in jetson
+    assert "nvpmodel" in jetson
+    assert "/proc/meminfo" in spark
+    assert "/proc/meminfo" in jetson
 
 
 def test_generic_fallback_for_an_unknown_kind():
     unknown = build_system_prompt(_context("something-else"))
     assert playbook_for("something-else") == GENERIC
-    assert "free -h" in unknown and "journalctl" in unknown
+    assert "free -h" in unknown
+    assert "journalctl" in unknown
 
 
 def test_every_playbook_is_short():

@@ -412,7 +412,7 @@ class _Handler(socketserver.StreamRequestHandler):
             message = json.loads(raw.decode("utf-8"))
             if not isinstance(message, dict):
                 raise ValueError("message must be a JSON object")
-        except (ValueError, UnicodeDecodeError) as exc:
+        except ValueError as exc:  # ValueError covers UnicodeDecodeError
             self._write(AgentEvent(kind=EventKind.ERROR, error=f"bad request: {exc}"))
             return
         for event in owner.handle_message(message, connection=self.connection):
@@ -925,27 +925,43 @@ class Daemon:
         context = context_from_dict(message.get("context"))  # type: ignore[arg-type]
         yield from self._run(shell, request, context, connection=connection)
 
+    def _handle_register(self, shell: str) -> Iterator[AgentEvent]:
+        """Remember a shell that has just come up."""
+        with self._lock:
+            if shell:
+                self._shells.add(shell)
+                self._had_shells = True
+        yield AgentEvent(kind=EventKind.STATUS, text=f"registered {shell}")
+        yield AgentEvent(kind=EventKind.DONE)
+
+    def _handle_unregister(self, shell: str) -> Iterator[AgentEvent]:
+        """Forget a shell, and shut down once the last one has gone."""
+        with self._lock:
+            self._shells.discard(shell)
+            empty = self._had_shells and not self._shells
+        yield AgentEvent(kind=EventKind.STATUS, text=f"unregistered {shell}")
+        yield AgentEvent(kind=EventKind.DONE)
+        if empty:
+            self._log.info("last shell left; shutting down")
+            self.shutdown()
+
+    def _handle_undo(self, shell: str) -> Iterator[AgentEvent]:
+        """Drop this shell's last exchange, if it has one."""
+        with self._lock:
+            conversation = self._conversations.get(shell)
+            dropped = conversation.undo() if conversation is not None else False
+        yield AgentEvent(kind=EventKind.STATUS, text="undone" if dropped else "nothing to undo")
+        yield AgentEvent(kind=EventKind.DONE)
+
     def _handle_control(
         self, kind: str, shell: str, message: Mapping[str, object]
     ) -> Iterator[AgentEvent]:
         if kind == "register":
-            with self._lock:
-                if shell:
-                    self._shells.add(shell)
-                    self._had_shells = True
-            yield AgentEvent(kind=EventKind.STATUS, text=f"registered {shell}")
-            yield AgentEvent(kind=EventKind.DONE)
+            yield from self._handle_register(shell)
             return
 
         if kind == "unregister":
-            with self._lock:
-                self._shells.discard(shell)
-                empty = self._had_shells and not self._shells
-            yield AgentEvent(kind=EventKind.STATUS, text=f"unregistered {shell}")
-            yield AgentEvent(kind=EventKind.DONE)
-            if empty:
-                self._log.info("last shell left; shutting down")
-                self.shutdown()
+            yield from self._handle_unregister(shell)
             return
 
         if kind == "cancel":
@@ -955,12 +971,7 @@ class Daemon:
             return
 
         if kind == "undo":
-            with self._lock:
-                conversation = self._conversations.get(shell)
-                dropped = conversation.undo() if conversation is not None else False
-            text = "undone" if dropped else "nothing to undo"
-            yield AgentEvent(kind=EventKind.STATUS, text=text)
-            yield AgentEvent(kind=EventKind.DONE)
+            yield from self._handle_undo(shell)
             return
 
         if kind == "ui_response":
@@ -1096,18 +1107,7 @@ class Daemon:
         try:
             for event in slot.agent.run(request, context):
                 self._last_activity = time.monotonic()
-                if event.kind is EventKind.TEXT_DELTA and event.text:
-                    turn["text"] += event.text
-                elif event.kind is EventKind.PROPOSAL and event.proposal is not None:
-                    conversation.pending_proposal = {
-                        "command": event.proposal.command,
-                        "rationale": event.proposal.rationale,
-                        "kind": event.proposal.kind.value,
-                    }
-                    request_id = str(event.args.get("request_id") or "")
-                    if request_id:
-                        with self._lock:
-                            active.pending_ui.append(request_id)
+                self._record_event(event, turn, conversation, active)
                 saw_terminal = event.kind in (EventKind.DONE, EventKind.ERROR)
                 yield event
                 if saw_terminal:
@@ -1128,8 +1128,41 @@ class Daemon:
                 if self._active is active:
                     self._active = None
 
+        closing = self._closing_event(active, saw_terminal)
+        if closing is not None:
+            yield closing
+        self._last_activity = time.monotonic()
+
+    def _record_event(
+        self,
+        event: AgentEvent,
+        turn: dict,
+        conversation: Conversation,
+        active: _ActiveTurn,
+    ) -> None:
+        """Fold one streamed event into the transcript and the dialog state."""
+        if event.kind is EventKind.TEXT_DELTA and event.text:
+            turn["text"] += event.text
+        elif event.kind is EventKind.PROPOSAL and event.proposal is not None:
+            conversation.pending_proposal = {
+                "command": event.proposal.command,
+                "rationale": event.proposal.rationale,
+                "kind": event.proposal.kind.value,
+            }
+            request_id = str(event.args.get("request_id") or "")
+            if request_id:
+                with self._lock:
+                    active.pending_ui.append(request_id)
+
+    def _closing_event(self, active: _ActiveTurn, saw_terminal: bool) -> AgentEvent | None:
+        """What a turn owes the client after the adapter's stream ended.
+
+        A turn the cap aborted says so; one that ended without a terminal
+        event of its own gets a DONE; one that reported its own terminal
+        event gets nothing more.
+        """
         if active.aborted == "timeout":
-            yield AgentEvent(
+            return AgentEvent(
                 kind=EventKind.ERROR,
                 error=(
                     f"the agent turn was aborted after {self.turn_timeout:g}s "
@@ -1137,9 +1170,9 @@ class Daemon:
                     "legitimately needs longer)"
                 ),
             )
-        elif not saw_terminal:
-            yield AgentEvent(kind=EventKind.DONE)
-        self._last_activity = time.monotonic()
+        if not saw_terminal:
+            return AgentEvent(kind=EventKind.DONE)
+        return None
 
 
 # --- foreground entry point ------------------------------------------------

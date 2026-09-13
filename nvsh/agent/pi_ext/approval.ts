@@ -81,13 +81,13 @@ function audit(command: string, decision: string): void {
   nvsh(["approve", "audit", "--tool", "bash", "--command", command, "--decision", decision, "--json"]);
 }
 
-export default function (pi: ExtensionAPI) {
+export default function nvshApproval(pi: ExtensionAPI) {
   pi.on("tool_call", async (event: any, ctx: any) => {
     if (event.toolName !== "bash") {
       return { block: true, reason: "nvsh v1 allows only the bash tool" };
     }
 
-    const command = String((event.input && event.input.command) || "");
+    const command = String(event.input?.command || "");
     // Checked afresh on *every* tool call, never memoized: the pattern the
     // operator widens halfway through a turn has to apply to the rest of it.
     const decision = checkCommand(command);
@@ -169,6 +169,5 @@ export default function (pi: ExtensionAPI) {
       return blockedBy(added, `nvsh refused to approve this command for the ${scope} scope`);
     }
     audit(command, scope);
-    return;
   });
 }

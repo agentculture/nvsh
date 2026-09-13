@@ -251,7 +251,7 @@ def one_shot(
     try:
         name, reason = registry.choose(cfg)
         agent = registry.ADAPTERS[name].factory(cfg)
-    except Exception as exc:  # noqa: BLE001 - report, never raise on the failure path
+    except Exception as exc:  # noqa: BLE001 - reported rather than raised on the failure path
         yield AgentEvent(kind=EventKind.ERROR, error=f"no agent available: {exc}")
         return
 
