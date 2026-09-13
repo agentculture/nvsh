@@ -1,0 +1,5 @@
+libnvinfer10	10.13.3.9-1+cuda13.0
+nvidia-tensorrt	7.0-b128
+nvidia-tensorrt-dev	7.0-b128
+tensorrt	10.13.3.9-1+cuda13.0
+tensorrt-libs	10.13.3.9-1+cuda13.0
