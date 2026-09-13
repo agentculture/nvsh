@@ -502,10 +502,11 @@ def check_capture_active(
 ) -> dict:
     log = env.get("NVSH_LOG")
     if not log:
+        hooked = bool(env.get("NVSH_HOOK_VERSION"))
         return _check(
             "capture_active",
             False,
-            "warning",
+            "warning" if hooked else "info",
             "NVSH_LOG not set; output capture is not active",
             RUN_TO_HOOK_REMEDIATION,
         )

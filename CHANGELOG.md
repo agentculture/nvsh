@@ -10,10 +10,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Added
 
 - docs/architecture.md recording the hook-vs-wrap decision (issue #1 milestone 1) and a docs/platforms.md skeleton for the platform-detection value/source table
+- The bash-hook shell itself, built across this PR's task waves: trigger rules (`nvsh/triggers.py`), the redactor (`nvsh/redact.py`), platform detection, the capture layer (session log + OSC 133 slicing + tmux pipe-pane), the bash hook core and readline layer (Enter macro, `/`+Tab palette, Ctrl+G), the `NvshAgent` contract with a `PiAgent` adapter for `pi --mode rpc`, the harness chooser/registry, the pi approval extension, the per-user session daemon, the failure client and inline panel, `nvsh setup`/`uninstall`/`on`/`off`/`hook`, the slash-command registry (`nvsh slash`/`complete`, `/agent` `/help` `/undo` `/approve` `/doctor` …), and doctor's platform/backend-reachability/hook-health/terminfo checks. Shipped and unit/integration-tested in this PR; real-hardware verification (Jetson, DGX Spark) is tracked separately in `docs/verification.md`, to follow in a later task.
 
 ### Changed
 
 - README.md, CLAUDE.md, AGENTS.override.md, AGENTS.colleague.md, QWEN.md and .pi/SYSTEM.md now describe the bash-hook architecture instead of the retired PTY-wrapper/login-shell design; CLAUDE.md's Login-shell constraints section is replaced by Hook constraints; README's opening names Jetson AGX Orin/Thor, DGX Spark, bash, Ghostty and ssh, marks the shell verbs as in progress, and adds a What leaves the machine section
+- `doctor`'s `capture_active` check now reports `info` severity (not `warning`) when `NVSH_HOOK_VERSION` is absent — running `nvsh doctor` outside a hooked shell is expected, not unhealthy; it still warns when hooked but not capturing
 
 ## [0.9.1] - 2026-09-13
 

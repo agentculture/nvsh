@@ -27,7 +27,7 @@ the spec (claims c43, c51) and in `docs/architecture.md`.
 | What | Where | Mode |
 | --- | --- | --- |
 | Socket | `$XDG_RUNTIME_DIR/nvsh/daemon.sock` (else `<tmp>/nvsh-<uid>/daemon.sock`) | `0600`, directory `0700` |
-| Log | `$XDG_STATE_HOME/nvsh/daemon.log` (else `~/.local/state/nvsh/daemon.log`) | `0600` |
+| Log | `$XDG_STATE_HOME/nvsh/daemon.log` (else the user's local state directory, `nvsh/daemon.log` under `.local/state`) | `0600` |
 
 The daemon never writes to a terminal.
 

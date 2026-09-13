@@ -234,9 +234,10 @@ into an operator's shell. It does two things:
 
 1. **Renders** both files from package resources (`importlib.resources`, so
    this works from a wheel install with no `nvsh/shell` source directory on
-   disk) into `$XDG_DATA_HOME/nvsh/shell/` (default
-   `~/.local/share/nvsh/shell/`), each prefixed with a two-line stamp naming
-   the nvsh version that rendered it (`nvsh/shell/render.py`).
+   disk) into `$XDG_DATA_HOME/nvsh/shell/` (default the user's local share
+   directory, `nvsh/shell/` under `.local/share`), each prefixed with a
+   two-line stamp naming the nvsh version that rendered it
+   (`nvsh/shell/render.py`).
 2. **Inserts** one small marked block into the rc file (default the user's
    bash rc file; override with `--rc`), immediately after the distro's
    interactive guard (`# If not running interactively, don't do anything`

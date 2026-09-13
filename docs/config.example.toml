@@ -1,7 +1,8 @@
 # Example nvsh config.
 #
-# Copy to $XDG_CONFIG_HOME/nvsh/config.toml (defaults to ~/.config/nvsh/config.toml
-# when $XDG_CONFIG_HOME is unset) and edit. A missing file is equivalent to
+# Copy to $XDG_CONFIG_HOME/nvsh/config.toml (defaults to the user's config
+# directory, nvsh/config.toml under .config, when $XDG_CONFIG_HOME is unset)
+# and edit. A missing file is equivalent to
 # every value below at its default — nvsh never requires this file to exist.
 #
 # nvsh never reads or stores a literal API key. Backends that need one
