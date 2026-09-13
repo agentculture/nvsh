@@ -530,7 +530,8 @@ def check_hook_first_in_prompt_command(prompt_command_text: str | None) -> dict:
 #: while hand-written/older payloads carry the bare one; both must parse.
 _REQUIRED_BINDINGS = (
     (r'"\C-x\C-n": __nvsh_enter', re.compile(r'"\\C-x\\C-n"\s*:\s*"?__nvsh_enter"?')),
-    (r'"\C-g": __nvsh_ctrl_g', re.compile(r'"\\C-g"\s*:\s*"?__nvsh_ctrl_g"?')),
+    (r'"\C-x\C-g": __nvsh_ctrl_g', re.compile(r'"\\C-x\\C-g"\s*:\s*"?__nvsh_ctrl_g"?')),
+    (r'"\C-g": "\C-x\C-g\C-j"', re.compile(r'"\\C-g"\s*:\s*"\\C-x\\C-g\\C-j"')),
     (r'"\C-m": "\C-x\C-n\C-j"', re.compile(r'"\\C-m"\s*:\s*"\\C-x\\C-n\\C-j"')),
 )
 

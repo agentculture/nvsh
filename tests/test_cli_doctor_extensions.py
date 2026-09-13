@@ -89,7 +89,8 @@ def test_bindings_present_flows_through_bind_p_and_keymap_flags(monkeypatch, tmp
         '"\\C-a": beginning-of-line\n'
         + doctor_checks.BIND_SECTION_MARKER
         + '\n"\\C-m": "\\C-x\\C-n\\C-j"\n'
-        + '"\\C-g": "__nvsh_ctrl_g"\n"\\C-x\\C-n": "__nvsh_enter"\n'
+        + '"\\C-x\\C-g": "__nvsh_ctrl_g"\n"\\C-g": "\\C-x\\C-g\\C-j"\n'
+        + '"\\C-x\\C-n": "__nvsh_enter"\n'
     )
     report = doctor_mod._diagnose(bind_p_text=bind_p_text, keymap="vi-insert")
 

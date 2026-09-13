@@ -395,6 +395,12 @@ def test_slash_dispatch_exports_every_bind_section(sh, tmp_path):
     assert "__nvsh_enter" in text, text
     assert "__nvsh_ctrl_g" in text, text
     assert r"\C-m" in text
+    # The real payload must satisfy doctor's check, not just a hand-written one
+    # (d4 parsed the dumps, d6 changed Ctrl+G into a macro; both seams meet here).
+    from nvsh import doctor_checks
+
+    check = doctor_checks.check_bindings_present(text, "emacs")
+    assert check["passed"], check
 
 
 def test_binds_every_keymap(sh):

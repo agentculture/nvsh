@@ -510,7 +510,8 @@ def test_hook_first_in_prompt_command_handles_string_form():
 # --- bindings_present ---------------------------------------------------------
 
 _REAL_BIND_P = r"""
-"\C-g": __nvsh_ctrl_g
+"\C-x\C-g": __nvsh_ctrl_g
+"\C-g": "\C-x\C-g\C-j"
 "\C-m": "\C-x\C-n\C-j"
 "\C-x\C-n": __nvsh_enter
 """
@@ -538,7 +539,7 @@ _FULL_BIND_PAYLOAD = (
     + doctor_checks.BIND_SECTION_MARKER
     + "\n"
     + '"\\C-m": "\\C-x\\C-n\\C-j"\n'
-    + '"\\C-g": "__nvsh_ctrl_g"\n'
+    + '"\\C-x\\C-g": "__nvsh_ctrl_g"\n"\\C-g": "\\C-x\\C-g\\C-j"\n'
     + '"\\C-x\\C-n": "__nvsh_enter"\n'
 )
 
