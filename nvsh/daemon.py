@@ -242,6 +242,7 @@ def request_from_dict(data: Mapping[str, object] | None) -> AgentRequest:
         command=str(data.get("command", "")),
         exit_code=exit_code,
         failure_id=str(data.get("failure_id", "")),
+        ask=str(data.get("ask", "")),
     )
 
 

@@ -20,6 +20,7 @@ from nvsh import client_transport
 from nvsh import panel as panel_mod
 from nvsh.agent.base import AgentEvent, EventKind
 from nvsh.agent.pi import build_prompt
+from nvsh.agent.prompt import build_full_prompt, build_system_prompt
 from nvsh.cli import main
 
 
@@ -59,8 +60,30 @@ def test_context_show_prints_exactly_what_would_be_sent(xdg, monkeypatch, capsys
     out = capsys.readouterr().out
     assert rc == 0
     request, context = captured[0]
-    assert out == build_prompt(request, context) + "\n"
+    assert out == build_full_prompt(request, context) + "\n"
+    assert build_system_prompt(context) in out
+    assert build_prompt(request, context) in out
     assert "No such file or directory" in out
+
+
+def test_context_show_includes_the_system_brief(xdg, capsys):
+    """d19: the operator is shown the brief the model is given, too."""
+    client_mod.save_last_failure(_args(xdg))
+    rc = main(["context", "--show"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert out.startswith("You are nvsh")
+    assert "GB10" in out  # the dgx-spark playbook, chosen from the detected kind
+    assert out.index("Command: ls /nope") > out.index("GB10")
+
+
+def test_context_show_json_carries_the_system_brief(xdg, capsys):
+    client_mod.save_last_failure(_args(xdg))
+    rc = main(["context", "--show", "--json"])
+    payload = json.loads(capsys.readouterr().out)
+    assert rc == 0
+    assert payload["system_prompt"].startswith("You are nvsh")
+    assert "GB10" in payload["system_prompt"]
 
 
 def test_context_show_json_shape(xdg, capsys):

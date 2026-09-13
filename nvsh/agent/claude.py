@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import json
 
-from ._subprocess import SubprocessAgent, build_prompt
+from ._subprocess import SubprocessAgent, build_prompt, build_system_prompt
 from .base import AgentContext, AgentEvent, AgentRequest, Capabilities, EventKind
 
 
@@ -25,7 +25,15 @@ class ClaudeAgent(SubprocessAgent):
 
     def _argv(self, request: AgentRequest, context: AgentContext) -> list[str]:
         prompt = build_prompt(request, context)
-        return [self.binary, "-p", prompt, "--output-format", "stream-json"]
+        return [
+            self.binary,
+            "-p",
+            prompt,
+            "--append-system-prompt",
+            build_system_prompt(context),
+            "--output-format",
+            "stream-json",
+        ]
 
     def _parse_line(self, line: str) -> AgentEvent | None:
         if not line.strip():

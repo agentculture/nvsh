@@ -14,7 +14,9 @@ import subprocess  # nosec B404 - fixed argv lists below, no shell=True
 from typing import Iterator
 
 from .base import AgentContext, AgentEvent, AgentRequest, EventKind, NvshAgent
+from .prompt import build_full_prompt as _build_full_prompt
 from .prompt import build_prompt as _build_prompt
+from .prompt import build_system_prompt as _build_system_prompt
 
 #: Every backend composes its prompt with the *same* function, so the bytes
 #: ``nvsh context --show`` prints are the bytes each adapter sends. Composing
@@ -22,6 +24,12 @@ from .prompt import build_prompt as _build_prompt
 #: whenever a caller also supplied a prompt -- which the failure client
 #: always does -- so the platform block never reached these backends.
 build_prompt = _build_prompt
+
+#: The same goes for the system brief (deviation d19): one text, delivered
+#: through whichever channel the backend has -- a flag where one exists,
+#: the head of the prompt where none does.
+build_system_prompt = _build_system_prompt
+build_full_prompt = _build_full_prompt
 
 
 class SubprocessAgent(NvshAgent):

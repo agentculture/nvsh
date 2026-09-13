@@ -151,3 +151,21 @@ itself. The context collector that wraps a failure report (bounded command
 line, exit code, cwd, captured output, and this platform block) is a
 separate, later piece of work and owns its own redaction pass and tests —
 see the spec's context-collector requirement.
+
+## Playbooks built on this table
+
+`nvsh/agent/playbooks.py` turns the facts above into a short per-kind
+markdown block that rides in every backend's system prompt (see
+`nvsh/agent/prompt.py`). The playbooks are keyed by the same
+`Platform.kind` values this module produces, and every command they name is
+either verified in the table above (`free -h` and `/proc/meminfo`,
+`nvidia-smi` and its `[N/A]` memory columns, `nvpmodel -q`,
+`/etc/nv_tegra_release`, `/etc/dgx-release`, `/usr/local/cuda/version.json`,
+`/etc/docker/daemon.json`, `spark status --json`) or explicitly marked *if
+installed* because it could not be verified here — `tegrastats`, `jtop` and
+`jetson_release` are in that second group, and `jtop` is additionally
+marked never-propose because it is interactive.
+
+Why they exist: without them the model has no background and investigates
+its own harness instead of the machine (deviation d19 — a failing
+`whats memory levels are now?` on the Spark drew `which pi && pi --help`).

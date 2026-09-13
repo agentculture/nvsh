@@ -267,3 +267,20 @@ def test_a_resolved_key_never_appears_in_any_event(fake_server, tmp_path):
     events = _run(agent)
     text = " ".join(f"{e.text or ''} {e.error or ''}" for e in events)
     assert "file-bearer-value" not in text
+
+
+def test_system_brief_is_sent_as_the_system_message(fake_server):
+    """d19: the brief leads the messages array, the facts block follows it."""
+    from nvsh.agent.prompt import build_prompt, build_system_prompt
+
+    base_url = f"http://127.0.0.1:{fake_server.server_port}"
+    agent = OpenAICompatAgent({"base_url": base_url})
+    agent.start()
+    try:
+        list(agent.run(_request(), _context()))
+    finally:
+        agent.close()
+    messages = fake_server.last_body["messages"]
+    assert [m["role"] for m in messages] == ["system", "user"]
+    assert messages[0]["content"] == build_system_prompt(_context())
+    assert messages[1]["content"] == build_prompt(_request(), _context())

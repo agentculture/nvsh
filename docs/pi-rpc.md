@@ -148,6 +148,36 @@ nothing for a blank command even if the operator approves it.
 
 `PiAgent.respond_ui(request_id, **fields)` writes exactly this.
 
+## The system brief: a launch flag, not a per-turn prompt
+
+There is **no rpc command and no `prompt` field that sets a system prompt**
+— `get_state`'s response reports `systemPrompt`, but nothing on the wire
+changes it. The system prompt is a *launch* concern: pi's CLI takes
+`--system-prompt <text>` (replace) and `--append-system-prompt <text>`
+(append, repeatable), both listed in the shipped `docs/usage.md` and in
+`pi --help` of the installed pi (0.85.x on this Spark), and both apply to
+`--mode rpc` exactly as they do to the TUI.
+
+So `PiAgent.build_argv()` passes nvsh's system brief — who the agent is,
+the rules it works under, and the playbook for the detected platform, from
+`nvsh.agent.prompt.build_system_prompt` — as one
+`--append-system-prompt <brief>` argument, placed after `-e <extension>`
+and before `--provider`/`--model`. Consequences worth knowing:
+
+- The brief is sent **once per pi process**, not once per turn: its tokens
+  are paid at launch and are carried by every turn of the session,
+  including after `new_session` / `switch_session`.
+- `PiAgent._prompt_for()` therefore sends only the facts block (the
+  failure, the detected platform values with their sources, the captured
+  output slice) — never the brief again.
+- `--append-system-prompt` *appends* to pi's own coding-assistant prompt
+  rather than replacing it, so pi's tool contract (the bash tool the
+  approval extension gates) stays intact. A `--system-prompt` replacement
+  would drop that, which is why nvsh does not use it.
+- The brief is composed from `nvsh.platform.detect()` at argv-build time,
+  because argv exists before any request does. Detection failing is not
+  fatal: the brief falls back to its generic playbook.
+
 ## What `PiAgent` never sends
 
 No API key ever appears in the argv or on the wire — `pi` reads its own
