@@ -7,7 +7,7 @@ JSON header line, then one `[time, "o", "data"]` line per output chunk.
 
 | File | Machine | What it shows |
 |------|---------|----------------|
-| `spark-cuda-oom.cast` | DGX Spark, Ghostty, pi/associate backend | A CUDA-out-of-memory-style `RuntimeError` triggers the failure panel; the agent diagnoses it against the unified-memory platform block and proposes a command, which the operator declines with `Esc`. |
+| `spark-cuda-oom.cast` | DGX Spark, Ghostty, pi/associate backend | A CUDA-out-of-memory-style `RuntimeError` triggers the failure panel; the agent diagnoses it against the unified-memory platform block and proposes a command, which the operator declines with `Esc`. Re-recorded after the d2-d8 fixes, so the proposal is the bare command; it also shows the daemon timeout still open on the Spark (deviation w1 in [`../verification.md`](../verification.md)). |
 | `orin-missing-package.cast` | Jetson AGX Orin over ssh, openai-compat backend | A missing TensorRT tool (`trtexec`, exit 127) triggers the panel through the offline-first openai-compat fallback. |
 
 Both recordings were scrubbed at record time: the model endpoint and its
