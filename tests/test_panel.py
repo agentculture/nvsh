@@ -476,3 +476,95 @@ def test_ordinary_status_stays_dim_and_empty_status_renders_nothing():
     text = out.getvalue()
     assert "\x1b[2m... checking disk\x1b[0m" in text
     assert text.count("...") == 1
+
+
+# --- approve for this session / for this user (d15) ----------------------
+
+
+def _proposal() -> Proposal:
+    return Proposal(command="df -h", rationale="disk", kind=ProposalKind.INSPECT)
+
+
+def test_legend_offers_session_and_user_keys_on_one_80_column_line():
+    out = io.StringIO()
+    p = _panel(out=out, in_=io.StringIO("q\n"), isatty=False)
+    p.show_proposal(_proposal())
+    legend = [ln for ln in out.getvalue().splitlines() if ln.startswith("[Enter]")][0]
+    assert len(legend) <= 80, f"legend is {len(legend)} columns: {legend!r}"
+    for token in ("[Enter] run", "[s]", "[u]", "[e] explain", "[d] details", "[Esc] ignore"):
+        assert token in legend, legend
+    assert "session" in legend and "user" in legend
+    # order: run, session, user, explain, details, ignore
+    positions = [legend.index(t) for t in ("[Enter]", "[s]", "[u]", "[e]", "[d]", "[Esc]")]
+    assert positions == sorted(positions), legend
+
+
+@pytest.mark.parametrize(
+    "typed,expected",
+    [
+        ("s\n", panel_mod.APPROVE_SESSION),
+        ("S\n", panel_mod.APPROVE_SESSION),
+        ("u\n", panel_mod.APPROVE_USER),
+        ("U\n", panel_mod.APPROVE_USER),
+    ],
+)
+def test_show_proposal_reads_the_scope_keys(typed, expected):
+    p = _panel(out=io.StringIO(), in_=io.StringIO(typed), isatty=False)
+    assert p.show_proposal(_proposal()) == expected
+
+
+@pytest.mark.parametrize(
+    "typed,ack",
+    [
+        ("s\n", "nvsh: running (approved for this session) ..."),
+        ("u\n", "nvsh: running (approved for this user) ..."),
+    ],
+)
+def test_scope_keys_acknowledge_with_the_scope_named(typed, ack):
+    out = io.StringIO()
+    p = _panel(out=out, in_=io.StringIO(typed), isatty=False)
+    p.show_proposal(_proposal())
+    lines = [line for line in out.getvalue().splitlines() if line.strip()]
+    assert lines[-1] == ack, lines
+
+
+@pytest.mark.parametrize("key,expected", [(b"s", "session"), (b"u", "user")])
+def test_scope_keys_are_read_as_single_keypresses_on_a_tty(key, expected):
+    master, slave = pty.openpty()
+    typist = threading.Timer(0.2, lambda: os.write(master, key))
+    typist.start()
+    try:
+        with os.fdopen(slave, "rb", buffering=0) as tty_in:
+            p = panel_mod.Panel(out=io.StringIO(), in_=tty_in, env={}, isatty=True)
+            assert p.show_proposal(_proposal()) == expected
+    finally:
+        typist.cancel()
+        os.close(master)
+
+
+def test_guard_refuses_a_scope_key_with_one_line_and_no_acknowledgement():
+    out = io.StringIO()
+    p = _panel(out=out, in_=io.StringIO("s\n"), isatty=False)
+    choice = p.show_proposal(
+        _proposal(), guard=lambda scope: "patterns starting with 'rm' are never approved"
+    )
+    assert choice == panel_mod.REFUSED
+    text = out.getvalue()
+    refusals = [ln for ln in text.splitlines() if "cannot approve" in ln]
+    assert len(refusals) == 1, text
+    assert "session" in refusals[0]
+    assert "patterns starting with 'rm' are never approved" in refusals[0]
+    assert "nvsh: running" not in text
+
+
+def test_guard_is_not_consulted_for_the_run_once_key():
+    out = io.StringIO()
+    p = _panel(out=out, in_=io.StringIO("\n"), isatty=False)
+    seen = []
+
+    def guard(scope):
+        seen.append(scope)
+        return "nope"
+
+    assert p.show_proposal(_proposal(), guard=guard) == panel_mod.APPROVE
+    assert seen == []

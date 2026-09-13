@@ -7,8 +7,10 @@ into via the CLI so the approval logic lives in exactly one place —
 :mod:`nvsh.approvals`.
 
 * ``nvsh approve check <cmd>``       — {decision, pattern}
-* ``nvsh approve add <pattern>``     — persist (or, with ``--session``, hold
-                                        in memory only for this process)
+* ``nvsh approve add <pattern>``     — persist to ``approved.toml`` (or, with
+                                        ``--session``, to the login session's
+                                        runtime-dir store, which a later
+                                        process still reads and logout wipes)
 * ``nvsh approve list``              — {user: [...], session: [...]}
 * ``nvsh approve remove <pattern>``  — drop from both lists
 * ``nvsh approve audit``             — append one decision to the audit log
@@ -131,7 +133,11 @@ def register(sub: argparse._SubParsersAction) -> None:
 
     add = noun_sub.add_parser("add", help="Approve a glob pattern.")
     add.add_argument("pattern", help="fnmatch glob matched against the full command line.")
-    add.add_argument("--session", action="store_true", help="Hold in memory only for this process.")
+    add.add_argument(
+        "--session",
+        action="store_true",
+        help="Approve for this login session only (gone at logout).",
+    )
     add.add_argument("--json", action="store_true", help="Emit structured JSON.")
     add.set_defaults(func=cmd_approve_add)
 

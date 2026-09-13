@@ -83,6 +83,12 @@ export default function (pi: ExtensionAPI) {
       return;
     }
 
+    // choice === "session": the exact line, unwidened, for this login
+    // session. `--session` writes to
+    // $XDG_RUNTIME_DIR/nvsh/session-approvals.toml (deviation d15), so the
+    // approval outlives this spawnSync and the next `approve check` -- from
+    // any process of this login -- matches it. Before d15 it was held in
+    // the CLI process's memory and was gone before this call returned.
     if (choice === "session") {
       const added = nvsh(["approve", "add", command, "--session", "--json"]);
       if (!added.ok) {
