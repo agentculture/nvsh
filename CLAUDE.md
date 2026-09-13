@@ -38,13 +38,13 @@ are installed and still works when they are not.
 
 The repo is still the **culture-agent-template scaffold** renamed to `nvsh`.
 No shell features exist yet. `nvsh/` only holds the agent-first verbs
-(`whoami`, `learn`, `explain`, `overview`, `doctor`, `cli overview`). Several
-files still describe the project as "a clonable template for AgentCulture
-mesh agents": `nvsh/explain/catalog.py`, the `_build_parser` description in
-`nvsh/cli/__init__.py`, `QWEN.md`, `AGENTS.override.md`,
-`AGENTS.colleague.md`, and `.pi/SYSTEM.md`. Update that wording when you
-touch those files. The package, CLI, import and PyPI names are all already
-`nvsh`, so no rename is needed.
+(`whoami`, `learn`, `explain`, `overview`, `doctor`, `cli overview`). The
+harness prompt files and the CLI's own descriptions (`learn`, `explain`,
+`--help`) already describe nvsh and mark the shell as planned. Keep them
+that way: don't describe planned behavior as implemented. The package, CLI,
+import and PyPI names are all already `nvsh`, so no rename is needed. Some
+code comments and test docstrings still say "this template"; that wording is
+internal and harmless.
 
 ## Commands
 
@@ -59,6 +59,7 @@ uv run black --check nvsh tests
 uv run isort --check-only nvsh tests
 uv run flake8 nvsh tests
 uv run bandit -c pyproject.toml -r nvsh
+npm install -g markdownlint-cli2@0.21.0     # not installed by uv sync; CI pins this version
 markdownlint-cli2 "**/*.md" "#node_modules" "#.local" "#.claude/skills" "#.teken"
 python3 scripts/scan-secrets.py             # committed secrets / non-localhost endpoints
 uv run teken cli doctor . --strict          # agent-first rubric gate
@@ -188,8 +189,10 @@ These hold whenever nvsh is set with `chsh`:
   blocks the merge otherwise, even for docs-only PRs. `nvsh.__version__` is
   read from package metadata, so `pyproject.toml` is the only version source.
 - **Publishing:** a push to `main` that touches `pyproject.toml` or `nvsh/**`
-  publishes to PyPI through Trusted Publishing. A PR publishes a
-  `.devN` build to TestPyPI. The package is public, so keep `main` green.
+  publishes to PyPI through Trusted Publishing. A PR from a branch in this
+  repo (not a fork) that touches those same paths publishes a `.devN` build
+  to TestPyPI; docs-only PRs and fork PRs don't. The package is public, so
+  keep `main` green.
 - **PR workflow:** use the `cicd` skill (built on `devex pr`, with SonarCloud
   gating). PR replies are signed automatically as `- nvsh (Claude)`.
 - **`.claude/skills/` is vendored verbatim** from guildmaster

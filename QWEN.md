@@ -125,7 +125,9 @@ Conventions:
 - **Lint:** black, isort, flake8 (line length 100), bandit, markdownlint,
   and `scripts/scan-secrets.py`.
 - **Deploy:** pushing to `main` publishes to PyPI through Trusted Publishing
-  (`.github/workflows/publish.yml`). PRs publish a TestPyPI dev build.
+  (`.github/workflows/publish.yml`) when `pyproject.toml` or `nvsh/**`
+  changes. Same-repo PRs touching those paths publish a TestPyPI dev build;
+  docs-only and fork PRs don't.
 - **Skills:** `.claude/skills/` vendors the guildmaster skill kit verbatim
   (cite-don't-import). Don't edit vendored scripts; re-sync from upstream
   (`docs/skill-sources.md`).

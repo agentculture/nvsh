@@ -53,8 +53,9 @@ def _as_json_payload() -> dict[str, object]:
         "tool": "nvsh",
         "version": __version__,
         "purpose": (
-            "Agent-first shell for NVIDIA Jetson, DGX Spark and RTX Spark: runs commands "
-            "normally and hands failures to an agent to diagnose and propose a fix."
+            "Agent-first shell for NVIDIA Jetson, DGX Spark and RTX Spark (planned): will run "
+            "commands normally and hand failures to an agent to diagnose and propose a fix. "
+            "Currently an agent-first CLI scaffold; only the commands listed here exist."
         ),
         "commands": [
             {"path": ["whoami"], "summary": "Identity probe from culture.yaml."},
