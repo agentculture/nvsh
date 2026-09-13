@@ -18,24 +18,24 @@ Edit the Owner/Model columns before approving gate 2 — the default Model is a 
 
 | Task | Owner | Model |
 | --- | --- | --- |
-| `t1` |  | sonnet |
-| `t2` |  | sonnet |
-| `t3` |  | sonnet |
-| `t4` |  | sonnet |
-| `t5` |  | sonnet |
-| `t6` |  | sonnet |
+| `t1` | subagent | sonnet |
+| `t2` | subagent | sonnet |
+| `t3` | subagent | sonnet |
+| `t4` | subagent | sonnet |
+| `t5` | subagent | sonnet |
+| `t6` | subagent | sonnet |
 | `t7` | subagent | opus |
-| `t8` |  | sonnet |
-| `t9` |  | sonnet |
-| `t10` |  | sonnet |
+| `t8` | subagent | sonnet |
+| `t9` | subagent | sonnet |
+| `t10` | subagent | sonnet |
 | `t20` | subagent | opus |
-| `t11` |  | sonnet |
+| `t11` | subagent | sonnet |
 | `t12` | subagent | opus |
-| `t21` |  | sonnet |
+| `t21` | subagent | sonnet |
 | `t13` | subagent | opus |
-| `t17` |  | sonnet |
-| `t14` |  | sonnet |
-| `t18` |  | sonnet |
+| `t17` | subagent | sonnet |
+| `t14` | subagent | sonnet |
+| `t18` | subagent | sonnet |
 | `t19` | operator + main agent | none (manual, on hardware) |
 
 ## Wave 1
