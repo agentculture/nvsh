@@ -187,6 +187,29 @@ def test_dispatch_unknown_command_is_a_user_error(xdg):
     assert "unknown" in p.out.getvalue().lower()
 
 
+def test_dispatch_result_reports_whether_the_line_was_handled(xdg):
+    """d5: 'handled' is what lets `nvsh slash` exit 0 for a verb that ran."""
+    handled = slash_mod.dispatch_result("/help", platform_kind="dgx-spark", panel=_panel())
+    assert handled.handled is True
+    assert handled.exit_code == 0
+
+    unknown = slash_mod.dispatch_result("/nope", platform_kind="dgx-spark", panel=_panel())
+    assert unknown.handled is False
+    assert unknown.exit_code == 1
+
+    empty = slash_mod.dispatch_result("", platform_kind="dgx-spark", panel=_panel())
+    assert empty.handled is False
+
+    hidden = slash_mod.dispatch_result("/power", platform_kind="dgx-spark", panel=_panel())
+    assert hidden.handled is False
+
+
+def test_dispatch_result_keeps_a_handled_verbs_own_exit_code(xdg):
+    ran = slash_mod.dispatch_result("/agent use bogus", platform_kind="dgx-spark", panel=_panel())
+    assert ran.handled is True
+    assert ran.exit_code == 1
+
+
 def test_dispatch_empty_line_is_a_user_error(xdg):
     p = _panel()
     assert slash_mod.dispatch("/", platform_kind="dgx-spark", panel=p) == 1

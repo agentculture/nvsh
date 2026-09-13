@@ -47,6 +47,22 @@ def test_slash_unknown_command_exit_code(capsys):
     assert "unknown" in err.out.lower()
 
 
+def test_slash_handled_command_exits_zero_even_when_the_verb_reports_trouble(capsys):
+    """d5(b): the hidden dispatch's own exit status must never look like a
+    failed command to the hook -- the panel already carried the result."""
+    rc = main(["slash", "/agent use bogus", "--platform", "dgx-spark"])
+    assert rc == 0
+    assert "unknown agent" in capsys.readouterr().out
+
+
+def test_slash_json_still_reports_the_verbs_own_exit_code(capsys):
+    rc = main(["slash", "/agent use bogus", "--platform", "dgx-spark", "--json"])
+    assert rc == 0
+    lines = [ln for ln in capsys.readouterr().out.splitlines() if ln.strip()]
+    payload = json.loads(lines[-1])
+    assert payload == {"command": "agent", "exit_code": 1}
+
+
 def test_slash_power_hidden_on_dgx_spark(capsys):
     rc = main(["slash", "/power", "--platform", "dgx-spark"])
     assert rc == 1

@@ -454,19 +454,35 @@ def _panel_for(panel: Panel | None, env: Mapping[str, str]) -> Panel:
     return panel if panel is not None else Panel(env=env)
 
 
-def dispatch(
+@dataclass(frozen=True)
+class DispatchResult:
+    """What one ``nvsh slash <line>`` did.
+
+    ``handled`` says a registered, visible command actually ran (as opposed
+    to an empty, unparseable, unknown or platform-hidden line); ``exit_code``
+    is that command's own result. The CLI verb keeps the two apart on
+    purpose: the hidden dispatch readline writes must never *look* like a
+    failed command to ``__nvsh_hook``, so a handled line exits 0 whatever the
+    verb reported — the panel already showed the operator what it found.
+    """
+
+    handled: bool
+    exit_code: int
+
+
+def dispatch_result(
     line: str,
     env: Mapping[str, str] | None = None,
     platform_kind: str | None = None,
     *,
     draft: str | None = None,
     panel: Panel | None = None,
-) -> int:
+) -> DispatchResult:
     """Route one ``/verb ...`` line (``nvsh slash <line>``).
 
     Parses with :mod:`shlex` so quoted arguments survive; an unknown or
     platform-hidden command (and anything that fails to parse) reports a
-    user error and never guesses.
+    user error, never guesses, and comes back ``handled=False``.
     """
     resolved = dict(os.environ if env is None else env)
     kind = platform_kind if platform_kind is not None else _detect_platform_kind()
@@ -475,7 +491,7 @@ def dispatch(
         text = text[1:]
     if not text:
         _panel_for(panel, resolved).line("nvsh: empty slash command (try /help)")
-        return 1
+        return DispatchResult(handled=False, exit_code=1)
 
     try:
         parts = shlex.split(text)
@@ -483,13 +499,13 @@ def dispatch(
         parts = text.split()
     if not parts:
         _panel_for(panel, resolved).line("nvsh: empty slash command (try /help)")
-        return 1
+        return DispatchResult(handled=False, exit_code=1)
 
     name, args = parts[0], parts[1:]
     cmd = resolve(name)
     if cmd is None or not cmd.visible_on(kind):
         _panel_for(panel, resolved).line(f"nvsh: unknown slash command '/{name}' (try /help)")
-        return 1
+        return DispatchResult(handled=False, exit_code=1)
 
     rest = text[len(name) :].strip()
     invocation = SlashInvocation(
@@ -502,4 +518,16 @@ def dispatch(
         panel=panel,
         platform_kind=kind,
     )
-    return cmd.handler(invocation)
+    return DispatchResult(handled=True, exit_code=cmd.handler(invocation))
+
+
+def dispatch(
+    line: str,
+    env: Mapping[str, str] | None = None,
+    platform_kind: str | None = None,
+    *,
+    draft: str | None = None,
+    panel: Panel | None = None,
+) -> int:
+    """:func:`dispatch_result`'s exit code alone (the long-standing API)."""
+    return dispatch_result(line, env, platform_kind, draft=draft, panel=panel).exit_code

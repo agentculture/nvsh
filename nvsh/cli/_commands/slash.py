@@ -32,15 +32,22 @@ def _platform_kind(args: argparse.Namespace) -> str:
 def cmd_slash(args: argparse.Namespace) -> int:
     kind = _platform_kind(args)
     draft = os.environ.get("NVSH_DRAFT") or None
-    exit_code = slash_mod.dispatch(args.line, platform_kind=kind, draft=draft)
+    result = slash_mod.dispatch_result(args.line, platform_kind=kind, draft=draft)
     json_mode = bool(getattr(args, "json", False))
     if json_mode:
         text = (args.line or "").strip()
         if text.startswith("/"):
             text = text[1:]
         name = text.split(" ", 1)[0] if text else ""
-        emit_result({"command": name, "exit_code": exit_code}, json_mode=True)
-    return exit_code
+        emit_result({"command": name, "exit_code": result.exit_code}, json_mode=True)
+    # A command that actually ran exits 0 whatever it reported: this process
+    # *is* the hidden ` nvsh slash ...` line readline.bash accepted for the
+    # operator, and a non-zero status there would look to __nvsh_hook like a
+    # failed command and make nvsh diagnose its own panel (deviation d5).
+    # The verb's own result is still in the --json payload above, and the
+    # panel already showed it. An unhandled line (unknown, hidden, empty) is
+    # a genuine user error and keeps exit code 1.
+    return 0 if result.handled else result.exit_code
 
 
 def cmd_complete(args: argparse.Namespace) -> int:
