@@ -23,6 +23,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - nvsh's own hidden slash dispatch (`/doctor` reporting unhealthy) never triggers an agent turn; `nvsh slash` exits 0 for a handled command
 - Ctrl+G streams the agent's answer on the tty instead of discarding it, in emacs and vi keymaps
 - A cold daemon start waits for the daemon to answer instead of timing out after 5 s and falling back to a one-shot run; a second autostart never spawns a rival daemon (lock file); fallback reasons are stated
+- openai-compat reads its bearer from `api_key_file` (default `$XDG_CONFIG_HOME/nvsh/api_key`, must be 0600) when the env var named by `api_key_env` is unset, so a headless Jetson over ssh needs no rc export; the auto-call rate limiter prints one line when it holds back instead of staying silent (deviation d10, reported live from orin)
 - With pi, `proposal.command` is the bare tool-call command, never the rendered panel text; a command-less proposal is never executed
 
 ### Changed
