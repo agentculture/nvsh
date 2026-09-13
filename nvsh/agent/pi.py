@@ -94,6 +94,49 @@ def default_approval_extension_path() -> Path:
 build_prompt = _build_prompt
 
 
+def _approval_envelope(obj: Mapping[str, object]) -> dict | None:
+    """Parse the approval extension's JSON envelope out of a dialog request.
+
+    ``pi``'s ``select`` request carries only ``title``/``options``/``timeout``
+    (see ``docs/pi-rpc.md``), so ``nvsh/agent/pi_ext/approval.ts`` puts a
+    machine-readable envelope --
+    ``{"nvsh": "approval", "v": 1, "tool": ..., "command": ..., "reason": ...}``
+    -- in ``title``. Returns the decoded envelope, or ``None`` when this is
+    some other dialog (a plain human-facing ``title``/``message``).
+    """
+    for field in ("title", "message"):
+        raw = obj.get(field)
+        if not isinstance(raw, str) or not raw.startswith("{"):
+            continue
+        try:
+            decoded = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(decoded, dict) and decoded.get("nvsh") == "approval":
+            return decoded
+    return None
+
+
+def _proposal_fields(obj: Mapping[str, object]) -> tuple[str, str]:
+    """Return ``(command, rationale)`` for one ``extension_ui_request``.
+
+    The command is *only* ever a field that holds a command: the approval
+    envelope's ``command``, or a structured top-level ``command`` field.
+    Human-facing prompt text (``title``/``message``) is never treated as a
+    command -- doing so is deviation d8, where pi's rendered panel text came
+    back as ``Proposal.command`` and would have been run verbatim on Enter.
+    A dialog that carries no command yields ``""``: there is nothing to run.
+    """
+    envelope = _approval_envelope(obj)
+    if envelope is not None:
+        return str(envelope.get("command") or ""), str(envelope.get("reason") or "")
+    raw_command = obj.get("command")
+    rationale = str(obj.get("rationale") or obj.get("message") or obj.get("title") or "")
+    if isinstance(raw_command, str):
+        return raw_command, rationale
+    return "", rationale
+
+
 class PiAgent(NvshAgent):
     """Drives ``pi --mode rpc`` as one persistent subprocess per instance."""
 
@@ -314,9 +357,8 @@ class PiAgent(NvshAgent):
             )
 
         if msg_type == "extension_ui_request":
-            command = obj.get("command") or obj.get("message") or obj.get("title") or ""
-            rationale = str(obj.get("message") or obj.get("title") or "")
-            proposal = Proposal(command=str(command), rationale=rationale, kind=ProposalKind.FIX)
+            command, rationale = _proposal_fields(obj)
+            proposal = Proposal(command=command, rationale=rationale, kind=ProposalKind.FIX)
             return AgentEvent(
                 kind=EventKind.PROPOSAL,
                 proposal=proposal,

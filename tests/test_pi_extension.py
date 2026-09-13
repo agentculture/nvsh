@@ -109,6 +109,50 @@ def test_extension_calls_approve_audit():
     assert "audit" in text
 
 
+# -- d8: the extension forwards only the raw command argument -------------
+
+
+def _select_argument(text: str) -> str:
+    """Return the source of ``ctx.ui.select(...)``'s first argument."""
+    start = text.index("await ctx.ui.select(") + len("await ctx.ui.select(")
+    return text[start : text.index(",", start)].strip()
+
+
+def _assignment_of(text: str, name: str) -> str:
+    """Return the source of ``const <name> = ...;``."""
+    start = text.index(f"const {name} = ")
+    return text[start : text.index(");", start)]
+
+
+def test_extension_never_embeds_a_human_prompt_in_the_select_payload():
+    """d8: the panel text must never ride along as (or inside) the command."""
+    text = _read_extension()
+    assert "run this command?" not in text
+    assert "command: ${" not in text
+
+
+def test_extension_select_payload_is_a_json_envelope_with_the_raw_command():
+    text = _read_extension()
+    argument = _select_argument(text)
+    # A bare identifier, never an inline template literal of prose.
+    assert argument.isidentifier(), f"select payload is not a plain variable: {argument!r}"
+    envelope = _assignment_of(text, argument)
+    assert "JSON.stringify" in envelope, f"select payload is not a JSON envelope: {envelope!r}"
+    assert '"approval"' in envelope
+    # The command argument is forwarded by reference, unmodified.
+    assert "command," in envelope or "command: command" in envelope
+    assert "${" not in envelope, "no interpolated prose may enter the envelope"
+
+
+def test_extension_checks_and_audits_the_same_raw_command():
+    """check/add/audit all receive the bare `command` variable, not a message."""
+    text = _read_extension()
+    assert 'const command = String((event.input && event.input.command) || "");' in text
+    assert "checkCommand(command)" in text
+    for call in ("audit(command,", "audit(command,"):
+        assert call in text
+
+
 # -- wheel packaging ----------------------------------------------------
 
 

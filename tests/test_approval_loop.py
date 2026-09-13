@@ -239,3 +239,39 @@ def test_proposal_never_written_into_readline_line(tmp_path, monkeypatch):
 
     assert "sudo rm -rf /x" in executed_via_callback
     assert "READLINE_LINE" not in os.environ
+
+
+def test_commandless_proposal_is_never_executed(tmp_path):
+    """d8: a proposal with no command runs nothing, even when approved.
+
+    ``PiAgent`` maps a dialog that carries no command field to an empty
+    ``Proposal.command`` rather than to the dialog's prompt text, so the
+    loop must treat approving one as "nothing to run" instead of handing a
+    blank (or, before the fix, a panel-text) string to the executor.
+    """
+    agent = FakeAgent(
+        [
+            AgentEvent(
+                kind=EventKind.PROPOSAL,
+                proposal=Proposal(command="", rationale="Apply fix?", kind=ProposalKind.FIX),
+            ),
+            AgentEvent(kind=EventKind.DONE),
+        ]
+    )
+    audit = AuditLog(path=tmp_path / "audit.jsonl")
+    executed: list[str] = []
+
+    results = run_loop(
+        agent=agent,
+        request=_request(),
+        context=_context(),
+        approve=lambda proposal: True,
+        executor=lambda command: executed.append(command) or ExecResult(exit_code=0),
+        on_event=lambda event: None,
+        audit=audit,
+    )
+
+    assert executed == []
+    assert results == []
+    # The proposal and the decision are still audited.
+    assert [e["event"] for e in audit.read_all()] == ["proposal", "decision"]
