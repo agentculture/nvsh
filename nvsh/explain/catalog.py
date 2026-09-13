@@ -12,11 +12,14 @@ from __future__ import annotations
 _ROOT = """\
 # nvsh
 
-A clonable template for AgentCulture mesh agents. It carries an agent-first CLI
-(cited from the teken `python-cli` reference), a mesh identity (`culture.yaml` +
-`CLAUDE.md`), the canonical guildmaster skill kit under `.claude/skills/`, and a
-buildable/deployable package baseline. Clone it, rename the package, edit
-`culture.yaml`, and you have a new agent.
+An agent-first shell for NVIDIA Jetson, DGX Spark and RTX Spark. It runs your
+commands like a normal shell; when a command fails, it hands the error and
+device context to an agent (shell -> agent) to diagnose and propose a fix, which
+you confirm before anything runs.
+
+Early scaffold: the agent-first verbs below exist today; the shell itself is
+planned (GitHub issues #1 and #2). nvsh is also an AgentCulture mesh agent
+(`culture.yaml` + `CLAUDE.md`).
 
 ## Verbs
 

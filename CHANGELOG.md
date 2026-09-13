@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/). This project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.1] - 2026-09-13
+
+### Changed
+
+- CLAUDE.md re-initialized from the seed into a full runtime prompt for nvsh (shell -> agent for Jetson / DGX Spark / RTX Spark), incorporating issues #1 and #2 and the goal of running nvsh as the default login shell: login-shell safety, PTY wrapper around a real bash, trigger rules, propose-before-run, pluggable offline-first backends, and redaction.
+- README.md rewritten around nvsh's purpose and goals instead of the agent template.
+- QWEN.md, AGENTS.override.md, AGENTS.colleague.md and .pi/SYSTEM.md now describe nvsh and its current scaffold state; the template re-initialization steps are removed.
+- `nvsh learn` (text and --json), the `explain` root entry, and `nvsh --help` now describe nvsh instead of a clonable agent template.
+
 ## [0.9.0] - 2026-09-06
 
 ### Added
