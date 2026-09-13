@@ -2,7 +2,7 @@
   "plan_slug": "nvsh-bash-hook-agent-on-error",
   "schema_version": 2,
   "created": "2026-09-13T13:17:31Z",
-  "updated": "2026-09-13T15:27:59Z",
+  "updated": "2026-09-13T15:37:50Z",
   "deviations": [
     {
       "id": "d1",
@@ -199,6 +199,22 @@
       "status": "proposed",
       "classification": "needs-follow-up",
       "seq": 13
+    },
+    {
+      "id": "d14",
+      "what": "spark with the pi backend: every daemon-routed request logs 'new conversation for shell N' and then emits no event at all (no pi rpc process appears, no pi-sessions/shell-N.jsonl is created, daemon stderr is empty), so each panel and Ctrl+G waits the 120 s stream timeout and falls back to a one-shot that answers in ~6 s; the warm conversation is never used on the Spark. thor/orin (openai-compat) answer through the daemon in ~24 s. Fix: the daemon's pi adapter must start pi and surface any launch/turn failure as an ERROR event immediately",
+      "task_ref": "t19",
+      "reason": "t19b re-verification measured +120.4 s / +120.3 s cold and +120.1 s warm on spark; reproduced with a foreground daemon under private XDG dirs on the merged head",
+      "affects": [
+        "t12",
+        "t9",
+        "c43",
+        "c23"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "classification": "risky",
+      "seq": 14
     }
   ],
   "evidence": [],
