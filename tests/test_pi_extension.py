@@ -51,9 +51,14 @@ def test_extension_file_exists():
     assert EXTENSION_PATH.is_file()
 
 
-def test_extension_under_120_lines():
+def test_extension_stays_small():
+    """A forwarder, not a policy engine.
+
+    Raised from 120 to 160 lines by d21, which added the spawn-failure path
+    (a missing nvsh is reported, never silently re-asked) and its comments.
+    """
     lines = _read_extension().splitlines()
-    assert len(lines) < 120, f"approval.ts has {len(lines)} lines, must be under 120"
+    assert len(lines) < 160, f"approval.ts has {len(lines)} lines, must be under 160"
 
 
 def test_extension_registers_tool_call_handler():
@@ -352,3 +357,135 @@ def test_live_pi_loads_extension_without_error(tmp_path):
             proc.kill()
             _, stderr = proc.communicate()
         assert b"approval.ts" not in stderr or b"error" not in stderr.lower()
+
+
+# -- d21: the extension must reach the same store the panel writes --------
+
+
+def test_extension_prefers_nvsh_bin_over_a_bare_path_lookup():
+    """d21: the rc block exports NVSH_BIN; the daemon's PATH may have no nvsh."""
+    text = _read_extension()
+    assert 'process.env.NVSH_BIN || "nvsh"' in text
+
+
+def test_extension_treats_a_failed_spawn_as_a_failure_not_an_ask():
+    """d21: a missing nvsh silently became 'ask' on every single call."""
+    text = _read_extension()
+    assert "result.error" in text
+    assert "failure" in text
+    # The failure is reported, not swallowed into the ask branch.
+    assert "could not run" in text
+
+
+def test_extension_rechecks_on_every_tool_call():
+    """d21: no memoization -- a widened pattern must apply to the rest of the turn."""
+    text = _read_extension()
+    body = text[text.index('pi.on("tool_call"') :]
+    assert "checkCommand(command)" in body
+    for cache in ("new Map(", "new Set(", "cache"):
+        assert cache not in text, f"approval.ts must not memoize decisions ({cache!r})"
+
+
+# -- node-level: the real extension handler, scripted nvsh ----------------
+
+NODE = shutil.which("node")
+
+_DRIVER = """
+const mod = (await import(process.env.NVSH_EXT)).default;
+let handler = null;
+mod({ on: (name, fn) => { if (name === "tool_call") handler = fn; } });
+const selects = [];
+const ctx = { ui: { select: async (payload) => { selects.push(payload); \
+return process.env.NVSH_CHOICE || undefined; } } };
+const results = [];
+for (const command of JSON.parse(process.env.NVSH_COMMANDS)) {
+  results.push((await handler({ toolName: "bash", input: { command } }, ctx)) ?? null);
+}
+console.log(JSON.stringify({ results, selects }));
+"""
+
+
+def _drive_extension(tmp_path, commands, *, nvsh_bin, choice=None, env_extra=None):
+    """Run the real approval.ts handler under node once per command."""
+    if NODE is None:  # pragma: no cover - CI always has node for markdownlint
+        pytest.skip("no node on PATH")
+    driver = tmp_path / "driver.mjs"
+    driver.write_text(_DRIVER, encoding="utf-8")
+    env = dict(os.environ)
+    env["NVSH_EXT"] = str(EXTENSION_PATH)
+    env["NVSH_COMMANDS"] = json.dumps(list(commands))
+    env["NVSH_BIN"] = str(nvsh_bin)
+    env["XDG_CONFIG_HOME"] = str(tmp_path / "config")
+    env["XDG_RUNTIME_DIR"] = str(tmp_path / "run")
+    if choice is not None:
+        env["NVSH_CHOICE"] = choice
+    env.update(env_extra or {})
+    proc = subprocess.run(  # nosec B603 - fixed argv, no shell
+        [NODE, str(driver)], capture_output=True, text=True, env=env, timeout=60
+    )
+    if proc.returncode != 0:
+        pytest.skip(f"node cannot load the TypeScript extension: {proc.stderr[-300:]}")
+    return json.loads(proc.stdout.strip().splitlines()[-1])
+
+
+def _scripted_nvsh(tmp_path, *, decision="user", add_status=0):
+    """A fake ``nvsh`` that records argv + the XDG env it was handed."""
+    log = tmp_path / "calls.log"
+    script = tmp_path / "fake-nvsh"
+    script.write_text(
+        "#!/bin/sh\n"
+        f'printf "%s|%s|%s|%s\\n" "$1 $2" "$XDG_CONFIG_HOME" "$XDG_RUNTIME_DIR" "$0" >> {log}\n'
+        'case "$2" in\n'
+        f'  check) printf \'{{"decision": "{decision}", "pattern": "whatis *"}}\\n\' ;;\n'
+        f'  add) printf \'{{"added": "whatis *"}}\\n\'; exit {add_status} ;;\n'
+        "  *) printf '{\"recorded\": true}\\n' ;;\n"
+        "esac\n",
+        encoding="utf-8",
+    )
+    script.chmod(0o755)
+    return script, log
+
+
+def test_node_extension_allows_an_already_approved_command_without_asking(tmp_path):
+    script, log = _scripted_nvsh(tmp_path, decision="user")
+    out = _drive_extension(tmp_path, ["whatis ls"], nvsh_bin=script)
+    assert out["results"] == [None], out
+    assert out["selects"] == []
+    assert "approve check" in log.read_text(encoding="utf-8")
+
+
+def test_node_extension_forwards_nvsh_bin_and_the_xdg_dirs(tmp_path):
+    """d21: the extension must read the store the panel writes, not another one."""
+    script, log = _scripted_nvsh(tmp_path)
+    _drive_extension(tmp_path, ["whatis ls"], nvsh_bin=script)
+    fields = log.read_text(encoding="utf-8").strip().splitlines()[0].split("|")
+    assert fields[1] == str(tmp_path / "config")
+    assert fields[2] == str(tmp_path / "run")
+    assert fields[3] == str(script)
+
+
+def test_node_extension_rechecks_every_call_in_the_same_turn(tmp_path):
+    script, log = _scripted_nvsh(tmp_path)
+    _drive_extension(tmp_path, ["whatis ls", "whatis lsmem", "whatis -h"], nvsh_bin=script)
+    checks = [ln for ln in log.read_text(encoding="utf-8").splitlines() if "approve check" in ln]
+    assert len(checks) == 3, checks
+
+
+def test_node_extension_blocks_and_names_the_failure_when_nvsh_cannot_be_run(tmp_path):
+    """d21's root cause: a spawn that never ran must not read as 'ask'."""
+    missing = tmp_path / "nowhere" / "nvsh"
+    out = _drive_extension(tmp_path, ["whatis ls"], nvsh_bin=missing, choice="user")
+    assert out["selects"] == [], "a broken nvsh must never reach the operator's panel"
+    result = out["results"][0]
+    assert result and result["block"] is True
+    assert str(missing) in result["reason"]
+    assert "could not run" in result["reason"]
+
+
+def test_node_extension_names_the_failure_when_the_approval_write_cannot_run(tmp_path):
+    """[u] pressed, but nvsh refused the pattern -- say which of the two it was."""
+    script, _log = _scripted_nvsh(tmp_path, decision="ask", add_status=1)
+    out = _drive_extension(tmp_path, ["whatis ls"], nvsh_bin=script, choice="user")
+    result = out["results"][0]
+    assert result and result["block"] is True
+    assert "refused" in result["reason"]

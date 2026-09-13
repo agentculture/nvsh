@@ -134,6 +134,32 @@ field. A dialog carrying neither yields an empty `Proposal.command`
 (its `title`/`message` becomes the rationale), and `run_loop` executes
 nothing for a blank command even if the operator approves it.
 
+## What the extension needs in `pi`'s environment
+
+The approval extension decides nothing itself: on **every** `tool_call` it
+shells out to `nvsh approve check <command> --json` and relays the answer,
+so a pattern the operator widens halfway through a turn applies to the rest
+of it. That only works if the extension can find the same `nvsh`, and the
+same approval store, the panel writes to. `PiAgent.child_env` therefore
+makes those explicit in the environment it spawns `pi` with:
+
+| Variable | Why |
+|---|---|
+| `NVSH_BIN` | the binary the extension spawns. Taken from the env (`nvsh setup` exports it), else `PATH`, else the console script beside `sys.executable` — which is where a `uv tool` install lives even when its `bin` directory is not on the daemon's `PATH`. |
+| `XDG_CONFIG_HOME` | `approved.toml` — the persistent (`user`) store. Defaults to `$HOME/.config`. |
+| `XDG_RUNTIME_DIR` | `session-approvals.toml` — the login session's store (d15). Filled in **only** when `/run/user/<uid>` exists; `nvsh.approvals.runtime_dir`'s last resort is a differently named temp directory, and inventing a value here would split the store in two. |
+| `XDG_STATE_HOME` | `audit.jsonl`, which the extension appends to through `nvsh approve audit`. |
+
+When `nvsh` cannot be run at all the extension **blocks and says so**
+(`nvsh could not check this tool call -- could not run <path>: ...`). It
+does not fall through to the dialog: deviation d21 was a daemon-spawned
+`pi` whose `PATH` had no `nvsh`, so every `spawnSync` failed with `ENOENT`,
+the empty stdout parsed as `"ask"`, and an already-approved pattern raised
+the panel again on every single tool call — while `[u]` silently failed to
+persist, because the `approve add` spawn failed the same way. An
+infrastructure failure the operator's keypress cannot fix must never be
+disguised as a question.
+
 ## Extension UI sub-protocol
 
 `select`/`confirm`/`input`/`editor` block the agent until an

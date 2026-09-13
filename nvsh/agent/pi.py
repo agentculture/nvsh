@@ -21,7 +21,9 @@ import importlib.resources
 import json
 import os
 import queue
+import shutil
 import subprocess  # external `pi` CLI (bandit B404, allowed repo-wide)
+import sys
 import threading
 import time
 from pathlib import Path
@@ -135,6 +137,61 @@ def default_session_dir(env: Mapping[str, str] | None = None) -> Path:
     return base / "nvsh" / "pi-sessions"
 
 
+def resolve_nvsh_bin(env: Mapping[str, str]) -> str | None:
+    """Where ``nvsh`` is, for the approval extension running under pi.
+
+    ``nvsh setup`` exports ``NVSH_BIN`` into the operator's rc file, so an
+    env that came from a hooked shell already says. Otherwise look on that
+    env's own ``PATH``, and finally next to the interpreter running nvsh --
+    which is where a ``uv tool`` / venv console script lives even when its
+    ``bin`` directory is not on the daemon's ``PATH``. ``None`` means "not
+    found": the extension then falls back to a bare ``nvsh`` lookup and, if
+    that fails too, reports the failure instead of asking (d21).
+    """
+    declared = env.get("NVSH_BIN")
+    if declared:
+        return declared
+    found = shutil.which("nvsh", path=env.get("PATH"))
+    if found:
+        return found
+    beside = Path(sys.executable).with_name("nvsh")
+    return str(beside) if beside.exists() else None
+
+
+def child_env(env: Mapping[str, str]) -> dict[str, str]:
+    """The environment ``pi`` -- and the approval extension under it -- gets.
+
+    Deviation d21: the extension shells out to ``nvsh approve check`` on
+    every tool call, so it has to find the same binary and read the same
+    store the panel writes. A daemon-spawned pi inherits whatever env the
+    shell that first triggered it had; when that env named neither
+    ``NVSH_BIN`` nor an ``nvsh`` on ``PATH``, every spawn failed with ENOENT
+    and every command was asked about again, approved or not. So the
+    variables the extension depends on are made explicit here.
+
+    Only *missing* values are filled in, and only with the same defaults the
+    readers themselves use (:func:`nvsh.approvals._config_dir`,
+    :func:`nvsh.agent.audit.default_audit_path`), so parent and child can
+    never disagree about where the store is. ``XDG_RUNTIME_DIR`` is the one
+    exception: it is set only when ``/run/user/<uid>`` exists, because
+    :func:`nvsh.approvals.runtime_dir`'s last resort is a *differently
+    named* temp directory and inventing a value here would split the session
+    store in two.
+    """
+    resolved = dict(env)
+    nvsh_bin = resolve_nvsh_bin(resolved)
+    if nvsh_bin:
+        resolved["NVSH_BIN"] = nvsh_bin
+    home = resolved.get("HOME") or os.path.expanduser("~")
+    resolved.setdefault("XDG_CONFIG_HOME", str(Path(home) / ".config"))
+    resolved.setdefault("XDG_STATE_HOME", str(Path(home) / ".local" / "state"))
+    if not resolved.get("XDG_RUNTIME_DIR"):
+        run_user = Path(f"/run/user/{os.getuid()}")
+        if run_user.is_dir():
+            resolved["XDG_RUNTIME_DIR"] = str(run_user)
+    return resolved
+
+
 def default_approval_extension_path() -> Path:
     """Path to the approval extension ``pi -e`` loads.
 
@@ -209,7 +266,10 @@ class PiAgent(NvshAgent):
         extension_path: str | Path | None = None,
     ) -> None:
         self._pi_path = pi_path
-        self._env: dict[str, str] = dict(os.environ if env is None else env)
+        # d21: pi's children (the approval extension) must find nvsh and the
+        # same approval store the panel writes, so those variables are made
+        # explicit rather than left to whatever the daemon inherited.
+        self._env: dict[str, str] = child_env(os.environ if env is None else env)
 
         defaults = _default_pi_agent_config()
         self._provider = provider if provider is not None else defaults.get("provider")

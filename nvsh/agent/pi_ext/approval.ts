@@ -18,20 +18,46 @@
 import { spawnSync } from "node:child_process";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
+// Where nvsh is. `nvsh setup` exports NVSH_BIN into the operator's rc file
+// and PiAgent passes it -- with XDG_CONFIG_HOME/XDG_RUNTIME_DIR -- into pi's
+// env, so this extension reads exactly the store the panel writes. The PATH
+// lookup is only the fallback for a pi started by hand. Deviation d21: a
+// daemon-spawned pi whose PATH has no nvsh failed every spawnSync with
+// ENOENT, the empty stdout parsed as "ask", and an already-approved pattern
+// was asked about again on every tool call with nothing said anywhere.
 const NVSH_BIN = process.env.NVSH_BIN || "nvsh";
 
-function nvsh(args: string[]): { ok: boolean; stdout: string } {
-  const result = spawnSync(NVSH_BIN, args, { encoding: "utf8" });
-  return { ok: result.status === 0, stdout: result.stdout || "" };
+interface Run {
+  ok: boolean;
+  stdout: string;
+  // Set only when nvsh never ran at all (ENOENT, EACCES, a signal), never
+  // for a command nvsh ran and rejected -- that is plain `ok: false`.
+  failure: string | null;
 }
 
-function checkCommand(command: string): { decision: string; pattern: string | null } {
-  const { stdout } = nvsh(["approve", "check", command, "--json"]);
-  try {
-    return JSON.parse(stdout);
-  } catch {
-    return { decision: "ask", pattern: null };
+function nvsh(args: string[]): Run {
+  const result = spawnSync(NVSH_BIN, args, { encoding: "utf8" });
+  if (result.error || result.status === null) {
+    const why = result.error ? String((result.error as Error).message) : "no exit status";
+    return { ok: false, stdout: "", failure: `could not run ${NVSH_BIN}: ${why}` };
   }
+  return { ok: result.status === 0, stdout: result.stdout || "", failure: null };
+}
+
+function checkCommand(command: string): { decision: string; failure: string | null } {
+  const run = nvsh(["approve", "check", command, "--json"]);
+  if (run.failure) {
+    return { decision: "ask", failure: run.failure };
+  }
+  try {
+    return { decision: String(JSON.parse(run.stdout).decision || "ask"), failure: null };
+  } catch {
+    return { decision: "ask", failure: `could not run ${NVSH_BIN}: unreadable approve check output` };
+  }
+}
+
+function blockedBy(run: Run, refusal: string): { block: true; reason: string } {
+  return { block: true, reason: run.failure || refusal };
 }
 
 function audit(command: string, decision: string): void {
@@ -45,7 +71,16 @@ export default function (pi: ExtensionAPI) {
     }
 
     const command = String((event.input && event.input.command) || "");
+    // Checked afresh on *every* tool call, never memoized: the pattern the
+    // operator widens halfway through a turn has to apply to the rest of it.
     const decision = checkCommand(command);
+
+    // nvsh itself is unreachable. Say so and block: treating an
+    // infrastructure failure as "ask" buries it under a dialog the
+    // operator's answer cannot fix, forever (d21).
+    if (decision.failure) {
+      return { block: true, reason: `nvsh could not check this tool call -- ${decision.failure}` };
+    }
 
     // Already approved (persisted or held for this session) -- allow.
     if (decision.decision === "user" || decision.decision === "session") {
@@ -93,7 +128,7 @@ export default function (pi: ExtensionAPI) {
       const added = nvsh(["approve", "add", command, "--session", "--json"]);
       if (!added.ok) {
         audit(command, "block");
-        return { block: true, reason: "nvsh refused to approve this pattern for the session" };
+        return blockedBy(added, "nvsh refused to approve this pattern for the session");
       }
       audit(command, "session");
       return;
@@ -107,7 +142,7 @@ export default function (pi: ExtensionAPI) {
     const added = nvsh(["approve", "add", pattern, "--json"]);
     if (!added.ok) {
       audit(command, "block");
-      return { block: true, reason: "nvsh refused to approve this pattern for the user" };
+      return blockedBy(added, "nvsh refused to approve this pattern for the user");
     }
     audit(command, "user");
     return;

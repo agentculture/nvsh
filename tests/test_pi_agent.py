@@ -643,3 +643,59 @@ def test_live_pi_get_state(tmp_path):
 
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))
+
+
+# --- d21: the env pi (and the approval extension under it) inherits ------
+
+
+def test_child_env_names_nvsh_bin_and_the_xdg_dirs(tmp_path):
+    """d21: the approval extension shells out to ``nvsh``; pi's env must say where.
+
+    The extension runs inside a pi that the daemon spawned, and it reads
+    the approval store through ``nvsh approve check``. When ``NVSH_BIN`` is
+    missing from that env and the daemon's ``PATH`` has no ``nvsh`` on it,
+    the spawn fails with ENOENT and every command is asked about forever.
+    """
+    env = _env(tmp_path)
+    env.pop("NVSH_BIN", None)
+    env.pop("XDG_CONFIG_HOME", None)
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    (fake_bin / "nvsh").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    (fake_bin / "nvsh").chmod(0o755)
+    env["PATH"] = str(fake_bin) + os.pathsep + env["PATH"]
+
+    agent = PiAgent(pi_path="pi", env=env)
+
+    assert agent._env["NVSH_BIN"] == str(fake_bin / "nvsh")
+    assert agent._env["XDG_CONFIG_HOME"] == str(Path(env["HOME"]) / ".config")
+    assert agent._env["XDG_STATE_HOME"] == env["XDG_STATE_HOME"]
+
+
+def test_child_env_keeps_an_explicit_nvsh_bin_and_xdg_config_home(tmp_path):
+    env = _env(tmp_path, NVSH_BIN="/opt/nvsh/bin/nvsh", XDG_CONFIG_HOME=str(tmp_path / "cfg"))
+    agent = PiAgent(pi_path="pi", env=env)
+    assert agent._env["NVSH_BIN"] == "/opt/nvsh/bin/nvsh"
+    assert agent._env["XDG_CONFIG_HOME"] == str(tmp_path / "cfg")
+
+
+def test_child_env_leaves_xdg_runtime_dir_alone_when_there_is_no_run_user(tmp_path, monkeypatch):
+    """Never invent a runtime dir: parent and child must agree on the fallback.
+
+    ``nvsh.approvals.runtime_dir()`` falls back to ``/run/user/<uid>`` and
+    then to a per-uid temp dir. Setting ``XDG_RUNTIME_DIR`` to something
+    else here would split the session store in two.
+    """
+    env = _env(tmp_path)
+    env.pop("XDG_RUNTIME_DIR", None)
+    monkeypatch.setattr("nvsh.agent.pi.Path.is_dir", lambda self: False)
+    agent = PiAgent(pi_path="pi", env=env)
+    assert "XDG_RUNTIME_DIR" not in agent._env
+
+
+def test_child_env_passes_an_existing_xdg_runtime_dir_through(tmp_path):
+    runtime = tmp_path / "run"
+    runtime.mkdir()
+    env = _env(tmp_path, XDG_RUNTIME_DIR=str(runtime))
+    agent = PiAgent(pi_path="pi", env=env)
+    assert agent._env["XDG_RUNTIME_DIR"] == str(runtime)
