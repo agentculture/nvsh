@@ -2,7 +2,7 @@
   "plan_slug": "nvsh-bash-hook-agent-on-error",
   "schema_version": 2,
   "created": "2026-09-13T13:17:31Z",
-  "updated": "2026-09-13T16:03:20Z",
+  "updated": "2026-09-13T16:14:31Z",
   "deviations": [
     {
       "id": "d1",
@@ -277,6 +277,22 @@
       "status": "proposed",
       "classification": "needs-follow-up",
       "seq": 18
+    },
+    {
+      "id": "d19",
+      "what": "operator request: (1) the agent needs out-of-the-box background: nvsh/agent/prompt.py sends only the failure and a 'Platform:' line, so the model investigates its own harness (which pi, ls /usr/local/bin) instead of the machine; ship in code a system brief (who nvsh is, propose-one-command rules, never inspect nvsh/pi itself) plus per-platform playbooks (DGX Spark GB10 unified memory: free/meminfo, nvidia-smi memory N/A; Jetson: tegrastats, jtop, nvpmodel, jetson_release; CUDA/cuDNN/TensorRT/driver/container facts from the detector) and the detected facts block; (2) the panel names the tool but not what it runs - show the command an approved or auto-inspect tool call executes",
+      "task_ref": "t19",
+      "reason": "operator on 2026-09-13: 'It would help a lot knowing what tool runs. Also, I think the agent needs a bit background on the system - something we can provide out of the box with code'",
+      "affects": [
+        "t13",
+        "t4",
+        "c33",
+        "c10"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "classification": "needs-follow-up",
+      "seq": 19
     }
   ],
   "evidence": [],
