@@ -561,8 +561,15 @@ def ask(
     draft: str | None = None,
     panel: Panel | None = None,
     env: Mapping[str, str] | None = None,
+    kind: RequestKind = RequestKind.EXPLICIT,
 ) -> int:
-    """``/ask`` and ``Ctrl+G``: a free-form question with the machine's context."""
+    """``/ask`` and ``Ctrl+G``: a free-form question with the machine's context.
+
+    ``kind`` defaults to :attr:`RequestKind.EXPLICIT` (a direct call, e.g.
+    ``Ctrl+G``); :mod:`nvsh.slash` passes :attr:`RequestKind.SLASH` when the
+    operator typed ``/ask`` at the prompt, so the two entry points stay
+    distinguishable on the wire without duplicating this function.
+    """
     resolved = dict(os.environ if env is None else env)
     panel = _panel_for(panel, resolved)
     text = prompt
@@ -571,7 +578,7 @@ def ask(
     state = load_last_failure(resolved) or {}
     args = _args_from_state(state) if state else _args_from_state({"cwd": os.getcwd()})
     request = AgentRequest(
-        kind=RequestKind.EXPLICIT,
+        kind=kind,
         prompt=text,
         command=str(state.get("line", "") or ""),
         failure_id=str(state.get("failure_id", "") or ""),

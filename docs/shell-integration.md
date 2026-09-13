@@ -148,42 +148,83 @@ is what `\C-m` binds, so feeding LF would bypass the whole layer. Tab tests
 set `show-all-if-ambiguous` so a single Tab prints the candidate list. The
 suite skips when no pty is available.
 
+## The slash-command registry (`nvsh/slash.py`)
+
+`nvsh complete` and `nvsh slash` (the two calls above) are thin CLI verbs
+(`nvsh/cli/_commands/slash.py`) over one registry in `nvsh/slash.py`
+(plan task t14): a `SlashCommand` per verb — name, aliases, description, a
+completion provider for its own arguments, the handler, a safety
+classification, and an optional `platforms` restriction. `/power` and
+`/clocks` are registered with `platforms={"jetson"}`; both `nvsh complete`
+and `/help` hide them everywhere else, and dispatching either one on a
+non-Jetson platform reports "unknown slash command" exactly like a typo
+would. The registry is the *only* place any of this is decided — bash never
+re-implements it.
+
+`--platform` overrides the detected kind on both verbs (mostly for tests);
+by default it comes from `nvsh.platform.detect().kind`.
+
 ## `/doctor`
 
 `/doctor` is one of the palette entries `nvsh complete --json` returns (see
 above), routed through the same Enter-macro dispatch as every other slash
 command — but its handler needs state only bash itself can see: the live
-`PROMPT_COMMAND` array and the active readline bindings. `nvsh doctor`
-(`nvsh/doctor_checks.py`, task t17) never shells out to read that state
-itself; bash hands it over as three flags. The exact invocation the `/doctor`
-slash handler runs is:
+`PROMPT_COMMAND` array and the active readline bindings. `nvsh.doctor_checks`
+(task t17) never shells out to read that state itself; bash hands it over as
+three environment variables, exported by `__nvsh_enter` right before *every*
+slash dispatch (not only `/doctor` — the cost is one `declare -p`/`bind -p`/
+`bind -V` per slash line, which already forks `nvsh`, so there is nothing to
+gain by special-casing the command name, and `readline.bash` must never carry
+a command name in its code — see "No static command list" above):
 
 ```bash
-nvsh doctor --prompt-command "$(declare -p PROMPT_COMMAND)" \
-    --bind-p "$(bind -p)" \
-    --keymap "$(bind -V | grep keymap | awk '{print $2}')"
+export NVSH_PROMPT_COMMAND="$(declare -p PROMPT_COMMAND)"
+export NVSH_BIND_P="$(bind -p)"
+export NVSH_KEYMAP="$(__nvsh_keymap)"   # emacs / vi-insert / vi-command
 ```
 
-- `--prompt-command` is `declare -p PROMPT_COMMAND`'s own output (array or
+The `/doctor` slash handler (`nvsh.slash._handle_doctor`) reads these three
+variables straight from its environment and passes them to
+`nvsh.cli._commands.doctor.cmd_doctor`, exactly as the `nvsh doctor
+--prompt-command/--bind-p/--keymap` CLI flags would:
+
+- `NVSH_PROMPT_COMMAND` is `declare -p PROMPT_COMMAND`'s own output (array or
   string form); `hook_first_in_prompt_command` parses it to confirm
   `__nvsh_hook` is element `[0]`, exactly as `__nvsh_hook_install` (in
   `nvsh/shell/hook.bash`) placed it.
-- `--bind-p` is plain `bind -p` output for whichever keymap is currently
+- `NVSH_BIND_P` is plain `bind -p` output for whichever keymap is currently
   active (not `bind -m <keymap> -p` — `readline.bash` registers every
   binding across all three keymaps, so the active keymap's own `bind -p` is
   enough); `bindings_present` looks for the `\C-x\C-n` dispatch binding, the
   `\C-m` Enter macro and the `\C-g` binding described above.
-- `--keymap` is read from `bind -V`'s `keymap` line, one of `emacs`,
-  `vi-insert` or `vi-command`, and only labels the `bindings_present`
-  message — it does not change which bindings are checked, since `bind -p`
-  already reflects the active keymap.
+- `NVSH_KEYMAP` is parsed from `bind -V`'s `keymap is set to` line by the
+  small `__nvsh_keymap` helper, one of `emacs`, `vi-insert` or
+  `vi-command`, and only labels the `bindings_present` message — it does not
+  change which bindings are checked, since `bind -p` already reflects the
+  active keymap.
 
-Run `nvsh doctor` (or `nvsh doctor --json`) with none of these flags — from a
-plain terminal, a script, or over `nvsh explain doctor` — and the in-shell
-checks (`hook_sourced`, `hook_first_in_prompt_command`, `bindings_present`)
-report `passed=false, severity=info` with the remediation "run /doctor from
-a hooked shell" rather than failing `healthy`, since that state genuinely
+Run `nvsh doctor` (or `nvsh doctor --json`) directly, or `/doctor` from a
+plain terminal, a script, or over `nvsh explain doctor` — anywhere none of
+these three variables are set — and the in-shell checks (`hook_sourced`,
+`hook_first_in_prompt_command`, `bindings_present`) report
+`passed=false, severity=info` with the remediation "run /doctor from a
+hooked shell" rather than failing `healthy`, since that state genuinely
 cannot exist outside a hooked bash.
+
+## `/undo`
+
+`/undo` (`nvsh.slash._handle_undo`) drops the last agent turn and its
+pending proposal from the conversation. It never runs anything on the
+machine and never reverts a change a proposal already made — the converged
+spec's `/undo` decision scopes it to nvsh's own view of the conversation;
+reverting machine changes is tracked as a separate, later GitHub issue on
+`agentculture/nvsh`. With a daemon running it sends the `undo` control
+message (`nvsh.daemon.Conversation.undo()` drops the daemon's last
+transcript entry and clears `pending_proposal` — the backend's own on-disk
+session, e.g. pi's, is left untouched, since there is no RPC to selectively
+erase one turn there); with no daemon running it clears any
+`pending_proposal` recorded in `$XDG_STATE_HOME/nvsh/last-failure.json`
+instead.
 
 ## Installation: `nvsh setup` and the rc block
 
