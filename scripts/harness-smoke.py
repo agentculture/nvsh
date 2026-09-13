@@ -461,6 +461,24 @@ def _run(argv: list[str], cwd: Path, timeout: int) -> subprocess.CompletedProces
 _FINDING_PATH = re.compile(r"(?:^|\s)([\w./-]+\.(?:md|yaml|yml|toml|json)):\d+")
 
 
+def _finding_paths_by_line(message: str) -> set[str]:
+    """Paths named at the start of a finding's detail lines (``path:line:``).
+
+    A second, format-tolerant extraction next to :data:`_FINDING_PATH`: any
+    indented line whose first token before ``:`` looks like a repo-relative
+    file counts, whatever its extension.
+    """
+    found: set[str] = set()
+    for line in message.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith(("❌", "-", "Fix:", "Allowed")):
+            continue
+        head = stripped.split(":", 1)[0]
+        if "/" in head and " " not in head and not head.startswith(("~", "/")):
+            found.add(head)
+    return found
+
+
 def check_steward_doctor(repo: Path, timeout: int) -> Result:
     base = _tool_argv("steward", "steward-cli")
     if base is None:
@@ -521,11 +539,11 @@ def check_steward_doctor(repo: Path, timeout: int) -> Result:
     for finding in findings:
         check = str(finding.get("check", "?"))
         message = str(finding.get("message", ""))
-        paths = set(_FINDING_PATH.findall(message))
+        paths = set(_FINDING_PATH.findall(message)) | _finding_paths_by_line(message)
         if check == "portability" and paths and all(map(steward_portability_waivable, paths)):
             waived.append(f"{check} ({', '.join(sorted(paths))})")
         else:
-            unexpected.append(f"{check}: {message.strip()[:300]}")
+            unexpected.append(f"{check}: {message.strip()[:1500]}")
 
     if unexpected:
         return Result("toolchain", "steward-doctor", FAIL, " | ".join(unexpected))
