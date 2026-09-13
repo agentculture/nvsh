@@ -89,10 +89,11 @@ def read_device_tree_list(root: str, path: str) -> list[str] | None:
 def parse_cuda_version(text: str) -> str | None:
     # Valid JSON of the wrong *shape* (null, a list, a string, a `cuda` that
     # is not an object) is an absent fact, not an exception: raising here
-    # aborted detection of the whole platform block.
+    # aborted detection of the whole platform block. ValueError covers
+    # json.JSONDecodeError, which derives from it.
     try:
         data = json.loads(text)
-    except (json.JSONDecodeError, ValueError):
+    except ValueError:
         return None
     if not isinstance(data, dict):
         return None
@@ -147,8 +148,9 @@ def parse_cudnn_version(text: str) -> str | None:
 
 def parse_docker_default_runtime(text: str) -> str | None:
     try:
+        # ValueError covers json.JSONDecodeError, which derives from it.
         data = json.loads(text)
-    except (json.JSONDecodeError, ValueError):
+    except ValueError:
         return None
     if not isinstance(data, dict):
         return None

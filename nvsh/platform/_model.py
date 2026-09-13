@@ -18,13 +18,14 @@ class Value:
 
     ``present`` is False when the source was checked and nothing usable was
     found there (file missing, binary not on PATH, content unparseable).
-    ``value`` is None in that case; ``source`` and ``method`` are always
+    ``text`` is None in that case; ``source`` and ``method`` are always
     filled in, so the caller can see what was checked even when nothing was
-    found.
+    found. The field is ``text``, not ``value`` (a field may not repeat its
+    own class's name); the serialized key stays ``"value"``.
     """
 
     name: str
-    value: str | None
+    text: str | None
     source: str
     method: str
     present: bool
@@ -32,15 +33,15 @@ class Value:
     def __post_init__(self) -> None:
         if self.method not in _METHODS:
             raise ValueError(f"unknown Value.method {self.method!r} for {self.name!r}")
-        if self.present and self.value is None:
+        if self.present and self.text is None:
             raise ValueError(f"Value {self.name!r} is present but value is None")
-        if not self.present and self.value is not None:
+        if not self.present and self.text is not None:
             raise ValueError(f"Value {self.name!r} is absent but value is not None")
 
     def to_dict(self) -> dict:
         return {
             "name": self.name,
-            "value": self.value,
+            "value": self.text,
             "source": self.source,
             "method": self.method,
             "present": self.present,
@@ -75,6 +76,6 @@ class Platform:
         """
         lines = [f"platform: {self.kind}"]
         for value in self.values:
-            shown = value.value if value.present else "absent"
+            shown = value.text if value.present else "absent"
             lines.append(f"  {value.name}: {shown}  [{value.method}: {value.source}]")
         return "\n".join(lines)

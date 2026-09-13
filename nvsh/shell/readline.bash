@@ -157,6 +157,7 @@ __nvsh_mark_line() {
         __NVSH_ITEMS=()
         return 1
         ;;
+    *) ;; # not a mark: the caller leaves the line to bash
     esac
     return 1
 }

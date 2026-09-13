@@ -233,7 +233,8 @@ def test_non_slash_lines_pass_through(tmp_path, mode):
         sh.send('echo "one\r', settle=0.4)
         sh.send('two"\r', settle=0.6)
         out = sh.since(mark)
-        assert "one" in out and "two" in out
+        assert "one" in out
+        assert "two" in out
         assert sh.records() == []
     finally:
         sh.close()
@@ -319,7 +320,9 @@ def test_slash_tab_lists_palette_merged_with_paths(sh):
     out = sh.since(mark)
     # readline lists candidates with the common "/" prefix stripped, so the
     # palette shows as bare words next to the real directories of /.
-    assert "doctor" in out and "retry" in out and "undo" in out
+    assert "doctor" in out
+    assert "retry" in out
+    assert "undo" in out
     assert "usr/" in out or "etc/" in out
     sh.send("\x03", settle=0.2)
 
@@ -342,7 +345,8 @@ def test_argument_completion_comes_from_nvsh_complete(sh):
     mark = sh.mark()
     sh.send("/doctor \t", settle=0.8)
     out = sh.since(mark)
-    assert "--json" in out and "--strict" in out
+    assert "--json" in out
+    assert "--strict" in out
     sh.send("\x03", settle=0.2)
 
 

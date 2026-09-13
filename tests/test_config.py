@@ -14,7 +14,7 @@ import pytest
 from nvsh.config import Config, ConfigError, default_toml, load, save, set_provider
 
 
-@pytest.fixture()
+@pytest.fixture
 def xdg_home(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     return tmp_path

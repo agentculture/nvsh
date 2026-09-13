@@ -99,8 +99,9 @@ def parse_dpkg_query(stdout: str, package: str) -> str | None:
 def parse_spark_status(stdout: str) -> bool | None:
     """Return the top-level 'available' flag, or None if unparseable."""
     try:
+        # ValueError covers json.JSONDecodeError, which derives from it.
         data = json.loads(stdout)
-    except (json.JSONDecodeError, ValueError):
+    except ValueError:
         return None
     if not isinstance(data, dict):
         return None

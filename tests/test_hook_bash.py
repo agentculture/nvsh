@@ -115,7 +115,7 @@ def _base_env(tmp_path, **extra):
     return env
 
 
-@pytest.fixture()
+@pytest.fixture
 def fake_nvsh(tmp_path):
     """A fake ``nvsh`` first on PATH that records argv and invocation count."""
 
@@ -571,7 +571,8 @@ def test_prompt_latency_overhead_is_small(tmp_path, fake_nvsh, capsys):
     hooked_out = _run_bash([_source(), *(["true"] * count)], env, timeout=300.0)
     base = _prompt_intervals(baseline_out)
     hooked = _prompt_intervals(hooked_out)
-    assert len(base) > count // 2 and len(hooked) > count // 2
+    assert len(base) > count // 2
+    assert len(hooked) > count // 2
     base_median = statistics.median(base) * 1000
     hook_median = statistics.median(hooked) * 1000
     delta = hook_median - base_median

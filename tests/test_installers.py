@@ -48,8 +48,10 @@ def test_tools_registry_has_expected_names():
 
 def test_tool_spec_has_purpose_and_binary():
     for tool in installers.TOOLS:
-        assert isinstance(tool.purpose, str) and tool.purpose
-        assert isinstance(tool.binary, str) and tool.binary
+        assert isinstance(tool.purpose, str)
+        assert tool.purpose
+        assert isinstance(tool.binary, str)
+        assert tool.binary
         assert callable(tool.install_commands)
 
 
@@ -148,8 +150,10 @@ def test_node_and_tmux_have_no_plan_without_apt_get():
     plan = installers.plan_installs(missing, which=which)
     node_step = next(step for step in plan if step.tool == "node")
     tmux_step = next(step for step in plan if step.tool == "tmux")
-    assert node_step.argv is None and node_step.executable is False
-    assert tmux_step.argv is None and tmux_step.executable is False
+    assert node_step.argv is None
+    assert node_step.executable is False
+    assert tmux_step.argv is None
+    assert tmux_step.executable is False
 
 
 # --------------------------------------------------------------------------

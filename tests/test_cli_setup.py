@@ -35,7 +35,6 @@ def _isolated_env(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg-config"))
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "run"))
     monkeypatch.delenv("NVSH_HOOK_VERSION", raising=False)
-    yield
 
 
 def _run(argv):
@@ -111,7 +110,8 @@ def test_setup_reports_agent_choice(tmp_path):
     code, out, err = _run(["setup", "--rc", str(rc), "--json"])
     payload = json.loads(out)
     assert "agent" in payload
-    assert "name" in payload["agent"] and "reason" in payload["agent"]
+    assert "name" in payload["agent"]
+    assert "reason" in payload["agent"]
 
 
 # --------------------------------------------------------------------------

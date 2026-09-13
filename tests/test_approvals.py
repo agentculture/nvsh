@@ -18,7 +18,7 @@ import pytest
 from nvsh.approvals import DEFAULT_PATTERNS, Approvals
 
 
-@pytest.fixture()
+@pytest.fixture
 def xdg_home(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     # Session approvals live under the runtime dir (d15); every test points
@@ -373,7 +373,8 @@ def test_matches_reports_the_session_scope_when_any_stage_is_session_only(xdg_ho
     approvals.add("head -n 20", scope="session")
     scope, pattern = approvals.matches("ps -eo pid | head -n 20")
     assert scope == "session"
-    assert "ps *" in pattern and "head -n 20" in pattern
+    assert "ps *" in pattern
+    assert "head -n 20" in pattern
 
 
 def test_unapproved_stage_names_the_stage_that_failed(xdg_home):

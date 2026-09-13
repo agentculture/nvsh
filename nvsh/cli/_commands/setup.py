@@ -32,6 +32,9 @@ from nvsh.cli._output import emit_diagnostic, emit_result
 from nvsh.shell import render
 from nvsh.triggers import TriggerEvent, decide
 
+#: Help text every ``--json`` flag in this verb group shares.
+_JSON_HELP = "Emit structured JSON."
+
 # --------------------------------------------------------------------------
 # shared helpers
 # --------------------------------------------------------------------------
@@ -162,44 +165,73 @@ def _agent_key_hint(chosen: str, cfg) -> str | None:
     )
 
 
+def _write_rc_block(rc_path: rcfile.RcPath, block: str) -> tuple[bool, bool, bool, Path | None]:
+    """Insert *block* into the rc file, backing the original up when it changes.
+
+    Returns ``(changed, was_present, was_edited, backup_path)``. Writing
+    nothing when the rendered text is byte-identical is what makes ``nvsh
+    setup`` idempotent.
+    """
+    original_text = rc_path.read_text()
+    base_text, was_present, was_edited = rcfile.remove_block(original_text)
+    new_text = rcfile.insert_block(base_text, block)
+
+    changed = new_text != original_text
+    backup_path: Path | None = None
+    if changed:
+        if rc_path.exists():
+            backup_path = rc_path.write_backup(original_text)
+        rc_path.write_text(new_text)
+    return changed, was_present, was_edited, backup_path
+
+
+def _install_mode(args: argparse.Namespace) -> tuple[bool, object]:
+    """``(offer_only, confirm)`` for :func:`_process_installs`, from the flags."""
+    if bool(getattr(args, "no_install", False)):
+        return True, None
+    if bool(getattr(args, "yes", False)):
+        return False, lambda _msg: True
+    if bool(getattr(args, "json", False)):
+        # --json is non-interactive by construction: there is no terminal
+        # to prompt on, so list the offers and run nothing without --yes.
+        return True, None
+    return False, None  # run_install's own input() prompt
+
+
+def _setup_lines(result: dict, install_rows: list[dict], offer_only: bool) -> list[str]:
+    """The text-mode rendering of :func:`cmd_setup`'s result."""
+    lines = [
+        f"rc: {result['rc']}",
+        f"block inserted: {result['block_inserted']}",
+        f"backup: {result['backup']}",
+        f"shell files: {result['shell_dir']}",
+        f"nvsh bin: {result['nvsh_bin']}",
+        f"agent: {result['agent']['name']} ({result['agent']['reason']})",
+    ]
+    key_hint = result["agent"]["key_hint"]
+    if key_hint:
+        lines.append(f"  {key_hint}")
+    for row in install_rows:
+        lines.append(f"{row['tool']} ({row['purpose']}): {row['command']}")
+        if not offer_only:
+            lines.append(f"  ran: {row['ran']} (returncode: {row['returncode']})")
+    return lines
+
+
 def cmd_setup(args: argparse.Namespace) -> int:
     rc_path = _rc_path(args)
-    original_text = rc_path.read_text()
 
     shell_dir = render.render_shell_files()
     nvsh_bin = render.resolve_nvsh_bin()
     block = _build_block(shell_dir, nvsh_bin)
 
-    base_text, was_present, was_edited = rcfile.remove_block(original_text)
-    new_text = rcfile.insert_block(base_text, block)
-
-    backup_path: Path | None = None
-    changed = new_text != original_text
-    if changed:
-        if rc_path.exists():
-            backup_path = rc_path.write_backup(original_text)
-        rc_path.write_text(new_text)
+    changed, was_present, was_edited, backup_path = _write_rc_block(rc_path, block)
 
     cfg = nvsh_config.load()
     chosen, reason = registry.choose(cfg)
 
-    no_install = bool(getattr(args, "no_install", False))
-    auto_yes = bool(getattr(args, "yes", False))
-    json_mode = bool(getattr(args, "json", False))
-
+    offer_only, confirm = _install_mode(args)
     missing = installers.missing_tools(which=shutil.which)
-
-    if no_install:
-        offer_only, confirm = True, None
-    elif auto_yes:
-        offer_only, confirm = False, lambda _msg: True
-    elif json_mode:
-        # --json is non-interactive by construction: there is no terminal
-        # to prompt on, so list the offers and run nothing without --yes.
-        offer_only, confirm = True, None
-    else:
-        offer_only, confirm = False, None  # run_install's own input() prompt
-
     install_rows, any_ran = _process_installs(missing, offer_only=offer_only, confirm=confirm)
     if any_ran:
         chosen, reason = registry.choose(cfg)
@@ -216,25 +248,10 @@ def cmd_setup(args: argparse.Namespace) -> int:
         "installs": install_rows,
     }
 
-    if json_mode:
+    if bool(getattr(args, "json", False)):
         emit_result(result, json_mode=True)
     else:
-        lines = [
-            f"rc: {result['rc']}",
-            f"block inserted: {changed}",
-            f"backup: {result['backup']}",
-            f"shell files: {shell_dir}",
-            f"nvsh bin: {nvsh_bin}",
-            f"agent: {chosen} ({reason})",
-        ]
-        key_hint = result["agent"]["key_hint"]
-        if key_hint:
-            lines.append(f"  {key_hint}")
-        for row in install_rows:
-            lines.append(f"{row['tool']} ({row['purpose']}): {row['command']}")
-            if not offer_only:
-                lines.append(f"  ran: {row['ran']} (returncode: {row['returncode']})")
-        emit_result("\n".join(lines), json_mode=False)
+        emit_result("\n".join(_setup_lines(result, install_rows, offer_only)), json_mode=False)
     return 0
 
 
@@ -265,53 +282,73 @@ def _stop_daemon(nvsh_bin: str) -> bool:
     return proc.returncode == 0
 
 
+def _restore_rc(rc_path: rcfile.RcPath) -> tuple[bool, bool, str | None]:
+    """Strip the block out of the rc file. Returns ``(removed, edited, restored_from)``.
+
+    A block that was hand-edited since ``nvsh setup`` wrote it cannot be
+    removed by text surgery alone without risking the operator's own edits,
+    so the newest backup is restored wholesale when there is one.
+    """
+    original_text = rc_path.read_text()
+    stripped_text, removed, edited = rcfile.remove_block(original_text)
+    if not removed:
+        return False, edited, None
+
+    restored_from = None
+    new_text = stripped_text
+    if edited:
+        backup = rc_path.newest_backup()
+        if backup is not None:
+            new_text = backup.read_text(encoding="utf-8")
+            restored_from = str(backup)
+    if new_text != original_text:
+        rc_path.write_text(new_text)
+    return True, edited, restored_from
+
+
+def _remove_shell_files() -> list[str]:
+    """Delete the rendered ``hook.bash``/``readline.bash``; return what went."""
+    shell_dir = render.data_dir() / "shell"
+    removed_files: list[str] = []
+    if not shell_dir.exists():
+        return removed_files
+    for name in render.SHELL_FILES:
+        f = shell_dir / name
+        if f.exists():
+            f.unlink()
+            removed_files.append(str(f))
+    return removed_files
+
+
+def _remove_runtime_files() -> list[str]:
+    """Delete this user's capture logs, notices and daemon socket."""
+    runtime_dir = _runtime_dir()
+    removed: list[str] = []
+    if not runtime_dir.exists():
+        return removed
+    for pattern in ("*.log", "*.notice"):
+        for path in runtime_dir.glob(pattern):
+            path.unlink()
+            removed.append(str(path))
+    sock = runtime_dir / "daemon.sock"
+    if sock.exists():
+        sock.unlink()
+        removed.append(str(sock))
+    return removed
+
+
 def cmd_uninstall(args: argparse.Namespace) -> int:
     rc_path = _rc_path(args)
-    original_text = rc_path.read_text()
+    removed, edited, restored_from_backup = _restore_rc(rc_path)
 
-    stripped_text, removed, edited = rcfile.remove_block(original_text)
-
-    restored_from_backup = None
-    if removed:
-        if edited:
-            backup = rc_path.newest_backup()
-            if backup is not None:
-                new_text = backup.read_text(encoding="utf-8")
-                restored_from_backup = str(backup)
-            else:
-                new_text = stripped_text
-        else:
-            new_text = stripped_text
-        if new_text != original_text:
-            rc_path.write_text(new_text)
-
-    shell_dir = render.data_dir() / "shell"
-    removed_files = []
-    if shell_dir.exists():
-        for name in render.SHELL_FILES:
-            f = shell_dir / name
-            if f.exists():
-                f.unlink()
-                removed_files.append(str(f))
+    removed_files = _remove_shell_files()
 
     # Stop the daemon *before* touching its socket: unlinking first leaves a
     # live daemon bound to a pathname nothing can reach any more, so
     # `daemon stop` cannot connect and the orphan survives to its own timeout.
     daemon_stopped = _stop_daemon(render.resolve_nvsh_bin())
 
-    runtime_dir = _runtime_dir()
-    removed_runtime = []
-    if runtime_dir.exists():
-        for log in runtime_dir.glob("*.log"):
-            log.unlink()
-            removed_runtime.append(str(log))
-        for notice in runtime_dir.glob("*.notice"):
-            notice.unlink()
-            removed_runtime.append(str(notice))
-        sock = runtime_dir / "daemon.sock"
-        if sock.exists():
-            sock.unlink()
-            removed_runtime.append(str(sock))
+    removed_runtime = _remove_runtime_files()
 
     result = {
         "rc": str(rc_path),
@@ -323,8 +360,7 @@ def cmd_uninstall(args: argparse.Namespace) -> int:
         "daemon_stopped": daemon_stopped,
     }
 
-    json_mode = bool(getattr(args, "json", False))
-    if json_mode:
+    if bool(getattr(args, "json", False)):
         emit_result(result, json_mode=True)
     else:
         lines = [
@@ -442,7 +478,7 @@ def register(sub: argparse._SubParsersAction) -> None:
         help="Render the bash hook files and insert the rc block (see 'nvsh explain setup').",
     )
     setup_p.add_argument("--rc", default=None, help="rc file to edit (default: ~/.bashrc).")
-    setup_p.add_argument("--json", action="store_true", help="Emit structured JSON.")
+    setup_p.add_argument("--json", action="store_true", help=_JSON_HELP)
     setup_p.add_argument(
         "--yes",
         action="store_true",
@@ -461,7 +497,7 @@ def register(sub: argparse._SubParsersAction) -> None:
         "(see 'nvsh explain uninstall').",
     )
     uninstall_p.add_argument("--rc", default=None, help="rc file to edit (default: ~/.bashrc).")
-    uninstall_p.add_argument("--json", action="store_true", help="Emit structured JSON.")
+    uninstall_p.add_argument("--json", action="store_true", help=_JSON_HELP)
     uninstall_p.set_defaults(func=cmd_uninstall)
 
     off_p = sub.add_parser(
@@ -471,7 +507,7 @@ def register(sub: argparse._SubParsersAction) -> None:
     off_p.add_argument(
         "--shell", action="store_true", help="Print raw bash only (for eval), no JSON/text wrap."
     )
-    off_p.add_argument("--json", action="store_true", help="Emit structured JSON.")
+    off_p.add_argument("--json", action="store_true", help=_JSON_HELP)
     off_p.set_defaults(func=cmd_off)
 
     on_p = sub.add_parser(
@@ -481,7 +517,7 @@ def register(sub: argparse._SubParsersAction) -> None:
     on_p.add_argument(
         "--shell", action="store_true", help="Print raw bash only (for eval), no JSON/text wrap."
     )
-    on_p.add_argument("--json", action="store_true", help="Emit structured JSON.")
+    on_p.add_argument("--json", action="store_true", help=_JSON_HELP)
     on_p.set_defaults(func=cmd_on)
 
     hook_p = sub.add_parser(
@@ -494,5 +530,5 @@ def register(sub: argparse._SubParsersAction) -> None:
     hook_p.add_argument("--line", required=True, help="The command line that failed.")
     hook_p.add_argument("--cwd", required=True, help="The shell's working directory.")
     hook_p.add_argument("--log", default="", help="Path of the session capture log, if any.")
-    hook_p.add_argument("--json", action="store_true", help="Emit structured JSON.")
+    hook_p.add_argument("--json", action="store_true", help=_JSON_HELP)
     hook_p.set_defaults(func=cmd_hook)

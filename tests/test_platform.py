@@ -83,18 +83,18 @@ def test_spark_kind_is_dgx_spark():
 
 def test_spark_known_facts():
     platform = _spark_platform()
-    assert platform.get("dgx_name").value == "DGX Spark"
-    assert platform.get("dgx_swbuild_version").value.startswith("7.")
-    assert platform.get("cuda_version").value == "13.0.2"
-    assert platform.get("nvidia_driver_version").value == "580.126.09"
-    assert platform.get("dmi_product_name").value == "NVIDIA_DGX_Spark"
+    assert platform.get("dgx_name").text == "DGX Spark"
+    assert platform.get("dgx_swbuild_version").text.startswith("7.")
+    assert platform.get("cuda_version").text == "13.0.2"
+    assert platform.get("nvidia_driver_version").text == "580.126.09"
+    assert platform.get("dmi_product_name").text == "NVIDIA_DGX_Spark"
 
 
 def test_spark_unified_memory_from_nvidia_smi_na():
     platform = _spark_platform()
     unified = platform.get("unified_memory")
     assert unified.present is True
-    assert unified.value == "true"
+    assert unified.text == "true"
     assert unified.method == "subprocess"
 
 
@@ -103,7 +103,7 @@ def test_spark_mem_available_is_pressure_signal():
     mem_available = platform.get("mem_available")
     assert mem_available.present is True
     assert mem_available.source == "/proc/meminfo"
-    assert mem_available.value.endswith("kB")
+    assert mem_available.text.endswith("kB")
 
 
 def test_spark_absent_facts_reported_not_omitted():
@@ -121,7 +121,7 @@ def test_spark_tmux_pi_spark_cli_present():
     assert platform.get("pi").present is True
     assert platform.get("spark_cli").present is True
     assert platform.get("spark_status_available").present is True
-    assert platform.get("spark_status_available").value == "true"
+    assert platform.get("spark_status_available").text == "true"
 
 
 # --- THOR ----------------------------------------------------------------
@@ -150,20 +150,21 @@ def test_thor_known_facts():
     assert platform.get("dgx_name").present is False
     l4t = platform.get("l4t_release")
     assert l4t.present is True
-    assert "R38" in l4t.value and "REVISION: 2.2" in l4t.value
-    assert platform.get("device_tree_model").value == "NVIDIA Jetson AGX Thor Developer Kit"
-    assert "tegra264" in platform.get("device_tree_compatible").value
-    assert platform.get("cuda_version").value == "13.0.0"
-    assert platform.get("cudnn_version").value == "9.12.0"
+    assert "R38" in l4t.text
+    assert "REVISION: 2.2" in l4t.text
+    assert platform.get("device_tree_model").text == "NVIDIA Jetson AGX Thor Developer Kit"
+    assert "tegra264" in platform.get("device_tree_compatible").text
+    assert platform.get("cuda_version").text == "13.0.0"
+    assert platform.get("cudnn_version").text == "9.12.0"
     tensorrt = platform.get("tensorrt_version")
     assert tensorrt.present is True
-    assert tensorrt.value.startswith("10.13")
-    assert platform.get("docker_default_runtime").value == "nvidia"
+    assert tensorrt.text.startswith("10.13")
+    assert platform.get("docker_default_runtime").text == "nvidia"
 
 
 def test_thor_nvpmodel_and_presence_flags():
     platform = _thor_platform()
-    assert platform.get("nvpmodel_power_mode").value == "MAXN"
+    assert platform.get("nvpmodel_power_mode").text == "MAXN"
     assert platform.get("tmux").present is True
     assert platform.get("pi").present is False
     assert platform.get("spark_cli").present is False
@@ -174,7 +175,7 @@ def test_thor_nvpmodel_and_presence_flags():
 
 def test_thor_unified_memory():
     platform = _thor_platform()
-    assert platform.get("unified_memory").value == "true"
+    assert platform.get("unified_memory").text == "true"
 
 
 # --- ORIN ------------------------------------------------------------------
@@ -201,10 +202,11 @@ def test_orin_known_facts():
     platform = _orin_platform()
     l4t = platform.get("l4t_release")
     assert l4t.present is True
-    assert "R39" in l4t.value and "REVISION: 2.0" in l4t.value
-    assert platform.get("device_tree_model").value == "NVIDIA Jetson AGX Orin Developer Kit"
-    assert "tegra234" in platform.get("device_tree_compatible").value
-    assert platform.get("nvpmodel_power_mode").value == "MAXN"
+    assert "R39" in l4t.text
+    assert "REVISION: 2.0" in l4t.text
+    assert platform.get("device_tree_model").text == "NVIDIA Jetson AGX Orin Developer Kit"
+    assert "tegra234" in platform.get("device_tree_compatible").text
+    assert platform.get("nvpmodel_power_mode").text == "MAXN"
 
 
 def test_orin_cuda_toolkit_and_tensorrt_absent():
@@ -269,7 +271,7 @@ def test_generic_root_reports_every_value_as_absent_not_omitted(tmp_path):
     assert expected <= names
     for value in platform.values:
         assert value.present is False
-        assert value.value is None
+        assert value.text is None
         assert value.source
 
 
@@ -289,20 +291,20 @@ def test_rtx_kind_from_dmi_product_name(tmp_path):
 
 
 def test_value_invariants():
-    Value(name="x", value="1", source="s", method="file", present=True)
-    Value(name="x", value=None, source="s", method="file", present=False)
+    Value(name="x", text="1", source="s", method="file", present=True)
+    Value(name="x", text=None, source="s", method="file", present=False)
     try:
-        Value(name="x", value="1", source="s", method="file", present=False)
+        Value(name="x", text="1", source="s", method="file", present=False)
         raise AssertionError("expected ValueError")
     except ValueError:
         pass
     try:
-        Value(name="x", value=None, source="s", method="file", present=True)
+        Value(name="x", text=None, source="s", method="file", present=True)
         raise AssertionError("expected ValueError")
     except ValueError:
         pass
     try:
-        Value(name="x", value=None, source="s", method="bogus", present=False)
+        Value(name="x", text=None, source="s", method="bogus", present=False)
         raise AssertionError("expected ValueError")
     except ValueError:
         pass

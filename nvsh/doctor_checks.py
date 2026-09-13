@@ -33,7 +33,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
-from typing import Callable, Mapping
+from typing import Callable, Mapping, NamedTuple
 
 from nvsh import capture as capture_mod
 from nvsh import daemon as daemon_mod
@@ -138,8 +138,29 @@ def check_agent_configured(config: Config | None, config_error: str | None) -> d
 #: "steward-portability-home-paths").
 _PI_MODELS_JSON = "$HOME/.pi/agent/models.json"
 
-#: Matches an env-ref apiKey value: ``$VAR`` or ``${VAR}``.
-_ENV_REF_RE = re.compile(r"^\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?$")
+#: Matches an env-ref apiKey value: ``$VAR`` or ``${VAR}``. ``re.ASCII``
+#: keeps ``\w`` to ``[A-Za-z0-9_]``, the shell's own variable-name alphabet.
+_ENV_REF_RE = re.compile(r"^\$\{?([A-Za-z_]\w*)\}?$", re.ASCII)
+
+
+def _provider_from_mapping(mapping: object, provider_name: object) -> dict | None:
+    """``mapping[provider_name]``, when both are the right shape."""
+    if not isinstance(mapping, dict) or not provider_name:
+        return None
+    entry = mapping.get(provider_name)
+    return entry if isinstance(entry, dict) else None
+
+
+def _provider_from_list(items: object, provider_name: object) -> dict | None:
+    """The first entry in *items* whose ``id``/``name`` is *provider_name*."""
+    if not isinstance(items, list):
+        return None
+    for entry in items:
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("id") == provider_name or entry.get("name") == provider_name:
+            return entry
+    return None
 
 
 def _find_provider_entry(data: object, provider_name: object) -> dict | None:
@@ -151,32 +172,17 @@ def _find_provider_entry(data: object, provider_name: object) -> dict | None:
     takes: a top-level or ``providers`` mapping keyed by provider name, or a
     list of provider objects carrying ``id``/``name``.
     """
-
-    def _from_mapping(mapping: object) -> dict | None:
-        if not isinstance(mapping, dict) or not provider_name:
-            return None
-        entry = mapping.get(provider_name)
-        return entry if isinstance(entry, dict) else None
-
-    def _from_list(items: object) -> dict | None:
-        if not isinstance(items, list):
-            return None
-        for entry in items:
-            if not isinstance(entry, dict):
-                continue
-            if entry.get("id") == provider_name or entry.get("name") == provider_name:
-                return entry
-        return None
-
     if isinstance(data, dict):
-        found = _from_mapping(data)
+        found = _provider_from_mapping(data, provider_name)
         if found is not None:
             return found
         providers = data.get("providers")
-        found = _from_mapping(providers) or _from_list(providers)
+        found = _provider_from_mapping(providers, provider_name) or _provider_from_list(
+            providers, provider_name
+        )
         if found is not None:
             return found
-    return _from_list(data)
+    return _provider_from_list(data, provider_name)
 
 
 def _load_pi_models(home: Path) -> object | None:
@@ -292,7 +298,7 @@ def _probe_endpoint(
             status = response.status
     except urllib.error.HTTPError as exc:
         status = exc.code
-    except (urllib.error.URLError, TimeoutError, OSError):
+    except OSError:  # URLError and TimeoutError both derive from OSError
         return _check(
             "agent_reachable",
             False,
@@ -339,6 +345,60 @@ def _openai_compat_401_remediation(outcome: BearerResolution) -> str:
     )
 
 
+class _ProbeInputs(NamedTuple):
+    """What :func:`_probe_endpoint` needs, or the check to report instead."""
+
+    base_url: str | None = None
+    base_url_source: str = ""
+    bearer: str | None = None
+    bearer_note: str | None = None
+    remediation_401: str = ""
+    refusal: dict | None = None
+
+
+def _pi_probe_inputs(config: Config, home: Path, which: Which) -> _ProbeInputs:
+    """Probe inputs for the ``pi`` provider, or a refusal when pi is missing."""
+    if which("pi") is None:
+        return _ProbeInputs(
+            refusal=_check(
+                "agent_reachable",
+                False,
+                "error",
+                "configured provider is pi, but 'pi' is not on PATH (pi-missing)",
+                "nvsh agent install pi, or nvsh agent use openai-compat",
+            )
+        )
+    base_url, base_url_source, bearer, bearer_source, provider_name = _pi_endpoint_info(
+        config, home
+    )
+    provider_label = provider_name or "the configured provider"
+    verb = "update" if bearer else "add"
+    return _ProbeInputs(
+        base_url=base_url,
+        base_url_source=base_url_source,
+        bearer=bearer,
+        bearer_note=f"bearer from {bearer_source}" if bearer_source else None,
+        remediation_401=f"{verb} apiKey for provider {provider_label} in {_PI_MODELS_JSON}",
+    )
+
+
+def _openai_compat_probe_inputs(config: Config) -> _ProbeInputs:
+    """Probe inputs for the ``openai-compat`` provider."""
+    settings = config.agents.get("openai-compat", {})
+    base_url_raw = settings.get("base_url")
+    outcome = resolve_bearer(settings)
+    bearer_note = f"bearer from {outcome.source}" if outcome.source else NO_BEARER_NOTE
+    if outcome.diagnostic:
+        bearer_note = outcome.diagnostic
+    return _ProbeInputs(
+        base_url=str(base_url_raw) if base_url_raw else None,
+        base_url_source="[agents.openai-compat]",
+        bearer=outcome.bearer,
+        bearer_note=bearer_note,
+        remediation_401=_openai_compat_401_remediation(outcome),
+    )
+
+
 def check_agent_reachable(
     config: Config,
     which: Which = default_which,
@@ -349,34 +409,9 @@ def check_agent_reachable(
     provider = config.agent_provider
 
     if provider == "pi":
-        if which("pi") is None:
-            return _check(
-                "agent_reachable",
-                False,
-                "error",
-                "configured provider is pi, but 'pi' is not on PATH (pi-missing)",
-                "nvsh agent install pi, or nvsh agent use openai-compat",
-            )
-        base_url, base_url_source, bearer, bearer_source, provider_name = _pi_endpoint_info(
-            config, home
-        )
-        bearer_note = f"bearer from {bearer_source}" if bearer_source else None
-        provider_label = provider_name or "the configured provider"
-        if bearer:
-            remediation_401 = f"update apiKey for provider {provider_label} in {_PI_MODELS_JSON}"
-        else:
-            remediation_401 = f"add apiKey for provider {provider_label} in {_PI_MODELS_JSON}"
+        inputs = _pi_probe_inputs(config, home, which)
     elif provider == "openai-compat":
-        settings = config.agents.get("openai-compat", {})
-        base_url_raw = settings.get("base_url")
-        base_url = str(base_url_raw) if base_url_raw else None
-        base_url_source = "[agents.openai-compat]"
-        outcome = resolve_bearer(settings)
-        bearer = outcome.bearer
-        bearer_note = f"bearer from {outcome.source}" if outcome.source else NO_BEARER_NOTE
-        if outcome.diagnostic:
-            bearer_note = outcome.diagnostic
-        remediation_401 = _openai_compat_401_remediation(outcome)
+        inputs = _openai_compat_probe_inputs(config)
     else:
         return _check(
             "agent_reachable",
@@ -386,7 +421,10 @@ def check_agent_reachable(
             "",
         )
 
-    if not base_url:
+    if inputs.refusal is not None:
+        return inputs.refusal
+
+    if not inputs.base_url:
         return _check(
             "agent_reachable",
             False,
@@ -396,7 +434,12 @@ def check_agent_reachable(
         )
 
     return _probe_endpoint(
-        base_url, base_url_source, bearer, bearer_note, timeout, remediation_401=remediation_401
+        inputs.base_url,
+        inputs.base_url_source,
+        inputs.bearer,
+        inputs.bearer_note,
+        timeout,
+        remediation_401=inputs.remediation_401,
     )
 
 
