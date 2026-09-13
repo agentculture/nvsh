@@ -2,7 +2,7 @@
   "plan_slug": "nvsh-bash-hook-agent-on-error",
   "schema_version": 2,
   "created": "2026-09-13T13:17:31Z",
-  "updated": "2026-09-13T15:44:55Z",
+  "updated": "2026-09-13T15:45:42Z",
   "deviations": [
     {
       "id": "d1",
@@ -231,6 +231,22 @@
       "status": "proposed",
       "classification": "needs-follow-up",
       "seq": 15
+    },
+    {
+      "id": "d16",
+      "what": "operator request: 'steer' - at the proposal prompt a [t] tell key (and a /steer <text> slash command) lets the operator type a steering instruction such as 'just run the command for memory on this machine'; nvsh denies the pending proposal with that text as the reason and injects it into the same conversation (pi rpc prompt with streamingBehavior=steer while the turn runs; the next message for adapters without a mid-turn channel), and the panel keeps streaming the steered turn",
+      "task_ref": "t19",
+      "reason": "operator on 2026-09-13; not in the confirmed spec (c5 lists /ask /fix /explain /retry /doctor /context /agent /help), so a scope addition; scheduled after d14/d15 to avoid conflicts in panel.py/client.py/pi.py",
+      "affects": [
+        "t13",
+        "t14",
+        "t9",
+        "c5"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "classification": "needs-follow-up",
+      "seq": 16
     }
   ],
   "evidence": [],
