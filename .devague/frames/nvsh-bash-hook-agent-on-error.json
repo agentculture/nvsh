@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-09-13T10:08:02Z",
-  "updated": "2026-09-13T14:25:05Z",
+  "updated": "2026-09-13T14:44:03Z",
   "claims": [
     {
       "id": "c1",
@@ -1583,6 +1583,24 @@
       "id": "l21",
       "code": "control-absent",
       "what": "t19: nvsh setup --yes was run in a throwaway HOME on orin and issued three sudo apt-get attempts (all refused, nothing changed) despite the no-sudo instruction; the control on remote side effects was the missing password, not the procedure",
+      "skipped_check": "",
+      "refs": [],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l22",
+      "code": "grader-unverified",
+      "what": "d5: the NVSH_BIND_P bind-sections export test was written and run green only (coordinator-supplied one-liner), never seen red",
+      "skipped_check": "",
+      "refs": [],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l23",
+      "code": "control-absent",
+      "what": "d7 finding: tests/test_cli_setup.py::test_hook_prints_refresh_notice_once_per_session leaves a detached 900 s-idle daemon behind on every run (21 per-pid logs found under the fallback runtime dir), and client_transport.one_shot() ignores the caller's env so a fallback in tests can reach the operator's real backend; neither is controlled by the suite",
       "skipped_check": "",
       "refs": [],
       "origin": "llm",
