@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-09-13T10:08:02Z",
-  "updated": "2026-09-13T15:59:03Z",
+  "updated": "2026-09-13T16:14:05Z",
   "claims": [
     {
       "id": "c1",
@@ -1619,6 +1619,15 @@
       "id": "l25",
       "code": "control-absent",
       "what": "d15: the runtime-dir persistence for session approvals was designed before grepping tests for scope='session'; test_slash.py surfaced only when the full suite went red, and four fixtures lacked XDG_RUNTIME_DIR so they were one save away from writing into the operator's real runtime dir (they did not, by ordering luck)",
+      "skipped_check": "",
+      "refs": [],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l26",
+      "code": "control-absent",
+      "what": "d14: the agent stopped its own daemon with pkill -f 'python -m nvsh.daemo[n]', which also killed six idle daemons belonging to other worktrees (idle, no persistent state, restarted lazily)",
       "skipped_check": "",
       "refs": [],
       "origin": "llm",
