@@ -93,6 +93,69 @@ opt_in_patterns = []
 """
 
 
+def _toml_str(value: str) -> str:
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
+
+
+def _toml_scalar(value: object) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, str):
+        return _toml_str(value)
+    if isinstance(value, (int, float)):
+        return str(value)
+    if isinstance(value, list):
+        return "[" + ", ".join(_toml_scalar(item) for item in value) + "]"
+    return _toml_str(str(value))
+
+
+def _dump_toml(cfg: Config) -> str:
+    """Serialize *cfg* back to ``config.toml`` text (round-trips through :func:`load`).
+
+    Deliberately minimal (no third-party TOML writer -- stdlib ``tomllib``
+    is read-only): covers exactly the shapes :func:`load` accepts. Never
+    emits a literal ``api_key`` -- callers only ever set ``api_key_env``.
+    """
+    lines = ["[agent]", f"provider = {_toml_str(cfg.agent_provider)}", ""]
+
+    for name, table in cfg.agents.items():
+        lines.append(f"[agents.{name}]")
+        for key, value in table.items():
+            lines.append(f"{key} = {_toml_scalar(value)}")
+        lines.append("")
+
+    lines.append("[sessions]")
+    lines.append(f"max = {_toml_scalar(cfg.sessions_max)}")
+    lines.append("")
+
+    lines.append("[triggers]")
+    for key, value in cfg.triggers.items():
+        lines.append(f"{key} = {_toml_scalar(value)}")
+    lines.append("")
+
+    return "\n".join(lines)
+
+
+def save(cfg: Config, path: Path | None = None) -> None:
+    """Write *cfg* to ``config.toml`` (default ``$XDG_CONFIG_HOME/nvsh/config.toml``)."""
+    target = path if path is not None else _default_path()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(_dump_toml(cfg), encoding="utf-8")
+
+
+def set_provider(name: str, path: Path | None = None) -> Config:
+    """Load the current config, set ``[agent] provider = name``, save, and return it.
+
+    Preserves every other table already on disk (loads first, mutates,
+    saves the full merged config back).
+    """
+    cfg = load(path)
+    cfg.agent_provider = name
+    save(cfg, path)
+    return cfg
+
+
 def _config_dir() -> Path:
     xdg = os.environ.get("XDG_CONFIG_HOME")
     base = Path(xdg) if xdg else Path.home() / ".config"
