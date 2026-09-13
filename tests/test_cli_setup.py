@@ -111,6 +111,154 @@ def test_setup_reports_agent_choice(tmp_path):
     assert "name" in payload["agent"] and "reason" in payload["agent"]
 
 
+# --------------------------------------------------------------------------
+# setup: missing-tool detection and install offers (deviation d1)
+# --------------------------------------------------------------------------
+
+
+def _which_factory(present: set[str]):
+    def _which(name: str) -> str | None:
+        return f"/usr/bin/{name}" if name in present else None
+
+    return _which
+
+
+def test_setup_json_lists_install_offers_and_runs_nothing(tmp_path, monkeypatch):
+    """--json is non-interactive: offers are listed, nothing is run without --yes."""
+    rc = _rc(tmp_path)
+    rc.write_text(UBUNTU_RC)
+    which = _which_factory({"apt-get", "snap"})  # orin-like: no node/pi/uv/tmux
+    monkeypatch.setattr("nvsh.cli._commands.setup.shutil.which", which)
+    ran = []
+    monkeypatch.setattr(
+        "nvsh.cli._commands.setup.installers.run_install",
+        lambda *a, **k: ran.append((a, k)) or None,
+    )
+    code, out, err = _run(["setup", "--rc", str(rc), "--json"])
+    assert code == 0, err
+    payload = json.loads(out)
+    assert "installs" in payload
+    names = {item["tool"] for item in payload["installs"]}
+    assert names == {"pi", "node", "uv", "tmux"}
+    for item in payload["installs"]:
+        assert item["ran"] is False
+    assert ran == []
+
+
+def test_setup_no_install_flag_lists_offers_and_runs_nothing(tmp_path, monkeypatch):
+    rc = _rc(tmp_path)
+    rc.write_text(UBUNTU_RC)
+    which = _which_factory({"apt-get", "snap"})
+    monkeypatch.setattr("nvsh.cli._commands.setup.shutil.which", which)
+    ran = []
+    monkeypatch.setattr(
+        "nvsh.cli._commands.setup.installers.run_install",
+        lambda *a, **k: ran.append((a, k)) or None,
+    )
+    code, out, err = _run(["setup", "--rc", str(rc), "--json", "--no-install"])
+    assert code == 0, err
+    payload = json.loads(out)
+    assert len(payload["installs"]) == 4
+    assert ran == []
+
+
+def test_setup_yes_runs_planned_steps_in_order_and_records_audit(tmp_path, monkeypatch):
+    rc = _rc(tmp_path)
+    rc.write_text(UBUNTU_RC)
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "xdg-state"))
+    which = _which_factory({"apt-get", "snap"})
+    monkeypatch.setattr("nvsh.cli._commands.setup.shutil.which", which)
+
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(list(argv))
+        import subprocess as _sp
+
+        return _sp.CompletedProcess(args=argv, returncode=0, stdout="", stderr="")
+
+    import nvsh.installers as installers_mod
+
+    monkeypatch.setattr(installers_mod.subprocess, "run", fake_run)
+
+    code, out, err = _run(["setup", "--rc", str(rc), "--json", "--yes"])
+    assert code == 0, err
+    payload = json.loads(out)
+    ran_tools = [item["tool"] for item in payload["installs"] if item["ran"]]
+    # pi cannot run (no npm on this fake machine); node/uv/tmux can.
+    assert set(ran_tools) == {"node", "uv", "tmux"}
+    assert [c[0] for c in calls if c[0] == "sudo"] or calls  # something ran
+
+    from nvsh.agent.audit import AuditLog
+
+    audit = AuditLog(path=tmp_path / "xdg-state" / "nvsh" / "audit.jsonl")
+    entries = audit.read_all()
+    install_entries = [e for e in entries if e["event"] == "install"]
+    assert len(install_entries) == 4  # one per missing tool, including pi's non-executable one
+
+
+def test_setup_curl_only_uv_is_never_executed_even_with_yes(tmp_path, monkeypatch):
+    rc = _rc(tmp_path)
+    rc.write_text(UBUNTU_RC)
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "xdg-state"))
+    # No snap, but curl present: uv can only offer the curl-pipe-sh installer.
+    which = _which_factory({"apt-get", "curl", "node", "npm", "tmux"})
+    monkeypatch.setattr("nvsh.cli._commands.setup.shutil.which", which)
+
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(list(argv))
+        import subprocess as _sp
+
+        return _sp.CompletedProcess(args=argv, returncode=0, stdout="", stderr="")
+
+    import nvsh.installers as installers_mod
+
+    monkeypatch.setattr(installers_mod.subprocess, "run", fake_run)
+
+    code, out, err = _run(["setup", "--rc", str(rc), "--json", "--yes"])
+    assert code == 0, err
+    payload = json.loads(out)
+    uv_item = next(item for item in payload["installs"] if item["tool"] == "uv")
+    assert uv_item["ran"] is False
+    assert "curl" in uv_item["command"]
+    assert all(argv[0] != "curl" for argv in calls)
+
+
+def test_setup_reruns_agent_choice_after_installing_pi(tmp_path, monkeypatch):
+    rc = _rc(tmp_path)
+    rc.write_text(UBUNTU_RC)
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "xdg-state"))
+    # npm present so pi is plannable; pretend the install makes pi appear.
+    state = {"pi_installed": False}
+
+    def which(name: str) -> str | None:
+        if name == "pi" and state["pi_installed"]:
+            return "/usr/bin/pi"
+        if name in {"apt-get", "npm", "node", "snap", "tmux", "uv"}:
+            return f"/usr/bin/{name}"
+        return None
+
+    monkeypatch.setattr("nvsh.cli._commands.setup.shutil.which", which)
+
+    def fake_run(argv, **kwargs):
+        if argv[:2] == ["npm", "install"]:
+            state["pi_installed"] = True
+        import subprocess as _sp
+
+        return _sp.CompletedProcess(args=argv, returncode=0, stdout="", stderr="")
+
+    import nvsh.installers as installers_mod
+
+    monkeypatch.setattr(installers_mod.subprocess, "run", fake_run)
+
+    code, out, err = _run(["setup", "--rc", str(rc), "--json", "--yes"])
+    assert code == 0, err
+    payload = json.loads(out)
+    assert payload["agent"]["name"] == "pi"
+
+
 def test_setup_on_missing_rc_creates_it(tmp_path):
     rc = _rc(tmp_path)
     assert not rc.exists()

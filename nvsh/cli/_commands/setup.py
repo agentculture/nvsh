@@ -18,13 +18,14 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import os
+import shutil
 import subprocess  # nosec B404 - fixed argv below, no shell=True
 import time
 from pathlib import Path
 
 from nvsh import __version__
 from nvsh import config as nvsh_config
-from nvsh import rcfile
+from nvsh import installers, rcfile
 from nvsh.agent import registry
 from nvsh.cli._output import emit_diagnostic, emit_result
 from nvsh.shell import render
@@ -67,6 +68,42 @@ def _build_block(shell_dir: Path, nvsh_bin: str) -> str:
 # --------------------------------------------------------------------------
 
 
+def _install_step_dict(
+    step: installers.InstallStep, result: installers.InstallResult | None
+) -> dict:
+    return {
+        "tool": step.tool,
+        "purpose": next((t.purpose for t in installers.TOOLS if t.name == step.tool), ""),
+        "command": step.shell_line,
+        "needs_sudo": step.needs_sudo,
+        "executable": step.executable,
+        "ran": bool(result.ran) if result is not None else False,
+        "returncode": result.returncode if result is not None else None,
+    }
+
+
+def _process_installs(
+    plan: list[installers.InstallStep], *, offer_only: bool, confirm
+) -> tuple[list[dict], bool]:
+    """Turn a plan into JSON-able rows, running each step unless ``offer_only``.
+
+    Returns ``(rows, any_ran)`` -- ``any_ran`` tells the caller whether it is
+    worth re-running :func:`nvsh.agent.registry.choose` (a freshly installed
+    ``pi`` only gets picked up on the next PATH lookup).
+    """
+    rows: list[dict] = []
+    any_ran = False
+    for step in plan:
+        if offer_only:
+            rows.append(_install_step_dict(step, None))
+            continue
+        kwargs = {} if confirm is None else {"confirm": confirm}
+        result = installers.run_install(step, **kwargs)
+        any_ran = any_ran or result.ran
+        rows.append(_install_step_dict(step, result))
+    return rows, any_ran
+
+
 def cmd_setup(args: argparse.Namespace) -> int:
     rc_path = _rc_path(args)
     original_text = rc_path.read_text(encoding="utf-8") if rc_path.exists() else ""
@@ -89,12 +126,27 @@ def cmd_setup(args: argparse.Namespace) -> int:
     cfg = nvsh_config.load()
     chosen, reason = registry.choose(cfg)
 
-    pi_install_offer = None
-    if not registry.installed("pi") and __import__("shutil").which("npm"):
-        pi_install_offer = (
-            f"pi is not installed; run '{registry.PI_INSTALL_CMD}' "
-            "(or 'nvsh agent install pi --yes') to install it"
-        )
+    no_install = bool(getattr(args, "no_install", False))
+    auto_yes = bool(getattr(args, "yes", False))
+    json_mode = bool(getattr(args, "json", False))
+
+    missing = installers.missing_tools(which=shutil.which)
+    plan = installers.plan_installs(missing, which=shutil.which)
+
+    if no_install:
+        offer_only, confirm = True, None
+    elif auto_yes:
+        offer_only, confirm = False, lambda _msg: True
+    elif json_mode:
+        # --json is non-interactive by construction: there is no terminal
+        # to prompt on, so list the offers and run nothing without --yes.
+        offer_only, confirm = True, None
+    else:
+        offer_only, confirm = False, None  # run_install's own input() prompt
+
+    install_rows, any_ran = _process_installs(plan, offer_only=offer_only, confirm=confirm)
+    if any_ran:
+        chosen, reason = registry.choose(cfg)
 
     result = {
         "rc": str(rc_path),
@@ -105,10 +157,9 @@ def cmd_setup(args: argparse.Namespace) -> int:
         "shell_dir": str(shell_dir),
         "nvsh_bin": nvsh_bin,
         "agent": {"name": chosen, "reason": reason},
-        "pi_install_offer": pi_install_offer,
+        "installs": install_rows,
     }
 
-    json_mode = bool(getattr(args, "json", False))
     if json_mode:
         emit_result(result, json_mode=True)
     else:
@@ -120,8 +171,10 @@ def cmd_setup(args: argparse.Namespace) -> int:
             f"nvsh bin: {nvsh_bin}",
             f"agent: {chosen} ({reason})",
         ]
-        if pi_install_offer:
-            lines.append(pi_install_offer)
+        for row in install_rows:
+            lines.append(f"{row['tool']} ({row['purpose']}): {row['command']}")
+            if not offer_only:
+                lines.append(f"  ran: {row['ran']} (returncode: {row['returncode']})")
         emit_result("\n".join(lines), json_mode=False)
     return 0
 
@@ -323,7 +376,14 @@ def register(sub: argparse._SubParsersAction) -> None:
     setup_p.add_argument("--rc", default=None, help="rc file to edit (default: ~/.bashrc).")
     setup_p.add_argument("--json", action="store_true", help="Emit structured JSON.")
     setup_p.add_argument(
-        "--yes", action="store_true", help="Reserved for non-interactive confirmation."
+        "--yes",
+        action="store_true",
+        help="Install every detected missing helper tool (pi, node, uv, tmux) without prompting.",
+    )
+    setup_p.add_argument(
+        "--no-install",
+        action="store_true",
+        help="List missing helper tools and their install commands, but install nothing.",
     )
     setup_p.set_defaults(func=cmd_setup)
 
