@@ -41,7 +41,13 @@ _NEGATIVES = [
 
 @pytest.mark.parametrize("line", _POSITIVES)
 def test_prose_is_recognized(line):
-    assert prose_request(line, 127) == line.strip()
+    found = prose_request(line, 127)
+    assert found is not None
+    assert found.question == line.strip()
+    assert found.agent is None
+    # An unmarked sentence is a guess, not an explicit call: it still pays
+    # the auto-call rate limit.
+    assert found.explicit is False
 
 
 @pytest.mark.parametrize("line", _NEGATIVES)
@@ -57,3 +63,60 @@ def test_only_command_not_found_counts():
 def test_empty_line_is_not_prose():
     assert prose_request("", 127) is None
     assert prose_request("   ", 127) is None
+
+
+# --- d23: the ? and @name marks -------------------------------------------
+
+_MARKED = [
+    ("? what are the ram memory levels?", "what are the ram memory levels?"),
+    ("?what are the ram memory levels?", "what are the ram memory levels?"),
+    ("? ram", "ram"),
+    ("?ram?", "ram?"),
+    ("? why is /dev/nvme0n1 full", "why is /dev/nvme0n1 full"),
+    ("?  rebuild the container  ", "rebuild the container"),
+]
+
+
+@pytest.mark.parametrize("line,question", _MARKED)
+def test_question_mark_is_an_explicit_request(line, question):
+    found = prose_request(line, 127)
+    assert found is not None
+    assert found.question == question
+    assert found.agent is None
+    assert found.explicit is True
+
+
+_NOT_MARKED = [
+    "?",
+    "?*.txt",
+    "? ",
+    "?1x",
+    "?.config",
+    "?foo",
+    "@",
+    "@ ",
+    "@pi",
+    "@foo.bar hello",
+    "@notaharness what is up",
+    "mail @foo.bar",
+    "echo user@example.com",
+]
+
+
+@pytest.mark.parametrize("line", _NOT_MARKED)
+def test_non_marks_are_not_requests(line):
+    assert prose_request(line, 127) is None
+
+
+@pytest.mark.parametrize("name", ["pi", "qwen", "claude", "codex", "openai-compat"])
+def test_at_name_picks_that_harness(name):
+    found = prose_request(f"@{name} how much ram is free?", 127)
+    assert found is not None
+    assert found.question == "how much ram is free?"
+    assert found.agent == name
+    assert found.explicit is True
+
+
+def test_marks_still_need_command_not_found():
+    assert prose_request("? how much ram", 0) is None
+    assert prose_request("@pi how much ram", 2) is None

@@ -29,9 +29,14 @@ COMMANDS = [
     "/help",
     "/undo",
     "/approve",
+    "@pi",
+    "@qwen",
+    "@claude",
+    "@codex",
+    "@openai-compat",
 ]
 
-ARGUMENTS = {"/doctor": ["--json", "--strict"]}
+ARGUMENTS = {"/doctor": ["--json", "--strict"], "/ask": ["--agent"]}
 
 
 def _emit(values: list[str]) -> None:

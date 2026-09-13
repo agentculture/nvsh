@@ -652,9 +652,17 @@ point `Ctrl+G` uses, with the operator's half-typed line passed along as
 `slash` (a direct `nvsh ask`/`Ctrl+G` call uses `explicit`), so the two are
 distinguishable on the wire without duplicating `nvsh.client.ask`.
 
+`--agent <name>` (or `--agent=<name>`) makes one named harness answer this
+one request, one-shot, instead of the configured one; an unavailable harness
+is a single `nvsh: @<name> is not available: ...` line and never a silent
+fallback. This is what the `@name` mark at the prompt is rewritten to, and
+`? <text>` is rewritten to a plain `/ask <text>` (deviation d23; see
+docs/shell-integration.md).
+
 ## Usage
 
     nvsh slash "/ask why is memory high?"
+    nvsh slash "/ask --agent qwen why is memory high?"
 """
 
 _FIX = """\

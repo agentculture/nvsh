@@ -475,3 +475,76 @@ def test_no_static_command_list_in_the_bash_file():
     code = "\n".join(ln for ln in text.splitlines() if not ln.lstrip().startswith("#"))
     for command in ("/doctor", "/retry", "/approve"):
         assert command not in code, "command list must come from 'nvsh complete'"
+
+
+# -- d23: the ? and @name marks at the prompt ----------------------------
+
+
+@pytest.mark.parametrize("mode", ["emacs", "vi"])
+def test_enter_routes_a_question_mark_to_the_agent(tmp_path, mode):
+    """`? text` never reaches bash, so there is no `?: command not found`."""
+    env, _log = shim(tmp_path)
+    sh = start(tmp_path, env_extra=env, post=(["set -o vi"] if mode == "vi" else []))
+    try:
+        out = sh.run("? what are the ram memory levels?", settle=1.0)
+        assert "command not found" not in out, out
+        assert "NVSH-PANEL" in out, out
+        assert "line=[/ask what are the ram memory levels?]" in out, out
+        # the original line -- mark included -- is what Up recalls
+        mark = sh.mark()
+        sh.send("history 4\r", settle=0.6)
+        hist = sh.since(mark)
+        assert "? what are the ram memory levels?" in hist, hist
+        assert "nvsh slash" not in hist, hist
+    finally:
+        sh.close()
+
+
+@pytest.mark.parametrize("mode", ["emacs", "vi"])
+def test_enter_routes_an_at_harness_mark(tmp_path, mode):
+    env, _log = shim(tmp_path)
+    sh = start(tmp_path, env_extra=env, post=(["set -o vi"] if mode == "vi" else []))
+    try:
+        out = sh.run("@pi how much ram is free?", settle=1.0)
+        assert "command not found" not in out, out
+        assert "line=[/ask --agent pi how much ram is free?]" in out, out
+        mark = sh.mark()
+        sh.send("history 4\r", settle=0.6)
+        assert "@pi how much ram is free?" in sh.since(mark)
+    finally:
+        sh.close()
+
+
+def test_the_question_mark_with_no_space_still_routes(tmp_path):
+    sh = start(tmp_path)
+    try:
+        sh.run("?whats the cuda version?", settle=0.8)
+        assert sh.records() == ["slash /ask whats the cuda version?"]
+    finally:
+        sh.close()
+
+
+def test_globs_and_bare_marks_are_left_to_bash(tmp_path):
+    """`?*.txt`, a bare `?`, a bare `@name` and an unknown harness are not marks."""
+    sh = start(tmp_path)
+    try:
+        for line in ("ls ?*.txt", "?*.txt", "?", "@pi", "@notaharness hello", "echo a@b.c"):
+            sh.run(line, settle=0.5)
+        assert sh.records() == []
+    finally:
+        sh.close()
+
+
+def test_tab_on_an_at_word_stays_bash_hostname_completion(tmp_path):
+    """bash completes `@word` as a hostname before any programmable completer
+    is consulted, so the `@name` marks are Enter-only and Tab is untouched."""
+    hosts = tmp_path / "hostfile"
+    hosts.write_text("pineapple\n")
+    sh = start(tmp_path, env_extra={"HOSTFILE": str(hosts)})
+    try:
+        mark = sh.mark()
+        sh.send("@p\t", settle=0.8)
+        assert "@pineapple" in sh.since(mark, settle=0.3)
+        sh.send("\x15", settle=0.2)
+    finally:
+        sh.close()

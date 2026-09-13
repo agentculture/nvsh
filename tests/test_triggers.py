@@ -289,16 +289,29 @@ def test_interactive_programs_is_a_frozenset_of_first_words():
 
 
 def test_decide_imports_only_stdlib():
+    """Importing the trigger rules costs three stdlib modules and nothing else.
+
+    The module is imported on every qualifying failure, so nothing heavy or
+    third-party may be pulled in at import time. A *lazy, relative* import
+    inside a function is allowed (``known_agents`` reads the adapter names
+    from ``nvsh.agent.registry`` to validate an ``@name`` mark, d23): it
+    costs nothing until an ``@`` line is actually typed, and it can never be
+    a third-party dependency.
+    """
     import ast
     import pathlib
 
     module_path = pathlib.Path(__file__).parent.parent / "nvsh" / "triggers.py"
     tree = ast.parse(module_path.read_text())
     allowed_stdlib = {"dataclasses", "shlex", "__future__"}
+    top_level = {id(node) for node in tree.body if isinstance(node, (ast.Import, ast.ImportFrom))}
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
                 assert alias.name.split(".")[0] in allowed_stdlib, alias.name
         elif isinstance(node, ast.ImportFrom):
+            if id(node) not in top_level and node.level > 0:
+                continue  # lazy, in-package import: never a dependency
+            assert node.level == 0, "relative import at module import time: %s" % node.module
             if node.module is not None:
                 assert node.module.split(".")[0] in allowed_stdlib, node.module

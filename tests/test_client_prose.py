@@ -90,3 +90,94 @@ def test_the_ask_form_is_handed_to_the_panel_header_once_it_takes_one(xdg, monke
     panel = _AskPanel(out=io.StringIO(), in_=io.StringIO(), env={}, isatty=False)
     client_mod.handle_failure(_args(xdg, "what are the memory levels?", 127), panel=panel)
     assert seen["args"] == ("what are the memory levels?", 127, "what are the memory levels?")
+
+
+# --- d23: the ? and @name marks -------------------------------------------
+
+
+def _run_marked(xdg, monkeypatch, line, *, adapters=("pi", "qwen"), installed=("pi",)):
+    """Drive handle_failure over a marked line with the registry mocked."""
+    from nvsh.agent import registry
+
+    captured = []
+    configs = []
+
+    def one_shot(request, context=None, **kwargs):
+        captured.append(request)
+        configs.append(kwargs.get("config"))
+        yield AgentEvent(kind=EventKind.DONE)
+
+    def send(request, context=None, **kwargs):
+        captured.append(request)
+        configs.append(kwargs.get("config"))
+        yield AgentEvent(kind=EventKind.DONE)
+
+    monkeypatch.setattr(client_transport, "one_shot", one_shot)
+    monkeypatch.setattr(client_transport, "send", send)
+    monkeypatch.setattr(registry, "ADAPTERS", {name: registry.ADAPTERS[name] for name in adapters})
+    monkeypatch.setattr(registry, "installed", lambda name, which=None: name in installed)
+    out = io.StringIO()
+    panel = panel_mod.Panel(out=out, in_=io.StringIO(), env={}, isatty=False)
+    rc = client_mod.handle_failure(_args(xdg, line, 127), panel=panel)
+    return rc, captured, configs, out.getvalue()
+
+
+def test_question_mark_asks_the_default_agent(xdg, monkeypatch):
+    rc, captured, _configs, out = _run_marked(xdg, monkeypatch, "? what are the ram levels?")
+    assert rc == 0
+    assert captured[0].kind is RequestKind.EXPLICIT
+    assert captured[0].prompt == "what are the ram levels?"
+    assert captured[0].command == ""
+    assert "nvsh: asking pi/associate: what are the ram levels?" in out
+
+
+def test_a_mark_is_never_held_back_by_the_rate_limiter(xdg, monkeypatch):
+    """Explicit calls bypass the auto-call window, like Ctrl+G (d23)."""
+    _rc, first, _c, _o = _run_marked(xdg, monkeypatch, "? what are the ram levels?")
+    assert len(first) == 1
+    rc, second, _c2, out = _run_marked(xdg, monkeypatch, "? and the disk?")
+    assert rc == 0
+    assert len(second) == 1, "the second mark was held back"
+    assert "held back" not in out
+
+
+def test_a_mark_does_not_consume_the_auto_call_window(xdg, monkeypatch):
+    """A mark must not count *against* a later automatic call either."""
+    _run_marked(xdg, monkeypatch, "? what are the ram levels?")
+    request, out = _run(xdg, monkeypatch, "ls /nope", 2)
+    assert request.kind is RequestKind.FAILURE
+    assert "held back" not in out
+
+
+def test_at_name_routes_to_that_harness_for_one_request(xdg, monkeypatch):
+    rc, captured, configs, out = _run_marked(
+        xdg, monkeypatch, "@pi how much ram is free?", installed=("pi", "qwen")
+    )
+    assert rc == 0
+    assert captured[0].prompt == "how much ram is free?"
+    assert configs[0].agent_provider == "pi"
+    assert "asking pi/associate: how much ram is free?" in out
+
+
+def test_an_unavailable_harness_is_one_line_and_nothing_else(xdg, monkeypatch):
+    rc, captured, _configs, out = _run_marked(
+        xdg, monkeypatch, "@qwen how much ram is free?", installed=("pi",)
+    )
+    assert rc == 0
+    assert captured == []
+    lines = [ln for ln in out.splitlines() if ln.strip()]
+    assert len(lines) == 1, lines
+    assert lines[0].startswith("nvsh: @qwen is not available: ")
+
+
+def test_an_unmarked_sentence_still_pays_the_rate_limit(xdg, monkeypatch, capsys):
+    """d20 prose is a guess, so it keeps the auto-call window (unchanged)."""
+    _run(xdg, monkeypatch, "what are the memory levels?", 127)
+    capsys.readouterr()
+    out = io.StringIO()
+    panel = panel_mod.Panel(out=out, in_=io.StringIO(), env={}, isatty=False)
+    monkeypatch.setattr(
+        client_transport, "send", lambda *a, **k: iter([AgentEvent(kind=EventKind.DONE)])
+    )
+    client_mod.handle_failure(_args(xdg, "why is the gpu slow", 127), panel=panel)
+    assert "held back" in capsys.readouterr().err

@@ -271,8 +271,109 @@ QUESTION_WORDS: frozenset[str] = frozenset(
 _SHELL_METACHARS = "|&;<>(){}[]$`\\*!~="
 
 
-def prose_request(line: str, exit_code: int) -> str | None:
-    """Return the question ``line`` asks, or ``None`` if it is a command.
+@dataclass(frozen=True)
+class ProseRequest:
+    """One line at the prompt that is a request to the agent, not a command.
+
+    ``question`` is what the operator actually asked, with any mark already
+    stripped. ``agent`` names the harness that must answer *this one*
+    request (the ``@name`` mark) or is ``None`` for the default one.
+    ``explicit`` says the operator marked the line deliberately (``?`` /
+    ``@name``), which makes it an explicit call like ``Ctrl+G``: it is never
+    held back by, and never counts against, the auto-call rate limiter. An
+    unmarked sentence (deviation d20) is a *guess* about intent, so it stays
+    rate-limited.
+    """
+
+    question: str
+    agent: str | None = None
+    explicit: bool = False
+
+
+#: The mark that sends a line to the default agent (deviation d23).
+QUESTION_MARK = "?"
+
+#: The mark that sends a line to one named harness, for that request only.
+AGENT_MARK = "@"
+
+
+def _is_agent_name(word: str) -> bool:
+    """A plain harness word: a letter, then letters, digits, ``_`` or ``-``.
+
+    Hand-rolled rather than a regex so this module keeps to the three
+    stdlib imports its contract test allows (``dataclasses``, ``shlex``,
+    ``__future__``).
+    """
+    if not word or not (word[0].isascii() and word[0].isalpha()):
+        return False
+    return all((ch.isascii() and (ch.isalnum())) or ch in "_-" for ch in word)
+
+
+def known_agents() -> frozenset[str]:
+    """Harness names an ``@name`` mark may address.
+
+    Imported lazily from :mod:`nvsh.agent.registry` so this module stays
+    importable (and pure) without the agent package; an import failure
+    yields an empty set, which makes every ``@name`` line an ordinary
+    command rather than a guess.
+    """
+    try:
+        from .agent.registry import ADAPTERS
+    except Exception:  # noqa: BLE001 - classification must never raise
+        return frozenset()
+    return frozenset(ADAPTERS)
+
+
+def parse_mark(line: str) -> ProseRequest | None:
+    """Parse an explicit ``?`` / ``@name`` mark, or return ``None`` (d23).
+
+    The rules, spelled out because ``nvsh/shell/readline.bash`` implements
+    exactly the same ones in bash (see ``docs/shell-integration.md``):
+
+    * ``?`` — the line starts with ``?``, the next character is a space or
+      an ASCII letter (so ``?*.txt``, ``?1x`` and ``?.config`` stay globs),
+      the line either contains a space or ends in ``?`` (so a bare ``?foo``
+      stays a glob), and something is left once the mark is stripped.
+    * ``@name`` — ``name`` is a plain word (a letter, then letters, digits,
+      ``_`` or ``-``) that is a *registered* harness, followed by whitespace
+      and a non-empty question. ``@`` alone, ``@pi`` alone, ``@foo.bar
+      hello`` and an unregistered ``@name`` are all ordinary commands, and
+      an address in argument position (``mail a@b.c``) never starts the
+      line, so it is never a mark.
+    """
+    text = (line or "").strip()
+    if not text:
+        return None
+    if text.startswith(QUESTION_MARK):
+        rest = text[1:]
+        if not rest:
+            return None
+        head = rest[0]
+        if not (head.isspace() or (head.isascii() and head.isalpha())):
+            return None
+        if " " not in text and not text.endswith("?"):
+            return None
+        question = rest.strip()
+        return ProseRequest(question=question, explicit=True) if question else None
+    if text.startswith(AGENT_MARK):
+        parts = text[1:].split(None, 1)
+        if len(parts) != 2:
+            return None
+        name, question = parts[0], parts[1].strip()
+        if not question or not _is_agent_name(name) or name not in known_agents():
+            return None
+        return ProseRequest(question=question, agent=name, explicit=True)
+    return None
+
+
+def prose_request(line: str, exit_code: int) -> ProseRequest | None:
+    """Return the request ``line`` makes, or ``None`` if it is a command.
+
+    Two shapes reach here, both on bash's ``command not found``:
+
+    * an explicit mark (``? what is the ram level`` / ``@qwen why?``),
+      parsed by :func:`parse_mark` and never rate-limited;
+    * an unmarked sentence, the conservative d20 heuristic below.
 
     The operator types ``what are the memory levels?`` at a bash prompt.
     Bash says ``what: command not found`` and exits 127. That is not a
@@ -286,10 +387,13 @@ def prose_request(line: str, exit_code: int) -> str | None:
     metacharacter or path separator appears, and only when the line either
     ends in ``?`` or opens with one of :data:`QUESTION_WORDS`. Anything
     else stays a failure.
-    """
+    """  # noqa: D401
     text = (line or "").strip()
     if exit_code != COMMAND_NOT_FOUND or not text:
         return None
+    marked = parse_mark(text)
+    if marked is not None:
+        return marked
     if any(char in text for char in _SHELL_METACHARS):
         return None
     words = text.split()
@@ -300,4 +404,4 @@ def prose_request(line: str, exit_code: int) -> str | None:
         return None
     if not (text.endswith("?") or first.lower() in QUESTION_WORDS):
         return None
-    return text
+    return ProseRequest(question=text)
