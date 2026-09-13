@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-09-13T10:08:02Z",
-  "updated": "2026-09-13T15:32:37Z",
+  "updated": "2026-09-13T15:59:03Z",
   "claims": [
     {
       "id": "c1",
@@ -1610,6 +1610,15 @@
       "id": "l24",
       "code": "control-absent",
       "what": "d11: two live-check attempts ran without a private XDG_RUNTIME_DIR and sent a synthetic failure to the operator's live daemon, blocking on its stream; caught after debugging a 'hang', not from the instruction",
+      "skipped_check": "",
+      "refs": [],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l25",
+      "code": "control-absent",
+      "what": "d15: the runtime-dir persistence for session approvals was designed before grepping tests for scope='session'; test_slash.py surfaced only when the full suite went red, and four fixtures lacked XDG_RUNTIME_DIR so they were one save away from writing into the operator's real runtime dir (they did not, by ordering luck)",
       "skipped_check": "",
       "refs": [],
       "origin": "llm",
