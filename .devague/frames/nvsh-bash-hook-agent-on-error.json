@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-09-13T10:08:02Z",
-  "updated": "2026-09-13T13:07:19Z",
+  "updated": "2026-09-13T13:12:55Z",
   "claims": [
     {
       "id": "c1",
@@ -1495,6 +1495,18 @@
       "refs": [
         "t17",
         "c49"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l13",
+      "code": "grader-unverified",
+      "what": "t13: the proposal box first wrapped commands at 68 columns, silently breaking 'exact command' for long paths; only a long-path test caught it; two initial assertions were wrong ('tput' substring matched 'output')",
+      "skipped_check": "",
+      "refs": [
+        "t13",
+        "h31"
       ],
       "origin": "llm",
       "status": "proposed"
