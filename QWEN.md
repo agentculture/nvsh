@@ -9,7 +9,7 @@ Qwen Code session.
 
 ## What this project is
 
-`culture-agent-template` is a **clonable template for AgentCulture mesh agents**.
+`nvsh` is a **clonable template for AgentCulture mesh agents**.
 It is a working, minimal example of the sibling pattern every Culture agent
 follows: an agent-first CLI, a mesh identity, the canonical skill kit, and a
 buildable/deployable package baseline. Clone it, rename the package, edit
@@ -40,7 +40,7 @@ Declared in `culture.yaml`:
 
 ```yaml
 agents:
-- suffix: culture-agent-template
+- suffix: nvsh
   backend: claude
 ```
 
@@ -56,15 +56,15 @@ together satisfy the two invariants `steward doctor` verifies:
 
 When you start a new agent from this template:
 
-1. Rename the package directory `culture_agent_template/` → `<your_module>/`
-   and replace `culture_agent_template` (module) / `culture-agent-template`
+1. Rename the package directory `nvsh/` → `<your_module>/`
+   and replace `nvsh` (module) / `nvsh`
    (CLI and dist name) throughout `pyproject.toml`, the package, `tests/`,
    `sonar-project.properties`, and `README.md`. The name is hard-coded in
    ~100 places, so list every occurrence first rather than renaming by hand
    (`git grep` is portable and skips `.git` / untracked `__pycache__`):
 
    ```bash
-   git grep -nF -e 'culture-agent-template' -e 'culture_agent_template'
+   git grep -nF -e 'nvsh' -e 'nvsh'
    ```
 
 2. Set your `suffix` (and `backend`) in `culture.yaml`. `whoami` and `doctor`
@@ -80,12 +80,12 @@ The CLI is cited (cite-don't-import) from teken's `python-cli` reference
 (`teken cli cite`), so the runtime package has **no third-party dependencies**;
 `teken` (a.k.a. `afi-cli`) is a dev dependency only. Agent-first verbs:
 
-- `culture-agent-template whoami` — identity from `culture.yaml`.
-- `culture-agent-template learn` — structured self-teaching prompt.
-- `culture-agent-template explain <path>` — markdown docs for any noun/verb.
-- `culture-agent-template overview` — descriptive snapshot of the agent.
-- `culture-agent-template doctor` — check the agent-identity invariants.
-- `culture-agent-template cli overview` — describe the CLI surface itself.
+- `nvsh whoami` — identity from `culture.yaml`.
+- `nvsh learn` — structured self-teaching prompt.
+- `nvsh explain <path>` — markdown docs for any noun/verb.
+- `nvsh overview` — descriptive snapshot of the agent.
+- `nvsh doctor` — check the agent-identity invariants.
+- `nvsh cli overview` — describe the CLI surface itself.
 
 Conventions: every command supports `--json`; results go to stdout, errors and
 diagnostics to stderr (never mixed); exit codes are `0` success, `1` user
@@ -111,7 +111,7 @@ from guildmaster instead.
 ## Layout
 
 ```text
-culture_agent_template/   agent-first CLI (cited from teken's python-cli reference)
+nvsh/   agent-first CLI (cited from teken's python-cli reference)
   cli/                    parser, error/output contract, _commands/ (verbs)
   explain/                markdown catalog for `explain`
 tests/                    pytest smoke + introspection tests

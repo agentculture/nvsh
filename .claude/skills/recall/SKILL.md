@@ -11,7 +11,7 @@ description: >
   Shadowed and archived records are excluded by default; use
   --include-shadowed / --include-archived to retrieve them. The store lives at
   ~/.eidetic/memory (a home-dir path outside any git worktree); the wrapper
-  defaults queries to this agent's PERSONAL, PRIVATE scope (`--scope culture-agent-template
+  defaults queries to this agent's PERSONAL, PRIVATE scope (`--scope nvsh
   --visibility private`, suffix read from culture.yaml) — matching where
   /remember writes — so a no-flag recall returns this agent's own private records
   plus the shared public pool, and Claude and the colleague backend recall each
@@ -120,7 +120,7 @@ compete on score/signal just like active ones when included.
 - `--filter KEY=VALUE` — metadata facet filter (repeatable): e.g. `--filter source=docs`.
 - `--scope NAME` / `--visibility public|private` — scope isolation (no private
   leak). **The wrapper defaults this to the agent's PERSONAL, PRIVATE scope**
-  (`--scope culture-agent-template --visibility private`, suffix read from `culture.yaml`),
+  (`--scope nvsh --visibility private`, suffix read from `culture.yaml`),
   matching where `/remember` writes — so a no-flag recall returns this agent's
   own private records **plus** the shared public pool, while those private records
   stay invisible to a `default`/other-scope recall. Pass `--scope`/`--visibility`

@@ -32,7 +32,7 @@ harnesses:
     binary: claude
     args:
       - "-p"
-      - "Answer with exactly one word, yes or no: does CLAUDE.md describe this project as culture-agent-template?"
+      - "Answer with exactly one word, yes or no: does CLAUDE.md describe this project as nvsh?"
     resolves:
       - CLAUDE.md
     read_only: true
@@ -80,7 +80,7 @@ harnesses:
       - "plan"
       - "--output-format"
       - "text"
-      - "Answer with exactly one word, yes or no: does QWEN.md describe this project as culture-agent-template?"
+      - "Answer with exactly one word, yes or no: does QWEN.md describe this project as nvsh?"
     resolves:
       - QWEN.md
     read_only: true
@@ -92,7 +92,7 @@ harnesses:
       match stdout directly. QWEN.md discovery is automatic in a directory
       that ships QWEN.md. An open-ended "what is the project name" probe
       answered inconsistently across runs ("QWEN.md" once, then
-      "culture-agent-template"), so a yes/no probe is used for a
+      "nvsh"), so a yes/no probe is used for a
       deterministic CI assertion. Verified twice: "Yes", "Yes".
 
   colleague:

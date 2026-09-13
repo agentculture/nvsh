@@ -1,7 +1,7 @@
 # Forced-invocation automation contract
 
 This page documents the **invocation-level** contract for force-selecting a
-harness in a clone of `culture-agent-template`, and is the human-readable
+harness in a clone of `nvsh`, and is the human-readable
 face of [`docs/harness-invocations.yaml`](harness-invocations.yaml) — the
 machine-readable source both this page and the CI smoke check (t12) read.
 Edit the YAML file; this page describes it, it does not duplicate its data.
@@ -48,7 +48,7 @@ read that one file rather than each hand-copying the command.
 ### claude
 
 ```sh
-claude -p "Answer with exactly one word, yes or no: does CLAUDE.md describe this project as culture-agent-template?"
+claude -p "Answer with exactly one word, yes or no: does CLAUDE.md describe this project as nvsh?"
 ```
 
 `-p`/`--print` runs a single non-interactive turn and exits — no
@@ -93,7 +93,7 @@ trust-gated file specifically.
 ### qwen
 
 ```sh
-qwen --approval-mode plan --output-format text "Answer with exactly one word, yes or no: does QWEN.md describe this project as culture-agent-template?"
+qwen --approval-mode plan --output-format text "Answer with exactly one word, yes or no: does QWEN.md describe this project as nvsh?"
 ```
 
 A bare positional prompt runs one-shot and exits by default (`-p`/`--prompt`
@@ -137,9 +137,9 @@ itself produced.
 
 | Invocation | Answer | `git status --porcelain` after |
 |---|---|---|
-| `claude -p "…culture-agent-template?"` | `Yes` | `?? docs/harness-invocations.yaml` (pre-existing; otherwise empty) |
+| `claude -p "…nvsh?"` | `Yes` | `?? docs/harness-invocations.yaml` (pre-existing; otherwise empty) |
 | `pi -p --approve --no-tools "…lobes-cli?"` | `yes` | `?? docs/harness-invocations.yaml` (pre-existing; otherwise empty) |
-| `qwen --approval-mode plan --output-format text "…culture-agent-template?"` | `yes` | `?? docs/harness-invocations.yaml` (pre-existing; otherwise empty) |
+| `qwen --approval-mode plan --output-format text "…nvsh?"` | `yes` | `?? docs/harness-invocations.yaml` (pre-existing; otherwise empty) |
 | `colleague agents list` | `colleague AGENTS.colleague.md` (tab-separated) | `?? docs/harness-invocations.yaml` (pre-existing; otherwise empty) |
 
 The pi trust-gating claim was verified as a genuine before/after contrast,

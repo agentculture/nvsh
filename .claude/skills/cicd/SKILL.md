@@ -2,17 +2,17 @@
 name: cicd
 type: command
 description: >
-  culture-agent-template's CI/CD lane, layered on `devex pr`. Delegates lint / open /
+  nvsh's CI/CD lane, layered on `devex pr`. Delegates lint / open /
   read / reply / delta to devex; adds two extensions — `status`
   (SonarCloud quality gate + hotspots + unresolved-thread tally) and
   `await` (read --wait + status with non-zero exit on Sonar ERROR or
-  unresolved threads). Use when: creating PRs in culture-agent-template, handling
+  unresolved threads). Use when: creating PRs in nvsh, handling
   review feedback, polling CI status, or the user says "create PR",
   "review comments", "address feedback", "resolve threads". Renamed
   from `pr-review` in steward 0.7.0; rebased on devex in 0.12.0.
 ---
 
-# CI/CD — culture-agent-template edition
+# CI/CD — nvsh edition
 
 `devex pr` (in `agentculture/devex`) is the upstream for the
 five core PR-lifecycle verbs — `lint`, `open`, `read`, `reply`,

@@ -20,7 +20,7 @@ what the repo is and how it is laid out, not who is reading it.
 
 ## What this project is
 
-`culture-agent-template` is a clonable template for AgentCulture mesh agents —
+`nvsh` is a clonable template for AgentCulture mesh agents —
 a working, minimal example of the sibling pattern every Culture agent follows:
 an agent-first CLI, a mesh identity, the canonical skill kit, and a
 buildable/deployable package baseline. It is a sibling to
@@ -53,7 +53,7 @@ Declared in `culture.yaml`:
 
 ```yaml
 agents:
-- suffix: culture-agent-template
+- suffix: nvsh
   backend: claude
 ```
 
@@ -70,7 +70,7 @@ That is a per-clone choice; this template does not ship it.)
 ## Layout (what you can read/find/summarize here)
 
 ```text
-culture_agent_template/   agent-first CLI (cited from teken's python-cli reference)
+nvsh/   agent-first CLI (cited from teken's python-cli reference)
   cli/                    parser, error/output contract, _commands/ (verbs)
   explain/                markdown catalog for `explain`
 tests/                    pytest smoke + introspection tests
@@ -85,7 +85,7 @@ culture.yaml              mesh identity (suffix + backend)
 - The vendored skills under `.claude/skills/` are cited **verbatim** from
   guildmaster — never propose editing their scripts; the fix belongs upstream
   (`docs/skill-sources.md` has the re-sync procedure).
-- The package/CLI name (`culture_agent_template` / `culture-agent-template`)
+- The package/CLI name (`nvsh` / `nvsh`)
   is hard-coded in roughly a hundred places; a rename is a `git grep` sweep,
   not a hand edit (see `CLAUDE.md`'s "Cloning this template" section).
 - Every PR bumps the version (`version-bump` skill); CI's `version-check` job

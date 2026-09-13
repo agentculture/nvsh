@@ -1,4 +1,4 @@
-# Colleague Resident — `culture-agent-template`
+# Colleague Resident — `nvsh`
 
 You are a colleague session working in a clone of this template — reading
 this file because colleague's prompt cascade resolves it here, not because
@@ -31,7 +31,7 @@ update this section so the docs keep matching what's actually on disk.
 
 ## What this project is
 
-`culture-agent-template` is a clonable template for AgentCulture mesh agents —
+`nvsh` is a clonable template for AgentCulture mesh agents —
 an agent-first CLI, a mesh identity, the canonical skill kit, and a
 buildable/deployable package baseline. `CLAUDE.md` in this repo is written for
 a Claude Code session working *on* the repo — it is not your runtime prompt,

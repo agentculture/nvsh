@@ -19,20 +19,18 @@ from pathlib import Path
 
 import pytest
 
-from culture_agent_template.cli._commands import doctor as doctor_mod
+from nvsh.cli._commands import doctor as doctor_mod
 
 
 def _diagnose_in(root: Path, backend: str, monkeypatch: pytest.MonkeyPatch) -> dict:
     """Run ``_diagnose()`` against a throwaway tree declaring ``backend``."""
     cfg = root / "culture.yaml"
-    cfg.write_text(
-        f"agents:\n- suffix: culture-agent-template\n  backend: {backend}\n", encoding="utf-8"
-    )
+    cfg.write_text(f"agents:\n- suffix: nvsh\n  backend: {backend}\n", encoding="utf-8")
     monkeypatch.setattr(doctor_mod, "find_culture_yaml", lambda: cfg)
     monkeypatch.setattr(
         doctor_mod,
         "read_agent_fields",
-        lambda: {"nick": "culture-agent-template", "backend": backend, "model": "unknown"},
+        lambda: {"nick": "nvsh", "backend": backend, "model": "unknown"},
     )
     (root / ".claude" / "skills" / "cicd").mkdir(parents=True)
     (root / ".claude" / "skills" / "cicd" / "SKILL.md").write_text("x", encoding="utf-8")

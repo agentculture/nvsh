@@ -8,7 +8,7 @@ registries, not the files:
    vendored backend fingerprint table (``backend -> accepted prompt paths``),
    read by the agent-config skill's ``show.sh`` and by ``steward doctor`` when
    it runs from inside this checkout.
-2. ``culture_agent_template/cli/_commands/doctor.py`` ``_PROMPT_FILE`` — the
+2. ``nvsh/cli/_commands/doctor.py`` ``_PROMPT_FILE`` — the
    same mapping in Python, backing this template's own ``doctor`` verb.
 3. ``culture_core.learn_prompt.SKILL_DIRS`` — **in the separate ``culture``
    repo**, which this repo cannot edit. Checked only when a sibling ``culture``
@@ -31,7 +31,7 @@ from typing import Any
 import pytest
 import yaml
 
-from culture_agent_template.cli._commands.doctor import _PROMPT_FILE
+from nvsh.cli._commands.doctor import _PROMPT_FILE
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SMOKE_PATH = REPO_ROOT / "scripts" / "harness-smoke.py"

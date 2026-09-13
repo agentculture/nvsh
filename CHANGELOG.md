@@ -77,7 +77,7 @@ filed with a reproduction as
 [`agentculture/colleague#494`](https://github.com/agentculture/colleague/issues/494)
 (the template ships the correct shape regardless); and retrofitting
 already-provisioned siblings is an explicit **non-goal**, so
-`culture-agent-template#25` stays open for the existing fleet.
+`nvsh#25` stays open for the existing fleet.
 
 ## [0.8.0] - 2026-09-05
 
@@ -147,7 +147,7 @@ already-provisioned siblings is an explicit **non-goal**, so
 
 - **Worktree location convention** in `CLAUDE.md` — every worktree you create
   by hand (workforce fan-out lanes, scratch checkouts) lives in
-  `../.worktrees.culture-agent-template/<name>/`, one
+  `../.worktrees.nvsh/<name>/`, one
   repo-named directory beside the checkout, replacing a shared `../worktrees/`
   folder. This workspace holds many sibling projects, so a generic shared
   folder accumulates orphaned trees from several repos at once with nothing
@@ -314,7 +314,7 @@ already-provisioned siblings is an explicit **non-goal**, so
   `_colleague_via_uv` local-dev resolution that honors `--repo`, and the
   tri-state (0/1/2) exit-code contract. `scripts/ask-colleague.sh` + `prompts/`
   are byte-identical to the origin; `SKILL.md` diverges only in the one
-  consumer-identifying Provenance clause (`culture-agent-template vendors from
+  consumer-identifying Provenance clause (`nvsh vendors from
   guildmaster`). `docs/skill-sources.md` sync row updated to
   `2026-06-12 (colleague 1.7.0, direct)`. Refs: colleague#183, #186.
 
@@ -343,7 +343,7 @@ already-provisioned siblings is an explicit **non-goal**, so
   diverse second opinion on the committed diff), and `write` (delegate a small
   implementation). `explore`/`review` run isolated in a throwaway `git worktree`;
   `write` refuses a dirty tree. Fulfils
-  [#8](https://github.com/agentculture/culture-agent-template/issues/8).
+  [#8](https://github.com/agentculture/nvsh/issues/8).
 - **Ledger + CLAUDE.md:** record `outsource` in `docs/skill-sources.md`
   (origin = convertible, re-broadcast via guildmaster; vendored verbatim — it
   already carries `type: command`) and document its *optional* runtime
@@ -362,7 +362,7 @@ already-provisioned siblings is an explicit **non-goal**, so
   the rename targets and a portable `git grep` discovery command so a cloner can
   find every occurrence of the template name (hard-coded in ~100 places across the
   package, including the CLI command files and `_ISSUES_URL` in
-  `culture_agent_template/cli/__init__.py`) rather than renaming by hand.
+  `nvsh/cli/__init__.py`) rather than renaming by hand.
 - Synced `README.md`'s "Make it your own" checklist with `CLAUDE.md`: it now lists
   `README.md` itself as a rename target and points to `CLAUDE.md`'s discovery
   command as the authoritative procedure, so the two onboarding checklists no
@@ -390,7 +390,7 @@ already-provisioned siblings is an explicit **non-goal**, so
 
 - SonarCloud now reports code coverage — added `relative_files = true` to
   `[tool.coverage.run]` so `coverage.xml` emits repo-relative paths that map to
-  `sonar.sources=culture_agent_template` (absolute / `.venv` paths were dropped
+  `sonar.sources=nvsh` (absolute / `.venv` paths were dropped
   as unmappable). Mirrors the sibling `convertible` setup.
 
 ## [0.1.1] - 2026-05-26
@@ -398,7 +398,7 @@ already-provisioned siblings is an explicit **non-goal**, so
 ### Changed
 
 - **CI gates on the SonarCloud quality gate**
-  ([issue #3](https://github.com/agentculture/culture-agent-template/issues/3)) —
+  ([issue #3](https://github.com/agentculture/nvsh/issues/3)) —
   added `sonar.qualitygate.wait=true` to `sonar-project.properties` so a failing
   gate fails the `test` job when `SONAR_TOKEN` is set. Token-less repos and fork
   PRs remain green (the scan step is guarded by `if: env.SONAR_TOKEN != ''`).
@@ -407,14 +407,14 @@ already-provisioned siblings is an explicit **non-goal**, so
 
 ### Added
 
-- **Onboarded into the AgentCulture mesh** ([issue #1](https://github.com/agentculture/culture-agent-template/issues/1)).
+- **Onboarded into the AgentCulture mesh** ([issue #1](https://github.com/agentculture/nvsh/issues/1)).
 - **Agent-first CLI** cited from teken's (`afi-cli`) `python-cli` reference
   (`teken cli cite`) — verbs `whoami`, `learn`, `explain`, `overview`, `doctor`,
   and the `cli` noun group. Runtime is self-contained (`dependencies = []`);
   `teken>=0.8` is a dev dependency only. Passes the seven-bundle agent-first
   rubric (`teken cli doctor . --strict`). `doctor` checks the agent-identity
   invariants (prompt-file-present, backend-consistency, skills-present).
-- **Mesh identity**: `culture.yaml` (`suffix: culture-agent-template`,
+- **Mesh identity**: `culture.yaml` (`suffix: nvsh`,
   `backend: claude`) and the matching `CLAUDE.md` prompt file.
 - **Canonical guildmaster skill kit** (11 skills) vendored under
   `.claude/skills/` (cite-don't-import): `agent-config`, `assign-to-workforce`,

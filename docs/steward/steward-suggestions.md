@@ -4,13 +4,13 @@
 > Re-run `steward doctor --scope siblings` to refresh.
 > See `docs/perfect-patient.md` in the steward checkout for the corpus baseline.
 
-Repo: `culture-agent-template` — 1 agent(s) declared.
+Repo: `nvsh` — 1 agent(s) declared.
 
 ## Repo-level findings
 
 _No repo-level findings (portability, skills-convention)._
 
-## Agent: `culture-agent-template`
+## Agent: `nvsh`
 
 - Backend: `claude`
 

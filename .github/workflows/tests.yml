@@ -29,7 +29,7 @@ jobs:
 
       - run: uv sync
 
-      - run: uv run pytest -n auto --cov=culture_agent_template --cov-report=xml:coverage.xml --cov-report=term -v
+      - run: uv run pytest -n auto --cov=nvsh --cov-report=xml:coverage.xml --cov-report=term -v
 
       - name: SonarCloud Scan
         if: env.SONAR_TOKEN != ''
@@ -58,16 +58,16 @@ jobs:
       - run: uv sync
 
       - name: black --check
-        run: uv run black --check culture_agent_template tests
+        run: uv run black --check nvsh tests
 
       - name: isort --check
-        run: uv run isort --check-only culture_agent_template tests
+        run: uv run isort --check-only nvsh tests
 
       - name: flake8
-        run: uv run flake8 culture_agent_template tests
+        run: uv run flake8 nvsh tests
 
       - name: bandit
-        run: uv run bandit -c pyproject.toml -r culture_agent_template
+        run: uv run bandit -c pyproject.toml -r nvsh
 
       - name: markdownlint-cli2
         run: |

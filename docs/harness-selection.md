@@ -22,7 +22,7 @@ template, and they care about it for different reasons:
    starts for this clone, which reads exactly one prompt file (the one
    matching its own backend) as its operating instructions.
 3. **The doctor / inventory tooling** — `steward doctor` and this
-   template's own `culture-agent-template doctor`, which parse
+   template's own `nvsh doctor`, which parse
    `culture.yaml` and check that the declared `backend` has a matching
    prompt file on disk (**prompt-file-present**) and that the pairing is
    correct (**backend-consistency**, e.g. `claude` ↔ `CLAUDE.md`, never
@@ -71,7 +71,7 @@ Chosen by the single `backend` value `culture.yaml` declares:
 
 ```yaml
 agents:
-- suffix: culture-agent-template
+- suffix: nvsh
   backend: claude
 ```
 
@@ -124,7 +124,7 @@ this template internally consistent, and (b) stop *new* siblings created
 from this template from inheriting the same two-harness confusion.
 
 The direct consequence is that
-[`culture-agent-template#25`](https://github.com/agentculture/culture-agent-template/issues/25)
+[`nvsh#25`](https://github.com/agentculture/nvsh/issues/25)
 ("Downstream scaffolds still carry the pre-0.3.4 backend: claude seed text —
 no re-sync path exists") **stays open**. It tracks the existing fleet of
 already-provisioned siblings, which this work does not touch and for which
