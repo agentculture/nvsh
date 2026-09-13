@@ -13,7 +13,8 @@ into via the CLI so the approval logic lives in exactly one place —
                                         process still reads and logout wipes);
                                         with ``--scope`` the argument is a
                                         command line and nvsh derives one
-                                        pattern per pipeline stage (d24)
+                                        pattern per pipeline stage (d24), or
+                                        per ``--stages``-chosen stage (d26)
 * ``nvsh approve list``              — {user: [...], session: [...]}
 * ``nvsh approve remove <pattern>``  — drop from both lists
 * ``nvsh approve audit``             — append one decision to the audit log
@@ -34,7 +35,9 @@ from nvsh.approvals import (
     Approvals,
     base_scope,
     command_refusal_reason,
+    parse_stages,
     patterns_for,
+    stages,
 )
 from nvsh.cli._errors import EXIT_USER_ERROR, CliError
 from nvsh.cli._output import emit_result
@@ -70,9 +73,23 @@ def cmd_approve_add(args: argparse.Namespace) -> int:
     -- the same helper the panel's scope line and its store write use. That
     is what lets the pi approval extension offer the four scope choices
     without re-implementing (or drifting from) the widening rules.
+
+    ``--stages`` (deviation d26) narrows a ``--scope`` approval to some of
+    those stages: the operator picked them at the panel's
+    ``stages [all,1,2]: `` prompt, and the pi extension forwards them here
+    after splitting them off the ``<scope>:<stages>`` answer pi's
+    ``ctx.ui.select`` carries back in its single value string.
     """
     approvals = Approvals.load()
     requested = getattr(args, "scope", None)
+    picked = getattr(args, "stages", None)
+    chosen: list[int] | None = None
+    if picked and not requested:
+        raise CliError(
+            code=EXIT_USER_ERROR,
+            message="--stages only means anything together with --scope",
+            remediation="pass --scope session|session-specific|user|user-specific as well",
+        )
     if requested:
         reason = command_refusal_reason(args.pattern)
         if reason is not None:
@@ -82,7 +99,16 @@ def cmd_approve_add(args: argparse.Namespace) -> int:
                 remediation="run it once instead; no scope pre-approves this command",
             )
         scope = base_scope(requested)
-        patterns = patterns_for(args.pattern, requested)
+        count = len(stages(args.pattern))
+        if picked:
+            chosen = parse_stages(picked, count)
+            if chosen is None:
+                raise CliError(
+                    code=EXIT_USER_ERROR,
+                    message=f"unreadable --stages {picked!r}: this line has {count} stage(s)",
+                    remediation=f"pass 'all' or stage numbers 1-{count}, comma- or space-separated",
+                )
+        patterns = patterns_for(args.pattern, requested, chosen)
         if not patterns:
             raise CliError(
                 code=EXIT_USER_ERROR,
@@ -104,7 +130,7 @@ def cmd_approve_add(args: argparse.Namespace) -> int:
     if scope == "user":
         approvals.save()
     json_mode = bool(getattr(args, "json", False))
-    result = {"added": args.pattern, "scope": scope, "patterns": patterns}
+    result = {"added": args.pattern, "scope": scope, "patterns": patterns, "stages": chosen}
     if json_mode:
         emit_result(result, json_mode=True)
     else:
@@ -198,8 +224,15 @@ def register(sub: argparse._SubParsersAction) -> None:
             "stage for this scope ('-specific' keeps the first argument)."
         ),
     )
+    add.add_argument(
+        "--stages",
+        help=(
+            "With --scope, approve only these stages of the command line: "
+            "'all' (the default) or numbers like '2' or '1,2'."
+        ),
+    )
     add.add_argument("--json", action="store_true", help="Emit structured JSON.")
-    add.set_defaults(func=cmd_approve_add)
+    add.set_defaults(func=cmd_approve_add, stages=None)
 
     lst = noun_sub.add_parser("list", help="List approved patterns.")
     lst.add_argument("--json", action="store_true", help="Emit structured JSON.")

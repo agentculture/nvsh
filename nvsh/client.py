@@ -53,7 +53,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any, Iterable, Mapping, Sequence
 
 from . import client_transport
 from .agent.base import AgentContext, AgentEvent, AgentRequest, Proposal, ProposalKind, RequestKind
@@ -637,17 +637,54 @@ def _audit(env: Mapping[str, str]):
         return None
 
 
-def scope_patterns(command: str, scope: str) -> list[str]:
+def scope_patterns(command: str, scope: str, chosen: Sequence[int] | None = None) -> list[str]:
     """The globs ``scope`` would store for ``command`` -- one per stage (d24).
 
     Delegates to :func:`nvsh.approvals.patterns_for`, the single pure helper
     the panel's scope line, this store write, the details view and (through
     ``nvsh approve add --scope``) the pi approval extension all share, so
     the four can never describe or persist different things.
+
+    ``chosen`` is d26's stage pick: the 1-based stage numbers the operator
+    typed at the panel's ``stages [all,1,2]: `` prompt, or ``None`` for
+    every stage.
     """
     from .approvals import patterns_for
 
-    return patterns_for(command, scope)
+    return patterns_for(command, scope, chosen)
+
+
+def stage_tokens(command: str) -> list[str]:
+    """One rendered token per stage, for the panel's numbered ``stages:`` line.
+
+    Deviation d26: d24's ``[s] each stage exactly`` never showed the
+    operator what the stages *were*. An approvable stage is quoted as it
+    will be matched; a stage no pattern may ever cover (a ``sudo``/``rm``
+    stage) reads ``(not approvable)`` rather than being quoted as though a
+    key could store it. An opaque line is one stage by construction
+    (:func:`nvsh.approvals.stages`), so it keeps d24's single-stage
+    rendering and its whole-line refusal.
+    """
+    from .approvals import command_refusal_reason, stages
+
+    return [
+        "(not approvable)" if command_refusal_reason(stage) else f"'{stage}'"
+        for stage in stages(command)
+    ]
+
+
+def scope_stage_patterns(command: str) -> dict[str, list[str]]:
+    """Per scope, the quoted pattern it would store for *each* stage (d26).
+
+    Positional and undeduplicated, so entry ``N - 1`` is always stage ``N``
+    -- the numbers the panel prints are the numbers it reads back.
+    """
+    from .approvals import stage_patterns
+
+    return {
+        scope: [f"'{pattern}'" for pattern in stage_patterns(command, scope)]
+        for scope in _SCOPE_CHOICES
+    }
 
 
 def scope_pattern(command: str, scope: str) -> str:
@@ -712,9 +749,22 @@ def scope_descriptions(command: str) -> dict[str, str]:
     """
     from .approvals import stages
 
-    plain_session = "this exact line" if len(stages(command)) <= 1 else "each stage exactly"
+    per_stage = scope_stage_patterns(command)
+    if len(stages(command)) > 1:
+        # d26: the stages are numbered on their own line just above, so each
+        # family names the pattern it would store *per stage*, in the same
+        # order and separated the way the stages are -- `[u] 'ls *' | 'grep
+        # *'` against `stages: 1 'ls ...'  2 'grep ...'`. `[s]` reads
+        # `exact` because its per-stage pattern is the stage itself, which
+        # the stages line already shows verbatim.
+        return {
+            APPROVE_SESSION: "exact",
+            APPROVE_SESSION_SPECIFIC: " | ".join(per_stage[APPROVE_SESSION_SPECIFIC]),
+            APPROVE_USER: " | ".join(per_stage[APPROVE_USER]),
+            APPROVE_USER_SPECIFIC: " | ".join(per_stage[APPROVE_USER_SPECIFIC]),
+        }
     described = {
-        APPROVE_SESSION: plain_session,
+        APPROVE_SESSION: "this exact line",
         APPROVE_SESSION_SPECIFIC: _quoted(command, APPROVE_SESSION_SPECIFIC),
         APPROVE_USER: _quoted(command, APPROVE_USER),
         APPROVE_USER_SPECIFIC: _quoted(command, APPROVE_USER_SPECIFIC),
@@ -750,8 +800,17 @@ def _decide_proposal(
 
     scopes = scope_descriptions(proposal.command)
     patterns = scope_patterns_text(proposal.command)
+    tokens = stage_tokens(proposal.command)
+    per_stage = scope_stage_patterns(proposal.command)
     for _ in range(_MAX_PROPOSAL_ROUNDS):
-        choice = panel.show_proposal(proposal, guard=guard, scopes=scopes, patterns=patterns)
+        choice = panel.show_proposal(
+            proposal,
+            guard=guard,
+            scopes=scopes,
+            patterns=patterns,
+            stages=tokens,
+            stage_patterns=per_stage,
+        )
         if choice == TELL:
             text = panel.read_tell()
             if not text:
@@ -856,11 +915,43 @@ def proposal_details(
     ]
     if refusals:
         details["refused"] = "; ".join(refusals)
+    details.update(_stage_details(command, approvals))
     details["backend"] = backend_label(config) or "unknown"
     details["conversation"] = _conversation_label(responder, env)
     sent = len(context.output.encode("utf-8", errors="replace")) if context.output else 0
     details["output"] = f"{sent} bytes of redacted output sent to the model"
     return details
+
+
+def _stage_details(command: str, approvals) -> dict[str, str]:
+    """One ``stage N`` row per stage for the ``[d]`` view (deviation d26).
+
+    A multi-stage line is now approvable stage by stage, so the details
+    view has to say, for each numbered stage, what the three pattern forms
+    would store and who (if anyone) already approves it. A single-stage
+    line adds nothing here: the four whole-line pattern rows above already
+    say all of it.
+    """
+    from .approvals import command_refusal_reason, pattern_for, stages
+
+    stage_list = stages(command)
+    if len(stage_list) < 2:
+        return {}
+    rows: dict[str, str] = {}
+    for number, stage in enumerate(stage_list, 1):
+        reason = command_refusal_reason(stage)
+        if reason:
+            rows[f"stage {number}"] = f"{stage} -- not approvable ({reason})"
+            continue
+        scope, pattern = approvals.match_stage(stage)
+        approver = "none" if scope == "ask" or not pattern else f"{scope} '{pattern}'"
+        rows[f"stage {number}"] = (
+            f"exact '{pattern_for(stage, APPROVE_SESSION)}'  "
+            f"specific '{pattern_for(stage, APPROVE_USER_SPECIFIC)}'  "
+            f"broad '{pattern_for(stage, APPROVE_USER)}'  "
+            f"approved-by {approver}"
+        )
+    return rows
 
 
 def _proposal_handler(
@@ -963,7 +1054,10 @@ def _proposal_handler(
             # relays the operator's answer, and must not run it a second time.
             # "session"/"user" are the extension's own choice tokens, so the
             # widening and the store write happen there, once.
-            responder.respond(request_id, {"value": "once" if choice == APPROVE else choice})
+            answer = "once" if choice == APPROVE else choice
+            if choice in _SCOPE_CHOICES:
+                answer = encode_choice(choice, getattr(panel, "stage_choice", None), command)
+            responder.respond(request_id, {"value": answer})
             return
         if choice in _SCOPE_CHOICES:
             # No dialog: this adapter (openai-compat and friends) has nvsh run
@@ -971,7 +1065,7 @@ def _proposal_handler(
             # in _decide_proposal has already cleared the pattern, but add()
             # is the authority and may still refuse -- a refusal must cost the
             # operator the approval, never the command they asked for.
-            _approve_scope(panel, approvals, command, choice)
+            _approve_scope(panel, approvals, command, choice, getattr(panel, "stage_choice", None))
         result = _run_approved(proposal, choice)
         if audit is not None:
             audit.record(
@@ -982,18 +1076,45 @@ def _proposal_handler(
     return handle
 
 
-def _approve_scope(panel: Panel, approvals, command: str, scope: str) -> None:
+def encode_choice(choice: str, chosen: Sequence[int] | None, command: str) -> str:
+    """The scope answer a backend dialog receives, stages included (d26).
+
+    pi's ``ctx.ui.select`` carries exactly one value string back to the
+    extension (``docs/pi-rpc.md``: pi 0.85.1 reduces an
+    ``extension_ui_response`` to its ``value``), and there is no second
+    field to put a stage list in. So a *partial* pick rides in the value
+    itself as ``<scope>:<comma-separated stages>`` --
+    ``session-specific:1,2`` -- which ``nvsh/agent/pi_ext/approval.ts``
+    splits on the first colon and forwards as
+    ``nvsh approve add <cmd> --scope <scope> --stages 1,2``. A pick that
+    covers every stage stays the bare token every pre-d26 reader expects.
+    """
+    from .approvals import stages
+
+    if not chosen or len(chosen) >= len(stages(command)):
+        return choice
+    return f"{choice}:{','.join(str(n) for n in chosen)}"
+
+
+def _approve_scope(
+    panel: Panel, approvals, command: str, scope: str, chosen: Sequence[int] | None = None
+) -> None:
     """Persist the operator's scope-key choice into the approval store.
 
     d24: one pattern *per stage* of the command line, so approving
     ``ps ... | head ...`` approves ``ps *`` and ``head *`` and nothing
     wider. A refusal on any stage costs the operator the whole approval
     (never the command they asked for, which still runs once).
+
+    d26: ``chosen`` narrows that to the stages the operator picked at the
+    ``stages [all,1,2]: `` prompt. Only those stages reach the store -- the
+    command itself still runs once either way, because the keypress
+    approved *this* execution and the store write is about future turns.
     """
     from .approvals import ApprovalError, base_scope
 
     where = base_scope(scope)
-    patterns = scope_patterns(command, scope)
+    patterns = scope_patterns(command, scope, chosen)
     if not patterns:
         panel.note(f"nvsh: nothing to approve for this {where}")
         return
@@ -1391,7 +1512,9 @@ def retry(
         panel.note("nvsh: not re-run")
         return 0
     if choice in _SCOPE_CHOICES:
-        _approve_scope(panel, _load_approvals(), command, choice)
+        _approve_scope(
+            panel, _load_approvals(), command, choice, getattr(panel, "stage_choice", None)
+        )
     try:
         result = _run_in(recorded_cwd, lambda: _run_approved(proposal, choice, login=True))
     except OSError as exc:

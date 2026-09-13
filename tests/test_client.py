@@ -1183,8 +1183,12 @@ def test_the_scope_line_lists_every_stage_pattern(xdg, monkeypatch):
     p = _panel("q\n")
     client_mod.handle_failure(_args(xdg.tmp), panel=p)
     text = p.out.getvalue()
-    assert "'ps *' 'head *'" in text, text
-    assert "each stage exactly" in text, text
+    # d26 renders the per-stage patterns in stage order, separated the way
+    # the numbered `stages:` line above them is, and `[s]` reads `exact`
+    # (d24's `each stage exactly` never showed what the stages were).
+    assert "'ps *' | 'head *'" in text, text
+    assert "[s] exact" in text, text
+    assert "stages: 1 'ps -eo pid,rss'  2 'head -n 20'" in text, text
 
 
 def test_the_scope_line_says_when_the_specific_form_adds_nothing(xdg, monkeypatch):
@@ -1206,3 +1210,104 @@ def test_details_quote_the_specific_patterns_too(xdg, monkeypatch):
     assert "user pattern: ssh *" in text, text
     assert "user-specific pattern: ssh orin *" in text, text
     assert "session-specific pattern: ssh orin *" in text, text
+
+
+# --- d26: choosing which stages an approval covers ------------------------
+
+
+def _multi_dialog(monkeypatch, command, request_id="req-d26"):
+    proposal = Proposal(command=command, rationale="look", kind=ProposalKind.INSPECT)
+    events = [
+        AgentEvent(kind=EventKind.PROPOSAL, proposal=proposal, args={"request_id": request_id}),
+        AgentEvent(kind=EventKind.DONE),
+    ]
+    monkeypatch.setattr(client_transport, "send", _stub_send([], events))
+    answered = []
+    monkeypatch.setattr(
+        client_transport, "respond_ui", lambda rid, fields, **kw: answered.append((rid, fields))
+    )
+    return answered
+
+
+def test_the_scope_lines_number_the_stages_and_show_each_stored_pattern(xdg, monkeypatch):
+    command = "ls /tmp/git | grep -i orin"
+    proposal = Proposal(command=command, rationale="look", kind=ProposalKind.INSPECT)
+    monkeypatch.setattr(client_transport, "send", _stub_send([], _proposal_events(proposal)))
+    p = _panel("q\n")
+    client_mod.handle_failure(_args(xdg.tmp), panel=p)
+    lines = p.out.getvalue().splitlines()
+    assert "stages: 1 'ls /tmp/git'  2 'grep -i orin'" in lines
+    assert "[s] exact  [S] 'ls /tmp/git *' | 'grep -i *'  (this session)" in lines
+    assert "[u] 'ls *' | 'grep *'  [U] 'ls /tmp/git *' | 'grep -i *'  (persisted for you)" in lines
+
+
+def test_a_stage_that_can_never_be_approved_reads_as_not_approvable(xdg, monkeypatch):
+    command = "ls /tmp | sudo tee /etc/x"
+    proposal = Proposal(command=command, rationale="look", kind=ProposalKind.FIX)
+    monkeypatch.setattr(client_transport, "send", _stub_send([], _proposal_events(proposal)))
+    p = _panel("q\n")
+    client_mod.handle_failure(_args(xdg.tmp), panel=p)
+    assert "stages: 1 'ls /tmp'  2 (not approvable)" in p.out.getvalue().splitlines()
+
+
+def test_a_dialog_answer_carries_the_chosen_stages_encoded_after_a_colon(xdg, monkeypatch):
+    answered = _multi_dialog(monkeypatch, "ls /tmp/git | grep -i orin")
+    executed = []
+    monkeypatch.setattr(client_mod, "_run_command", lambda cmd, **kw: executed.append(cmd))
+    client_mod.handle_failure(_args(xdg.tmp), panel=_panel("s\n2\n"))
+    assert answered == [("req-d26", {"value": "session:2"})]
+    assert executed == [], "the extension runs it; nvsh must not double-run"
+
+
+def test_a_dialog_answer_for_every_stage_stays_the_bare_choice(xdg, monkeypatch):
+    answered = _multi_dialog(monkeypatch, "ls /tmp/git | grep -i orin")
+    client_mod.handle_failure(_args(xdg.tmp), panel=_panel("u\nall\n"))
+    assert answered == [("req-d26", {"value": "user"})]
+
+
+def test_a_single_stage_dialog_answer_is_unchanged_by_d26(xdg, monkeypatch):
+    answered = _multi_dialog(monkeypatch, "apt install foo")
+    client_mod.handle_failure(_args(xdg.tmp), panel=_panel("u\n"))
+    assert answered == [("req-d26", {"value": "user"})]
+
+
+def test_without_a_dialog_only_the_chosen_stage_is_stored_and_it_still_runs(xdg, monkeypatch):
+    marker = xdg.tmp / "ran-d26"
+    command = f"touch {marker} | cat"
+    proposal = Proposal(command=command, rationale="fix it", kind=ProposalKind.FIX)
+    monkeypatch.setattr(client_transport, "send", _stub_send([], _proposal_events(proposal)))
+    assert client_mod.handle_failure(_args(xdg.tmp), panel=_panel("u\n1\n")) == 0
+    assert marker.exists(), "the keypress approved this execution; it must still happen once"
+    approvals = _approvals()
+    assert "touch *" in approvals.user_patterns
+    assert "cat *" not in approvals.user_patterns
+
+
+def test_without_a_dialog_all_stages_are_stored_when_the_operator_says_all(xdg, monkeypatch):
+    marker = xdg.tmp / "ran-d26-all"
+    command = f"touch {marker} | cat"
+    proposal = Proposal(command=command, rationale="fix it", kind=ProposalKind.FIX)
+    monkeypatch.setattr(client_transport, "send", _stub_send([], _proposal_events(proposal)))
+    assert client_mod.handle_failure(_args(xdg.tmp), panel=_panel("u\nall\n")) == 0
+    approvals = _approvals()
+    assert "touch *" in approvals.user_patterns
+    assert "cat *" in approvals.user_patterns
+
+
+def test_the_details_view_shows_one_row_per_stage(xdg, monkeypatch):
+    command = "ls /tmp/git | grep -i orin"
+    proposal = Proposal(command=command, rationale="look", kind=ProposalKind.INSPECT)
+    monkeypatch.setattr(client_transport, "send", _stub_send([], _proposal_events(proposal)))
+    p = _panel("d\nq\n")
+    client_mod.handle_failure(_args(xdg.tmp), panel=p)
+    text = p.out.getvalue()
+    assert "stage 1:" in text and "stage 2:" in text
+    assert "exact 'ls /tmp/git'" in text
+    assert "specific 'ls /tmp/git *'" in text
+    assert "broad 'ls *'" in text
+    assert "approved-by" in text
+
+
+def test_scope_patterns_can_be_restricted_to_the_chosen_stages():
+    assert client_mod.scope_patterns("ls /a | grep b", "user", chosen=[2]) == ["grep *"]
+    assert client_mod.scope_patterns("ls /a | grep b", "user") == ["ls *", "grep *"]

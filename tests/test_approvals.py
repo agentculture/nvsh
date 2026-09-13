@@ -394,3 +394,50 @@ def test_add_accepts_the_specific_scope_tokens(xdg_home):
     assert "ssh thor *" in approvals.session_patterns
     assert base_scope("user-specific") == "user"
     assert base_scope("session-specific") == "session"
+
+
+# --- d26: per-stage pattern lists and the stage selection parser ----------
+
+
+def test_stage_patterns_keeps_one_entry_per_stage_without_deduplicating():
+    """The picker indexes by stage number, so position N must stay stage N."""
+    from nvsh.approvals import patterns_for, stage_patterns
+
+    assert stage_patterns("ls /a | ls /b", "user") == ["ls *", "ls *"]
+    assert patterns_for("ls /a | ls /b", "user") == ["ls *"]
+    assert stage_patterns("ls /tmp/git | grep -i orin", "user-specific") == [
+        "ls /tmp/git *",
+        "grep -i *",
+    ]
+
+
+def test_match_stage_is_public_so_the_details_view_can_name_the_approver(xdg_home):
+    approvals = Approvals.default()
+    approvals.add("ps *")
+    assert approvals.match_stage("ps -eo pid") == ("user", "ps *")
+    assert approvals.match_stage("head -n 20") == ("ask", None)
+
+
+@pytest.mark.parametrize(
+    "typed,expected",
+    [
+        ("all", [1, 2]),
+        ("", [1, 2]),
+        ("  ", [1, 2]),
+        ("1", [1]),
+        ("2", [2]),
+        ("1,2", [1, 2]),
+        ("1 2", [1, 2]),
+        ("2,1", [1, 2]),
+        ("2, 2", [2]),
+        ("junk", None),
+        ("3", None),
+        ("0", None),
+        ("1,junk", None),
+        ("-1", None),
+    ],
+)
+def test_parse_stages_table(typed, expected):
+    from nvsh.approvals import parse_stages
+
+    assert parse_stages(typed, 2) == expected

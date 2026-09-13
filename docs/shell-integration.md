@@ -342,6 +342,50 @@ key can be mistaken for a narrower one than it is:
 [u] 'ssh *'  [U] 'ssh orin *'  (persisted for you)
 ```
 
+### Numbered stages, and picking which of them an approval covers (d26)
+
+An operator on the Spark was shown `ls /home/spark/git | grep -i orin` and
+told `[s] each stage exactly` — which never said what the stages *were*, and
+offered no way to approve only the `grep` half. A line with more than one
+stage now numbers them above the scope lines, and each scope family names
+the pattern it would store *per stage*, in the same order:
+
+```text
+stages: 1 'ls /home/spark/git'  2 'grep -i orin'
+[s] exact  [S] 'ls /home/spark/git *' | 'grep -i *'  (this session)
+[u] 'ls *' | 'grep *'  [U] 'ls /home/spark/git *' | 'grep -i *'  (persisted for you)
+```
+
+Each line is clipped to 80 columns with a trailing `…`. A stage no pattern
+may ever cover — a `sudo`/`rm` stage — reads `(not approvable)` instead of
+being quoted as though a key could store it. An opaque line (a subshell, a
+command substitution) is *one* stage by construction, so it keeps the d24
+single-stage rendering and its whole-line refusal. A single-stage command is
+unchanged: no `stages:` line, and `[s]` still reads `this exact line`.
+
+After `s`, `S`, `u` or `U` on a multi-stage command the panel reads one
+cooked line:
+
+```text
+stages [all,1,2]: 2
+nvsh: running; 'grep -i *' approved for this session (stage 2 of 2)
+```
+
+`all`, an empty line, EOF and `Ctrl+C` all mean every stage — the pre-d26
+behaviour — and so does a second unreadable answer after the one re-ask
+(`nvsh: type 'all' or stage numbers 1-2`). A single number or a comma- or
+space-separated list stores only those stages. The ack then names exactly
+the patterns that were stored and which stages they came from, so it can
+never over-report the approval; picking every stage keeps the pre-d26
+wording. **The proposal still runs once whatever was picked**: the keypress
+approved *this* execution, and the store write is only about future turns.
+
+`nvsh approve add <cmd> --scope <choice> --stages 1,2` is the same choice
+from the CLI, and it takes the same `all`/number-list spelling (both go
+through one parser, `nvsh.approvals.parse_stages`). `--stages` without
+`--scope` is a user error, and a stage number past the end of the line is
+refused rather than silently dropped.
+
 **One pattern per stage (deviation d24).** A command line is split into
 stages on `|`, `&&`, `||`, `&`, `;` and newlines, honouring quotes —
 `ssh orin "ps | head"` is ONE stage, because the pipe is inside the quoted
@@ -354,7 +398,8 @@ privileged or destructive one can never be pre-approved at all — it makes
 the whole line unapprovable for `s`/`S`/`u`/`U`, exactly as a bare
 `sudo …` always has been. When there is more than one stage the scope line
 lists the per-stage patterns (`[u] 'ps *' 'head *'`), clipped at 80
-columns, and `[s]` reads `each stage exactly`.
+columns, numbered and shown stage by stage (see below), and `[s]` reads
+`exact`.
 
 A line carrying a subshell or a command substitution — `(cd /tmp && ls)`,
 `echo $(id)`, a backtick — is **opaque**: what it really runs is not in its
@@ -392,7 +437,19 @@ from a backend dialog (pi's approval extension), and that backend is blocked
 waiting: nvsh forwards the operator's answer verbatim as
 `{"value": <choice>}`, where `<choice>` is one of the six the extension
 offers `ctx.ui.select` — in this order, which is part of the contract:
-`once`, `session`, `session-specific`, `user`, `user-specific`, `deny`. The
+`once`, `session`, `session-specific`, `user`, `user-specific`, `deny`.
+
+**How the stage pick travels (d26).** pi carries exactly one value string
+back to the extension (pi 0.85.1 reduces an `extension_ui_response` to its
+`value` — see `docs/pi-rpc.md`), and there is no second field to put a stage
+list in. So a *partial* pick is encoded into the value itself as
+`<scope>:<stages>` — `session-specific:1,2` — which the extension splits on
+the first colon and forwards as
+`nvsh approve add <cmd> --scope session-specific --stages 1,2`. A pick that
+covers every stage stays the bare token, so nothing that reads these answers
+had to change. The extension interprets the stage list no more than it
+interprets a pattern: the CLI parses it, and the audit records the bare
+scope. The
 extension then does the store write and the run — nvsh must not run the
 command a second time. It derives no pattern of its own: it shells out to
 `nvsh approve add <command> --scope <choice>`, the single writer, which

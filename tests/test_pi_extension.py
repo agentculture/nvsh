@@ -55,10 +55,14 @@ def test_extension_stays_small():
     """A forwarder, not a policy engine.
 
     Raised from 120 to 160 lines by d21, which added the spawn-failure path
-    (a missing nvsh is reported, never silently re-asked) and its comments.
+    (a missing nvsh is reported, never silently re-asked) and its comments,
+    and to 190 by d26, which added the `<scope>:<stages>` splitter and the
+    explanation of why the stage list has to ride inside pi's single select
+    value at all. Still a forwarder: the split is three lines, and every
+    decision -- including what a stage number means -- is still nvsh's.
     """
     lines = _read_extension().splitlines()
-    assert len(lines) < 160, f"approval.ts has {len(lines)} lines, must be under 160"
+    assert len(lines) < 190, f"approval.ts has {len(lines)} lines, must be under 190"
 
 
 def test_extension_registers_tool_call_handler():
@@ -485,3 +489,57 @@ def test_node_extension_names_the_failure_when_the_approval_write_cannot_run(tmp
     result = out["results"][0]
     assert result and result["block"] is True
     assert "refused" in result["reason"]
+
+
+# -- d26: the chosen stages ride on the select answer as "<scope>:<list>" --
+
+
+def test_extension_splits_a_stage_encoded_choice_and_forwards_stages():
+    text = _read_extension()
+    assert '"--stages"' in text
+    assert 'indexOf(":")' in text or 'split(":")' in text
+
+
+def test_extension_documents_the_stage_encoding():
+    text = _read_extension()
+    assert "session-specific:1,2" in text or "<scope>:<stages>" in text
+
+
+def _argv_logging_nvsh(tmp_path, *, decision="ask"):
+    """A fake ``nvsh`` that records its whole argv, one call per line."""
+    log = tmp_path / "argv.log"
+    script = tmp_path / "fake-nvsh"
+    script.write_text(
+        "#!/bin/sh\n"
+        f'printf "%s\\n" "$*" >> {log}\n'
+        'case "$2" in\n'
+        f'  check) printf \'{{"decision": "{decision}", "pattern": null}}\\n\' ;;\n'
+        '  add) printf \'{"added": "x"}\\n\' ;;\n'
+        "  *) printf '{\"recorded\": true}\\n' ;;\n"
+        "esac\n",
+        encoding="utf-8",
+    )
+    script.chmod(0o755)
+    return script, log
+
+
+def test_node_extension_forwards_the_encoded_stages_to_approve_add(tmp_path):
+    script, log = _argv_logging_nvsh(tmp_path)
+    out = _drive_extension(
+        tmp_path, ["ls /tmp | grep x"], nvsh_bin=script, choice="session-specific:2"
+    )
+    assert out["results"] == [None], out
+    calls = log.read_text(encoding="utf-8").splitlines()
+    add = [c for c in calls if " add " in c]
+    assert len(add) == 1, calls
+    assert "--scope session-specific" in add[0], add
+    assert "--stages 2" in add[0], add
+    audits = [c for c in calls if " audit " in c]
+    assert "--decision session-specific" in audits[0], audits
+
+
+def test_node_extension_omits_stages_when_the_choice_carries_none(tmp_path):
+    script, log = _argv_logging_nvsh(tmp_path)
+    _drive_extension(tmp_path, ["ls /tmp | grep x"], nvsh_bin=script, choice="user")
+    add = [c for c in log.read_text(encoding="utf-8").splitlines() if " add " in c]
+    assert "--stages" not in add[0], add

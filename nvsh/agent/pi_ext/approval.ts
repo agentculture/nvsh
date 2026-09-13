@@ -60,6 +60,23 @@ function blockedBy(run: Run, refusal: string): { block: true; reason: string } {
   return { block: true, reason: run.failure || refusal };
 }
 
+// Deviation d26: pi's `ctx.ui.select` carries exactly ONE value string back
+// here (pi 0.85.1 reduces an extension_ui_response to its `value` -- see
+// docs/pi-rpc.md), and there is no second field for a stage list. So when
+// the operator approves only SOME stages of a pipeline, nvsh encodes the
+// answer as `<scope>:<stages>` -- e.g. `session-specific:1,2` -- and this
+// splits it back apart. A whole-line approval stays the bare scope token,
+// exactly as before d26. The stage list is never interpreted here: it goes
+// to `nvsh approve add --stages`, which owns the parsing as it owns the
+// widening.
+function splitChoice(answer: string): { scope: string; stages: string } {
+  const at = answer.indexOf(":");
+  if (at < 0) {
+    return { scope: answer, stages: "" };
+  }
+  return { scope: answer.slice(0, at), stages: answer.slice(at + 1) };
+}
+
 function audit(command: string, decision: string): void {
   nvsh(["approve", "audit", "--tool", "bash", "--command", command, "--decision", decision, "--json"]);
 }
@@ -116,12 +133,20 @@ export default function (pi: ExtensionAPI) {
       "deny",
     ]);
 
-    if (choice === undefined || choice === "deny") {
+    if (choice === undefined) {
       audit(command, "deny");
       return { block: true, reason: "operator denied this command" };
     }
 
-    if (choice === "once") {
+    // d26: the answer may carry the stages the approval covers.
+    const { scope, stages } = splitChoice(String(choice));
+
+    if (scope === "deny") {
+      audit(command, "deny");
+      return { block: true, reason: "operator denied this command" };
+    }
+
+    if (scope === "once") {
       audit(command, "once");
       return;
     }
@@ -134,12 +159,16 @@ export default function (pi: ExtensionAPI) {
     // scope lands in $XDG_RUNTIME_DIR/nvsh/session-approvals.toml (d15),
     // so the approval outlives this spawnSync and the next `approve check`
     // -- from any process of this login -- matches it.
-    const added = nvsh(["approve", "add", command, "--scope", String(choice), "--json"]);
+    const args = ["approve", "add", command, "--scope", scope, "--json"];
+    if (stages) {
+      args.push("--stages", stages);
+    }
+    const added = nvsh(args);
     if (!added.ok) {
       audit(command, "block");
-      return blockedBy(added, `nvsh refused to approve this command for the ${choice} scope`);
+      return blockedBy(added, `nvsh refused to approve this command for the ${scope} scope`);
     }
-    audit(command, String(choice));
+    audit(command, scope);
     return;
   });
 }

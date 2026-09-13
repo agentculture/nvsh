@@ -68,6 +68,7 @@ import re
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Sequence
 
 from nvsh import runtimedir
 
@@ -315,17 +316,62 @@ def pattern_for(command: str, scope: str) -> str:
     return f"{first} {words[1]} *"
 
 
-def patterns_for(command: str, scope: str) -> list[str]:
+def stage_patterns(command: str, scope: str) -> list[str]:
+    """The pattern ``scope`` would store for *each* stage, positionally (d26).
+
+    Unlike :func:`patterns_for` this never deduplicates and never drops an
+    entry: element ``N - 1`` is always stage ``N``. That is what lets the
+    panel's numbered ``stages:`` line, the stage picker and
+    ``nvsh approve add --stages`` agree about which stage a number means
+    even when two stages widen to the same pattern -- ``ls /a | ls /b`` is
+    two stages and one pattern.
+    """
+    return [pattern_for(stage, scope) for stage in stages(command)]
+
+
+def parse_stages(text: str, count: int) -> list[int] | None:
+    """The stage numbers ``text`` names, or ``None`` when it names none (d26).
+
+    The one parser behind the panel's ``stages [all,1,2]: `` prompt and
+    ``nvsh approve add --stages``, so a typed answer and a CLI flag can
+    never disagree. ``all`` and an empty answer both mean every stage;
+    numbers may be separated by commas or spaces, are deduplicated and come
+    back sorted. Anything else -- a word, a zero, a number past ``count`` --
+    is ``None``, which the panel turns into one re-ask and the CLI into a
+    user error.
+    """
+    tokens = [token for token in text.replace(",", " ").split() if token]
+    if not tokens or tokens == ["all"]:
+        return list(range(1, count + 1))
+    picked: set[int] = set()
+    for token in tokens:
+        if not token.isdigit():
+            return None
+        number = int(token)
+        if not 1 <= number <= count:
+            return None
+        picked.add(number)
+    return sorted(picked)
+
+
+def patterns_for(command: str, scope: str, chosen: Sequence[int] | None = None) -> list[str]:
     """One pattern per stage of ``command``, in order, deduplicated.
 
     ``patterns_for("ps -eo pid | head -n 20", "user")`` is
     ``["ps *", "head *"]``: approving a pipeline approves each of its
     stages, and :meth:`Approvals.matches` then requires every stage of a
     later candidate to match something.
+
+    ``chosen`` (deviation d26) is the list of 1-based stage numbers the
+    operator picked at the panel's ``stages [all,1,2]: `` prompt; only
+    those stages contribute a pattern. ``None`` -- what every pre-d26
+    caller passes -- still means every stage.
     """
+    per_stage = stage_patterns(command, scope)
+    if chosen is not None:
+        per_stage = [per_stage[i - 1] for i in chosen if 1 <= i <= len(per_stage)]
     out: list[str] = []
-    for stage in stages(command):
-        pattern = pattern_for(stage, scope)
+    for pattern in per_stage:
         if pattern and pattern not in out:
             out.append(pattern)
     return out
@@ -516,6 +562,15 @@ class Approvals:
                     target.remove(candidate)
                     removed = True
         return removed
+
+    def match_stage(self, stage: str) -> tuple[str, str | None]:
+        """``(scope, pattern)`` for one stage -- the public form of the lookup.
+
+        Public since d26: the ``[d]`` details view prints a per-stage table
+        and has to name who approved each stage, which is exactly this
+        answer for one stage rather than :meth:`matches` for the line.
+        """
+        return self._match_stage(stage)
 
     def _match_stage(self, stage: str) -> tuple[str, str | None]:
         """``(scope, pattern)`` for one stage, user patterns before session ones."""

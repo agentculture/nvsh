@@ -922,3 +922,132 @@ def test_header_ask_form_without_a_label_still_reads_as_a_sentence():
     p = _panel(out=out)
     p.header("", 0, ask="why is memory high?")
     assert out.getvalue() == "nvsh: asking: why is memory high?\n"
+
+
+# --- d26: numbered stages, and picking which of them an approval covers ---
+
+
+_MULTI_SCOPES = {
+    "session": "exact",
+    "session-specific": "'ls /tmp/git *' | 'grep -i *'",
+    "user": "'ls *' | 'grep *'",
+    "user-specific": "'ls /tmp/git *' | 'grep -i *'",
+}
+_MULTI_STAGES = ["'ls /tmp/git'", "'grep -i orin'"]
+_MULTI_STAGE_PATTERNS = {
+    "session": ["'ls /tmp/git'", "'grep -i orin'"],
+    "session-specific": ["'ls /tmp/git *'", "'grep -i *'"],
+    "user": ["'ls *'", "'grep *'"],
+    "user-specific": ["'ls /tmp/git *'", "'grep -i *'"],
+}
+
+
+def _multi_proposal():
+    return Proposal("ls /tmp/git | grep -i orin", "look", ProposalKind.INSPECT)
+
+
+def _show_multi(typed):
+    out = io.StringIO()
+    p = _panel(out=out, in_=io.StringIO(typed), isatty=False)
+    choice = p.show_proposal(
+        _multi_proposal(),
+        scopes=_MULTI_SCOPES,
+        patterns={k: " ".join(v) for k, v in _MULTI_STAGE_PATTERNS.items()},
+        stages=_MULTI_STAGES,
+        stage_patterns=_MULTI_STAGE_PATTERNS,
+    )
+    return p, out.getvalue(), choice
+
+
+def test_multi_stage_scope_lines_number_the_stages_and_name_each_pattern():
+    _p, text, _choice = _show_multi("q\n")
+    lines = text.splitlines()
+    assert "stages: 1 'ls /tmp/git'  2 'grep -i orin'" in lines
+    assert "[s] exact  [S] 'ls /tmp/git *' | 'grep -i *'  (this session)" in lines
+    assert "[u] 'ls *' | 'grep *'  [U] 'ls /tmp/git *' | 'grep -i *'  (persisted for you)" in lines
+    stages_at = lines.index("stages: 1 'ls /tmp/git'  2 'grep -i orin'")
+    assert stages_at < lines.index(panel_mod.LEGEND)
+
+
+def test_a_long_stages_line_is_clipped_to_80_columns():
+    out = io.StringIO()
+    p = _panel(out=out, in_=io.StringIO("q\n"), isatty=False)
+    p.show_proposal(
+        _multi_proposal(),
+        scopes=_MULTI_SCOPES,
+        stages=["'" + "x" * 60 + "'", "'" + "y" * 60 + "'"],
+    )
+    for line in out.getvalue().splitlines():
+        assert len(line) <= 80, f"{len(line)} columns: {line!r}"
+
+
+def test_an_unapprovable_stage_is_rendered_as_not_approvable():
+    out = io.StringIO()
+    p = _panel(out=out, in_=io.StringIO("q\n"), isatty=False)
+    p.show_proposal(
+        _multi_proposal(),
+        scopes=_MULTI_SCOPES,
+        stages=["'ls /tmp'", "(not approvable)"],
+    )
+    assert "stages: 1 'ls /tmp'  2 (not approvable)" in out.getvalue().splitlines()
+
+
+@pytest.mark.parametrize(
+    "typed,picked",
+    [
+        ("all\n", [1, 2]),
+        ("\n", [1, 2]),
+        ("1\n", [1]),
+        ("2\n", [2]),
+        ("1,2\n", [1, 2]),
+        ("1 2\n", [1, 2]),
+        ("junk\nall\n", [1, 2]),
+        ("junk\n2\n", [2]),
+        ("junk\njunk\n", [1, 2]),
+    ],
+)
+def test_the_stages_prompt_parses_what_the_operator_typed(typed, picked):
+    p, text, choice = _show_multi("s\n" + typed)
+    assert choice == panel_mod.APPROVE_SESSION
+    assert "stages [all,1,2]: " in text
+    assert p.stage_choice == picked
+
+
+def test_a_single_stage_command_never_asks_which_stage():
+    out = io.StringIO()
+    p = _panel(out=out, in_=io.StringIO("s\n"), isatty=False)
+    p.show_proposal(
+        Proposal("whatis ls", "look it up", ProposalKind.INSPECT),
+        scopes=_SCOPES,
+        stages=["'whatis ls'"],
+    )
+    assert "stages [" not in out.getvalue()
+    assert p.stage_choice is None
+
+
+def test_a_non_scope_key_never_asks_which_stage():
+    _p, text, choice = _show_multi("\n")
+    assert choice == panel_mod.APPROVE
+    assert "stages [" not in text
+
+
+def test_the_ack_names_only_the_stored_stage_patterns():
+    _p, text, _choice = _show_multi("s\n2\n")
+    assert "nvsh: running; 'grep -i orin' approved for this session (stage 2 of 2)" in text
+
+
+def test_the_ack_says_stages_plural_when_a_subset_of_three_is_stored():
+    out = io.StringIO()
+    p = _panel(out=out, in_=io.StringIO("u\n1,3\n"), isatty=False)
+    p.show_proposal(
+        Proposal("a | b | c", "x", ProposalKind.INSPECT),
+        scopes={"user": "'a *' | 'b *' | 'c *'"},
+        stages=["'a'", "'b'", "'c'"],
+        stage_patterns={"user": ["'a *'", "'b *'", "'c *'"]},
+    )
+    assert "'a *' 'c *' approved for this user (stages 1,3 of 3)" in out.getvalue()
+
+
+def test_the_ack_keeps_the_d24_wording_when_every_stage_is_stored():
+    _p, text, _choice = _show_multi("u\nall\n")
+    assert "nvsh: running; 'ls *' 'grep *' approved for this user\n" in text
