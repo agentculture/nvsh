@@ -21,7 +21,7 @@ OSC_C = b"\x1b]133;C\x07"
 OSC_D = b"\x1b]133;D;2\x07"
 
 
-@pytest.fixture()
+@pytest.fixture
 def xdg(tmp_path, monkeypatch):
     state = tmp_path / "state"
     config = tmp_path / "config"
@@ -1301,7 +1301,8 @@ def test_the_details_view_shows_one_row_per_stage(xdg, monkeypatch):
     p = _panel("d\nq\n")
     client_mod.handle_failure(_args(xdg.tmp), panel=p)
     text = p.out.getvalue()
-    assert "stage 1:" in text and "stage 2:" in text
+    assert "stage 1:" in text
+    assert "stage 2:" in text
     assert "exact 'ls /tmp/git'" in text
     assert "specific 'ls /tmp/git *'" in text
     assert "broad 'ls *'" in text
@@ -1311,3 +1312,69 @@ def test_the_details_view_shows_one_row_per_stage(xdg, monkeypatch):
 def test_scope_patterns_can_be_restricted_to_the_chosen_stages():
     assert client_mod.scope_patterns("ls /a | grep b", "user", chosen=[2]) == ["grep *"]
     assert client_mod.scope_patterns("ls /a | grep b", "user") == ["ls *", "grep *"]
+
+
+# --- the proposal handler's edges, unit by unit --------------------------
+
+
+def test_tell_without_a_conversation_ignores_rather_than_pretending():
+    """``[t]`` on an adapter with nothing to steer must say so, not lie."""
+    proposal = Proposal(command="apt install foo", rationale="install", kind=ProposalKind.FIX)
+    p = _panel("t\njust run free -h\n")
+    assert client_mod._decide_proposal(p, proposal, inject=None) == panel_mod.IGNORE
+    assert "no conversation to steer" in p.out.getvalue()
+
+
+def test_a_steer_that_reaches_nobody_is_reported_as_such():
+    """No mid-turn channel *and* no follow-up list: the panel admits it."""
+    p = _panel()
+    responder = types.SimpleNamespace(
+        steer=lambda text: False,
+        respond=lambda request_id, fields: True,
+    )
+    client_mod._injector(p, responder, None, None)("try free -h instead")
+    assert "could not be steered" in p.out.getvalue()
+
+
+def test_an_auto_run_inspection_answers_the_backend_dialog_once(monkeypatch):
+    """An approved inspector runs without asking -- and the dialog it came
+    from is still answered, or the backend's turn would hang."""
+    monkeypatch.setattr(client_mod, "_run_command", lambda cmd, **kw: _ok())
+    answers = []
+    responder = types.SimpleNamespace(
+        respond=lambda request_id, fields: answers.append((request_id, fields)) or True
+    )
+    approvals = types.SimpleNamespace(decide=lambda command: "user")
+    proposal = Proposal(command="ls -la", rationale="look", kind=ProposalKind.INSPECT)
+    inspections: list = []
+    handled = client_mod._auto_inspected(
+        _panel(),
+        proposal,
+        approvals=approvals,
+        inspections=inspections,
+        responder=responder,
+        audit=None,
+        request_id="ui-1",
+    )
+    assert handled is True
+    assert [command for command, _result in inspections] == ["ls -la"]
+    assert answers == [("ui-1", {"value": "once"})]
+
+
+def test_a_proposal_the_operator_must_decide_is_not_auto_run():
+    approvals = types.SimpleNamespace(decide=lambda command: "ask")
+    proposal = Proposal(command="ls -la", rationale="look", kind=ProposalKind.INSPECT)
+    inspections: list = []
+    assert (
+        client_mod._auto_inspected(
+            _panel(),
+            proposal,
+            approvals=approvals,
+            inspections=inspections,
+            responder=None,
+            audit=None,
+            request_id=None,
+        )
+        is False
+    )
+    assert inspections == []

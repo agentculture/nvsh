@@ -95,7 +95,7 @@ bash_required = pytest.mark.skipif(
 )
 
 
-@pytest.fixture()
+@pytest.fixture
 def no_agent_env(tmp_path):
     """Hook env with the agent disabled outright and no session capture."""
     return _base_env(

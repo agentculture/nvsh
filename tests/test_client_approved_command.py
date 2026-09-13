@@ -36,8 +36,9 @@ def test_auto_inspect_is_an_approved_decision():
 
 @pytest.mark.parametrize("decision", [IGNORE, client_mod.STEERED, "", "yes", None])
 def test_unapproved_decisions_are_refused(decision):
+    proposal = _proposal()
     with pytest.raises(client_mod.UnapprovedCommandError):
-        client_mod._approved_command(_proposal(), decision)
+        client_mod._approved_command(proposal, decision)
 
 
 def test_a_bare_string_is_not_a_proposal():
@@ -47,8 +48,9 @@ def test_a_bare_string_is_not_a_proposal():
 
 @pytest.mark.parametrize("command", ["", "   ", "ls\x00-la", "ls\x1b]133;C\x07", "ls\x07"])
 def test_commands_with_no_body_or_control_bytes_are_refused(command):
+    proposal = _proposal(command)
     with pytest.raises(client_mod.UnapprovedCommandError):
-        client_mod._approved_command(_proposal(command), APPROVE)
+        client_mod._approved_command(proposal, APPROVE)
 
 
 def test_multiline_fix_commands_are_still_allowed():
@@ -59,8 +61,9 @@ def test_multiline_fix_commands_are_still_allowed():
 def test_run_approved_refuses_before_spawning_anything(monkeypatch):
     calls = []
     monkeypatch.setattr(client_mod, "_run_command", lambda *a, **k: calls.append((a, k)))
+    proposal = _proposal()
     with pytest.raises(client_mod.UnapprovedCommandError):
-        client_mod._run_approved(_proposal(), IGNORE)
+        client_mod._run_approved(proposal, IGNORE)
     assert calls == []
 
 

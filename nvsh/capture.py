@@ -218,12 +218,12 @@ def cleanup(log: LogHandle) -> None:
         pass
 
 
-def wrapper_command(env: dict, log: Path) -> WrapperCommand:
+def wrapper_command(log: Path) -> WrapperCommand:
     """Render the ``script(1)`` wrapper invocation for the bash hook.
 
-    ``env`` is accepted for symmetry with the rest of this module's API
-    (and so a future revision can vary the rendered line by environment)
-    but is not currently consulted.
+    Depends on nothing but the log path: the rendered line is the same
+    whatever the environment is, and the decision that there should *be* a
+    wrapper at all was already made by :func:`start` before this is called.
     """
     argv = ["script", "-qfc", "$BASH", str(log)]
     bash_line = f'export NVSH_WRAPPED=1\nexec script -qfc "$BASH" "{log}"'

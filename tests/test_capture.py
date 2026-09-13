@@ -100,7 +100,7 @@ def test_cleanup_missing_log_does_not_raise(tmp_path):
 
 def test_wrapper_command_argv_and_bash_line(tmp_path):
     log = tmp_path / "nvsh" / "42.log"
-    wrapper = capture.wrapper_command({}, log)
+    wrapper = capture.wrapper_command(log)
     assert wrapper.argv == ["script", "-qfc", "$BASH", str(log)]
     assert "NVSH_WRAPPED=1" in wrapper.bash_line
     assert f'script -qfc "$BASH" "{log}"' in wrapper.bash_line
@@ -374,7 +374,8 @@ def test_tmux_pipe_command_escapes_a_quote_in_the_path(tmp_path):
     assert "touch pwned" in cmd  # the path is still there, verbatim...
     # ...but every apostrophe in it is escaped, so nothing is a new word.
     inner = cmd[len('tmux pipe-pane -o "cat >> ') : -len('"')]
-    assert inner.startswith("'") and inner.endswith("'")
+    assert inner.startswith("'")
+    assert inner.endswith("'")
     assert "'\\''" in inner
     # bash agrees: the whole path is one word.
     import subprocess  # noqa: PLC0415 - local to this assertion

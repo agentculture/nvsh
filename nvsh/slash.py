@@ -232,18 +232,20 @@ def _handle_undo(inv: SlashInvocation) -> int:
     events = client_transport.control("undo", shell_id=shell_id, env=inv.env)
     if events:
         panel.line("nvsh: undid the last agent turn")
-        return 0
-
-    # No daemon (never started, or crashed): the only local state nvsh keeps
-    # about a pending proposal lives in last-failure.json. Clear it, but
-    # never run anything on the machine -- /undo only ever rewinds nvsh's
-    # own view of the conversation (see spec's /undo decision).
-    path = last_failure_path(inv.env)
-    data = _read_json(path)
-    if data and "pending_proposal" in data:
-        data.pop("pending_proposal", None)
-        _write_private_json(path, data)
-    panel.line("nvsh: no daemon running; cleared the pending proposal")
+    else:
+        # No daemon (never started, or crashed): the only local state nvsh
+        # keeps about a pending proposal lives in last-failure.json. Clear
+        # it, but never run anything on the machine -- /undo only ever
+        # rewinds nvsh's own view of the conversation (spec's /undo
+        # decision).
+        path = last_failure_path(inv.env)
+        data = _read_json(path)
+        if data and "pending_proposal" in data:
+            data.pop("pending_proposal", None)
+            _write_private_json(path, data)
+        panel.line("nvsh: no daemon running; cleared the pending proposal")
+    # Either way the operator's view was rewound as far as it can be, so
+    # /undo reports success -- the handler's return is the slash exit code.
     return 0
 
 
@@ -262,7 +264,7 @@ def _handle_doctor(inv: SlashInvocation) -> int:
 
 
 def _handle_approve(inv: SlashInvocation) -> int:
-    from .approvals import ApprovalError, Approvals
+    from .approvals import Approvals
 
     panel = inv.panel_or()
     args = inv.args
@@ -270,40 +272,60 @@ def _handle_approve(inv: SlashInvocation) -> int:
     approvals = Approvals.load()
 
     if sub == "list":
-        lines = ["user:"]
-        lines.extend(f"  {p}" for p in approvals.user_patterns)
-        lines.append("session:")
-        lines.extend(f"  {p}" for p in approvals.session_patterns)
-        panel.line("\n".join(lines))
-        return 0
-
+        return _approve_list(panel, approvals)
     if sub == "add":
-        if len(args) < 2:
-            panel.line("nvsh: /approve add <pattern> [--session]")
-            return 1
-        pattern = args[1]
-        session = "--session" in args[2:]
-        try:
-            approvals.add(pattern, scope="session" if session else "user")
-        except ApprovalError as exc:
-            panel.line(f"nvsh: {exc}")
-            return 1
-        if not session:
-            approvals.save()
-        panel.line(f"approved ({'session' if session else 'user'}): {pattern}")
-        return 0
-
+        return _approve_add(panel, approvals, args)
     if sub == "remove":
-        if len(args) < 2:
-            panel.line("nvsh: /approve remove <pattern>")
-            return 1
-        approvals.remove(args[1])
-        approvals.save()
-        panel.line(f"removed: {args[1]}")
-        return 0
+        return _approve_remove(panel, approvals, args)
 
     panel.line("nvsh: /approve [list|add <pattern> [--session]|remove <pattern>]")
     return 1
+
+
+def _approve_list(panel, approvals) -> int:
+    """``/approve list``: every stored pattern, user scope first."""
+    lines = ["user:"]
+    lines.extend(f"  {p}" for p in approvals.user_patterns)
+    lines.append("session:")
+    lines.extend(f"  {p}" for p in approvals.session_patterns)
+    panel.line("\n".join(lines))
+    return 0
+
+
+def _approve_add(panel, approvals, args: list[str]) -> int:
+    """``/approve add <pattern> [--session]``, saving a user pattern to disk.
+
+    A pattern the store refuses (the same guard the panel's ``[u]`` key
+    goes through) costs the operator the approval and nothing else: the
+    reason is printed and the slash command exits 1.
+    """
+    from .approvals import ApprovalError
+
+    if len(args) < 2:
+        panel.line("nvsh: /approve add <pattern> [--session]")
+        return 1
+    pattern = args[1]
+    session = "--session" in args[2:]
+    try:
+        approvals.add(pattern, scope="session" if session else "user")
+    except ApprovalError as exc:
+        panel.line(f"nvsh: {exc}")
+        return 1
+    if not session:
+        approvals.save()
+    panel.line(f"approved ({'session' if session else 'user'}): {pattern}")
+    return 0
+
+
+def _approve_remove(panel, approvals, args: list[str]) -> int:
+    """``/approve remove <pattern>``: drop one pattern and persist."""
+    if len(args) < 2:
+        panel.line("nvsh: /approve remove <pattern>")
+        return 1
+    approvals.remove(args[1])
+    approvals.save()
+    panel.line(f"removed: {args[1]}")
+    return 0
 
 
 def _stub_handler(name: str) -> HandlerFn:

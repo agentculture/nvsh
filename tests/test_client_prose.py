@@ -15,7 +15,7 @@ from nvsh import panel as panel_mod
 from nvsh.agent.base import AgentEvent, EventKind, RequestKind
 
 
-@pytest.fixture()
+@pytest.fixture
 def xdg(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))

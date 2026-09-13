@@ -24,7 +24,7 @@ from nvsh.agent.prompt import build_full_prompt, build_system_prompt
 from nvsh.cli import main
 
 
-@pytest.fixture()
+@pytest.fixture
 def xdg(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))

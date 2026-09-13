@@ -345,25 +345,35 @@ def parse_mark(line: str) -> ProseRequest | None:
     if not text:
         return None
     if text.startswith(QUESTION_MARK):
-        rest = text[1:]
-        if not rest:
-            return None
-        head = rest[0]
-        if not (head.isspace() or (head.isascii() and head.isalpha())):
-            return None
-        if " " not in text and not text.endswith("?"):
-            return None
-        question = rest.strip()
-        return ProseRequest(question=question, explicit=True) if question else None
+        return _parse_question_mark(text)
     if text.startswith(AGENT_MARK):
-        parts = text[1:].split(None, 1)
-        if len(parts) != 2:
-            return None
-        name, question = parts[0], parts[1].strip()
-        if not question or not _is_agent_name(name) or name not in known_agents():
-            return None
-        return ProseRequest(question=question, agent=name, explicit=True)
+        return _parse_agent_mark(text)
     return None
+
+
+def _parse_question_mark(text: str) -> ProseRequest | None:
+    """The ``? ...`` half of :func:`parse_mark`; ``text`` starts with ``?``."""
+    rest = text[1:]
+    if not rest:
+        return None
+    head = rest[0]
+    if not (head.isspace() or (head.isascii() and head.isalpha())):
+        return None
+    if " " not in text and not text.endswith("?"):
+        return None
+    question = rest.strip()
+    return ProseRequest(question=question, explicit=True) if question else None
+
+
+def _parse_agent_mark(text: str) -> ProseRequest | None:
+    """The ``@name ...`` half of :func:`parse_mark`; ``text`` starts with ``@``."""
+    parts = text[1:].split(None, 1)
+    if len(parts) != 2:
+        return None
+    name, question = parts[0], parts[1].strip()
+    if not question or not _is_agent_name(name) or name not in known_agents():
+        return None
+    return ProseRequest(question=question, agent=name, explicit=True)
 
 
 def prose_request(line: str, exit_code: int) -> ProseRequest | None:
