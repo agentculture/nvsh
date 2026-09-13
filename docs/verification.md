@@ -212,3 +212,234 @@ The same two lines appear on thor and orin on their first failure
 so this is not specific to spark, to Ghostty, or to `pi`. The fallback works
 — every panel in this pass still rendered — but the first answer on every
 cold session is delayed by the timeout and runs outside the daemon.
+
+## Re-verification after d2-d8 (2026-09-13)
+
+A second pass over exactly the rows the pass above recorded as FAIL or
+PARTIAL, plus the candidate deviations v1-v9, run against nvsh **0.9.2** as
+refreshed on all three machines from the merged wheel (the installed shell
+files under the per-user `share/nvsh/shell/` directory carry the
+`BP_PIPESTATUS` read, the `__NVSH_SLASH_DISPATCH` flag and the `Ctrl+G`
+macro). Every session below ran on a real pty — locally through
+`bash --rcfile <copy of the operator's real rc> -i`, remotely through
+`ssh -tt` into the machine's own login shell — and every quoted line was
+observed, trimmed, with escape sequences stripped. Nothing was fixed here:
+what still fails is recorded as a failure.
+
+| # | Item (deviation) | Machine | Result |
+|---|------------------|---------|--------|
+| 1 | Pipeline `PIPESTATUS` under the real rc layout (d2) | spark | **PASS** |
+| 2 | `ls /nope` error slice (d3) | spark | **PASS** |
+| 3 | `/doctor`: no self-triggered turn, `hook_first_in_prompt_command`, `bindings_present`, no endpoint, consistent summary (d4, d5) | spark, thor, orin | **PASS** |
+| 4 | `Ctrl+G` streams the answer, emacs and vi (d6) | spark, thor, orin | **PASS** (one empty-answer flake on spark, below) |
+| 5 | Cold daemon: no `daemon connection lost: timed out` (d7) | thor, orin | **PASS** |
+| 5 | Cold *and warm* daemon on spark with `pi` (d7) | spark | **FAIL** — new deviation **w1** |
+| 6 | `pi` proposal carries the bare command (d8) | spark | **PASS** |
+| 7 | `demos/spark-cuda-oom.cast` re-recorded | spark | **PASS** |
+
+### 1 — pipeline `PIPESTATUS` on the Spark (d2): PASS
+
+Driven on a pty with the operator's real rc (kiro-cli's bash-preexec pre-block
+first, `TERM=xterm-ghostty`, `TERM_PROGRAM=ghostty`), `NVSH_AUTO=0` and
+`NVSH_HOOK_DEBUG_FILE` set, so each prompt appends `<exit>\t<PIPESTATUS>`.
+The debug file, verbatim (tabs shown as spaces), one line per prompt:
+
+```text
+0   0            # the first prompt
+0   1 0          # false | true
+0   0 1 0        # true | false | true
+1   1 0          # set -o pipefail; false | true
+0   0            # declare -p PROMPT_COMMAND
+```
+
+All three expectations hold: the per-stage statuses survive bash-preexec's
+`return`, and `pipefail` still reports `1` for the pipeline itself.
+
+`declare -p PROMPT_COMMAND` in the same session, unchanged from the pass
+above (the d2 fix reads `BP_PIPESTATUS`; it does not reorder anything):
+
+```text
+declare -a PROMPT_COMMAND=([0]=$'__bp_precmd_invoke_cmd\n__nvsh_hook\n__fig_post_prompt\n__bp_interactive_mode' [1]=$'__bp_trap_string="$(trap -p DEBUG)"\ntrap - DEBUG\n__bp_install; __ghostty_hook' [2]="__bp_interactive_mode")
+```
+
+### 2 — the error slice on the Spark (d3, was v1): PASS
+
+`echo hello-success`, then `ls /nope`, then `nvsh context --show`. The
+`Output:` section now opens with the failing command's own stderr, not the
+previous command's stdout:
+
+```text
+cwd: /tmp/…/scratchpad
+Output:
+ls: cannot access '/nope': No such file or directory
+nvsh: ls /nope failed (exit 2)
+…
+```
+
+The agent's answer confirms it from the other side — it diagnosed the
+missing path (`The 'ls /nope' command fails with exit code 2 because the
+path '/nope' doesn't exist on this system`) instead of commenting on
+`hello-success`, which is what it did before d3.
+
+### 3 — `/doctor` (d4, d5): PASS on all three
+
+On spark, typed as `/doctor` and dispatched by the Enter macro to
+`nvsh slash '/doctor'`:
+
+```text
+nvsh doctor: healthy
+
+[ok] source_checkout: no culture.yaml found alongside the package; identity checks skipped
+[ok] platform_detected: detected platform: dgx-spark
+[ok] agent_configured: agent provider configured: pi
+[ok] agent_reachable: endpoint reachable (base_url from pi models.json, bearer from pi models.json)
+[ok] hook_sourced: hook sourced, version 0.9.2 matches installed nvsh
+[ok] hook_first_in_prompt_command: __nvsh_hook runs directly after __bp_precmd_invoke_cmd in PROMPT_COMMAND (bash-preexec layout; $? is restored and PIPESTATUS is read from BP_PIPESTATUS)
+[ok] bindings_present: nvsh readline bindings present (emacs)
+[ok] capture_active: script: /run/user/1000/nvsh/3421065.log
+[ok] daemon_status: daemon running (socket: /run/user/1000/nvsh/daemon.sock)
+[ok] terminfo_present: terminfo present for TERM=xterm-ghostty
+```
+
+On thor and orin (no bash-preexec) the same run reports
+`[ok] hook_first_in_prompt_command: __nvsh_hook is first in PROMPT_COMMAND`,
+`[ok] bindings_present: nvsh readline bindings present (emacs)` and
+`[ok] daemon_status: daemon not running (normal — the daemon starts on
+demand)`, with the summary line `nvsh doctor: healthy`.
+
+Point by point:
+
+- **No self-triggered agent turn (d5).** Nothing follows the check list: the
+  next command in each session (`echo marker-after-doctor` → `marker-after-doctor`)
+  comes straight after, with no `... agent_start` line anywhere.
+- **`bindings_present` (v3).** `[ok]` on all three, in shells whose Enter
+  macro had just dispatched the command.
+- **No endpoint in any line (v8).** `agent_reachable` names the *source* of
+  the values — `base_url from pi models.json` on spark, `base_url from
+  [agents.openai-compat], bearer from $NVSH_API_KEY` on thor and orin — and
+  prints no URL, host or IP.
+- **Consistent summary (v2/v4).** No `[FAIL]` line appears while the summary
+  says healthy. The one failing run seen this pass was self-consistent the
+  other way: driving thor from a Ghostty terminal over ssh, `[FAIL]
+  terminfo_present: no terminfo entry for TERM=xterm-ghostty` came with the
+  summary `nvsh doctor: unhealthy` — and still triggered no agent turn.
+  Re-run with `TERM=xterm-256color` (what a Jetson session normally sees) it
+  is healthy.
+
+### 4 — `Ctrl+G` (d6, was v5): PASS
+
+The banner is now followed by the answer on the tty, in both keymaps. On
+thor (`openai-compat`), emacs and then after `set -o vi`:
+
+```text
+why is memory high
+⚡ nvsh (Ctrl+G): asking the agent
+… NVSH_DRAFT=$__NVSH_DRAFT … nvsh slash "/ask"
+**Memory snapshot from your Jetson AGX Thor:**
+- **Total RAM:** ~128.8 GB (`mem_total: 128790772 kB`)
+- **Available for new processes:** ~50.0 GB (`mem_available: 50049864 kB`)
+…
+```
+
+Orin's runs are the same shape against its own platform block (`~64 GB
+(64324844 kB)` total, `~3.2 GB` available), in both keymaps. On spark with `pi` the stream is the event-by-event form —
+`... turn_start`, `... message_start`, then the prose, e.g.
+`Based on the system output, here are the current memory levels: … Total
+memory: 127,601,228 kB … Available memory: 21,807,028 kB` — and it reaches
+the terminal in both emacs and vi-insert. The redirect to `/dev/null` that
+swallowed it before is gone.
+
+One flake, recorded rather than smoothed over: of two vi-mode `Ctrl+G` runs
+on spark, the first printed the banner and the rewritten dispatch line, ran
+for 48 s, exited 0 and printed *nothing at all* — no status lines, no text.
+The second, identical run streamed the full answer. Nothing in nvsh's own
+output distinguishes the two, so this is logged as a `pi`-side empty turn,
+not a reproducible nvsh defect; it is worth a second look if it recurs.
+
+### 5 — cold daemon (d7, was v7): PASS on thor and orin, FAIL on spark
+
+On **thor** and **orin** the deviation is fixed. With no daemon running
+(`nvsh daemon stop`, then `nvsh daemon status --json` →
+`{"running": false, …}`), the first failure produces no fallback line at
+all — the daemon starts, accepts and answers:
+
+| Machine | Failure | First agent text | Fallback line |
+|---------|---------|------------------|---------------|
+| thor | `ls /nope` (exit 2) | **24.0 s** after the panel's `failed` line | none |
+| orin | `trtexec --version` (exit 127) | **24.1 s** after the panel's `failed` line | none |
+
+On **spark** with the `pi` backend it still fails, and it is worse than v7
+described: the timeout is not limited to a cold daemon. Three runs, two
+cold (socket absent, verified with `nvsh daemon status --json` and a check
+that nothing is listening on the socket path) and one warm (a daemon
+already running, `"running": true`), all produced:
+
+```text
+nvsh: ls /nope failed (exit 2)
+... agent_start
+... daemon connection lost: timed out
+... one-shot pi: pi is configured and on PATH
+... agent_start
+```
+
+Measured from the pty stream, relative to the `failed (exit 2)` line:
+
+| Run | Daemon | `daemon connection lost` | First agent text |
+|-----|--------|--------------------------|------------------|
+| 1 | cold | +120.4 s | +126.5 s |
+| 2 | cold | +120.3 s | +125.8 s |
+| 3 | **warm** | +120.1 s | +125.9 s |
+
+The 120 s is `_DEFAULT_TIMEOUT`, the *stream* read timeout in
+`nvsh/client_transport.py` — so the connect and accept wait d7 added does
+succeed (the daemon logs `daemon listening …` and `new conversation for
+shell <pid>` within a second of the failure), and it is the request itself
+that is never answered. Supporting evidence on the daemon side: the
+conversation's `session_path` (`pi-sessions/shell-<pid>.jsonl`) is never
+created, while every `pi` session file that does exist on disk is a
+one-shot's. The one-shot fallback then answers in about 6 s, so every agent
+call on spark — failure panels and `Ctrl+G` alike — pays a flat two-minute
+penalty and runs outside the daemon, losing the warm conversation.
+
+Raised as deviation **w1** below.
+
+### 6 — the `pi` proposal (d8, was v9): PASS
+
+The panel now shows the command once, bare:
+
+```text
++----------------------------------------------------------------------+
+  ls / 2>&1
++----------------------------------------------------------------------+
+(fix)
+[Enter] run   [e] explain   [d] details   [Esc] ignore
+nvsh: not run
+```
+
+The newest entries of the audit log (`<state dir>/nvsh/audit.jsonl`, read
+only) carry the same bare string, with no rendered panel text:
+
+```json
+{"decision": null, "event": "proposal", "outcome": null, "proposal": {"command": "ls / 2>&1", "kind": "fix", "rationale": ""}, "ts": …}
+{"decision": "ignore", "event": "decision", "outcome": null, "proposal": {"command": "ls / 2>&1", "kind": "fix", "rationale": ""}, "ts": …}
+```
+
+### 7 — recording
+
+`demos/spark-cuda-oom.cast` was re-recorded with `scripts/record-cast.py`
+against the same CUDA-OOM-style `RuntimeError` and the same scrub rules.
+The new recording shows the d8 panel — the proposed `nvidia-smi` printed
+once, no nested `nvsh: run this command?` text — and, honestly, also shows
+the w1 two-minute `daemon connection lost: timed out` before the one-shot
+answers. `demos/orin-missing-package.cast` is unchanged: it shows no
+proposal panel and no daemon fallback, so nothing in it was fixed by
+d2-d8.
+
+### Deviation raised by this pass
+
+| id | What | Where | Why it matters |
+|----|------|-------|----------------|
+| w1 | Every daemon-routed request on spark with the `pi` backend is accepted and then never answered; the client gives up after the 120 s stream timeout (`daemon connection lost: timed out`) and falls back to one-shot. Cold **and** warm daemon. The daemon-side `pi` session file is never created | spark (`pi`); thor and orin (`openai-compat`) are correct | Supersedes v7: the cost is not a cold-start tax but a flat two minutes on *every* agent call on the Spark, and the daemon's warm conversation is never used there |
+
+Deviations v1-v6, v8 and v9 are all cleared by the runs above; v7 is
+superseded by w1.
