@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-09-13T10:08:02Z",
-  "updated": "2026-09-13T11:14:37Z",
+  "updated": "2026-09-13T11:40:05Z",
   "claims": [
     {
       "id": "c1",
@@ -516,14 +516,35 @@
     {
       "id": "c25",
       "kind": "decision",
-      "text": "v1 agent tooling: pi gets the nvsh system prompt, the bounded failure context and its built-in bash tool; every mutation still surfaces as a proposal the operator approves in nvsh. nvsh-specific skills and resident deterministic tools are prototyped in the associate harness first and migrated into nvsh when proven.",
+      "text": "v1 agent tooling: pi gets the nvsh system prompt, the bounded failure context and its built-in bash tool, gated by a small nvsh-shipped TypeScript extension that intercepts every tool_call: a command matching the operator's persistent 'approved for user' list or the in-memory 'approved for session' list runs; anything else is shown in the panel and waits for a keypress, with 'approve once / approve for session / approve for user' as the choices. Patterns are shell globs ('nvsh *' approves nvsh with any arguments). nvsh-specific skills and resident deterministic tools are still prototyped in the associate harness first and migrated when proven.",
       "origin": "user",
       "status": "confirmed",
       "honesty_conditions": [],
-      "hard_questions": [],
+      "hard_questions": [
+        {
+          "id": "q7",
+          "text": "contradiction with c8?",
+          "resolved": true,
+          "blocking": true,
+          "resolution": "Option (b): ship the TypeScript approval shim in v1. Every pi tool call passes through it; commands matching 'commands approved for user' (persistent) or 'commands approved for session' (in-memory) run, everything else is shown for a keypress. Patterns are globs, so 'nvsh *' approves nvsh with any arguments."
+        },
+        {
+          "id": "q8",
+          "text": "pi's built-in bash tool runs model-chosen commands autonomously with no approval hook unless a TypeScript extension blocks tool_call events (docs/extensions.md:751-793). That contradicts 'nothing runs without confirmation'. Options: (a) v1 runs pi with --no-tools and nvsh itself gathers read-only inspection (nvidia-smi, docker ps, journalctl tail, dpkg) into the prompt, so the model only reasons and proposes; (b) ship the small TypeScript shim after all, allow-listing read-only commands and blocking the rest; (c) allow pi's bash tool with a user-visible per-call approval via extension_ui_request. Which for v1?",
+          "resolved": true,
+          "blocking": true,
+          "resolution": "Option (b), see q7."
+        }
+      ],
       "links": [],
       "instruction": "",
-      "revisions": []
+      "revisions": [
+        {
+          "text": "v1 agent tooling: pi gets the nvsh system prompt, the bounded failure context and its built-in bash tool; every mutation still surfaces as a proposal the operator approves in nvsh. nvsh-specific skills and resident deterministic tools are prototyped in the associate harness first and migrated into nvsh when proven.",
+          "kind": "decision",
+          "reason": "user decision on q7/q8: option (b) approval hook with user/session allowlists"
+        }
+      ]
     },
     {
       "id": "c26",
@@ -688,6 +709,340 @@
       "links": [],
       "instruction": "tests/test_triggers.py table; a timing test that sources the hook in 'bash --norc -i' under script and diffs prompt latency; tests/test_redact.py corpus; a manual 3-machine install/uninstall checklist in docs/.",
       "revisions": []
+    },
+    {
+      "id": "c35",
+      "kind": "requirement",
+      "text": "Hook ordering and status capture: the nvsh hook is inserted as the FIRST element of the PROMPT_COMMAND array and captures $? and PIPESTATUS in its first statement; later elements (Ghostty's __ghostty_hook, others) run after it. Probe on the Spark: a hook placed after __ghostty_hook saw PIPESTATUS clobbered, while a first-position hook saw 'false | true' as '1 0' and 'true | false | true' as '0 1 0'; with the user's own 'set -o pipefail' the hook's $? becomes the pipeline status, which the trigger table must respect rather than override.",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h29",
+          "text": "With Ghostty's integration loaded, 'declare -p PROMPT_COMMAND' lists the nvsh hook first; a test sources the hook, runs 'false | true' and 'true | false | true', and the hook records PIPESTATUS '1 0' and '0 1 0'; under 'set -o pipefail' the recorded status is 1.",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c36",
+      "kind": "requirement",
+      "text": "Placement of the capture wrapper in ~/.bashrc: the exec into script(1) must be the first line after the distro's interactive guard ('If not running interactively' at line 40 on spark, 29 on thor, 28 on orin), guarded by an NVSH_WRAPPED env var, not appended at the end. Otherwise the whole rc (nvm, cargo, kiro-cli, bash-completion) runs twice and every new terminal pays a second 'bash -ic true' (0.25 s measured) before the prompt. 'nvsh setup' edits the rc idempotently inside a marked block and keeps a timestamped backup.",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h30",
+          "text": "After 'nvsh setup', the exec line sits immediately after the interactive guard inside a marked block; 'bash -ic true' timing is within 10% of the pre-setup baseline; running setup twice leaves ~/.bashrc unchanged; a backup file exists.",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c37",
+      "kind": "assumption",
+      "text": "Coexistence with other shell integrations on the operator's machines: Ghostty (PROMPT_COMMAND element + PS0/bash-preexec), kiro-cli pre/post files (5 lines each, no PROMPT_COMMAND/bind/trap found), bash-completion's 'complete -D _completion_loader' (the -I slot is free, verified with 'complete -p -I'). No integration on spark, thor or orin rebinds Enter today; any future one that does (fzf, atuin, ble.sh) is a known conflict class that 'nvsh doctor' reports by inspecting 'bind -p' for C-m.",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c38",
+      "kind": "requirement",
+      "text": "Terminal portability: thor has no xterm-ghostty terminfo (infocmp fails), so an ssh from Ghostty arrives with TERM=xterm-ghostty and tput/clear break. The panel renders with hard-coded SGR sequences guarded by NO_COLOR / TERM=dumb / non-tty checks and never calls tput; 'nvsh doctor' detects missing terminfo and prints the 'infocmp -x | ssh host tic -x -' remediation.",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h31",
+          "text": "In a shell with TERM=dumb and one with TERM=xterm-ghostty and no terminfo, the panel prints readable text without tput errors; doctor reports the missing terminfo with the tic remediation on thor.",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c39",
+      "kind": "requirement",
+      "text": "Readline keymaps: the Enter macro, Ctrl+G and the palette are bound in the emacs, vi-insert and vi-command keymaps (one 'bind -m' per keymap); probe on the Spark showed a plain 'bind -x' binding does not fire after 'set -o vi' while a vi-insert keymap binding does.",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h32",
+          "text": "In 'set -o vi' and in emacs mode, /doctor + Enter routes, Ctrl+G fires and '/'+Tab lists the palette (test drives both keymaps under script(1)).",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": [
+        {
+          "text": "Readline keymaps: the Enter macro, Ctrl+G and the palette are bound in the emacs, vi-insert and vi-command keymaps ('bind -m <keymap> -x'); probe on the Spark showed a plain 'bind -x' binding does not fire after 'set -o vi' while 'bind -m vi-insert -x' does.",
+          "kind": "requirement",
+          "reason": "lint MD033"
+        }
+      ]
+    },
+    {
+      "id": "c40",
+      "kind": "assumption",
+      "text": "The default model is LAN-local, not on-box: Pi's 'associate' is served by a gateway on 192.168.1.138, and orin (no node, 3.1 GB MemAvailable) cannot host pi or a model. So 'offline-first' in v1 means 'no internet, LAN reachable'; a truly air-gapped machine needs an on-box endpoint configured or gets 'no agent configured' from doctor with a clear message, never a hang.",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c41",
+      "kind": "requirement",
+      "text": "pi launch hygiene: PiAgent starts pi with --no-context-files (otherwise pi reads CLAUDE.md/AGENTS.md from the user's cwd into the prompt), --no-extensions, --no-skills, --no-prompt-templates, --no-approve, and either --no-session or --session-dir under $XDG_STATE_HOME/nvsh (0700). Probe: pi stores sessions per cwd under ~/.pi/agent/sessions (26 project dirs on the Spark), so an unflagged run would persist redacted-but-sensitive failure context into project-named session files.",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h33",
+          "text": "The PiAgent argv is asserted in a test to contain --no-context-files --no-extensions --no-skills --no-prompt-templates --no-approve and a session flag; after a failure run, no new file appears under ~/.pi/agent/sessions.",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c42",
+      "kind": "assumption",
+      "text": "Remote and container commands are pass-through for triggers: 'ssh host cmd', 'docker exec -it', 'kubectl exec', tmux/screen attach and 'su'/'sudo -i' return the remote or inner status, which is not this machine's failure. The trigger table lists them as never-auto-trigger; the operator can still /fix them explicitly.",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c43",
+      "kind": "requirement",
+      "text": "Warm-session ownership: the long-lived pi process is owned by an nvsh session daemon started lazily on the first qualifying failure (never at shell start), listening on a per-user socket under $XDG_RUNTIME_DIR/nvsh/; the 45 ms hook client connects, streams the panel, and exits. The daemon dies on an idle timeout and when its last shell exits (EXIT trap sends a stop); stale sockets are reaped at the next start. If the daemon or pi is missing or crashed, the client falls back to a one-shot 'pi -p' run so a failure is never left without a diagnosis.",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h34",
+          "text": "Starting a shell creates no nvsh or pi process; the first qualifying failure starts one daemon; closing the shell leaves no nvsh or pi process behind (pgrep); with pi absent the client still produces a diagnosis or a clear 'no agent' panel within 2 s.",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [
+        {
+          "id": "q9",
+          "text": "One pi process per shell (isolation, but N terminals = N node processes; impossible on orin and heavy on a 3 GB-free Jetson) or one per user with pi's steer/follow-up queue serialising concurrent failures from several terminals (shared 1M context across terminals, which the 'this worked this morning' use case in issue #2 actually wants)?",
+          "resolved": true,
+          "blocking": false,
+          "resolution": "Single pi session per user by default, configurable to more. When a different shell session sends work, the current conversation is put to sleep (saved) and a fresh one serves the new shell, so contexts from different terminals never mix; a sleeping conversation resumes when its shell returns."
+        }
+      ],
+      "links": [],
+      "instruction": "",
+      "revisions": [
+        {
+          "text": "Warm-session ownership: the long-lived pi process is owned by an nvsh session daemon started lazily on the first qualifying failure (never at shell start), listening on $XDG_RUNTIME_DIR/nvsh/<key>.sock; the 45 ms hook client connects, streams the panel, and exits. The daemon dies on an idle timeout and when its shell exits (EXIT trap sends a stop); stale sockets are reaped at the next start. If the daemon or pi is missing or crashed, the client falls back to a one-shot 'pi -p' run so a failure is never left without a diagnosis.",
+          "kind": "requirement",
+          "reason": "lint MD033; per-user socket per decision q9"
+        }
+      ]
+    },
+    {
+      "id": "c44",
+      "kind": "requirement",
+      "text": "Upgrade path: the sourced ~/.local/share/nvsh/bash.sh carries the nvsh version that rendered it; the failure-path client compares it with its own version and prints 'run nvsh setup to refresh the hook' once per session when they differ. 'nvsh setup' is idempotent and re-renders; a 'uv tool upgrade nvsh' alone never breaks the shell because the old hook only calls stable verbs.",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h35",
+          "text": "With the hook file stamped as an older version, the next failure prints the refresh notice once; 'nvsh setup' re-renders and the notice stops.",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c45",
+      "kind": "requirement",
+      "text": "Kill switch and reversibility: NVSH_DISABLE=1 in the environment makes the sourced file a no-op; 'nvsh off' / 'nvsh on' unbind and rebind Enter, the palette and the hook in the current shell; 'nvsh uninstall' removes the marked block from ~/.bashrc (restoring from its backup if the block was edited), the hook file, runtime sockets and logs, and stops daemons. Hook functions never use set -e and end with '|| return 0'. Probe on the Spark: an erroring bind -x function still lets the Enter macro accept the line, so a bug degrades, it does not lock the terminal.",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h36",
+          "text": "NVSH_DISABLE=1 bash -i shows no hook, no Enter macro (bind -p) and no capture; 'nvsh off' then '/doctor' runs as a path again; 'nvsh uninstall' restores ~/.bashrc byte-identical to the backup and leaves no files, sockets or processes.",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c46",
+      "kind": "requirement",
+      "text": "Interrupt and cleanup: Ctrl+C while the panel is streaming sends rpc abort to pi, restores the terminal and returns to a clean prompt with the original failure still available to /fix; killing script(1) or the daemon mid-session leaves the shell usable; stale session logs under $XDG_RUNTIME_DIR/nvsh are removed at next setup or shell start.",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h37",
+          "text": "Ctrl+C during a streaming panel returns to a working prompt within 1 s, pi's get_state shows isStreaming false, and '/fix' still finds the last failure; kill -9 of script(1) or the daemon leaves the shell accepting commands.",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c47",
+      "kind": "requirement",
+      "text": "The output slice sent to the agent is bounded (last 64 KB of the failed command's C..D region, head+tail with a marker when truncated), handled as bytes with invalid UTF-8 replaced, stripped of escape sequences before redaction, and redacted before it leaves the hook client. The session log itself is never transmitted whole and never leaves the machine.",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h38",
+          "text": "A failure whose output is 5 MB of binary yields a context slice of at most 64 KB with a truncation marker, valid UTF-8, no escape sequences, and redacted tokens; a test asserts the log path never appears in the agent request.",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c48",
+      "kind": "boundary",
+      "text": "No auto-apply in v1: every proposal, including package installs and container stops, waits for an explicit keypress; there is no 'safe auto-fix policy' switch yet, and 'sudo' proposals are shown with the exact command and never pre-typed into the prompt.",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h39",
+          "text": "The fixture agent proposing 'sudo apt install x' shows the exact command and requires Enter; a proposal is never inserted into READLINE_LINE; no code path executes a proposal without the approval function returning true.",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c49",
+      "kind": "requirement",
+      "text": "'nvsh doctor' gains in-shell checks with remediations: hook file sourced, nvsh hook first in PROMPT_COMMAND, Enter/Tab/Ctrl+G bindings present in the active keymap, capture active (script or tmux pipe-pane) with the log path and mode, daemon and pi status, harness reachable, terminfo present; '/doctor' prints the same inline.",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h40",
+          "text": "'nvsh doctor' run inside a hooked shell reports each in-shell check with pass/fail and a remediation; run with the hook deliberately moved to last position it fails the ordering check.",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c50",
+      "kind": "requirement",
+      "text": "Approval allowlists: 'approved for user' lives at $XDG_CONFIG_HOME/nvsh/approved.toml (0600) as glob patterns matched against the full command line with fnmatch semantics; 'approved for session' lives in the daemon's memory and dies with it. Defaults ship read-only inspectors ('nvidia-smi *', 'docker ps*', 'journalctl *', 'systemctl status *', 'df *', 'free *', 'nvsh *') and never 'sudo *', 'rm *' or a bare '*'; 'nvsh approve list/add/remove' and '/approve' manage them; every allowlisted execution is still written to the audit log.",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h41",
+          "text": "A test drives the fixture agent through 'nvidia-smi -q' (runs without prompt via the default list), 'apt install foo' (prompts; 'approve for session' makes a second call run; a new daemon prompts again), and 'sudo rm -rf /x' (prompts even after 'approve for user' is attempted, because sudo and rm patterns are refused by the add command); the audit log holds all three.",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c51",
+      "kind": "requirement",
+      "text": "Session daemon model (from decision on q9): one nvsh daemon and one pi process per user, $XDG_RUNTIME_DIR/nvsh/daemon.sock; each shell session (keyed by the hook's shell PID) owns its own pi conversation. When a request arrives from a shell other than the active one, the daemon puts the active conversation to sleep (pi rpc switch_session / new_session, which persist to the nvsh-owned session dir) and activates the caller's conversation, resuming it on its next request. 'sessions.max' in config allows more concurrent pi processes for machines that can afford them.",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h42",
+          "text": "With two terminals: a failure in A, then a failure in B, then '/ask what did you just see' in A answers about A's failure only; pgrep shows one pi process throughout; on orin (no node) the daemon reports 'pi unavailable' and the client falls back to the configured stdlib adapter.",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c52",
+      "kind": "decision",
+      "text": "/undo in v1 rewinds the agent conversation (last turn and its proposal) and never reverts machine changes; reverting changes is a follow-up tracked as a GitHub issue on agentculture/nvsh.",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
     }
   ],
   "open_vagueness": [
@@ -732,6 +1087,33 @@
       "text": "Login-shell / PTY-wrapper mode (chsh, /etc/shells, install-shell) \u2014 revisit only after the hook is solid; would sit on top of the same NvshAgent and tools layer.",
       "kind": "follow_up",
       "claim_id": "c18",
+      "resolved": false,
+      "resolution": "",
+      "resolution_claim_id": null
+    },
+    {
+      "id": "v6",
+      "text": "Residual: passwords or secrets typed at prompts that DO echo (custom scripts, 'read' without -s) land in the session log and are only caught if they match a redactor pattern.",
+      "kind": "unknown_nonblocking",
+      "claim_id": "c47",
+      "resolved": false,
+      "resolution": "",
+      "resolution_claim_id": null
+    },
+    {
+      "id": "v7",
+      "text": "Residual: a future integration that rebinds Enter (fzf, atuin, ble.sh) would silently take over or be taken over; doctor can detect it but the winner depends on source order.",
+      "kind": "unknown_nonblocking",
+      "claim_id": "c37",
+      "resolved": false,
+      "resolution": "",
+      "resolution_claim_id": null
+    },
+    {
+      "id": "v8",
+      "text": "Residual: pi's node startup and memory on Jetson Thor (node present) is unmeasured; the per-shell vs per-user daemon decision (q9) depends on it.",
+      "kind": "unknown_nonblocking",
+      "claim_id": "c43",
       "resolved": false,
       "resolution": "",
       "resolution_claim_id": null
@@ -909,8 +1291,100 @@
         "c5",
         "c6"
       ]
+    },
+    {
+      "id": "s19",
+      "surface": "challenge pass / adjacent-systems lens: PROMPT_COMMAND ordering probe (bash --norc -i under script, with and without ghostty.bash)",
+      "finding": "First-position hook keeps $? and PIPESTATUS; appended after Ghostty's hook loses PIPESTATUS. pipefail changes the observed status.",
+      "seeds": [
+        "c35"
+      ]
+    },
+    {
+      "id": "s20",
+      "surface": "challenge pass / adjacent-systems lens: ~/.bashrc on spark, thor, orin (interactive guard line, sourced files), kiro-cli shell files, bash-completion complete -p -I/-D, thor infocmp",
+      "finding": "All three rcs guard non-interactive shells at the top, so appended lines are interactive-only but an appended exec would double-source the rc; kiro-cli installs no hooks; complete -I is free; thor lacks xterm-ghostty terminfo.",
+      "seeds": [
+        "c36",
+        "c37",
+        "c38"
+      ]
+    },
+    {
+      "id": "s21",
+      "surface": "challenge pass / unstated-assumptions lens: pi docs/extensions.md tool_call blocking, pi --help tool flags, vi-mode bind probe, pi session dirs, LAN topology (192.168.1.138 vs .157, orin without node)",
+      "finding": "Found a real contradiction between c25 and c8 (bash tool = autonomous execution); vi keymaps need explicit binding; pi persists per-cwd sessions and reads cwd context files unless disabled; the default model is LAN-local, not on-box.",
+      "seeds": [
+        "c39",
+        "c40",
+        "c41",
+        "c42"
+      ]
+    },
+    {
+      "id": "s22",
+      "surface": "challenge pass / overlooked-actors-and-lifecycle lens: c7 warm session, c2 install, c45 uninstall, issue #3 /undo, orin memory and node absence (P14)",
+      "finding": "The spec named a warm pi process but not its owner, lifetime, per-shell vs per-user scope or crash fallback; upgrade drift between the sourced hook and the CLI was unaddressed; kill switch and Ctrl+C behaviour were implicit; /undo is unmentioned.",
+      "seeds": [
+        "c43",
+        "c44",
+        "c45",
+        "c46"
+      ]
+    },
+    {
+      "id": "s23",
+      "surface": "challenge pass / security-and-reversibility lens: c11 redactor, c28/c29 session log, c8 approvals, tty state inside bind -x (raw: -icanon -echo)",
+      "finding": "Slice bounding and byte-safety were unstated; the log's non-transmission is now a boundary; the dispatch must run outside the readline callback (terminal is raw inside bind -x), which the rewrite-then-accept variant already does; sudo prompts do not echo so passwords stay out of the log, but the redactor only knows named patterns.",
+      "seeds": [
+        "c47",
+        "c48"
+      ]
+    },
+    {
+      "id": "s24",
+      "surface": "challenge pass / observability-and-recovery lens: c9 doctor, c46 interrupt, c43 daemon",
+      "finding": "Doctor had platform and backend checks but nothing about the hook's own health; added in-shell checks.",
+      "seeds": [
+        "c49"
+      ]
+    },
+    {
+      "id": "s25",
+      "surface": "challenge pass / concurrency lens: two terminals failing at once, daemon socket, rate limit state",
+      "finding": "Per-shell daemons are independent; a per-user daemon serialises via pi's one-at-a-time steering (get_state showed steeringMode one-at-a-time). Rate-limit state lives with the daemon. No finding beyond the per-shell/per-user question on c43.",
+      "seeds": []
+    },
+    {
+      "id": "s26",
+      "surface": "challenge pass / migration lens: fresh install only, no prior nvsh state exists on any machine",
+      "finding": "Nothing to migrate; the version-stamped hook (c44) covers future upgrades. Clean.",
+      "seeds": []
     }
   ],
-  "lapses": [],
+  "lapses": [
+    {
+      "id": "l1",
+      "code": "assumption-for-measurement",
+      "what": "pi --mode rpc cold-start wall time and RSS were not measured: the probe's /usr/bin/time output was cut off by head and I moved on instead of re-running; v2 stays parked on an estimate.",
+      "skipped_check": "P9 pi rpc timing probe",
+      "refs": [
+        "challenge pass / adjacent-systems lens: pi rpc"
+      ],
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "l2",
+      "code": "assumption-for-measurement",
+      "what": "The ISIG-inside-bind-x probe printed only '-icanon' and I did not re-run it to learn whether Ctrl+C is delivered inside a readline callback; the design routes dispatch outside the callback, so I treated it as moot without verifying.",
+      "skipped_check": "P13 stty isig probe",
+      "refs": [
+        "challenge pass / security lens: tty state in bind -x"
+      ],
+      "origin": "llm",
+      "status": "approved"
+    }
+  ],
   "obligations": []
 }
