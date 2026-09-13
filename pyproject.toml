@@ -29,6 +29,9 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["nvsh"]
 include = ["nvsh/shell/*.bash"]
+# The bash integration is data, not Python: name it explicitly or hatchling
+# leaves nvsh/shell/*.bash out of the wheel.
+artifacts = ["nvsh/shell/*.bash"]
 
 [dependency-groups]
 dev = [

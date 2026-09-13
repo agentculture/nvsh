@@ -1,1 +1,1 @@
-"""nvsh shell integration assets (bash hook)."""
+"""Shell integration assets for nvsh (bash readline + hook layer)."""
