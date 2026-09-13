@@ -245,3 +245,50 @@ they differ (state file under `$XDG_RUNTIME_DIR/nvsh/<shell-pid>.notice`).
 
 See `tests/test_rcfile.py`, `tests/test_shell_render.py`,
 `tests/test_cli_setup.py` and `tests/test_setup_timing.py`.
+
+## What setup can install
+
+`nvsh setup` also detects the helper tools it depends on that are missing
+from `PATH` and, only with explicit confirmation, installs them
+(`nvsh/installers.py`). This exists because the fleet is uneven: the Jetson
+AGX Orin ships with neither `uv` nor `tmux`, and the Jetson AGX Thor has
+`npm` but no `pi`, so `setup` was the natural place to close that gap
+instead of leaving it as a manual step per machine.
+
+| tool | why nvsh wants it | command tried |
+| --- | --- | --- |
+| `node`/`npm` | prerequisite for installing `pi` via npm | `sudo apt-get install -y nodejs npm` |
+| `pi` | the default agent backend nvsh's failure client talks to | `npm install -g @earendil-works/pi-coding-agent` |
+| `uv` | Python package/dependency manager | `sudo snap install astral-uv --classic` when `snap` is present |
+| `tmux` | terminal multiplexer nvsh's inline panel and daemon target | `sudo apt-get install -y tmux` |
+
+Rules that hold regardless of platform:
+
+- **Confirmation is never skipped.** Interactively, `setup` asks
+  `install <tool>? [y/N]` once per tool. `--yes` answers yes to all of them
+  in one run. `--no-install` lists every offer and installs nothing.
+  `--json` is non-interactive by construction (there is no terminal to
+  prompt on), so it only lists offers unless `--yes` is also given.
+- **`sudo` is never pre-typed or stored.** A `sudo` command runs with
+  `sudo` as `argv[0]` in list form — never through a shell string — and its
+  output is left attached to the real terminal (no output capture) so the
+  operator sees and answers the password prompt themselves. nvsh never
+  reads, stores or types a password on the operator's behalf. The same
+  no-`sudo`-typed rule already governs agent-proposed fixes; see
+  [architecture.md](architecture.md)'s "Propose, don't run".
+- **`uv`'s curl-pipe-sh installer is printed only, never executed.** When
+  no package manager can install `uv` but `curl` is present, `setup` prints
+  `curl -LsSf https://astral.sh/uv/install.sh | sh` as the command the
+  operator can run by hand — it is never run automatically, not even with
+  `--yes`, because a curl-pipe-sh has no place running unattended.
+- **Every attempt is audited.** Whether a tool install actually ran, was
+  declined, or was never executable at all, it is written to the audit log
+  (`nvsh.agent.audit.AuditLog`, event `"install"`) alongside the proposed
+  command and its outcome — the same trail an agent-proposed fix leaves.
+- **A freshly installed `pi` is picked up immediately.** After any installs
+  run, `setup` re-runs `nvsh.agent.registry.choose()`, so `pi` becomes the
+  reported (and usable) agent backend in the same `setup` invocation that
+  installed it.
+
+See `tests/test_installers.py` for the exact planned command per fleet
+machine and `tests/test_cli_setup.py` for the `setup` integration.

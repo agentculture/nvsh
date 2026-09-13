@@ -498,14 +498,26 @@ with `--rc`)
 immediately after the distro's interactive guard (`nvsh.rcfile`). A
 timestamped backup of the rc is written before any change, and a second run
 is idempotent: an unchanged rc after the first run makes `setup` write
-nothing at all. Also picks and reports the agent backend
-(`nvsh.agent.registry.choose()`), and prints the pi-install offer text when
-`pi` is missing and `npm` is on PATH — it never runs `npm` itself.
+nothing at all. Also picks and reports the agent backend (`nvsh.agent.registry.choose()`),
+and detects any of nvsh's helper tools that are missing (`pi`, `node` as
+pi's prerequisite, `uv`, `tmux` — see `nvsh.installers`), printing each
+one's purpose and exact install command. Nothing installs without explicit
+confirmation: interactively it asks `install <tool>? [y/N]` once per tool;
+`--yes` answers yes to all of them; `--no-install` lists the offers and
+installs nothing; `--json` is non-interactive by construction and only
+lists offers unless `--yes` is also given. A tool with no known installer
+for this machine (missing package manager) or whose only known installer is
+a curl-pipe-sh (`uv`, when neither `snap` nor a package manager applies) is
+only ever printed, never executed — not even with `--yes`. After any
+installs run, the agent backend is re-picked, so a freshly installed `pi`
+is reported immediately.
 
 ## Usage
 
     nvsh setup
     nvsh setup --rc /path/to/bashrc --json
+    nvsh setup --yes          # install every missing helper tool
+    nvsh setup --no-install   # list missing tools and commands only
 """
 
 _UNINSTALL = """\
