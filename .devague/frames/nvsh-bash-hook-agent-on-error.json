@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-09-13T10:08:02Z",
-  "updated": "2026-09-13T12:15:35Z",
+  "updated": "2026-09-13T12:25:12Z",
   "claims": [
     {
       "id": "c1",
@@ -1438,6 +1438,17 @@
       "skipped_check": "red phase of TDD",
       "refs": [
         "t4"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l8",
+      "code": "grader-unverified",
+      "what": "t20: first red run happened after hook.bash was written and two assertions matched pty-echoed input (vacuous pass); agent caught both and re-ran red/green, but the initial grader was unverified",
+      "skipped_check": "genuine red run before implementation",
+      "refs": [
+        "t20"
       ],
       "origin": "llm",
       "status": "proposed"
