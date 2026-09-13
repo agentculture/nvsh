@@ -586,6 +586,219 @@ they differ in a given shell session (state file under
 """
 
 
+_SLASH = """\
+# nvsh slash <line>
+
+Dispatches one operator-typed `/verb ...` line, `/`-prefixed, against the
+registry in `nvsh.slash` (task t14). This is what the readline layer's Enter
+macro rewrites a recognized slash line into
+(`nvsh/shell/readline.bash`, see `docs/shell-integration.md`); `Ctrl+G`
+dispatches `nvsh slash "/ask"` with the half-typed line exported as
+`NVSH_DRAFT`.
+
+The registry — not this CLI wrapper — decides what is visible: a command
+with a `platforms` restriction (e.g. `/power`, `/clocks`, Jetson-only) is
+reported as unknown outside those platforms. `--platform` overrides the
+detected kind (mostly for tests); by default it comes from
+`nvsh.platform.detect().kind`.
+
+## Usage
+
+    nvsh slash "/ask why is memory high?"
+    nvsh slash "/doctor" --json
+
+## See also
+
+- `nvsh explain complete`
+- `nvsh explain ask`, `nvsh explain doctor`, `nvsh explain undo`, ...
+"""
+
+_COMPLETE = """\
+# nvsh complete
+
+Prints Tab-completion candidates for the slash-command surface, backing
+`nvsh/shell/readline.bash`'s `complete -I` (initial word) and `complete -F`
+(per-command arguments) registrations. The bash layer holds no command list
+of its own — everything comes from this verb.
+
+With no words after `--`, prints the full palette (`/`-prefixed values,
+platform-filtered). With `-- <command> <partial>`, prints that command's own
+argument candidates from its registered completion provider (e.g. `/doctor`
+offers `--json --strict`; `/agent` offers `list use <adapter names>`;
+`/approve` offers `list add remove --session`). The bash side prefix-filters
+the returned values itself, so nvsh may return the full candidate set.
+
+## Usage
+
+    nvsh complete --json
+    nvsh complete --json -- /doctor --st
+"""
+
+_ASK = """\
+# nvsh slash /ask <text>
+
+A free-form question with the machine's context attached — the same entry
+point `Ctrl+G` uses, with the operator's half-typed line passed along as
+`NVSH_DRAFT` instead of as the question itself. Routed with request kind
+`slash` (a direct `nvsh ask`/`Ctrl+G` call uses `explicit`), so the two are
+distinguishable on the wire without duplicating `nvsh.client.ask`.
+
+## Usage
+
+    nvsh slash "/ask why is memory high?"
+"""
+
+_FIX = """\
+# nvsh slash /fix
+
+Asks for the smallest fix for the last recorded failure
+(`nvsh.client.fix`). Nothing runs without the operator's confirmation.
+
+## Usage
+
+    nvsh slash "/fix"
+"""
+
+_EXPLAIN_SLASH = """\
+# nvsh slash /explain
+
+Asks what the last recorded failure means on this machine
+(`nvsh.client.explain`).
+
+## Usage
+
+    nvsh slash "/explain"
+"""
+
+_RETRY_SLASH = """\
+# nvsh slash /retry
+
+Re-runs the last failed command, but only after the operator confirms the
+exact command shown (`nvsh.client.retry`), then reports pass/fail with
+`nvsh.client.verify`.
+
+## Usage
+
+    nvsh slash "/retry"
+"""
+
+_CONTEXT_SLASH = """\
+# nvsh slash /context [--show|--json]
+
+Prints exactly the bytes that would be sent to the agent for the last
+recorded failure (`nvsh.client.context_show`). See `nvsh explain context`.
+
+## Usage
+
+    nvsh slash "/context"
+    nvsh slash "/context --json"
+"""
+
+_AGENT_SLASH = """\
+# nvsh slash /agent [list|use <name>]
+
+Lists or chooses the configured `NvshAgent` harness backend, in-shell. With
+no argument, behaves like `list`. See `nvsh explain agent`.
+
+## Usage
+
+    nvsh slash "/agent list"
+    nvsh slash "/agent use pi"
+"""
+
+_HELP_SLASH = """\
+# nvsh slash /help
+
+Prints the slash-command registry — every command visible on this
+platform, its aliases and its one-line description — straight from
+`nvsh.slash.REGISTRY`. There is no separate hard-coded list to drift from it.
+
+## Usage
+
+    nvsh slash "/help"
+"""
+
+_UNDO = """\
+# nvsh slash /undo
+
+Drops the last agent turn and its pending proposal from the conversation.
+**Never runs anything on the machine and never reverts a change a proposal
+already made** — the spec's `/undo` decision scopes this to nvsh's own view
+of the conversation; reverting machine changes is tracked as a separate,
+later GitHub issue.
+
+With a daemon running, sends the `undo` control message and the daemon's
+`Conversation.undo()` drops its last transcript entry and clears
+`pending_proposal` — the backend's own on-disk session (e.g. pi's) is left
+untouched, since there is no RPC to selectively erase one turn there; only
+nvsh's view of it, and what it would re-show, changes. With no daemon
+running, clears any `pending_proposal` recorded in
+`$XDG_STATE_HOME/nvsh/last-failure.json` instead.
+
+## Usage
+
+    nvsh slash "/undo"
+"""
+
+_APPROVE_SLASH = """\
+# nvsh slash /approve [list|add <pattern> [--session]|remove <pattern>]
+
+The in-shell form of `nvsh approve` (see `nvsh explain approve`), over the
+same `nvsh.approvals.Approvals` store. With no argument, behaves like
+`list`.
+
+## Usage
+
+    nvsh slash "/approve list"
+    nvsh slash "/approve add 'kubectl get *'"
+    nvsh slash "/approve add 'apt install *' --session"
+    nvsh slash "/approve remove 'kubectl get *'"
+"""
+
+_DOCTOR_SLASH = """\
+# nvsh slash /doctor [--json]
+
+Runs `nvsh doctor`'s checks in-shell, including the three that only make
+sense inside a hooked bash: `hook_sourced`, `hook_first_in_prompt_command`
+and `bindings_present`. Those need state only bash itself can see, so
+`nvsh/shell/readline.bash`'s Enter macro exports `NVSH_PROMPT_COMMAND`
+(`declare -p PROMPT_COMMAND`), `NVSH_BIND_P` (`bind -p`) and `NVSH_KEYMAP`
+(from `bind -V`) right before every slash dispatch, and this handler reads
+them from the environment. Run `nvsh doctor` directly (not through
+`nvsh slash`) and those three checks report `passed=false, severity=info`
+with "run /doctor from a hooked shell" instead, since that state cannot
+exist outside one. See `docs/shell-integration.md`.
+
+## Usage
+
+    nvsh slash "/doctor"
+    nvsh slash "/doctor --json"
+"""
+
+_POWER = """\
+# nvsh slash /power
+
+Jetson-only stub (`platforms={"jetson"}`): hidden in `nvsh complete` and
+`/help` on DGX Spark, RTX Spark and any undetected platform, and prints
+"not implemented in this milestone" when run. Exists to prove the
+`SlashCommand.platforms` filtering works end to end, not as a real power
+control yet.
+
+## Usage
+
+    nvsh slash "/power"
+"""
+
+_CLOCKS = """\
+# nvsh slash /clocks
+
+Jetson-only stub, the `/clocks` twin of `/power` — see `nvsh explain power`.
+
+## Usage
+
+    nvsh slash "/clocks"
+"""
+
 ENTRIES: dict[tuple[str, ...], str] = {
     (): _ROOT,
     ("nvsh",): _ROOT,
@@ -620,4 +833,18 @@ ENTRIES: dict[tuple[str, ...], str] = {
     ("off",): _OFF,
     ("on",): _ON,
     ("hook",): _HOOK,
+    ("slash",): _SLASH,
+    ("complete",): _COMPLETE,
+    ("slash", "ask"): _ASK,
+    ("slash", "fix"): _FIX,
+    ("slash", "explain"): _EXPLAIN_SLASH,
+    ("slash", "retry"): _RETRY_SLASH,
+    ("slash", "context"): _CONTEXT_SLASH,
+    ("slash", "agent"): _AGENT_SLASH,
+    ("slash", "help"): _HELP_SLASH,
+    ("slash", "undo"): _UNDO,
+    ("slash", "approve"): _APPROVE_SLASH,
+    ("slash", "doctor"): _DOCTOR_SLASH,
+    ("slash", "power"): _POWER,
+    ("slash", "clocks"): _CLOCKS,
 }

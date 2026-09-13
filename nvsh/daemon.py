@@ -56,7 +56,7 @@ _WATCHDOG_INTERVAL = 0.1
 
 #: Control kinds that carry no agent request.
 _CONTROL_KINDS = frozenset(
-    {"register", "unregister", "cancel", "ui_response", "status", "stop", "ping"}
+    {"register", "unregister", "cancel", "ui_response", "status", "stop", "ping", "undo"}
 )
 
 _LOGGER_NAME = "nvsh.daemon"
@@ -174,13 +174,38 @@ def context_from_dict(data: Mapping[str, object] | None) -> AgentContext:
 
 @dataclass
 class Conversation:
-    """One shell's agent conversation, awake or asleep."""
+    """One shell's agent conversation, awake or asleep.
+
+    ``transcript`` is nvsh's own record of turns (request prompt + the
+    accumulated response text), kept purely so :meth:`undo` has something to
+    drop; it is never replayed to the backend. ``pending_proposal`` mirrors
+    the most recent ``proposal`` event this conversation streamed, cleared
+    once a fresh turn starts.
+    """
 
     shell: str
     session_path: str | None = None
     started: bool = False
     sleeping: bool = False
     requests: int = 0
+    transcript: list[dict] = field(default_factory=list)
+    pending_proposal: dict | None = None
+
+    def undo(self) -> bool:
+        """Drop the last request/answer pair and any pending proposal.
+
+        This only changes nvsh's own view of the conversation -- a backend
+        like pi keeps its own on-disk session file untouched (there is no
+        RPC to selectively erase a turn there), so the operator's next
+        request still reaches a warm backend, just without nvsh re-showing
+        the undone turn or its proposal. Never runs anything on the machine.
+        Returns ``True`` if there was anything to drop.
+        """
+        had = bool(self.transcript) or self.pending_proposal is not None
+        if self.transcript:
+            self.transcript.pop()
+        self.pending_proposal = None
+        return had
 
 
 @dataclass
@@ -550,6 +575,15 @@ class Daemon:
             yield AgentEvent(kind=EventKind.DONE)
             return
 
+        if kind == "undo":
+            with self._lock:
+                conversation = self._conversations.get(shell)
+                dropped = conversation.undo() if conversation is not None else False
+            text = "undone" if dropped else "nothing to undo"
+            yield AgentEvent(kind=EventKind.STATUS, text=text)
+            yield AgentEvent(kind=EventKind.DONE)
+            return
+
         if kind == "ui_response":
             yield from self._handle_ui_response(shell, message)
             return
@@ -602,10 +636,21 @@ class Daemon:
                 yield AgentEvent(kind=EventKind.STATUS, text=self._fallback_notice)
 
             conversation.requests += 1
+            turn = {"prompt": request.prompt, "text": ""}
+            conversation.transcript.append(turn)
+            conversation.pending_proposal = None
             saw_terminal = False
             try:
                 for event in slot.agent.run(request, context):
                     self._last_activity = time.monotonic()
+                    if event.kind is EventKind.TEXT_DELTA and event.text:
+                        turn["text"] += event.text
+                    elif event.kind is EventKind.PROPOSAL and event.proposal is not None:
+                        conversation.pending_proposal = {
+                            "command": event.proposal.command,
+                            "rationale": event.proposal.rationale,
+                            "kind": event.proposal.kind.value,
+                        }
                     saw_terminal = event.kind in (EventKind.DONE, EventKind.ERROR)
                     yield event
                     if saw_terminal:

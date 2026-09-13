@@ -73,6 +73,7 @@ def _build_parser() -> argparse.ArgumentParser:
     from nvsh.cli._commands import learn as _learn_cmd
     from nvsh.cli._commands import overview as _overview_cmd
     from nvsh.cli._commands import setup as _setup_group
+    from nvsh.cli._commands import slash as _slash_group
     from nvsh.cli._commands import whoami as _whoami_cmd
 
     parser = _CliArgumentParser(
@@ -100,6 +101,7 @@ def _build_parser() -> argparse.ArgumentParser:
     _agent_group.register(sub)
     _daemon_group.register(sub)
     _setup_group.register(sub)
+    _slash_group.register(sub)
     # Register your own noun groups here:
     #   from nvsh.cli._commands import my_noun as _my_noun_group
     #   _my_noun_group.register(sub)

@@ -304,6 +304,53 @@ def test_ui_response_control_reaches_the_agent(tmp_path: Path) -> None:
     assert (agent.name, "respond_ui:ui-1") in log
 
 
+def test_undo_control_drops_the_last_turn_and_pending_proposal(tmp_path: Path) -> None:
+    """/undo (task t14) never runs anything -- it only trims nvsh's own view."""
+    env = _env(tmp_path)
+
+    class ProposingAgent(RecordingAgent):
+        def run(self, request: AgentRequest, context: AgentContext) -> Iterator[AgentEvent]:
+            self.log.append((self.name, f"run:{request.prompt}"))
+            yield AgentEvent(kind=EventKind.TEXT_DELTA, text="looking...")
+            yield AgentEvent(
+                kind=EventKind.PROPOSAL,
+                proposal=Proposal(command="nvidia-smi", rationale="check", kind=ProposalKind.FIX),
+            )
+            yield AgentEvent(kind=EventKind.DONE)
+
+    log: list[tuple[str, str]] = []
+    agent = ProposingAgent(log)
+    daemon = daemon_mod.Daemon(Config(), env=env, agent_factory=lambda: agent)
+    _start(daemon)
+    try:
+        _collect(client_transport.send(_failure(), shell_id="5", env=env, autostart=False))
+        conversation = daemon._conversations["5"]
+        assert conversation.transcript
+        assert conversation.pending_proposal is not None
+
+        events = client_transport.control("undo", shell_id="5", env=env)
+        assert events
+
+        assert conversation.pending_proposal is None
+        assert not conversation.transcript
+    finally:
+        daemon.shutdown()
+    # Nothing this test did could have run "nvidia-smi": the proposal was
+    # only ever streamed and recorded, never approved or executed.
+    assert not any("nvidia-smi" in entry for entry in log)
+
+
+def test_undo_control_with_nothing_to_undo_reports_it(tmp_path: Path) -> None:
+    env = _env(tmp_path)
+    daemon = daemon_mod.Daemon(Config(), env=env, agent_factory=lambda: RecordingAgent([]))
+    _start(daemon)
+    try:
+        events = client_transport.control("undo", shell_id="never-seen", env=env)
+    finally:
+        daemon.shutdown()
+    assert any("nothing to undo" in (e.text or "") for e in events)
+
+
 # --- per-shell conversations ----------------------------------------------
 
 

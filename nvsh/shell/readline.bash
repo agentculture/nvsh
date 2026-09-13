@@ -58,6 +58,16 @@ __nvsh_items() {
     return 0
 }
 
+# Active keymap name (emacs / vi-insert / vi-command), parsed from
+# `bind -V`'s "keymap is set to `emacs'" line. Only used as a doctor label.
+__nvsh_keymap() {
+    local raw
+    raw=$(bind -V 2>/dev/null | grep '^keymap')
+    raw=${raw##*\`}
+    printf '%s' "${raw%\'*}"
+    return 0
+}
+
 # --- Enter -------------------------------------------------------------
 
 __nvsh_enter() {
@@ -71,6 +81,14 @@ __nvsh_enter() {
     for item in "${__NVSH_ITEMS[@]}"; do
         if [[ $item == "$word" ]]; then
             history -s -- "$line"
+            # Some dispatch handlers (nvsh doctor's in-shell checks) need
+            # state only bash itself can see. Exporting it here, ahead of
+            # every dispatch, costs nothing extra: a slash line already
+            # forks nvsh. No command name is hard-coded on this path --
+            # the dispatch target reads these three vars only if it cares.
+            export NVSH_PROMPT_COMMAND="$(declare -p PROMPT_COMMAND 2>/dev/null)"
+            export NVSH_BIND_P="$(bind -p 2>/dev/null)"
+            export NVSH_KEYMAP="$(__nvsh_keymap)"
             READLINE_LINE=" ${NVSH_BIN:-nvsh} slash ${line@Q}"
             READLINE_POINT=${#READLINE_LINE}
             __NVSH_ITEMS=()
