@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-09-13T10:08:02Z",
-  "updated": "2026-09-13T12:25:12Z",
+  "updated": "2026-09-13T12:26:22Z",
   "claims": [
     {
       "id": "c1",
@@ -1449,6 +1449,17 @@
       "skipped_check": "genuine red run before implementation",
       "refs": [
         "t20"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l9",
+      "code": "grader-unverified",
+      "what": "t7: a keymap test was first written with an assertion that could never fail ('or True'); caught on review before running and rewritten against bind -m -X/-s output",
+      "skipped_check": "",
+      "refs": [
+        "t7"
       ],
       "origin": "llm",
       "status": "proposed"
