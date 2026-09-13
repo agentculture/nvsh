@@ -69,7 +69,7 @@ into a wrapper process, and no PTY-transparency problem to solve.
   `__ghostty_hook` entry saw `PIPESTATUS` already clobbered, while a
   first-position hook saw `false | true` as `1 0` and
   `true | false | true` as `0 1 0` correctly, and still respected the
-  operator's own `set -o pipefail`. So nvsh's hook must be inserted as the
+  operator's own `set -o pipefail`. So nvsh's hook inserts itself as the
   **first** element of the `PROMPT_COMMAND` array, before Ghostty's own
   hook is appended (Ghostty's shell integration
   (`/usr/share/ghostty/shell-integration/bash/ghostty.bash:295-308`)
@@ -77,6 +77,30 @@ into a wrapper process, and no PTY-transparency problem to solve.
   append-don't-clobber idiom nvsh's installer follows). A wrapper would not
   have this ordering problem, but it would also not get Ghostty's own OSC
   133 prompt markers for free — see the output-capture point next.
+- **First position is not always ours, and that is fine: under
+  `bash-preexec` the hook reads `BP_PIPESTATUS`** (deviation `d2`, measured
+  on the Spark against a copy of the operator's real rc). nvsh is first
+  when no other prompt manager is present. But `bash-preexec.sh` — which
+  Ghostty's own integration sources on bash < 5.3, and which fig /
+  amazon-q also load — rewrites `PROMPT_COMMAND` on its first prompt by
+  design: its `__bp_install` puts `__bp_precmd_invoke_cmd` first and folds
+  whatever was there before into a single newline-joined first element
+  behind it, so the array becomes
+  `([0]=$'__bp_precmd_invoke_cmd\n__nvsh_hook\n…' …)`. No installer
+  ordering can win that race, because the rewrite happens after every rc
+  file has been sourced. What survives it: `$?` is correct, because
+  bash-preexec restores it for each folded command via
+  `__bp_set_ret_value`; `PIPESTATUS` is not, because that `return` leaves
+  it with exactly one element (`false | true` arrived as `0` rather than
+  `1 0`). bash-preexec keeps the real per-stage statuses in its own global
+  copy, `BP_PIPESTATUS`
+  (`/usr/share/ghostty/shell-integration/bash/bash-preexec.sh:63-67,148-174`),
+  so `__nvsh_hook` substitutes that copy when bash-preexec is loaded, its
+  entry is the first thing in `PROMPT_COMMAND` (which proves the copy is
+  this prompt's, not the previous one's) and the captured `PIPESTATUS` has
+  the tell-tale single element. `nvsh doctor`'s
+  `hook_first_in_prompt_command` check accepts both layouts and names the
+  one it saw; it still fails when `__nvsh_hook` appears more than once.
 - **Output capture reuses Ghostty's own markers instead of re-inventing
   a scrollback reader.** A hook cannot see a failed command's output the
   way a PTY wrapper could (a wrapper sits in the data path; a hook only

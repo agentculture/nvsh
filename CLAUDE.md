@@ -129,7 +129,9 @@ venv or wheel breaks. `termios`, `select`, `subprocess`, `tomllib` and
 interactive shell delivered as a default-login-shell wrapper. The converged
 decision (`docs/architecture.md`) is the hook: `nvsh setup` appends one
 function to the operator's `PROMPT_COMMAND` array (first position, so
-`PIPESTATUS` survives — see below) via one marked block inserted into
+`PIPESTATUS` survives; when `bash-preexec` takes first position by its own
+design the hook reads `BP_PIPESTATUS` instead — see below) via one marked
+block inserted into
 `$HOME/.bashrc` right after the distro's interactive guard, and `nvsh uninstall`
 removes it. Bash itself still parses, does job control, completion, aliases
 and rc files exactly as before; nothing wraps it, and there is no pty to

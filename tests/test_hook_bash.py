@@ -28,6 +28,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 HOOK = REPO_ROOT / "nvsh" / "shell" / "hook.bash"
 BASH = shutil.which("bash") or "/bin/bash"
 GHOSTTY_BASH = Path("/usr/share/ghostty/shell-integration/bash/ghostty.bash")
+BASH_PREEXEC = Path("/usr/share/ghostty/shell-integration/bash/bash-preexec.sh")
 
 #: How much slower a prompt may get with the hook installed, per command.
 #: Overridable so a loaded CI box can relax the bound; the real measured
@@ -371,6 +372,101 @@ def test_pipefail_makes_the_recorded_status_one(tmp_path, fake_nvsh):
     )
     assert status == "1"
     assert pipestatus == "1 0"
+
+
+# --------------------------------------------------------------------------
+# status / PIPESTATUS capture under bash-preexec (Ghostty, fig/amazon-q)
+# --------------------------------------------------------------------------
+#
+# bash-preexec's ``__bp_install`` rewrites PROMPT_COMMAND so that its own
+# ``__bp_precmd_invoke_cmd`` runs first and every prior element is folded into
+# a newline-joined first element behind it. It restores ``$?`` for the folded
+# commands via ``__bp_set_ret_value``, which leaves PIPESTATUS with exactly one
+# element; the real per-stage statuses survive only in its ``BP_PIPESTATUS``
+# copy. These tests pin that the hook reads that copy.
+
+requires_bash_preexec = pytest.mark.skipif(
+    not BASH_PREEXEC.exists(), reason="bash-preexec.sh not installed"
+)
+
+
+def _preexec_debug_records(tmp_path, fake_nvsh, commands, **extra):
+    """Records written by the hook when bash-preexec installs *after* it."""
+
+    debug = tmp_path / "hook-debug.log"
+    env = fake_nvsh.env(tmp_path, NVSH_HOOK_DEBUG_FILE=str(debug), **extra)
+    _run_bash([_source(), f"source {BASH_PREEXEC}", "true", *commands], env)
+    return [tuple(ln.partition("\t")[::2]) for ln in debug.read_text().splitlines() if ln.strip()]
+
+
+@requires_bash_preexec
+def test_pipestatus_under_bash_preexec_false_pipe_true(tmp_path, fake_nvsh):
+    records = _preexec_debug_records(tmp_path, fake_nvsh, ["false | true"])
+    assert ("0", "1 0") in records, records
+
+
+@requires_bash_preexec
+def test_pipestatus_under_bash_preexec_three_stage_pipeline(tmp_path, fake_nvsh):
+    records = _preexec_debug_records(tmp_path, fake_nvsh, ["true | false | true"])
+    assert ("0", "0 1 0") in records, records
+
+
+@requires_bash_preexec
+def test_pipefail_under_bash_preexec_keeps_status_and_pipestatus(tmp_path, fake_nvsh):
+    records = _preexec_debug_records(tmp_path, fake_nvsh, ["set -o pipefail", "false | true"])
+    assert ("1", "1 0") in records, records
+
+
+def test_pipestatus_without_bash_preexec_is_the_control(tmp_path, fake_nvsh):
+    """Control for the three tests above: no manager, no BP_PIPESTATUS."""
+
+    debug = tmp_path / "hook-debug.log"
+    env = fake_nvsh.env(tmp_path, NVSH_HOOK_DEBUG_FILE=str(debug))
+    _run_bash([_source(), "true", "false | true", "true | false | true"], env)
+    records = [
+        tuple(ln.partition("\t")[::2]) for ln in debug.read_text().splitlines() if ln.strip()
+    ]
+    assert ("0", "1 0") in records, records
+    assert ("0", "0 1 0") in records, records
+
+
+@requires_bash_preexec
+def test_hook_installed_once_when_resourced_under_bash_preexec(tmp_path, fake_nvsh):
+    env = fake_nvsh.env(tmp_path)
+    out = _run_bash(
+        [
+            _source(),
+            f"source {BASH_PREEXEC}",
+            "true",
+            "unset __NVSH_HOOK_LOADED",
+            _source(),
+            "declare -p PROMPT_COMMAND | tr -d '\\n' | sed 's/^/PC:/'",
+        ],
+        env,
+    )
+    line = _tagged(out, "PC:")
+    assert line.count("__nvsh_hook") == 1, line
+    assert "__bp_precmd_invoke_cmd" in line
+
+
+@requires_bash_preexec
+def test_unload_removes_the_hook_from_a_bash_preexec_joined_element(tmp_path, fake_nvsh):
+    env = fake_nvsh.env(tmp_path)
+    out = _run_bash(
+        [
+            _source(),
+            f"source {BASH_PREEXEC}",
+            "true",
+            "declare -p PROMPT_COMMAND | tr -d '\\n' | sed 's/^/BEFORE:/'",
+            "__nvsh_hook_unload",
+            "declare -p PROMPT_COMMAND | tr -d '\\n' | sed 's/^/PC:/'",
+        ],
+        env,
+    )
+    assert "__nvsh_hook" in _tagged(out, "BEFORE:")
+    line = _tagged(out, "PC:")
+    assert "__nvsh_hook" not in line, line
+    assert "__bp_precmd_invoke_cmd" in line
 
 
 # --------------------------------------------------------------------------

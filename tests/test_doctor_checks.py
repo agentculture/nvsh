@@ -371,6 +371,50 @@ def test_hook_first_in_prompt_command_fails_with_fix_command_when_moved_last():
     assert 'PROMPT_COMMAND=(__nvsh_hook "${PROMPT_COMMAND[@]/__nvsh_hook}")' in check["remediation"]
 
 
+#: What ``declare -p PROMPT_COMMAND`` prints once bash-preexec has installed
+#: itself on top of an already-hooked shell (measured on a DGX Spark under
+#: Ghostty with fig/amazon-q also loaded).
+_BASH_PREEXEC_PROMPT_COMMAND = (
+    "declare -a PROMPT_COMMAND=("
+    "[0]=$'__bp_precmd_invoke_cmd\\n__nvsh_hook\\n:' "
+    '[1]="__ghostty_hook" [2]="__bp_interactive_mode")'
+)
+
+
+def test_hook_first_in_prompt_command_accepts_the_bash_preexec_layout():
+    check = doctor_checks.check_hook_first_in_prompt_command(_BASH_PREEXEC_PROMPT_COMMAND)
+    assert check["passed"] is True
+    assert "bash-preexec" in check["message"]
+    assert "__bp_precmd_invoke_cmd" in check["message"]
+
+
+def test_hook_first_in_prompt_command_message_names_the_plain_layout():
+    text = 'declare -a PROMPT_COMMAND=([0]="__nvsh_hook" [1]="__ghostty_hook")'
+    check = doctor_checks.check_hook_first_in_prompt_command(text)
+    assert check["passed"] is True
+    assert "first" in check["message"]
+    assert "bash-preexec" not in check["message"]
+
+
+def test_hook_first_in_prompt_command_fails_when_the_hook_appears_twice():
+    text = (
+        "declare -a PROMPT_COMMAND=("
+        "[0]=$'__bp_precmd_invoke_cmd\\n__nvsh_hook' "
+        '[1]="__nvsh_hook")'
+    )
+    check = doctor_checks.check_hook_first_in_prompt_command(text)
+    assert check["passed"] is False
+    assert check["severity"] == "error"
+    assert "appears 2 times" in check["message"]
+
+
+def test_hook_first_in_prompt_command_fails_when_preexec_element_lacks_the_hook():
+    text = "declare -a PROMPT_COMMAND=([0]=$'__bp_precmd_invoke_cmd\\n:' [1]=\"__nvsh_hook\")"
+    check = doctor_checks.check_hook_first_in_prompt_command(text)
+    assert check["passed"] is False
+    assert check["severity"] == "error"
+
+
 def test_hook_first_in_prompt_command_handles_string_form():
     text = 'declare -- PROMPT_COMMAND="__nvsh_hook"'
     check = doctor_checks.check_hook_first_in_prompt_command(text)
