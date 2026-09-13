@@ -2,7 +2,7 @@
   "plan_slug": "nvsh-bash-hook-agent-on-error",
   "schema_version": 2,
   "created": "2026-09-13T13:17:31Z",
-  "updated": "2026-09-13T15:18:15Z",
+  "updated": "2026-09-13T15:27:59Z",
   "deviations": [
     {
       "id": "d1",
@@ -184,6 +184,21 @@
       "status": "proposed",
       "classification": "risky",
       "seq": 12
+    },
+    {
+      "id": "d13",
+      "what": "operator on spark: no progress indication while the agent works (tens of seconds of silence after the header), no acknowledgement line after choosing Enter/e/d/Esc on a proposal, and no clear line when the client falls back from the daemon; the panel prints text only when the backend emits it. Fix: an elapsed-time waiting line that repaints in place on a tty while no event has arrived for >1 s (no repaint when not a tty/NO_COLOR/dumb), an immediate acknowledgement after every proposal key (running / explaining / details / ignored), and a one-line 'falling back: <reason>' notice",
+      "task_ref": "t19",
+      "reason": "operator report from a live spark session: 'still took a lot of time, I don't see proper indications things run'",
+      "affects": [
+        "t13",
+        "c32",
+        "c23"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "classification": "needs-follow-up",
+      "seq": 13
     }
   ],
   "evidence": [],
