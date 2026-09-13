@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-09-13T10:08:02Z",
-  "updated": "2026-09-13T11:58:13Z",
+  "updated": "2026-09-13T12:13:52Z",
   "claims": [
     {
       "id": "c1",
@@ -1384,6 +1384,41 @@
       ],
       "origin": "llm",
       "status": "approved"
+    },
+    {
+      "id": "l3",
+      "code": "grader-unverified",
+      "what": "t3 reported 'scan-secrets: clean' but the corpus fixture was untracked when scanned; once tracked the scanner reports 41 findings and tests/test_scan_secrets fails",
+      "skipped_check": "",
+      "refs": [
+        "t3",
+        "h10"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l4",
+      "code": "assumption-for-measurement",
+      "what": "t2: 'rate limiter records a refused call' interpreted as rule_id=rate_limited in the returned Decision with RateState unchanged; no definition in spec, assumption not measurement",
+      "skipped_check": "",
+      "refs": [
+        "t2",
+        "h3"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l5",
+      "code": "grader-unverified",
+      "what": "t6: tests were written before running but never seen failing first (red phase skipped); FakeAgent raise-path has no dedicated test",
+      "skipped_check": "red phase of TDD",
+      "refs": [
+        "t6"
+      ],
+      "origin": "llm",
+      "status": "proposed"
     }
   ],
   "obligations": [
