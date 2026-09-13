@@ -2,7 +2,7 @@
   "plan_slug": "nvsh-bash-hook-agent-on-error",
   "schema_version": 2,
   "created": "2026-09-13T13:17:31Z",
-  "updated": "2026-09-13T16:41:45Z",
+  "updated": "2026-09-13T17:04:30Z",
   "deviations": [
     {
       "id": "d1",
@@ -357,7 +357,1984 @@
       "seq": 23
     }
   ],
-  "evidence": [],
+  "evidence": [
+    {
+      "id": "e1",
+      "obligation_ref": "o1",
+      "test_ref": "docs/verification.md (t19 record + re-verification after d2-d8) and the operator's live sessions on spark/thor/orin",
+      "behavior_text": "no full end-to-end interactive-session test exists (no tests/test_e2e_shell.py in the suite).",
+      "contract_text": "obligation o1 on claim c1",
+      "evidence_type": "manual",
+      "strength": "fidelity",
+      "strength_basis": "three-machine checklist executed on the real installs: setup, no visible change on success, ls /nope panel with the real slice, /doctor, Ctrl+G, slash-Tab palette, vi mode, uninstall restoring the rc; FAIL rows of the first pass were fixed by d2-d8 and re-verified PASS; operator confirmed d14 (5 s answer), c51 (context between calls) and d20 (prose routed) live",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-13T17:02:47Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 24
+    },
+    {
+      "id": "e2",
+      "obligation_ref": "o2",
+      "test_ref": "tests/test_cli_setup.py::test_setup_inserts_block_after_guard ; tests/test_cli_setup.py::test_uninstall_restores_rc_byte_identical_to_backup ; tests/test_hook_bash.py::test_hook_is_first_element_of_prompt_command",
+      "behavior_text": "asserts setup inserts a marked block after the interactive guard, uninstall restores the rc byte-identical to its backup, and the hook only appends to the PROMPT_COMMAND array.",
+      "contract_text": "obligation o2 on claim c2",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "tests ran fail at ef72f86: tests/test_cli_setup.py::test_setup_inserts_block_after_guard=missing, tests/test_cli_setup.py::test_uninstall_restores_rc_byte_identical_to_backup=missing, tests/test_hook_bash.py::test_hook_is_first_element_of_prompt_command=missing",
+      "outcome": "fail",
+      "run": {
+        "timestamp": "2026-09-13T17:02:47Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 25
+    },
+    {
+      "id": "e3",
+      "obligation_ref": "o3",
+      "test_ref": "tests/test_hook_bash.py::test_thousand_successful_commands_fork_no_nvsh_process ; tests/test_hook_bash.py::test_prompt_latency_overhead_is_small",
+      "behavior_text": "asserts 1000 successful 'true' commands fork the fake nvsh entrypoint 0 times, and measures hooked-vs-baseline prompt latency delta stays under a fixed tolerance.",
+      "contract_text": "obligation o3 on claim c3",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "tests ran fail at ef72f86: tests/test_hook_bash.py::test_thousand_successful_commands_fork_no_nvsh_process=missing, tests/test_hook_bash.py::test_prompt_latency_overhead_is_small=missing",
+      "outcome": "fail",
+      "run": {
+        "timestamp": "2026-09-13T17:02:47Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 26
+    },
+    {
+      "id": "e4",
+      "obligation_ref": "o4",
+      "test_ref": "tests/test_triggers.py::test_trigger_table[ctrl-c 130] ; tests/test_triggers.py::test_trigger_table[sigpipe 141] ; tests/test_triggers.py::test_every_non_error_row_has_a_reason ; tests/test_triggers.py::test_rate_limiter_refuses_second_call_inside_window_and_records_it ; tests/test_hook_bash.py::test_prefilter_skips_nvsh_own_slash_dispatch",
+      "behavior_text": "table-driven test asserts decide()'s action/rule_id for every table row, every non-error row explains itself, and the rate limiter refuses and records a second automatic call inside the window.",
+      "contract_text": "obligation o4 on claim c4",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "tests ran fail at ef72f86: tests/test_triggers.py::test_trigger_table[ctrl-c 130]=missing, tests/test_triggers.py::test_trigger_table[sigpipe 141]=missing, tests/test_triggers.py::test_every_non_error_row_has_a_reason=missing, tests/test_triggers.py::test_rate_limiter_refuses_second_call_inside_window_and_records_it=missing, tests/test_hook_bash.py::test_prefilter_skips_nvsh_own_slash_dispatch=missing",
+      "outcome": "fail",
+      "run": {
+        "timestamp": "2026-09-13T17:02:47Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 27
+    },
+    {
+      "id": "e5",
+      "obligation_ref": "o5",
+      "test_ref": "tests/test_readline_bash.py::test_enter_routes_slash_commands[emacs] ; tests/test_readline_bash.py::test_enter_routes_slash_commands[vi] ; tests/test_readline_bash.py::test_non_slash_lines_pass_through[emacs] ; tests/test_readline_bash.py::test_non_slash_lines_pass_through[vi] ; tests/test_readline_bash.py::test_ctrl_g_streams_the_answer_on_the_tty[emacs] ; tests/test_hook_bash.py::test_prefilter_skips_nvsh_own_slash_dispatch",
+      "behavior_text": "real pty-driven bash session asserts /doctor and /ask route to 'slash ...' with the original line kept in visible history (not the hidden 'nvsh slash' call), while /notacmd, plain commands and a quoted multi-line echo pass through unchanged, in both emacs and vi modes.",
+      "contract_text": "obligation o5 on claim c5",
+      "evidence_type": "integration",
+      "strength": "execution",
+      "strength_basis": "tests ran fail at ef72f86: tests/test_readline_bash.py::test_enter_routes_slash_commands[emacs]=missing, tests/test_readline_bash.py::test_enter_routes_slash_commands[vi]=missing, tests/test_readline_bash.py::test_non_slash_lines_pass_through[emacs]=missing, tests/test_readline_bash.py::test_non_slash_lines_pass_through[vi]=missing, tests/test_readline_bash.py::test_ctrl_g_streams_the_answer_on_the_tty[emacs]=missing, tests/test_hook_bash.py::test_prefilter_skips_nvsh_own_slash_dispatch=missing",
+      "outcome": "fail",
+      "run": {
+        "timestamp": "2026-09-13T17:02:47Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 28
+    },
+    {
+      "id": "e6",
+      "obligation_ref": "o6",
+      "test_ref": "tests/test_readline_bash.py::test_slash_tab_lists_palette_merged_with_paths ; tests/test_readline_bash.py::test_prefix_completes_slash_command ; tests/test_readline_bash.py::test_argument_completion_comes_from_nvsh_complete ; tests/test_readline_bash.py::test_ordinary_word_completion_still_works",
+      "behavior_text": "real pty bash session: '/'+Tab lists the slash palette merged with real paths, '/do'+Tab completes /doctor, '/doctor '+Tab lists its arguments via nvsh complete, and 'ec'+Tab still completes echo.",
+      "contract_text": "obligation o6 on claim c6",
+      "evidence_type": "integration",
+      "strength": "execution",
+      "strength_basis": "tests ran fail at ef72f86: tests/test_readline_bash.py::test_slash_tab_lists_palette_merged_with_paths=missing, tests/test_readline_bash.py::test_prefix_completes_slash_command=missing, tests/test_readline_bash.py::test_argument_completion_comes_from_nvsh_complete=missing, tests/test_readline_bash.py::test_ordinary_word_completion_still_works=missing",
+      "outcome": "fail",
+      "run": {
+        "timestamp": "2026-09-13T17:02:47Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 29
+    },
+    {
+      "id": "e7",
+      "obligation_ref": "o7",
+      "test_ref": "tests/test_agent_conformance.py::test_streaming_order[FakeAgent] ; tests/test_agent_conformance.py::test_streaming_order[PiAgent] ; tests/test_agent_conformance.py::test_cancel_mid_stream[FakeAgent] ; tests/test_agent_conformance.py::test_cancel_mid_stream[PiAgent] ; tests/test_agent_conformance.py::test_error_propagation[FakeAgent] ; tests/test_agent_conformance.py::test_error_propagation[PiAgent] ; tests/test_agent_conformance.py::test_capability_report[FakeAgent] ; tests/test_agent_conformance.py::test_capability_report[PiAgent] ; tests/test_agent_conformance.py::test_teardown[FakeAgent] ; tests/test_agent_conformance.py::test_teardown[PiAgent]",
+      "behavior_text": "the same parametrized suite (FakeAgent, ClaudeAgentViaFake, CodexAgentViaFake, QwenAgentViaFake, PiAgent) runs streaming order, cancel, error, capability-report and teardown checks against every registered adapter.",
+      "contract_text": "obligation o7 on claim c7",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "tests ran fail at ef72f86: tests/test_agent_conformance.py::test_streaming_order[FakeAgent]=missing, tests/test_agent_conformance.py::test_streaming_order[PiAgent]=missing, tests/test_agent_conformance.py::test_cancel_mid_stream[FakeAgent]=missing, tests/test_agent_conformance.py::test_cancel_mid_stream[PiAgent]=missing, tests/test_agent_conformance.py::test_error_propagation[FakeAgent]=missing, tests/test_agent_conformance.py::test_error_propagation[PiAgent]=missing, tests/test_agent_conformance.py::test_capability_report[FakeAgent]=missing, tests/test_agent_conformance.py::test_capability_report[PiAgent]=missing, tests/test_agent_conformance.py::test_teardown[FakeAgent]=missing, tests/test_agent_conformance.py::test_teardown[PiAgent]=missing",
+      "outcome": "fail",
+      "run": {
+        "timestamp": "2026-09-13T17:02:47Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 30
+    },
+    {
+      "id": "e8",
+      "obligation_ref": "o8",
+      "test_ref": "tests/test_approval_loop.py::test_dangerous_proposal_never_runs_until_approved ; tests/test_approval_loop.py::test_audit_log_records_proposal_decision_outcome",
+      "behavior_text": "asserts approve() is called before a proposal is ever executed, and that the audit log records a proposal/decision/outcome triple per proposal at file mode 0600 (parent dir 0700).",
+      "contract_text": "obligation o8 on claim c8",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "tests ran fail at ef72f86: tests/test_approval_loop.py::test_dangerous_proposal_never_runs_until_approved=missing, tests/test_approval_loop.py::test_audit_log_records_proposal_decision_outcome=missing",
+      "outcome": "fail",
+      "run": {
+        "timestamp": "2026-09-13T17:02:47Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 31
+    },
+    {
+      "id": "e9",
+      "obligation_ref": "o9",
+      "test_ref": "tests/test_doctor_checks.py::test_agent_configured_passes_for_a_known_provider ; tests/test_doctor_checks.py::test_agent_reachable_pi_missing ; tests/test_doctor_checks.py::test_agent_reachable_openai_compat_401_reports_endpoint_401 ; tests/test_doctor_checks.py::test_agent_reachable_unreachable_closed_port",
+      "behavior_text": "asserts config names a provider without needing a key, and doctor distinguishes pi-missing, endpoint-401 and an unreachable/closed-port endpoint with distinct messages and remediations, never leaking the key.",
+      "contract_text": "obligation o9 on claim c9",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "tests ran fail at ef72f86: tests/test_doctor_checks.py::test_agent_configured_passes_for_a_known_provider=missing, tests/test_doctor_checks.py::test_agent_reachable_pi_missing=missing, tests/test_doctor_checks.py::test_agent_reachable_openai_compat_401_reports_endpoint_401=missing, tests/test_doctor_checks.py::test_agent_reachable_unreachable_closed_port=missing",
+      "outcome": "fail",
+      "run": {
+        "timestamp": "2026-09-13T17:02:47Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 32
+    },
+    {
+      "id": "e10",
+      "obligation_ref": "o10",
+      "test_ref": "tests/test_platform.py::test_spark_known_facts ; tests/test_platform.py::test_spark_unified_memory_from_nvidia_smi_na ; tests/test_platform.py::test_spark_mem_available_is_pressure_signal ; tests/test_platform.py::test_spark_absent_facts_reported_not_omitted",
+      "behavior_text": "against a DGX Spark fixture tree, asserts dgx_name/swbuild/cuda/driver values and their sources, that unified_memory derives from the nvidia-smi N/A signal, mem_available from /proc/meminfo, and that absent facts (cuDNN, TensorRT, nvpmodel) are reported present=False rather than omitted.",
+      "contract_text": "obligation o10 on claim c10",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "tests ran fail at ef72f86: tests/test_platform.py::test_spark_known_facts=missing, tests/test_platform.py::test_spark_unified_memory_from_nvidia_smi_na=missing, tests/test_platform.py::test_spark_mem_available_is_pressure_signal=missing, tests/test_platform.py::test_spark_absent_facts_reported_not_omitted=missing",
+      "outcome": "fail",
+      "run": {
+        "timestamp": "2026-09-13T17:02:47Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 33
+    },
+    {
+      "id": "e11",
+      "obligation_ref": "o11",
+      "test_ref": "tests/test_redact.py::test_corpus_no_secret_substring_survives ; tests/test_cli_context.py::test_context_show_prints_exactly_what_would_be_sent ; tests/test_redact.py::test_no_source_reads_shell_rc_files",
+      "behavior_text": "asserts the redaction corpus is fully scrubbed, 'nvsh context --show' prints exactly the bytes that would be sent to the agent, and a repo-wide scan asserts nothing under nvsh/ (besides the sanctioned rc editor) opens a shell rc file.",
+      "contract_text": "obligation o11 on claim c11",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "tests ran fail at ef72f86: tests/test_redact.py::test_corpus_no_secret_substring_survives=missing, tests/test_cli_context.py::test_context_show_prints_exactly_what_would_be_sent=missing, tests/test_redact.py::test_no_source_reads_shell_rc_files=missing",
+      "outcome": "fail",
+      "run": {
+        "timestamp": "2026-09-13T17:02:47Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 34
+    },
+    {
+      "id": "e12",
+      "obligation_ref": "o12",
+      "test_ref": "tests/test_capture.py::test_last_slice_script_fixture_returns_last_command_output ; tests/test_capture.py::test_last_slice_tmux_fixture_returns_last_command_output ; tests/test_client.py::test_retry_runs_only_after_enter_and_verify_reports_the_new_status",
+      "behavior_text": "asserts the failure slice is read from the script(1) typescript / tmux pipe-pane log rather than by re-running the command, while retry only re-runs the command later and only after an explicit Enter.",
+      "contract_text": "obligation o12 on claim c12",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "tests ran fail at ef72f86: tests/test_capture.py::test_last_slice_script_fixture_returns_last_command_output=missing, tests/test_capture.py::test_last_slice_tmux_fixture_returns_last_command_output=missing, tests/test_client.py::test_retry_runs_only_after_enter_and_verify_reports_the_new_status=missing",
+      "outcome": "fail",
+      "run": {
+        "timestamp": "2026-09-13T17:02:47Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 35
+    },
+    {
+      "id": "e13",
+      "obligation_ref": "o13",
+      "test_ref": "tests/test_wheel_packaging.py::test_wheel_contains_shell_bash_files ; tests/test_wheel_packaging.py::test_clean_venv_install_runs_nvsh_setup",
+      "behavior_text": "builds the real wheel, asserts nvsh/shell/hook.bash and readline.bash are inside it, and that installing that wheel into a clean venv lets 'nvsh setup' run; pyproject.toml's dependencies=[] is a plain grep, not a test. Seam named tests/test_packaging.py \u2014 the real file is tests/test_wheel_packaging.py.",
+      "contract_text": "obligation o13 on claim c13",
+      "evidence_type": "integration",
+      "strength": "execution",
+      "strength_basis": "tests ran fail at ef72f86: tests/test_wheel_packaging.py::test_wheel_contains_shell_bash_files=missing, tests/test_wheel_packaging.py::test_clean_venv_install_runs_nvsh_setup=missing",
+      "outcome": "fail",
+      "run": {
+        "timestamp": "2026-09-13T17:02:47Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 36
+    },
+    {
+      "id": "e14",
+      "obligation_ref": "o14",
+      "test_ref": "tests/test_docs_architecture.py::test_architecture_doc_exists ; tests/test_harness_smoke.py::test_smoke_passes_on_the_real_repo",
+      "behavior_text": "asserts docs/architecture.md and docs/platforms.md exist with required content, and the real-repo harness-smoke config stage passes for all four prompt files; version-bump-per-PR is a CI gate (version-check job), not a pytest test.",
+      "contract_text": "obligation o14 on claim c14",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "tests ran fail at ef72f86: tests/test_docs_architecture.py::test_architecture_doc_exists=missing, tests/test_harness_smoke.py::test_smoke_passes_on_the_real_repo=missing",
+      "outcome": "fail",
+      "run": {
+        "timestamp": "2026-09-13T17:02:47Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 37
+    },
+    {
+      "id": "e15",
+      "obligation_ref": "o15",
+      "test_ref": "tests/test_platform.py::test_thor_known_facts ; tests/test_platform.py::test_thor_nvpmodel_and_presence_flags ; tests/test_platform.py::test_orin_cuda_toolkit_and_tensorrt_absent",
+      "behavior_text": "against thor/orin fixture trees, asserts R38.2/AGX Thor/CUDA 13/cuDNN/TensorRT/nvpmodel MAXN on thor, and R39.2/AGX Orin with CUDA toolkit and tensorrt reported absent on orin.",
+      "contract_text": "obligation o15 on claim c15",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "tests ran fail at ef72f86: tests/test_platform.py::test_thor_known_facts=missing, tests/test_platform.py::test_thor_nvpmodel_and_presence_flags=missing, tests/test_platform.py::test_orin_cuda_toolkit_and_tensorrt_absent=missing",
+      "outcome": "fail",
+      "run": {
+        "timestamp": "2026-09-13T17:02:47Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 38
+    },
+    {
+      "id": "e16",
+      "obligation_ref": "o16",
+      "test_ref": "tests/test_agent_registry.py::test_choose_orin_without_node_selects_openai_compat_with_reason ; tests/test_agent_registry.py::test_no_harness_message_offers_both_options",
+      "behavior_text": "asserts that with no pi/node/npm on PATH the registry falls back to openai-compat and states 'node' as the reason, and the no-harness message offers install-or-choose.",
+      "contract_text": "obligation o16 on claim c16",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "tests ran fail at ef72f86: tests/test_agent_registry.py::test_choose_orin_without_node_selects_openai_compat_with_reason=missing, tests/test_agent_registry.py::test_no_harness_message_offers_both_options=missing",
+      "outcome": "fail",
+      "run": {
+        "timestamp": "2026-09-13T17:02:47Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 39
+    },
+    {
+      "id": "e17",
+      "obligation_ref": "o17",
+      "test_ref": "tests/test_import_time.py::test_import_nvsh_cli_loads_only_stdlib_and_nvsh",
+      "behavior_text": "runs 'python -X importtime -c \"import nvsh.cli\"' and asserts every imported module is stdlib or nvsh itself, catching any accidental third-party or jetson-cli/pi dependency at import time.",
+      "contract_text": "obligation o17 on claim c17",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "tests ran fail at ef72f86: tests/test_import_time.py::test_import_nvsh_cli_loads_only_stdlib_and_nvsh=missing",
+      "outcome": "fail",
+      "run": {
+        "timestamp": "2026-09-13T17:02:47Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 40
+    },
+    {
+      "id": "e18",
+      "obligation_ref": "o18",
+      "test_ref": "grep -rn 'install-shell|chsh|/etc/shells' nvsh/ tests/ (negative-space check)",
+      "behavior_text": "no test asserts the absence of an install-shell/chsh verb or /etc/shells edits.",
+      "contract_text": "obligation o18 on claim c18",
+      "evidence_type": "observation",
+      "strength": "coverage",
+      "strength_basis": "grep over nvsh/ and tests/ at 373d77d returns no install-shell/chsh//etc/shells reference; no such verb exists in the CLI verb table",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-13T17:02:47Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 41
+    },
+    {
+      "id": "e19",
+      "obligation_ref": "o19",
+      "test_ref": "tests/test_import_time.py::test_import_nvsh_cli_loads_only_stdlib_and_nvsh",
+      "behavior_text": "the import-time test would fail if nvsh.cli imported jetson-cli/rtx-spark-cli/callsmith as a module; no test directly greps for their absence as a dependency.",
+      "contract_text": "obligation o19 on claim c19",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "tests ran fail at ef72f86: tests/test_import_time.py::test_import_nvsh_cli_loads_only_stdlib_and_nvsh=missing",
+      "outcome": "fail",
+      "run": {
+        "timestamp": "2026-09-13T17:02:47Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 42
+    },
+    {
+      "id": "e20",
+      "obligation_ref": "o20",
+      "test_ref": "tests/test_pi_settings.py::test_pi_skills_is_a_symlink ; tests/test_pi_settings.py::test_no_inert_pi_settings_json ; tests/test_harness_registries.py::test_the_yaml_and_the_smoke_check_list_the_same_four_harnesses",
+      "behavior_text": "asserts .pi/skills stays a relative symlink with no forked settings.json, and doctor's _PROMPT_FILE table agrees with backend-fingerprints.yaml across all four harnesses; culture.yaml's own diff-emptiness is a plain diff check, not a pytest.",
+      "contract_text": "obligation o20 on claim c20",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "tests ran fail at ef72f86: tests/test_pi_settings.py::test_pi_skills_is_a_symlink=missing, tests/test_pi_settings.py::test_no_inert_pi_settings_json=missing, tests/test_harness_registries.py::test_the_yaml_and_the_smoke_check_list_the_same_four_harnesses=missing",
+      "outcome": "fail",
+      "run": {
+        "timestamp": "2026-09-13T17:02:47Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 43
+    },
+    {
+      "id": "e21",
+      "obligation_ref": "o21",
+      "test_ref": "tests/test_scan_secrets.py::test_clean_repo_passes_via_cli ; tests/test_scan_secrets.py::test_loopback_endpoints_are_allowed[http://127.0.0.1:8000/v1]",
+      "behavior_text": "asserts scan-secrets.py passes on the current clean repo and that loopback endpoints are allowed while any non-localhost URL (including remote IPv6) is caught.",
+      "contract_text": "obligation o21 on claim c21",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "tests ran fail at ef72f86: tests/test_scan_secrets.py::test_clean_repo_passes_via_cli=missing, tests/test_scan_secrets.py::test_loopback_endpoints_are_allowed[http://127.0.0.1:8000/v1]=missing",
+      "outcome": "fail",
+      "run": {
+        "timestamp": "2026-09-13T17:02:47Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 44
+    },
+    {
+      "id": "e22",
+      "obligation_ref": "o22",
+      "test_ref": "tests/test_slash.py::test_remember_good_family_is_not_registered",
+      "behavior_text": "asserts resolve() returns None for remember-good/diff-good/restore-good; no test separately asserts the absence of zsh/fish installers, but tests/test_triggers.py::test_pattern_trigger_is_opt_in_and_ignored_by_default covers the pattern-trigger-is-opt-in half.",
+      "contract_text": "obligation o22 on claim c22",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "tests ran fail at ef72f86: tests/test_slash.py::test_remember_good_family_is_not_registered=missing",
+      "outcome": "fail",
+      "run": {
+        "timestamp": "2026-09-13T17:02:47Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 45
+    },
+    {
+      "id": "e23",
+      "obligation_ref": "o23",
+      "test_ref": "tests/test_hook_bash.py::test_prompt_latency_overhead_is_small ; tests/test_panel.py::test_terminal_matrix_renders_readable_text_with_no_escapes[env0-True] ; tests/test_panel.py::test_terminal_matrix_renders_readable_text_with_no_escapes[env2-False] ; tests/test_timing.py::test_success_path_overhead_under_5ms ; tests/test_timing.py::test_time_to_first_agent_text_under_2s",
+      "behavior_text": "asserts hooked-vs-baseline prompt latency delta stays under a fixed tolerance, and panel output is escape-free and readable across a NO_COLOR/TERM=dumb/non-tty matrix; the '<2s to first agent text with a warm pi session on the Spark' number has no automated test.",
+      "contract_text": "obligation o23 on claim c23",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "tests ran fail at ef72f86: tests/test_hook_bash.py::test_prompt_latency_overhead_is_small=missing, tests/test_panel.py::test_terminal_matrix_renders_readable_text_with_no_escapes[env0-True]=missing, tests/test_panel.py::test_terminal_matrix_renders_readable_text_with_no_escapes[env2-False]=missing, tests/test_timing.py::test_success_path_overhead_under_5ms=missing, tests/test_timing.py::test_time_to_first_agent_text_under_2s=missing",
+      "outcome": "fail",
+      "run": {
+        "timestamp": "2026-09-13T17:02:47Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 46
+    },
+    {
+      "id": "e24",
+      "obligation_ref": "o24",
+      "test_ref": "tests/test_cli_agent.py::test_agent_list_json_reports_all_five ; tests/test_cli_agent.py::test_agent_list_marks_configured_provider ; tests/test_agent_registry.py::test_available_adapters_reports_all_five_with_installed_status",
+      "behavior_text": "asserts 'agent list --json' reports all five adapters (pi, qwen, claude, codex, openai-compat) with installed/configured status.",
+      "contract_text": "obligation o24 on claim c24",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "tests ran fail at ef72f86: tests/test_cli_agent.py::test_agent_list_json_reports_all_five=missing, tests/test_cli_agent.py::test_agent_list_marks_configured_provider=missing, tests/test_agent_registry.py::test_available_adapters_reports_all_five_with_installed_status=missing",
+      "outcome": "fail",
+      "run": {
+        "timestamp": "2026-09-13T17:02:47Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 47
+    },
+    {
+      "id": "e25",
+      "obligation_ref": "o25",
+      "test_ref": "tests/test_pi_extension.py::test_extension_forwards_to_nvsh_approve_check ; tests/test_pi_extension.py::test_extension_blocks_non_bash_tools ; tests/test_pi_extension.py::test_scenario_sudo_rm_always_asks_even_after_user_attempt",
+      "behavior_text": "asserts the pi extension forwards every tool_call through the approve check, blocks non-bash tools outright, and a sudo rm proposal always asks even after a prior user-level approval attempt.",
+      "contract_text": "obligation o25 on claim c25",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "tests ran fail at ef72f86: tests/test_pi_extension.py::test_extension_forwards_to_nvsh_approve_check=missing, tests/test_pi_extension.py::test_extension_blocks_non_bash_tools=missing, tests/test_pi_extension.py::test_scenario_sudo_rm_always_asks_even_after_user_attempt=missing",
+      "outcome": "fail",
+      "run": {
+        "timestamp": "2026-09-13T17:02:47Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 48
+    },
+    {
+      "id": "e26",
+      "obligation_ref": "o26",
+      "test_ref": "tests/test_hook_bash.py::test_composes_with_ghostty_integration ; tests/test_hook_bash.py::test_no_debug_trap_is_installed ; tests/test_hook_bash.py::test_pipestatus_under_bash_preexec_false_pipe_true ; tests/test_hook_bash.py::test_hook_installed_once_when_resourced_under_bash_preexec",
+      "behavior_text": "asserts nvsh's hook appears before __ghostty_hook in PROMPT_COMMAND exactly once, and that no DEBUG trap containing '__nvsh' is installed.",
+      "contract_text": "obligation o26 on claim c26",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "tests ran fail at ef72f86: tests/test_hook_bash.py::test_composes_with_ghostty_integration=missing, tests/test_hook_bash.py::test_no_debug_trap_is_installed=missing, tests/test_hook_bash.py::test_pipestatus_under_bash_preexec_false_pipe_true=missing, tests/test_hook_bash.py::test_hook_installed_once_when_resourced_under_bash_preexec=missing",
+      "outcome": "fail",
+      "run": {
+        "timestamp": "2026-09-13T17:02:47Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 49
+    },
+    {
+      "id": "e27",
+      "obligation_ref": "o27",
+      "test_ref": "tests/test_client.py::test_retry_runs_only_after_enter_and_verify_reports_the_new_status ; tests/test_client.py::test_build_context_carries_platform_output_cwd_and_redaction",
+      "behavior_text": "retry only runs the command after an explicit Enter reply and then reports verify/exit status; build_context assembles the diagnosis from log output, cwd and platform before any re-run.",
+      "contract_text": "obligation o27 on claim c27",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "tests ran fail at ef72f86: tests/test_client.py::test_retry_runs_only_after_enter_and_verify_reports_the_new_status=missing, tests/test_client.py::test_build_context_carries_platform_output_cwd_and_redaction=missing",
+      "outcome": "fail",
+      "run": {
+        "timestamp": "2026-09-13T17:02:47Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 50
+    },
+    {
+      "id": "e28",
+      "obligation_ref": "o28",
+      "test_ref": "tests/test_hook_bash.py::test_composes_with_ghostty_integration ; tests/test_hook_bash.py::test_hook_sources_ghostty_itself_when_term_program_is_ghostty ; tests/test_hook_bash.py::test_capture_execs_script_and_exports_the_log",
+      "behavior_text": "hook composes with Ghostty's PROMPT_COMMAND element, sources ghostty.bash itself when TERM_PROGRAM=ghostty, and execs script(1) to export the session log path.",
+      "contract_text": "obligation o28 on claim c28",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "tests ran fail at ef72f86: tests/test_hook_bash.py::test_composes_with_ghostty_integration=missing, tests/test_hook_bash.py::test_hook_sources_ghostty_itself_when_term_program_is_ghostty=missing, tests/test_hook_bash.py::test_capture_execs_script_and_exports_the_log=missing",
+      "outcome": "fail",
+      "run": {
+        "timestamp": "2026-09-13T17:02:47Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 51
+    },
+    {
+      "id": "e29",
+      "obligation_ref": "o29",
+      "test_ref": "tests/test_capture.py::test_open_session_log_creates_dir_and_file_with_correct_perms ; tests/test_capture.py::test_cleanup_removes_log ; tests/test_cli_capture.py::test_capture_show_never_leaks_log_path",
+      "behavior_text": "session log dir/file are created 0700/0600, cleanup removes the log file, and capture --show never prints the log path.",
+      "contract_text": "obligation o29 on claim c29",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "tests ran fail at ef72f86: tests/test_capture.py::test_open_session_log_creates_dir_and_file_with_correct_perms=missing, tests/test_capture.py::test_cleanup_removes_log=missing, tests/test_cli_capture.py::test_capture_show_never_leaks_log_path=missing",
+      "outcome": "fail",
+      "run": {
+        "timestamp": "2026-09-13T17:02:47Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 52
+    },
+    {
+      "id": "e30",
+      "obligation_ref": "o30",
+      "test_ref": "README.md lines 1-7 read by eye",
+      "behavior_text": "no automated test asserts README wording.",
+      "contract_text": "obligation o30 on claim c30",
+      "evidence_type": "manual",
+      "strength": "coverage",
+      "strength_basis": "README opening paragraph at 373d77d names Jetson AGX Orin/Thor, DGX Spark, Ghostty, ssh and the bash hook; wording only, no test pins it",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-13T17:02:47Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 53
+    },
+    {
+      "id": "e31",
+      "obligation_ref": "o31",
+      "test_ref": "tests/test_docs_architecture.py::test_architecture_doc_cites_before_state",
+      "behavior_text": "asserts docs/architecture.md's text contains the literal citation 'README.md:10-14' and the version string '0.9.1'.",
+      "contract_text": "obligation o31 on claim c31",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "tests ran fail at ef72f86: tests/test_docs_architecture.py::test_architecture_doc_cites_before_state=missing",
+      "outcome": "fail",
+      "run": {
+        "timestamp": "2026-09-13T17:02:47Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 54
+    },
+    {
+      "id": "e32",
+      "obligation_ref": "o32",
+      "test_ref": "ls docs/demos/ (spark-cuda-oom.cast re-recorded after d8, orin-missing-package.cast) + docs/verification.md",
+      "behavior_text": "no docs/demos/ directory or recordings exist yet; no test covers recorded demos.",
+      "contract_text": "obligation o32 on claim c32",
+      "evidence_type": "manual",
+      "strength": "fidelity",
+      "strength_basis": "two asciicast recordings committed; the spark one shows the bare nvidia-smi proposal, panel, Esc and 'nvsh: not run'; recorded with scripts/record-cast.py, scrubbed of endpoint/token",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-13T17:02:47Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 55
+    },
+    {
+      "id": "e33",
+      "obligation_ref": "o33",
+      "test_ref": "tests/test_client.py::test_build_context_carries_platform_output_cwd_and_redaction ; tests/test_client_airgap.py::test_air_gapped_failure_still_reaches_a_localhost_endpoint ; tests/test_client_airgap.py::test_a_non_loopback_endpoint_is_refused_when_air_gapped",
+      "behavior_text": "build_context's platform field is asserted present ('platform: ' prefix) and, with outbound network disabled, a localhost endpoint is still reached while a non-loopback one is refused. Seam names tests/test_context.py, which doesn't exist \u2014 the real equivalents are test_client.py and test_client_airgap.py (plus tests/test_cli_context.py for --show-context).",
+      "contract_text": "obligation o33 on claim c33",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "tests ran fail at ef72f86: tests/test_client.py::test_build_context_carries_platform_output_cwd_and_redaction=missing, tests/test_client_airgap.py::test_air_gapped_failure_still_reaches_a_localhost_endpoint=missing, tests/test_client_airgap.py::test_a_non_loopback_endpoint_is_refused_when_air_gapped=missing",
+      "outcome": "fail",
+      "run": {
+        "timestamp": "2026-09-13T17:02:47Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 56
+    },
+    {
+      "id": "e34",
+      "obligation_ref": "o34",
+      "test_ref": "tests/test_triggers.py::test_every_non_error_row_has_a_reason ; tests/test_redact.py::test_corpus_no_secret_substring_survives ; tests/test_hook_bash.py::test_prompt_latency_overhead_is_small ; tests/test_timing.py::test_success_path_overhead_under_5ms ; tests/test_timing.py::test_time_to_first_agent_text_under_2s",
+      "behavior_text": "triggers table asserts every non-error exit row yields a skip reason (0 agent calls), redaction corpus test asserts no secret substring survives, and hook_bash asserts prompt overhead is small; the '<2s first text on Spark' and '3/3 install/uninstall on spark,thor,orin' numbers have no automated test yet.",
+      "contract_text": "obligation o34 on claim c34",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "tests ran fail at ef72f86: tests/test_triggers.py::test_every_non_error_row_has_a_reason=missing, tests/test_redact.py::test_corpus_no_secret_substring_survives=missing, tests/test_hook_bash.py::test_prompt_latency_overhead_is_small=missing, tests/test_timing.py::test_success_path_overhead_under_5ms=missing, tests/test_timing.py::test_time_to_first_agent_text_under_2s=missing",
+      "outcome": "fail",
+      "run": {
+        "timestamp": "2026-09-13T17:02:47Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 57
+    },
+    {
+      "id": "e35",
+      "obligation_ref": "o35",
+      "test_ref": "tests/test_hook_bash.py::test_hook_is_first_element_of_prompt_command ; tests/test_hook_bash.py::test_pipestatus_false_pipe_true ; tests/test_hook_bash.py::test_pipestatus_three_stage_pipeline ; tests/test_hook_bash.py::test_pipefail_makes_the_recorded_status_one ; tests/test_hook_bash.py::test_pipefail_under_bash_preexec_keeps_status_and_pipestatus ; tests/test_hook_bash.py::test_pipestatus_without_bash_preexec_is_the_control",
+      "behavior_text": "asserts the hook is PROMPT_COMMAND[0] and that 'false | true' records PIPESTATUS '1 0', 'true | false | true' records '0 1 0', and pipefail makes the recorded status 1.",
+      "contract_text": "obligation o35 on claim c35",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "tests ran fail at ef72f86: tests/test_hook_bash.py::test_hook_is_first_element_of_prompt_command=missing, tests/test_hook_bash.py::test_pipestatus_false_pipe_true=missing, tests/test_hook_bash.py::test_pipestatus_three_stage_pipeline=missing, tests/test_hook_bash.py::test_pipefail_makes_the_recorded_status_one=missing, tests/test_hook_bash.py::test_pipefail_under_bash_preexec_keeps_status_and_pipestatus=missing, tests/test_hook_bash.py::test_pipestatus_without_bash_preexec_is_the_control=missing",
+      "outcome": "fail",
+      "run": {
+        "timestamp": "2026-09-13T17:02:47Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 58
+    },
+    {
+      "id": "e36",
+      "obligation_ref": "o36",
+      "test_ref": "tests/test_rcfile.py::test_insert_places_block_right_after_guard ; tests/test_rcfile.py::test_double_insert_is_idempotent_when_reapplied_over_stripped_text ; tests/test_rcfile.py::test_write_backup_creates_timestamped_sibling ; tests/test_setup_timing.py::test_setup_does_not_meaningfully_slow_down_prompt_startup",
+      "behavior_text": "asserts the block is inserted right after the interactive guard, double-insertion is idempotent, a timestamped backup file is created, and setup does not meaningfully slow bash -ic startup.",
+      "contract_text": "obligation o36 on claim c36",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "tests ran fail at ef72f86: tests/test_rcfile.py::test_insert_places_block_right_after_guard=missing, tests/test_rcfile.py::test_double_insert_is_idempotent_when_reapplied_over_stripped_text=missing, tests/test_rcfile.py::test_write_backup_creates_timestamped_sibling=missing, tests/test_setup_timing.py::test_setup_does_not_meaningfully_slow_down_prompt_startup=missing",
+      "outcome": "fail",
+      "run": {
+        "timestamp": "2026-09-13T17:02:47Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 59
+    },
+    {
+      "id": "e37",
+      "obligation_ref": "o37",
+      "test_ref": "tests/test_doctor_checks.py::test_bindings_present_fails_when_entries_missing ; tests/test_doctor_checks.py::test_hook_first_in_prompt_command_fails_with_fix_command_when_moved_last",
+      "behavior_text": "asserts doctor reports a failing/error check with remediation when bindings are missing or the hook is reordered out of first position; coverage does not extend to naming a third-party integration's source file when known.",
+      "contract_text": "obligation o37 on claim c37",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "tests ran fail at ef72f86: tests/test_doctor_checks.py::test_bindings_present_fails_when_entries_missing=missing, tests/test_doctor_checks.py::test_hook_first_in_prompt_command_fails_with_fix_command_when_moved_last=missing",
+      "outcome": "fail",
+      "run": {
+        "timestamp": "2026-09-13T17:02:47Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 60
+    },
+    {
+      "id": "e38",
+      "obligation_ref": "o38",
+      "test_ref": "tests/test_panel.py::test_panel_module_never_imports_curses_or_calls_tput ; tests/test_panel.py::test_terminal_matrix_renders_readable_text_with_no_escapes[env0-True] ; tests/test_panel.py::test_terminal_matrix_renders_readable_text_with_no_escapes[env2-False] ; tests/test_doctor_checks.py::test_terminfo_present_xterm_ghostty_missing_gives_exact_tic_remediation",
+      "behavior_text": "asserts panel.py's source never imports curses/subprocess/tput, renders escape-free readable text across a TERM/NO_COLOR/tty matrix, and doctor gives the exact 'infocmp -x ... | tic -x -' remediation when terminfo is missing.",
+      "contract_text": "obligation o38 on claim c38",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "tests ran fail at ef72f86: tests/test_panel.py::test_panel_module_never_imports_curses_or_calls_tput=missing, tests/test_panel.py::test_terminal_matrix_renders_readable_text_with_no_escapes[env0-True]=missing, tests/test_panel.py::test_terminal_matrix_renders_readable_text_with_no_escapes[env2-False]=missing, tests/test_doctor_checks.py::test_terminfo_present_xterm_ghostty_missing_gives_exact_tic_remediation=missing",
+      "outcome": "fail",
+      "run": {
+        "timestamp": "2026-09-13T17:02:47Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 61
+    },
+    {
+      "id": "e39",
+      "obligation_ref": "o39",
+      "test_ref": "tests/test_readline_bash.py::test_binds_every_keymap ; tests/test_readline_bash.py::test_enter_routes_slash_commands[emacs] ; tests/test_readline_bash.py::test_enter_routes_slash_commands[vi]",
+      "behavior_text": "asserts Enter/Ctrl+G are bound in every keymap (emacs, vi-insert, vi-command) and that slash routing works under both emacs and vi indexing.",
+      "contract_text": "obligation o39 on claim c39",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "tests ran fail at ef72f86: tests/test_readline_bash.py::test_binds_every_keymap=missing, tests/test_readline_bash.py::test_enter_routes_slash_commands[emacs]=missing, tests/test_readline_bash.py::test_enter_routes_slash_commands[vi]=missing",
+      "outcome": "fail",
+      "run": {
+        "timestamp": "2026-09-13T17:02:47Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 62
+    },
+    {
+      "id": "e40",
+      "obligation_ref": "o40",
+      "test_ref": "tests/test_doctor_checks.py::test_agent_reachable_pi_missing ; tests/test_doctor_checks.py::test_agent_reachable_unreachable_closed_port ; tests/test_doctor_checks.py::test_agent_reachable_openai_compat_401_reports_endpoint_401",
+      "behavior_text": "asserts a LAN endpoint check yields distinct messages for pi missing, a closed/unreachable port, and a 401, none of which hang (server-backed with real sockets and timeouts).",
+      "contract_text": "obligation o40 on claim c40",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "tests ran fail at ef72f86: tests/test_doctor_checks.py::test_agent_reachable_pi_missing=missing, tests/test_doctor_checks.py::test_agent_reachable_unreachable_closed_port=missing, tests/test_doctor_checks.py::test_agent_reachable_openai_compat_401_reports_endpoint_401=missing",
+      "outcome": "fail",
+      "run": {
+        "timestamp": "2026-09-13T17:02:47Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 63
+    },
+    {
+      "id": "e41",
+      "obligation_ref": "o41",
+      "test_ref": "tests/test_pi_agent.py::test_build_argv_contains_hygiene_flags_in_order ; tests/test_pi_agent.py::test_no_file_under_dot_pi_agent_sessions",
+      "behavior_text": "asserts PiAgent's argv contains --no-context-files, --no-extensions, --no-skills, --no-prompt-templates, --no-approve (in order) and a --session-dir flag, and that a run leaves no file under ~/.pi/agent/sessions.",
+      "contract_text": "obligation o41 on claim c41",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "tests ran fail at ef72f86: tests/test_pi_agent.py::test_build_argv_contains_hygiene_flags_in_order=missing, tests/test_pi_agent.py::test_no_file_under_dot_pi_agent_sessions=missing",
+      "outcome": "fail",
+      "run": {
+        "timestamp": "2026-09-13T17:02:47Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 64
+    },
+    {
+      "id": "e42",
+      "obligation_ref": "o42",
+      "test_ref": "tests/test_triggers.py::test_trigger_table[ctrl-c 130] ; tests/test_triggers.py::test_trigger_table[sigpipe 141]",
+      "behavior_text": "table rows for ssh, docker exec, kubectl exec, tmux/screen attach and sudo -i all assert action=='skip', rule_id=='interactive_program' (never auto-triggering).",
+      "contract_text": "obligation o42 on claim c42",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "tests ran fail at ef72f86: tests/test_triggers.py::test_trigger_table[ctrl-c 130]=missing, tests/test_triggers.py::test_trigger_table[sigpipe 141]=missing",
+      "outcome": "fail",
+      "run": {
+        "timestamp": "2026-09-13T17:02:47Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 65
+    },
+    {
+      "id": "e43",
+      "obligation_ref": "o43",
+      "test_ref": "tests/test_daemon_lifecycle.py::test_daemon_starts_pi_lazily_and_the_last_shell_stops_both ; tests/test_daemon.py::test_client_falls_back_to_one_shot_without_a_daemon ; tests/test_daemon_lifecycle.py::test_autostart_waits_for_a_cold_backend_instead_of_falling_back ; tests/test_daemon_lifecycle.py::test_a_second_daemon_refuses_while_another_holds_the_lock",
+      "behavior_text": "spawns a real daemon subprocess and asserts no pi process exists before the first failure, exactly one pi process starts on the first qualifying failure, and both the daemon and pi die when the last shell unregisters; a separate test covers the one-shot fallback when the daemon is missing.",
+      "contract_text": "obligation o43 on claim c43",
+      "evidence_type": "integration",
+      "strength": "execution",
+      "strength_basis": "tests ran fail at ef72f86: tests/test_daemon_lifecycle.py::test_daemon_starts_pi_lazily_and_the_last_shell_stops_both=missing, tests/test_daemon.py::test_client_falls_back_to_one_shot_without_a_daemon=missing, tests/test_daemon_lifecycle.py::test_autostart_waits_for_a_cold_backend_instead_of_falling_back=missing, tests/test_daemon_lifecycle.py::test_a_second_daemon_refuses_while_another_holds_the_lock=missing",
+      "outcome": "fail",
+      "run": {
+        "timestamp": "2026-09-13T17:02:47Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 66
+    },
+    {
+      "id": "e44",
+      "obligation_ref": "o44",
+      "test_ref": "tests/test_shell_render.py::test_render_shell_files_stamps_version_header ; tests/test_cli_setup.py::test_hook_prints_refresh_notice_once_per_session",
+      "behavior_text": "asserts the rendered hook file carries a version-stamp header, and that a stale hook (NVSH_HOOK_VERSION mismatch) prints 'run nvsh setup to refresh' once per session and not again on the second call.",
+      "contract_text": "obligation o44 on claim c44",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "tests ran fail at ef72f86: tests/test_shell_render.py::test_render_shell_files_stamps_version_header=missing, tests/test_cli_setup.py::test_hook_prints_refresh_notice_once_per_session=missing",
+      "outcome": "fail",
+      "run": {
+        "timestamp": "2026-09-13T17:02:47Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 67
+    },
+    {
+      "id": "e45",
+      "obligation_ref": "o45",
+      "test_ref": "tests/test_hook_bash.py::test_nvsh_disable_makes_the_file_a_noop ; tests/test_cli_setup.py::test_off_shell_mode_prints_bash_snippet ; tests/test_cli_setup.py::test_uninstall_restores_rc_byte_identical_to_backup ; tests/test_readline_bash.py::test_erroring_hook_still_accepts_the_line",
+      "behavior_text": "asserts NVSH_DISABLE=1 installs no hook function/bindings, 'nvsh off --shell' prints an unload/unbind snippet plus NVSH_DISABLE=1, uninstall restores the rc byte-identical to its backup, and an erroring Enter-macro function still lets the line execute (no lockout).",
+      "contract_text": "obligation o45 on claim c45",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "tests ran fail at ef72f86: tests/test_hook_bash.py::test_nvsh_disable_makes_the_file_a_noop=missing, tests/test_cli_setup.py::test_off_shell_mode_prints_bash_snippet=missing, tests/test_cli_setup.py::test_uninstall_restores_rc_byte_identical_to_backup=missing, tests/test_readline_bash.py::test_erroring_hook_still_accepts_the_line=missing",
+      "outcome": "fail",
+      "run": {
+        "timestamp": "2026-09-13T17:02:47Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 68
+    },
+    {
+      "id": "e46",
+      "obligation_ref": "o46",
+      "test_ref": "tests/test_panel.py::test_sigint_during_stream_cancels_and_reports_interrupted ; tests/test_panel.py::test_ctrl_c_returns_to_a_prompt_within_one_second ; tests/test_client.py::test_interrupted_stream_returns_130_and_keeps_the_last_failure",
+      "behavior_text": "asserts Ctrl+C mid-stream calls the cancel callback and reports 'interrupted', returns to a working prompt within one second (real subprocess timing), and handle_failure returns 130 while keeping the last failure available for /fix.",
+      "contract_text": "obligation o46 on claim c46",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "tests ran fail at ef72f86: tests/test_panel.py::test_sigint_during_stream_cancels_and_reports_interrupted=missing, tests/test_panel.py::test_ctrl_c_returns_to_a_prompt_within_one_second=missing, tests/test_client.py::test_interrupted_stream_returns_130_and_keeps_the_last_failure=missing",
+      "outcome": "fail",
+      "run": {
+        "timestamp": "2026-09-13T17:02:47Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 69
+    },
+    {
+      "id": "e47",
+      "obligation_ref": "o47",
+      "test_ref": "tests/test_capture.py::test_last_slice_truncates_large_output_head_and_tail ; tests/test_capture.py::test_last_slice_replaces_invalid_utf8 ; tests/test_capture.py::test_last_slice_prefers_open_region_over_previous_closed_region",
+      "behavior_text": "asserts a large (200KB+) failure body is truncated to a bounded head+tail with a 'truncated' marker under the 64KB limit, and invalid UTF-8 bytes are replaced rather than raising.",
+      "contract_text": "obligation o47 on claim c47",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "tests ran fail at ef72f86: tests/test_capture.py::test_last_slice_truncates_large_output_head_and_tail=missing, tests/test_capture.py::test_last_slice_replaces_invalid_utf8=missing, tests/test_capture.py::test_last_slice_prefers_open_region_over_previous_closed_region=missing",
+      "outcome": "fail",
+      "run": {
+        "timestamp": "2026-09-13T17:02:47Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 70
+    },
+    {
+      "id": "e48",
+      "obligation_ref": "o48",
+      "test_ref": "tests/test_client.py::test_sudo_proposal_is_displayed_verbatim_and_never_run_without_enter ; tests/test_client.py::test_sudo_is_never_auto_run_even_if_a_pattern_allows_it ; tests/test_pi_agent.py::test_panel_text_in_title_never_becomes_the_command ; tests/test_approval_loop.py::test_commandless_proposal_is_never_executed",
+      "behavior_text": "asserts a sudo proposal is shown exactly as given and never executed without an explicit Enter, even when an allowlist pattern would otherwise match it \u2014 no auto-apply code path exists to test the negative.",
+      "contract_text": "obligation o48 on claim c48",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "tests ran fail at ef72f86: tests/test_client.py::test_sudo_proposal_is_displayed_verbatim_and_never_run_without_enter=missing, tests/test_client.py::test_sudo_is_never_auto_run_even_if_a_pattern_allows_it=missing, tests/test_pi_agent.py::test_panel_text_in_title_never_becomes_the_command=missing, tests/test_approval_loop.py::test_commandless_proposal_is_never_executed=missing",
+      "outcome": "fail",
+      "run": {
+        "timestamp": "2026-09-13T17:02:47Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 71
+    },
+    {
+      "id": "e49",
+      "obligation_ref": "o49",
+      "test_ref": "tests/test_doctor_checks.py::test_collect_checks_returns_every_new_check_id ; tests/test_doctor_checks.py::test_hook_first_in_prompt_command_fails_with_fix_command_when_moved_last ; tests/test_doctor_checks.py::test_capture_active_script_mode_0600_passes ; tests/test_doctor_checks.py::test_hook_first_in_prompt_command_accepts_the_bash_preexec_layout ; tests/test_readline_bash.py::test_slash_dispatch_exports_every_bind_section",
+      "behavior_text": "asserts collect_checks() returns hook_sourced, hook_first_in_prompt_command, bindings_present, capture_active, daemon_status and terminfo_present as distinct check ids, each with pass/fail plus remediation.",
+      "contract_text": "obligation o49 on claim c49",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "tests ran fail at ef72f86: tests/test_doctor_checks.py::test_collect_checks_returns_every_new_check_id=missing, tests/test_doctor_checks.py::test_hook_first_in_prompt_command_fails_with_fix_command_when_moved_last=missing, tests/test_doctor_checks.py::test_capture_active_script_mode_0600_passes=missing, tests/test_doctor_checks.py::test_hook_first_in_prompt_command_accepts_the_bash_preexec_layout=missing, tests/test_readline_bash.py::test_slash_dispatch_exports_every_bind_section=missing",
+      "outcome": "fail",
+      "run": {
+        "timestamp": "2026-09-13T17:02:47Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 72
+    },
+    {
+      "id": "e50",
+      "obligation_ref": "o50",
+      "test_ref": "tests/test_approvals.py::test_default_patterns_present ; tests/test_approvals.py::test_add_refuses_dangerous_patterns[sudo *] ; tests/test_approvals.py::test_add_refuses_dangerous_patterns[rm *] ; tests/test_approvals.py::test_add_refuses_dangerous_patterns[*] ; tests/test_approvals.py::test_matches_full_command_line_not_just_argv0 ; tests/test_approvals.py::test_session_patterns_not_persisted ; tests/test_approvals.py::test_save_writes_0600",
+      "behavior_text": "asserts fnmatch is applied to the full command line, add() refuses sudo/rm/bare-'*' patterns, default read-only patterns ship, session patterns stay in-memory only, and the store is saved 0600.",
+      "contract_text": "obligation o50 on claim c50",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "tests ran fail at ef72f86: tests/test_approvals.py::test_default_patterns_present=missing, tests/test_approvals.py::test_add_refuses_dangerous_patterns[sudo *]=missing, tests/test_approvals.py::test_add_refuses_dangerous_patterns[rm *]=missing, tests/test_approvals.py::test_add_refuses_dangerous_patterns[*]=missing, tests/test_approvals.py::test_matches_full_command_line_not_just_argv0=missing, tests/test_approvals.py::test_session_patterns_not_persisted=missing, tests/test_approvals.py::test_save_writes_0600=missing",
+      "outcome": "fail",
+      "run": {
+        "timestamp": "2026-09-13T17:02:47Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 73
+    },
+    {
+      "id": "e51",
+      "obligation_ref": "o51",
+      "test_ref": "tests/test_daemon.py::test_two_shells_share_one_agent_and_swap_sessions ; tests/test_daemon.py::test_sessions_max_two_builds_a_second_agent ; tests/test_daemon_lifecycle.py::test_one_pi_serves_two_shells_by_swapping_sessions",
+      "behavior_text": "asserts two shells' failures stay in separate conversations served by one agent process (new_session called once per shell, switch_session resumes the caller's own conversation), and that sessions.max=2 builds a second agent process instead.",
+      "contract_text": "obligation o51 on claim c51",
+      "evidence_type": "integration",
+      "strength": "execution",
+      "strength_basis": "tests ran fail at ef72f86: tests/test_daemon.py::test_two_shells_share_one_agent_and_swap_sessions=missing, tests/test_daemon.py::test_sessions_max_two_builds_a_second_agent=missing, tests/test_daemon_lifecycle.py::test_one_pi_serves_two_shells_by_swapping_sessions=missing",
+      "outcome": "fail",
+      "run": {
+        "timestamp": "2026-09-13T17:02:47Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 74
+    },
+    {
+      "id": "e52",
+      "obligation_ref": "o52",
+      "test_ref": "tests/test_slash.py::test_undo_never_calls_the_executor_with_no_daemon ; tests/test_daemon.py::test_undo_control_drops_the_last_turn_and_pending_proposal",
+      "behavior_text": "asserts /undo never calls the command executor and, at the daemon level, drops the last agent turn and its pending proposal from the conversation.",
+      "contract_text": "obligation o52 on claim c52",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "tests ran fail at ef72f86: tests/test_slash.py::test_undo_never_calls_the_executor_with_no_daemon=missing, tests/test_daemon.py::test_undo_control_drops_the_last_turn_and_pending_proposal=missing",
+      "outcome": "fail",
+      "run": {
+        "timestamp": "2026-09-13T17:02:47Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 75
+    },
+    {
+      "id": "e53",
+      "obligation_ref": "o1",
+      "test_ref": "docs/verification.md (t19 record + re-verification after d2-d8) and the operator's live sessions on spark/thor/orin",
+      "behavior_text": "no full end-to-end interactive-session test exists (no tests/test_e2e_shell.py in the suite).",
+      "contract_text": "obligation o1 on claim c1",
+      "evidence_type": "manual",
+      "strength": "fidelity",
+      "strength_basis": "three-machine checklist executed on the real installs: setup, no visible change on success, ls /nope panel with the real slice, /doctor, Ctrl+G, slash-Tab palette, vi mode, uninstall restoring the rc; FAIL rows of the first pass were fixed by d2-d8 and re-verified PASS; operator confirmed d14 (5 s answer), c51 (context between calls) and d20 (prose routed) live",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-13T17:04:26Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 76
+    },
+    {
+      "id": "e54",
+      "obligation_ref": "o2",
+      "test_ref": "tests/test_cli_setup.py::test_setup_inserts_block_after_guard ; tests/test_cli_setup.py::test_uninstall_restores_rc_byte_identical_to_backup ; tests/test_hook_bash.py::test_hook_is_first_element_of_prompt_command",
+      "behavior_text": "asserts setup inserts a marked block after the interactive guard, uninstall restores the rc byte-identical to its backup, and the hook only appends to the PROMPT_COMMAND array.",
+      "contract_text": "obligation o2 on claim c2",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "tests ran pass at ef72f86: tests/test_cli_setup.py::test_setup_inserts_block_after_guard=pass, tests/test_cli_setup.py::test_uninstall_restores_rc_byte_identical_to_backup=pass, tests/test_hook_bash.py::test_hook_is_first_element_of_prompt_command=pass",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-13T17:04:26Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 77
+    },
+    {
+      "id": "e55",
+      "obligation_ref": "o3",
+      "test_ref": "tests/test_hook_bash.py::test_thousand_successful_commands_fork_no_nvsh_process ; tests/test_hook_bash.py::test_prompt_latency_overhead_is_small",
+      "behavior_text": "asserts 1000 successful 'true' commands fork the fake nvsh entrypoint 0 times, and measures hooked-vs-baseline prompt latency delta stays under a fixed tolerance.",
+      "contract_text": "obligation o3 on claim c3",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "tests ran pass at ef72f86: tests/test_hook_bash.py::test_thousand_successful_commands_fork_no_nvsh_process=pass, tests/test_hook_bash.py::test_prompt_latency_overhead_is_small=pass",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-13T17:04:26Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 78
+    },
+    {
+      "id": "e56",
+      "obligation_ref": "o4",
+      "test_ref": "tests/test_triggers.py::test_every_non_error_row_has_a_reason ; tests/test_triggers.py::test_rate_limiter_refuses_second_call_inside_window_and_records_it ; tests/test_hook_bash.py::test_prefilter_skips_nvsh_own_slash_dispatch ; tests/test_triggers.py::test_trigger_table[ctrl-c 130] ; tests/test_triggers.py::test_trigger_table[sigpipe 141]",
+      "behavior_text": "table-driven test asserts decide()'s action/rule_id for every table row, every non-error row explains itself, and the rate limiter refuses and records a second automatic call inside the window.",
+      "contract_text": "obligation o4 on claim c4",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "tests ran pass at ef72f86: tests/test_triggers.py::test_every_non_error_row_has_a_reason=pass, tests/test_triggers.py::test_rate_limiter_refuses_second_call_inside_window_and_records_it=pass, tests/test_hook_bash.py::test_prefilter_skips_nvsh_own_slash_dispatch=pass, tests/test_triggers.py::test_trigger_table[ctrl-c 130]=pass, tests/test_triggers.py::test_trigger_table[sigpipe 141]=pass",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-13T17:04:26Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 79
+    },
+    {
+      "id": "e57",
+      "obligation_ref": "o5",
+      "test_ref": "tests/test_readline_bash.py::test_enter_routes_slash_commands[emacs] ; tests/test_readline_bash.py::test_enter_routes_slash_commands[vi] ; tests/test_readline_bash.py::test_non_slash_lines_pass_through[emacs] ; tests/test_readline_bash.py::test_non_slash_lines_pass_through[vi] ; tests/test_readline_bash.py::test_ctrl_g_streams_the_answer_on_the_tty[emacs] ; tests/test_hook_bash.py::test_prefilter_skips_nvsh_own_slash_dispatch",
+      "behavior_text": "real pty-driven bash session asserts /doctor and /ask route to 'slash ...' with the original line kept in visible history (not the hidden 'nvsh slash' call), while /notacmd, plain commands and a quoted multi-line echo pass through unchanged, in both emacs and vi modes.",
+      "contract_text": "obligation o5 on claim c5",
+      "evidence_type": "integration",
+      "strength": "execution",
+      "strength_basis": "tests ran pass at ef72f86: tests/test_readline_bash.py::test_enter_routes_slash_commands[emacs]=pass, tests/test_readline_bash.py::test_enter_routes_slash_commands[vi]=pass, tests/test_readline_bash.py::test_non_slash_lines_pass_through[emacs]=pass, tests/test_readline_bash.py::test_non_slash_lines_pass_through[vi]=pass, tests/test_readline_bash.py::test_ctrl_g_streams_the_answer_on_the_tty[emacs]=pass, tests/test_hook_bash.py::test_prefilter_skips_nvsh_own_slash_dispatch=pass",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-13T17:04:26Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 80
+    },
+    {
+      "id": "e58",
+      "obligation_ref": "o6",
+      "test_ref": "tests/test_readline_bash.py::test_slash_tab_lists_palette_merged_with_paths ; tests/test_readline_bash.py::test_prefix_completes_slash_command ; tests/test_readline_bash.py::test_argument_completion_comes_from_nvsh_complete ; tests/test_readline_bash.py::test_ordinary_word_completion_still_works",
+      "behavior_text": "real pty bash session: '/'+Tab lists the slash palette merged with real paths, '/do'+Tab completes /doctor, '/doctor '+Tab lists its arguments via nvsh complete, and 'ec'+Tab still completes echo.",
+      "contract_text": "obligation o6 on claim c6",
+      "evidence_type": "integration",
+      "strength": "execution",
+      "strength_basis": "tests ran pass at ef72f86: tests/test_readline_bash.py::test_slash_tab_lists_palette_merged_with_paths=pass, tests/test_readline_bash.py::test_prefix_completes_slash_command=pass, tests/test_readline_bash.py::test_argument_completion_comes_from_nvsh_complete=pass, tests/test_readline_bash.py::test_ordinary_word_completion_still_works=pass",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-13T17:04:26Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 81
+    },
+    {
+      "id": "e59",
+      "obligation_ref": "o7",
+      "test_ref": "tests/test_agent_conformance.py::test_streaming_order[FakeAgent] ; tests/test_agent_conformance.py::test_streaming_order[PiAgent] ; tests/test_agent_conformance.py::test_cancel_mid_stream[FakeAgent] ; tests/test_agent_conformance.py::test_cancel_mid_stream[PiAgent] ; tests/test_agent_conformance.py::test_error_propagation[FakeAgent] ; tests/test_agent_conformance.py::test_error_propagation[PiAgent] ; tests/test_agent_conformance.py::test_capability_report[FakeAgent] ; tests/test_agent_conformance.py::test_capability_report[PiAgent] ; tests/test_agent_conformance.py::test_teardown[FakeAgent] ; tests/test_agent_conformance.py::test_teardown[PiAgent]",
+      "behavior_text": "the same parametrized suite (FakeAgent, ClaudeAgentViaFake, CodexAgentViaFake, QwenAgentViaFake, PiAgent) runs streaming order, cancel, error, capability-report and teardown checks against every registered adapter.",
+      "contract_text": "obligation o7 on claim c7",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "tests ran pass at ef72f86: tests/test_agent_conformance.py::test_streaming_order[FakeAgent]=pass, tests/test_agent_conformance.py::test_streaming_order[PiAgent]=pass, tests/test_agent_conformance.py::test_cancel_mid_stream[FakeAgent]=pass, tests/test_agent_conformance.py::test_cancel_mid_stream[PiAgent]=pass, tests/test_agent_conformance.py::test_error_propagation[FakeAgent]=pass, tests/test_agent_conformance.py::test_error_propagation[PiAgent]=pass, tests/test_agent_conformance.py::test_capability_report[FakeAgent]=pass, tests/test_agent_conformance.py::test_capability_report[PiAgent]=pass, tests/test_agent_conformance.py::test_teardown[FakeAgent]=pass, tests/test_agent_conformance.py::test_teardown[PiAgent]=pass",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-13T17:04:26Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 82
+    },
+    {
+      "id": "e60",
+      "obligation_ref": "o8",
+      "test_ref": "tests/test_approval_loop.py::test_dangerous_proposal_never_runs_until_approved ; tests/test_approval_loop.py::test_audit_log_records_proposal_decision_outcome",
+      "behavior_text": "asserts approve() is called before a proposal is ever executed, and that the audit log records a proposal/decision/outcome triple per proposal at file mode 0600 (parent dir 0700).",
+      "contract_text": "obligation o8 on claim c8",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "tests ran pass at ef72f86: tests/test_approval_loop.py::test_dangerous_proposal_never_runs_until_approved=pass, tests/test_approval_loop.py::test_audit_log_records_proposal_decision_outcome=pass",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-13T17:04:26Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 83
+    },
+    {
+      "id": "e61",
+      "obligation_ref": "o9",
+      "test_ref": "tests/test_doctor_checks.py::test_agent_configured_passes_for_a_known_provider ; tests/test_doctor_checks.py::test_agent_reachable_pi_missing ; tests/test_doctor_checks.py::test_agent_reachable_openai_compat_401_reports_endpoint_401 ; tests/test_doctor_checks.py::test_agent_reachable_unreachable_closed_port",
+      "behavior_text": "asserts config names a provider without needing a key, and doctor distinguishes pi-missing, endpoint-401 and an unreachable/closed-port endpoint with distinct messages and remediations, never leaking the key.",
+      "contract_text": "obligation o9 on claim c9",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "tests ran pass at ef72f86: tests/test_doctor_checks.py::test_agent_configured_passes_for_a_known_provider=pass, tests/test_doctor_checks.py::test_agent_reachable_pi_missing=pass, tests/test_doctor_checks.py::test_agent_reachable_openai_compat_401_reports_endpoint_401=pass, tests/test_doctor_checks.py::test_agent_reachable_unreachable_closed_port=pass",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-13T17:04:26Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 84
+    },
+    {
+      "id": "e62",
+      "obligation_ref": "o10",
+      "test_ref": "tests/test_platform.py::test_spark_known_facts ; tests/test_platform.py::test_spark_unified_memory_from_nvidia_smi_na ; tests/test_platform.py::test_spark_mem_available_is_pressure_signal ; tests/test_platform.py::test_spark_absent_facts_reported_not_omitted",
+      "behavior_text": "against a DGX Spark fixture tree, asserts dgx_name/swbuild/cuda/driver values and their sources, that unified_memory derives from the nvidia-smi N/A signal, mem_available from /proc/meminfo, and that absent facts (cuDNN, TensorRT, nvpmodel) are reported present=False rather than omitted.",
+      "contract_text": "obligation o10 on claim c10",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "tests ran pass at ef72f86: tests/test_platform.py::test_spark_known_facts=pass, tests/test_platform.py::test_spark_unified_memory_from_nvidia_smi_na=pass, tests/test_platform.py::test_spark_mem_available_is_pressure_signal=pass, tests/test_platform.py::test_spark_absent_facts_reported_not_omitted=pass",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-13T17:04:26Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 85
+    },
+    {
+      "id": "e63",
+      "obligation_ref": "o11",
+      "test_ref": "tests/test_redact.py::test_corpus_no_secret_substring_survives ; tests/test_cli_context.py::test_context_show_prints_exactly_what_would_be_sent ; tests/test_redact.py::test_no_source_reads_shell_rc_files",
+      "behavior_text": "asserts the redaction corpus is fully scrubbed, 'nvsh context --show' prints exactly the bytes that would be sent to the agent, and a repo-wide scan asserts nothing under nvsh/ (besides the sanctioned rc editor) opens a shell rc file.",
+      "contract_text": "obligation o11 on claim c11",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "tests ran pass at ef72f86: tests/test_redact.py::test_corpus_no_secret_substring_survives=pass, tests/test_cli_context.py::test_context_show_prints_exactly_what_would_be_sent=pass, tests/test_redact.py::test_no_source_reads_shell_rc_files=pass",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-13T17:04:26Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 86
+    },
+    {
+      "id": "e64",
+      "obligation_ref": "o12",
+      "test_ref": "tests/test_capture.py::test_last_slice_script_fixture_returns_last_command_output ; tests/test_capture.py::test_last_slice_tmux_fixture_returns_last_command_output ; tests/test_client.py::test_retry_runs_only_after_enter_and_verify_reports_the_new_status",
+      "behavior_text": "asserts the failure slice is read from the script(1) typescript / tmux pipe-pane log rather than by re-running the command, while retry only re-runs the command later and only after an explicit Enter.",
+      "contract_text": "obligation o12 on claim c12",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "tests ran pass at ef72f86: tests/test_capture.py::test_last_slice_script_fixture_returns_last_command_output=pass, tests/test_capture.py::test_last_slice_tmux_fixture_returns_last_command_output=pass, tests/test_client.py::test_retry_runs_only_after_enter_and_verify_reports_the_new_status=pass",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-13T17:04:26Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 87
+    },
+    {
+      "id": "e65",
+      "obligation_ref": "o13",
+      "test_ref": "tests/test_wheel_packaging.py::test_wheel_contains_shell_bash_files ; tests/test_wheel_packaging.py::test_clean_venv_install_runs_nvsh_setup",
+      "behavior_text": "builds the real wheel, asserts nvsh/shell/hook.bash and readline.bash are inside it, and that installing that wheel into a clean venv lets 'nvsh setup' run; pyproject.toml's dependencies=[] is a plain grep, not a test. Seam named tests/test_packaging.py \u2014 the real file is tests/test_wheel_packaging.py.",
+      "contract_text": "obligation o13 on claim c13",
+      "evidence_type": "integration",
+      "strength": "execution",
+      "strength_basis": "tests ran pass at ef72f86: tests/test_wheel_packaging.py::test_wheel_contains_shell_bash_files=pass, tests/test_wheel_packaging.py::test_clean_venv_install_runs_nvsh_setup=pass",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-13T17:04:26Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 88
+    },
+    {
+      "id": "e66",
+      "obligation_ref": "o14",
+      "test_ref": "tests/test_docs_architecture.py::test_architecture_doc_exists ; tests/test_harness_smoke.py::test_smoke_passes_on_the_real_repo",
+      "behavior_text": "asserts docs/architecture.md and docs/platforms.md exist with required content, and the real-repo harness-smoke config stage passes for all four prompt files; version-bump-per-PR is a CI gate (version-check job), not a pytest test.",
+      "contract_text": "obligation o14 on claim c14",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "tests ran pass at ef72f86: tests/test_docs_architecture.py::test_architecture_doc_exists=pass, tests/test_harness_smoke.py::test_smoke_passes_on_the_real_repo=pass",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-13T17:04:26Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 89
+    },
+    {
+      "id": "e67",
+      "obligation_ref": "o15",
+      "test_ref": "tests/test_platform.py::test_thor_known_facts ; tests/test_platform.py::test_thor_nvpmodel_and_presence_flags ; tests/test_platform.py::test_orin_cuda_toolkit_and_tensorrt_absent",
+      "behavior_text": "against thor/orin fixture trees, asserts R38.2/AGX Thor/CUDA 13/cuDNN/TensorRT/nvpmodel MAXN on thor, and R39.2/AGX Orin with CUDA toolkit and tensorrt reported absent on orin.",
+      "contract_text": "obligation o15 on claim c15",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "tests ran pass at ef72f86: tests/test_platform.py::test_thor_known_facts=pass, tests/test_platform.py::test_thor_nvpmodel_and_presence_flags=pass, tests/test_platform.py::test_orin_cuda_toolkit_and_tensorrt_absent=pass",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-13T17:04:26Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 90
+    },
+    {
+      "id": "e68",
+      "obligation_ref": "o16",
+      "test_ref": "tests/test_agent_registry.py::test_choose_orin_without_node_selects_openai_compat_with_reason ; tests/test_agent_registry.py::test_no_harness_message_offers_both_options",
+      "behavior_text": "asserts that with no pi/node/npm on PATH the registry falls back to openai-compat and states 'node' as the reason, and the no-harness message offers install-or-choose.",
+      "contract_text": "obligation o16 on claim c16",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "tests ran pass at ef72f86: tests/test_agent_registry.py::test_choose_orin_without_node_selects_openai_compat_with_reason=pass, tests/test_agent_registry.py::test_no_harness_message_offers_both_options=pass",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-13T17:04:26Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 91
+    },
+    {
+      "id": "e69",
+      "obligation_ref": "o17",
+      "test_ref": "tests/test_import_time.py::test_import_nvsh_cli_loads_only_stdlib_and_nvsh",
+      "behavior_text": "runs 'python -X importtime -c \"import nvsh.cli\"' and asserts every imported module is stdlib or nvsh itself, catching any accidental third-party or jetson-cli/pi dependency at import time.",
+      "contract_text": "obligation o17 on claim c17",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "tests ran pass at ef72f86: tests/test_import_time.py::test_import_nvsh_cli_loads_only_stdlib_and_nvsh=pass",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-13T17:04:26Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 92
+    },
+    {
+      "id": "e70",
+      "obligation_ref": "o18",
+      "test_ref": "grep -rn 'install-shell|chsh|/etc/shells' nvsh/ tests/ (negative-space check)",
+      "behavior_text": "no test asserts the absence of an install-shell/chsh verb or /etc/shells edits.",
+      "contract_text": "obligation o18 on claim c18",
+      "evidence_type": "observation",
+      "strength": "coverage",
+      "strength_basis": "grep over nvsh/ and tests/ at 373d77d returns no install-shell/chsh//etc/shells reference; no such verb exists in the CLI verb table",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-13T17:04:26Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 93
+    },
+    {
+      "id": "e71",
+      "obligation_ref": "o19",
+      "test_ref": "tests/test_import_time.py::test_import_nvsh_cli_loads_only_stdlib_and_nvsh",
+      "behavior_text": "the import-time test would fail if nvsh.cli imported jetson-cli/rtx-spark-cli/callsmith as a module; no test directly greps for their absence as a dependency.",
+      "contract_text": "obligation o19 on claim c19",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "tests ran pass at ef72f86: tests/test_import_time.py::test_import_nvsh_cli_loads_only_stdlib_and_nvsh=pass",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-13T17:04:26Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 94
+    },
+    {
+      "id": "e72",
+      "obligation_ref": "o20",
+      "test_ref": "tests/test_pi_settings.py::test_pi_skills_is_a_symlink ; tests/test_pi_settings.py::test_no_inert_pi_settings_json ; tests/test_harness_registries.py::test_the_yaml_and_the_smoke_check_list_the_same_four_harnesses",
+      "behavior_text": "asserts .pi/skills stays a relative symlink with no forked settings.json, and doctor's _PROMPT_FILE table agrees with backend-fingerprints.yaml across all four harnesses; culture.yaml's own diff-emptiness is a plain diff check, not a pytest.",
+      "contract_text": "obligation o20 on claim c20",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "tests ran pass at ef72f86: tests/test_pi_settings.py::test_pi_skills_is_a_symlink=pass, tests/test_pi_settings.py::test_no_inert_pi_settings_json=pass, tests/test_harness_registries.py::test_the_yaml_and_the_smoke_check_list_the_same_four_harnesses=pass",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-13T17:04:26Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 95
+    },
+    {
+      "id": "e73",
+      "obligation_ref": "o21",
+      "test_ref": "tests/test_scan_secrets.py::test_clean_repo_passes_via_cli ; tests/test_scan_secrets.py::test_loopback_endpoints_are_allowed[http://127.0.0.1:8000/v1]",
+      "behavior_text": "asserts scan-secrets.py passes on the current clean repo and that loopback endpoints are allowed while any non-localhost URL (including remote IPv6) is caught.",
+      "contract_text": "obligation o21 on claim c21",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "tests ran pass at ef72f86: tests/test_scan_secrets.py::test_clean_repo_passes_via_cli=pass, tests/test_scan_secrets.py::test_loopback_endpoints_are_allowed[http://127.0.0.1:8000/v1]=pass",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-13T17:04:26Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 96
+    },
+    {
+      "id": "e74",
+      "obligation_ref": "o22",
+      "test_ref": "tests/test_slash.py::test_remember_good_family_is_not_registered",
+      "behavior_text": "asserts resolve() returns None for remember-good/diff-good/restore-good; no test separately asserts the absence of zsh/fish installers, but tests/test_triggers.py::test_pattern_trigger_is_opt_in_and_ignored_by_default covers the pattern-trigger-is-opt-in half.",
+      "contract_text": "obligation o22 on claim c22",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "tests ran pass at ef72f86: tests/test_slash.py::test_remember_good_family_is_not_registered=pass",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-13T17:04:26Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 97
+    },
+    {
+      "id": "e75",
+      "obligation_ref": "o23",
+      "test_ref": "tests/test_hook_bash.py::test_prompt_latency_overhead_is_small ; tests/test_panel.py::test_terminal_matrix_renders_readable_text_with_no_escapes[env0-True] ; tests/test_panel.py::test_terminal_matrix_renders_readable_text_with_no_escapes[env2-False] ; tests/test_timing.py::test_success_path_overhead_under_5ms ; tests/test_timing.py::test_time_to_first_agent_text_under_2s",
+      "behavior_text": "asserts hooked-vs-baseline prompt latency delta stays under a fixed tolerance, and panel output is escape-free and readable across a NO_COLOR/TERM=dumb/non-tty matrix; the '<2s to first agent text with a warm pi session on the Spark' number has no automated test.",
+      "contract_text": "obligation o23 on claim c23",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "tests ran pass at ef72f86: tests/test_hook_bash.py::test_prompt_latency_overhead_is_small=pass, tests/test_panel.py::test_terminal_matrix_renders_readable_text_with_no_escapes[env0-True]=pass, tests/test_panel.py::test_terminal_matrix_renders_readable_text_with_no_escapes[env2-False]=pass, tests/test_timing.py::test_success_path_overhead_under_5ms=pass, tests/test_timing.py::test_time_to_first_agent_text_under_2s=pass",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-13T17:04:26Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 98
+    },
+    {
+      "id": "e76",
+      "obligation_ref": "o24",
+      "test_ref": "tests/test_cli_agent.py::test_agent_list_json_reports_all_five ; tests/test_cli_agent.py::test_agent_list_marks_configured_provider ; tests/test_agent_registry.py::test_available_adapters_reports_all_five_with_installed_status",
+      "behavior_text": "asserts 'agent list --json' reports all five adapters (pi, qwen, claude, codex, openai-compat) with installed/configured status.",
+      "contract_text": "obligation o24 on claim c24",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "tests ran pass at ef72f86: tests/test_cli_agent.py::test_agent_list_json_reports_all_five=pass, tests/test_cli_agent.py::test_agent_list_marks_configured_provider=pass, tests/test_agent_registry.py::test_available_adapters_reports_all_five_with_installed_status=pass",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-13T17:04:26Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 99
+    },
+    {
+      "id": "e77",
+      "obligation_ref": "o25",
+      "test_ref": "tests/test_pi_extension.py::test_extension_forwards_to_nvsh_approve_check ; tests/test_pi_extension.py::test_extension_blocks_non_bash_tools ; tests/test_pi_extension.py::test_scenario_sudo_rm_always_asks_even_after_user_attempt",
+      "behavior_text": "asserts the pi extension forwards every tool_call through the approve check, blocks non-bash tools outright, and a sudo rm proposal always asks even after a prior user-level approval attempt.",
+      "contract_text": "obligation o25 on claim c25",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "tests ran pass at ef72f86: tests/test_pi_extension.py::test_extension_forwards_to_nvsh_approve_check=pass, tests/test_pi_extension.py::test_extension_blocks_non_bash_tools=pass, tests/test_pi_extension.py::test_scenario_sudo_rm_always_asks_even_after_user_attempt=pass",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-13T17:04:26Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 100
+    },
+    {
+      "id": "e78",
+      "obligation_ref": "o26",
+      "test_ref": "tests/test_hook_bash.py::test_composes_with_ghostty_integration ; tests/test_hook_bash.py::test_no_debug_trap_is_installed ; tests/test_hook_bash.py::test_pipestatus_under_bash_preexec_false_pipe_true ; tests/test_hook_bash.py::test_hook_installed_once_when_resourced_under_bash_preexec",
+      "behavior_text": "asserts nvsh's hook appears before __ghostty_hook in PROMPT_COMMAND exactly once, and that no DEBUG trap containing '__nvsh' is installed.",
+      "contract_text": "obligation o26 on claim c26",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "tests ran pass at ef72f86: tests/test_hook_bash.py::test_composes_with_ghostty_integration=pass, tests/test_hook_bash.py::test_no_debug_trap_is_installed=pass, tests/test_hook_bash.py::test_pipestatus_under_bash_preexec_false_pipe_true=pass, tests/test_hook_bash.py::test_hook_installed_once_when_resourced_under_bash_preexec=pass",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-13T17:04:26Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 101
+    },
+    {
+      "id": "e79",
+      "obligation_ref": "o27",
+      "test_ref": "tests/test_client.py::test_retry_runs_only_after_enter_and_verify_reports_the_new_status ; tests/test_client.py::test_build_context_carries_platform_output_cwd_and_redaction",
+      "behavior_text": "retry only runs the command after an explicit Enter reply and then reports verify/exit status; build_context assembles the diagnosis from log output, cwd and platform before any re-run.",
+      "contract_text": "obligation o27 on claim c27",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "tests ran pass at ef72f86: tests/test_client.py::test_retry_runs_only_after_enter_and_verify_reports_the_new_status=pass, tests/test_client.py::test_build_context_carries_platform_output_cwd_and_redaction=pass",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-13T17:04:26Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 102
+    },
+    {
+      "id": "e80",
+      "obligation_ref": "o28",
+      "test_ref": "tests/test_hook_bash.py::test_composes_with_ghostty_integration ; tests/test_hook_bash.py::test_hook_sources_ghostty_itself_when_term_program_is_ghostty ; tests/test_hook_bash.py::test_capture_execs_script_and_exports_the_log",
+      "behavior_text": "hook composes with Ghostty's PROMPT_COMMAND element, sources ghostty.bash itself when TERM_PROGRAM=ghostty, and execs script(1) to export the session log path.",
+      "contract_text": "obligation o28 on claim c28",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "tests ran pass at ef72f86: tests/test_hook_bash.py::test_composes_with_ghostty_integration=pass, tests/test_hook_bash.py::test_hook_sources_ghostty_itself_when_term_program_is_ghostty=pass, tests/test_hook_bash.py::test_capture_execs_script_and_exports_the_log=pass",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-13T17:04:26Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 103
+    },
+    {
+      "id": "e81",
+      "obligation_ref": "o29",
+      "test_ref": "tests/test_capture.py::test_open_session_log_creates_dir_and_file_with_correct_perms ; tests/test_capture.py::test_cleanup_removes_log ; tests/test_cli_capture.py::test_capture_show_never_leaks_log_path",
+      "behavior_text": "session log dir/file are created 0700/0600, cleanup removes the log file, and capture --show never prints the log path.",
+      "contract_text": "obligation o29 on claim c29",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "tests ran pass at ef72f86: tests/test_capture.py::test_open_session_log_creates_dir_and_file_with_correct_perms=pass, tests/test_capture.py::test_cleanup_removes_log=pass, tests/test_cli_capture.py::test_capture_show_never_leaks_log_path=pass",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-13T17:04:26Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 104
+    },
+    {
+      "id": "e82",
+      "obligation_ref": "o30",
+      "test_ref": "README.md lines 1-7 read by eye",
+      "behavior_text": "no automated test asserts README wording.",
+      "contract_text": "obligation o30 on claim c30",
+      "evidence_type": "manual",
+      "strength": "coverage",
+      "strength_basis": "README opening paragraph at 373d77d names Jetson AGX Orin/Thor, DGX Spark, Ghostty, ssh and the bash hook; wording only, no test pins it",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-13T17:04:26Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 105
+    },
+    {
+      "id": "e83",
+      "obligation_ref": "o31",
+      "test_ref": "tests/test_docs_architecture.py::test_architecture_doc_cites_before_state",
+      "behavior_text": "asserts docs/architecture.md's text contains the literal citation 'README.md:10-14' and the version string '0.9.1'.",
+      "contract_text": "obligation o31 on claim c31",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "tests ran pass at ef72f86: tests/test_docs_architecture.py::test_architecture_doc_cites_before_state=pass",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-13T17:04:26Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 106
+    },
+    {
+      "id": "e84",
+      "obligation_ref": "o32",
+      "test_ref": "ls docs/demos/ (spark-cuda-oom.cast re-recorded after d8, orin-missing-package.cast) + docs/verification.md",
+      "behavior_text": "no docs/demos/ directory or recordings exist yet; no test covers recorded demos.",
+      "contract_text": "obligation o32 on claim c32",
+      "evidence_type": "manual",
+      "strength": "fidelity",
+      "strength_basis": "two asciicast recordings committed; the spark one shows the bare nvidia-smi proposal, panel, Esc and 'nvsh: not run'; recorded with scripts/record-cast.py, scrubbed of endpoint/token",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-13T17:04:26Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 107
+    },
+    {
+      "id": "e85",
+      "obligation_ref": "o33",
+      "test_ref": "tests/test_client.py::test_build_context_carries_platform_output_cwd_and_redaction ; tests/test_client_airgap.py::test_air_gapped_failure_still_reaches_a_localhost_endpoint ; tests/test_client_airgap.py::test_a_non_loopback_endpoint_is_refused_when_air_gapped",
+      "behavior_text": "build_context's platform field is asserted present ('platform: ' prefix) and, with outbound network disabled, a localhost endpoint is still reached while a non-loopback one is refused. Seam names tests/test_context.py, which doesn't exist \u2014 the real equivalents are test_client.py and test_client_airgap.py (plus tests/test_cli_context.py for --show-context).",
+      "contract_text": "obligation o33 on claim c33",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "tests ran pass at ef72f86: tests/test_client.py::test_build_context_carries_platform_output_cwd_and_redaction=pass, tests/test_client_airgap.py::test_air_gapped_failure_still_reaches_a_localhost_endpoint=pass, tests/test_client_airgap.py::test_a_non_loopback_endpoint_is_refused_when_air_gapped=pass",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-13T17:04:26Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 108
+    },
+    {
+      "id": "e86",
+      "obligation_ref": "o34",
+      "test_ref": "tests/test_triggers.py::test_every_non_error_row_has_a_reason ; tests/test_redact.py::test_corpus_no_secret_substring_survives ; tests/test_hook_bash.py::test_prompt_latency_overhead_is_small ; tests/test_timing.py::test_success_path_overhead_under_5ms ; tests/test_timing.py::test_time_to_first_agent_text_under_2s",
+      "behavior_text": "triggers table asserts every non-error exit row yields a skip reason (0 agent calls), redaction corpus test asserts no secret substring survives, and hook_bash asserts prompt overhead is small; the '<2s first text on Spark' and '3/3 install/uninstall on spark,thor,orin' numbers have no automated test yet.",
+      "contract_text": "obligation o34 on claim c34",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "tests ran pass at ef72f86: tests/test_triggers.py::test_every_non_error_row_has_a_reason=pass, tests/test_redact.py::test_corpus_no_secret_substring_survives=pass, tests/test_hook_bash.py::test_prompt_latency_overhead_is_small=pass, tests/test_timing.py::test_success_path_overhead_under_5ms=pass, tests/test_timing.py::test_time_to_first_agent_text_under_2s=pass",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-13T17:04:26Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 109
+    },
+    {
+      "id": "e87",
+      "obligation_ref": "o35",
+      "test_ref": "tests/test_hook_bash.py::test_hook_is_first_element_of_prompt_command ; tests/test_hook_bash.py::test_pipestatus_false_pipe_true ; tests/test_hook_bash.py::test_pipestatus_three_stage_pipeline ; tests/test_hook_bash.py::test_pipefail_makes_the_recorded_status_one ; tests/test_hook_bash.py::test_pipefail_under_bash_preexec_keeps_status_and_pipestatus ; tests/test_hook_bash.py::test_pipestatus_without_bash_preexec_is_the_control",
+      "behavior_text": "asserts the hook is PROMPT_COMMAND[0] and that 'false | true' records PIPESTATUS '1 0', 'true | false | true' records '0 1 0', and pipefail makes the recorded status 1.",
+      "contract_text": "obligation o35 on claim c35",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "tests ran pass at ef72f86: tests/test_hook_bash.py::test_hook_is_first_element_of_prompt_command=pass, tests/test_hook_bash.py::test_pipestatus_false_pipe_true=pass, tests/test_hook_bash.py::test_pipestatus_three_stage_pipeline=pass, tests/test_hook_bash.py::test_pipefail_makes_the_recorded_status_one=pass, tests/test_hook_bash.py::test_pipefail_under_bash_preexec_keeps_status_and_pipestatus=pass, tests/test_hook_bash.py::test_pipestatus_without_bash_preexec_is_the_control=pass",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-13T17:04:26Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 110
+    },
+    {
+      "id": "e88",
+      "obligation_ref": "o36",
+      "test_ref": "tests/test_rcfile.py::test_insert_places_block_right_after_guard ; tests/test_rcfile.py::test_double_insert_is_idempotent_when_reapplied_over_stripped_text ; tests/test_rcfile.py::test_write_backup_creates_timestamped_sibling ; tests/test_setup_timing.py::test_setup_does_not_meaningfully_slow_down_prompt_startup",
+      "behavior_text": "asserts the block is inserted right after the interactive guard, double-insertion is idempotent, a timestamped backup file is created, and setup does not meaningfully slow bash -ic startup.",
+      "contract_text": "obligation o36 on claim c36",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "tests ran pass at ef72f86: tests/test_rcfile.py::test_insert_places_block_right_after_guard=pass, tests/test_rcfile.py::test_double_insert_is_idempotent_when_reapplied_over_stripped_text=pass, tests/test_rcfile.py::test_write_backup_creates_timestamped_sibling=pass, tests/test_setup_timing.py::test_setup_does_not_meaningfully_slow_down_prompt_startup=pass",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-13T17:04:26Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 111
+    },
+    {
+      "id": "e89",
+      "obligation_ref": "o37",
+      "test_ref": "tests/test_doctor_checks.py::test_bindings_present_fails_when_entries_missing ; tests/test_doctor_checks.py::test_hook_first_in_prompt_command_fails_with_fix_command_when_moved_last",
+      "behavior_text": "asserts doctor reports a failing/error check with remediation when bindings are missing or the hook is reordered out of first position; coverage does not extend to naming a third-party integration's source file when known.",
+      "contract_text": "obligation o37 on claim c37",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "tests ran pass at ef72f86: tests/test_doctor_checks.py::test_bindings_present_fails_when_entries_missing=pass, tests/test_doctor_checks.py::test_hook_first_in_prompt_command_fails_with_fix_command_when_moved_last=pass",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-13T17:04:26Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 112
+    },
+    {
+      "id": "e90",
+      "obligation_ref": "o38",
+      "test_ref": "tests/test_panel.py::test_panel_module_never_imports_curses_or_calls_tput ; tests/test_panel.py::test_terminal_matrix_renders_readable_text_with_no_escapes[env0-True] ; tests/test_panel.py::test_terminal_matrix_renders_readable_text_with_no_escapes[env2-False] ; tests/test_doctor_checks.py::test_terminfo_present_xterm_ghostty_missing_gives_exact_tic_remediation",
+      "behavior_text": "asserts panel.py's source never imports curses/subprocess/tput, renders escape-free readable text across a TERM/NO_COLOR/tty matrix, and doctor gives the exact 'infocmp -x ... | tic -x -' remediation when terminfo is missing.",
+      "contract_text": "obligation o38 on claim c38",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "tests ran pass at ef72f86: tests/test_panel.py::test_panel_module_never_imports_curses_or_calls_tput=pass, tests/test_panel.py::test_terminal_matrix_renders_readable_text_with_no_escapes[env0-True]=pass, tests/test_panel.py::test_terminal_matrix_renders_readable_text_with_no_escapes[env2-False]=pass, tests/test_doctor_checks.py::test_terminfo_present_xterm_ghostty_missing_gives_exact_tic_remediation=pass",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-13T17:04:26Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 113
+    },
+    {
+      "id": "e91",
+      "obligation_ref": "o39",
+      "test_ref": "tests/test_readline_bash.py::test_binds_every_keymap ; tests/test_readline_bash.py::test_enter_routes_slash_commands[emacs] ; tests/test_readline_bash.py::test_enter_routes_slash_commands[vi]",
+      "behavior_text": "asserts Enter/Ctrl+G are bound in every keymap (emacs, vi-insert, vi-command) and that slash routing works under both emacs and vi indexing.",
+      "contract_text": "obligation o39 on claim c39",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "tests ran pass at ef72f86: tests/test_readline_bash.py::test_binds_every_keymap=pass, tests/test_readline_bash.py::test_enter_routes_slash_commands[emacs]=pass, tests/test_readline_bash.py::test_enter_routes_slash_commands[vi]=pass",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-13T17:04:26Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 114
+    },
+    {
+      "id": "e92",
+      "obligation_ref": "o40",
+      "test_ref": "tests/test_doctor_checks.py::test_agent_reachable_pi_missing ; tests/test_doctor_checks.py::test_agent_reachable_unreachable_closed_port ; tests/test_doctor_checks.py::test_agent_reachable_openai_compat_401_reports_endpoint_401",
+      "behavior_text": "asserts a LAN endpoint check yields distinct messages for pi missing, a closed/unreachable port, and a 401, none of which hang (server-backed with real sockets and timeouts).",
+      "contract_text": "obligation o40 on claim c40",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "tests ran pass at ef72f86: tests/test_doctor_checks.py::test_agent_reachable_pi_missing=pass, tests/test_doctor_checks.py::test_agent_reachable_unreachable_closed_port=pass, tests/test_doctor_checks.py::test_agent_reachable_openai_compat_401_reports_endpoint_401=pass",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-13T17:04:26Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 115
+    },
+    {
+      "id": "e93",
+      "obligation_ref": "o41",
+      "test_ref": "tests/test_pi_agent.py::test_build_argv_contains_hygiene_flags_in_order ; tests/test_pi_agent.py::test_no_file_under_dot_pi_agent_sessions",
+      "behavior_text": "asserts PiAgent's argv contains --no-context-files, --no-extensions, --no-skills, --no-prompt-templates, --no-approve (in order) and a --session-dir flag, and that a run leaves no file under ~/.pi/agent/sessions.",
+      "contract_text": "obligation o41 on claim c41",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "tests ran pass at ef72f86: tests/test_pi_agent.py::test_build_argv_contains_hygiene_flags_in_order=pass, tests/test_pi_agent.py::test_no_file_under_dot_pi_agent_sessions=pass",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-13T17:04:26Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 116
+    },
+    {
+      "id": "e94",
+      "obligation_ref": "o42",
+      "test_ref": "tests/test_triggers.py::test_trigger_table[ctrl-c 130] ; tests/test_triggers.py::test_trigger_table[sigpipe 141]",
+      "behavior_text": "table rows for ssh, docker exec, kubectl exec, tmux/screen attach and sudo -i all assert action=='skip', rule_id=='interactive_program' (never auto-triggering).",
+      "contract_text": "obligation o42 on claim c42",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "tests ran pass at ef72f86: tests/test_triggers.py::test_trigger_table[ctrl-c 130]=pass, tests/test_triggers.py::test_trigger_table[sigpipe 141]=pass",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-13T17:04:26Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 117
+    },
+    {
+      "id": "e95",
+      "obligation_ref": "o43",
+      "test_ref": "tests/test_daemon_lifecycle.py::test_daemon_starts_pi_lazily_and_the_last_shell_stops_both ; tests/test_daemon.py::test_client_falls_back_to_one_shot_without_a_daemon ; tests/test_daemon_lifecycle.py::test_autostart_waits_for_a_cold_backend_instead_of_falling_back ; tests/test_daemon_lifecycle.py::test_a_second_daemon_refuses_while_another_holds_the_lock",
+      "behavior_text": "spawns a real daemon subprocess and asserts no pi process exists before the first failure, exactly one pi process starts on the first qualifying failure, and both the daemon and pi die when the last shell unregisters; a separate test covers the one-shot fallback when the daemon is missing.",
+      "contract_text": "obligation o43 on claim c43",
+      "evidence_type": "integration",
+      "strength": "execution",
+      "strength_basis": "tests ran pass at ef72f86: tests/test_daemon_lifecycle.py::test_daemon_starts_pi_lazily_and_the_last_shell_stops_both=pass, tests/test_daemon.py::test_client_falls_back_to_one_shot_without_a_daemon=pass, tests/test_daemon_lifecycle.py::test_autostart_waits_for_a_cold_backend_instead_of_falling_back=pass, tests/test_daemon_lifecycle.py::test_a_second_daemon_refuses_while_another_holds_the_lock=pass",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-13T17:04:26Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 118
+    },
+    {
+      "id": "e96",
+      "obligation_ref": "o44",
+      "test_ref": "tests/test_shell_render.py::test_render_shell_files_stamps_version_header ; tests/test_cli_setup.py::test_hook_prints_refresh_notice_once_per_session",
+      "behavior_text": "asserts the rendered hook file carries a version-stamp header, and that a stale hook (NVSH_HOOK_VERSION mismatch) prints 'run nvsh setup to refresh' once per session and not again on the second call.",
+      "contract_text": "obligation o44 on claim c44",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "tests ran pass at ef72f86: tests/test_shell_render.py::test_render_shell_files_stamps_version_header=pass, tests/test_cli_setup.py::test_hook_prints_refresh_notice_once_per_session=pass",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-13T17:04:26Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 119
+    },
+    {
+      "id": "e97",
+      "obligation_ref": "o45",
+      "test_ref": "tests/test_hook_bash.py::test_nvsh_disable_makes_the_file_a_noop ; tests/test_cli_setup.py::test_off_shell_mode_prints_bash_snippet ; tests/test_cli_setup.py::test_uninstall_restores_rc_byte_identical_to_backup ; tests/test_readline_bash.py::test_erroring_hook_still_accepts_the_line",
+      "behavior_text": "asserts NVSH_DISABLE=1 installs no hook function/bindings, 'nvsh off --shell' prints an unload/unbind snippet plus NVSH_DISABLE=1, uninstall restores the rc byte-identical to its backup, and an erroring Enter-macro function still lets the line execute (no lockout).",
+      "contract_text": "obligation o45 on claim c45",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "tests ran pass at ef72f86: tests/test_hook_bash.py::test_nvsh_disable_makes_the_file_a_noop=pass, tests/test_cli_setup.py::test_off_shell_mode_prints_bash_snippet=pass, tests/test_cli_setup.py::test_uninstall_restores_rc_byte_identical_to_backup=pass, tests/test_readline_bash.py::test_erroring_hook_still_accepts_the_line=pass",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-13T17:04:26Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 120
+    },
+    {
+      "id": "e98",
+      "obligation_ref": "o46",
+      "test_ref": "tests/test_panel.py::test_sigint_during_stream_cancels_and_reports_interrupted ; tests/test_panel.py::test_ctrl_c_returns_to_a_prompt_within_one_second ; tests/test_client.py::test_interrupted_stream_returns_130_and_keeps_the_last_failure",
+      "behavior_text": "asserts Ctrl+C mid-stream calls the cancel callback and reports 'interrupted', returns to a working prompt within one second (real subprocess timing), and handle_failure returns 130 while keeping the last failure available for /fix.",
+      "contract_text": "obligation o46 on claim c46",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "tests ran pass at ef72f86: tests/test_panel.py::test_sigint_during_stream_cancels_and_reports_interrupted=pass, tests/test_panel.py::test_ctrl_c_returns_to_a_prompt_within_one_second=pass, tests/test_client.py::test_interrupted_stream_returns_130_and_keeps_the_last_failure=pass",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-13T17:04:26Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 121
+    },
+    {
+      "id": "e99",
+      "obligation_ref": "o47",
+      "test_ref": "tests/test_capture.py::test_last_slice_truncates_large_output_head_and_tail ; tests/test_capture.py::test_last_slice_replaces_invalid_utf8 ; tests/test_capture.py::test_last_slice_prefers_open_region_over_previous_closed_region",
+      "behavior_text": "asserts a large (200KB+) failure body is truncated to a bounded head+tail with a 'truncated' marker under the 64KB limit, and invalid UTF-8 bytes are replaced rather than raising.",
+      "contract_text": "obligation o47 on claim c47",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "tests ran pass at ef72f86: tests/test_capture.py::test_last_slice_truncates_large_output_head_and_tail=pass, tests/test_capture.py::test_last_slice_replaces_invalid_utf8=pass, tests/test_capture.py::test_last_slice_prefers_open_region_over_previous_closed_region=pass",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-13T17:04:26Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 122
+    },
+    {
+      "id": "e100",
+      "obligation_ref": "o48",
+      "test_ref": "tests/test_client.py::test_sudo_proposal_is_displayed_verbatim_and_never_run_without_enter ; tests/test_client.py::test_sudo_is_never_auto_run_even_if_a_pattern_allows_it ; tests/test_pi_agent.py::test_panel_text_in_title_never_becomes_the_command ; tests/test_approval_loop.py::test_commandless_proposal_is_never_executed",
+      "behavior_text": "asserts a sudo proposal is shown exactly as given and never executed without an explicit Enter, even when an allowlist pattern would otherwise match it \u2014 no auto-apply code path exists to test the negative.",
+      "contract_text": "obligation o48 on claim c48",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "tests ran pass at ef72f86: tests/test_client.py::test_sudo_proposal_is_displayed_verbatim_and_never_run_without_enter=pass, tests/test_client.py::test_sudo_is_never_auto_run_even_if_a_pattern_allows_it=pass, tests/test_pi_agent.py::test_panel_text_in_title_never_becomes_the_command=pass, tests/test_approval_loop.py::test_commandless_proposal_is_never_executed=pass",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-13T17:04:26Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 123
+    },
+    {
+      "id": "e101",
+      "obligation_ref": "o49",
+      "test_ref": "tests/test_doctor_checks.py::test_collect_checks_returns_every_new_check_id ; tests/test_doctor_checks.py::test_hook_first_in_prompt_command_fails_with_fix_command_when_moved_last ; tests/test_doctor_checks.py::test_capture_active_script_mode_0600_passes ; tests/test_doctor_checks.py::test_hook_first_in_prompt_command_accepts_the_bash_preexec_layout ; tests/test_readline_bash.py::test_slash_dispatch_exports_every_bind_section",
+      "behavior_text": "asserts collect_checks() returns hook_sourced, hook_first_in_prompt_command, bindings_present, capture_active, daemon_status and terminfo_present as distinct check ids, each with pass/fail plus remediation.",
+      "contract_text": "obligation o49 on claim c49",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "tests ran pass at ef72f86: tests/test_doctor_checks.py::test_collect_checks_returns_every_new_check_id=pass, tests/test_doctor_checks.py::test_hook_first_in_prompt_command_fails_with_fix_command_when_moved_last=pass, tests/test_doctor_checks.py::test_capture_active_script_mode_0600_passes=pass, tests/test_doctor_checks.py::test_hook_first_in_prompt_command_accepts_the_bash_preexec_layout=pass, tests/test_readline_bash.py::test_slash_dispatch_exports_every_bind_section=pass",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-13T17:04:26Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 124
+    },
+    {
+      "id": "e102",
+      "obligation_ref": "o50",
+      "test_ref": "tests/test_approvals.py::test_default_patterns_present ; tests/test_approvals.py::test_add_refuses_dangerous_patterns[*] ; tests/test_approvals.py::test_matches_full_command_line_not_just_argv0 ; tests/test_approvals.py::test_save_writes_0600 ; tests/test_approvals.py::test_session_remove_is_persisted_too ; tests/test_approvals.py::test_add_refuses_dangerous_patterns[sudo *] ; tests/test_approvals.py::test_add_refuses_dangerous_patterns[rm *]",
+      "behavior_text": "asserts fnmatch is applied to the full command line, add() refuses sudo/rm/bare-'*' patterns, default read-only patterns ship, session patterns stay in-memory only, and the store is saved 0600.",
+      "contract_text": "obligation o50 on claim c50",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "tests ran pass at ef72f86: tests/test_approvals.py::test_default_patterns_present=pass, tests/test_approvals.py::test_add_refuses_dangerous_patterns[*]=pass, tests/test_approvals.py::test_matches_full_command_line_not_just_argv0=pass, tests/test_approvals.py::test_save_writes_0600=pass, tests/test_approvals.py::test_session_remove_is_persisted_too=pass, tests/test_approvals.py::test_add_refuses_dangerous_patterns[sudo *]=pass, tests/test_approvals.py::test_add_refuses_dangerous_patterns[rm *]=pass",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-13T17:04:26Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 125
+    },
+    {
+      "id": "e103",
+      "obligation_ref": "o51",
+      "test_ref": "tests/test_daemon.py::test_two_shells_share_one_agent_and_swap_sessions ; tests/test_daemon.py::test_sessions_max_two_builds_a_second_agent ; tests/test_daemon_lifecycle.py::test_one_pi_serves_two_shells_by_swapping_sessions",
+      "behavior_text": "asserts two shells' failures stay in separate conversations served by one agent process (new_session called once per shell, switch_session resumes the caller's own conversation), and that sessions.max=2 builds a second agent process instead.",
+      "contract_text": "obligation o51 on claim c51",
+      "evidence_type": "integration",
+      "strength": "execution",
+      "strength_basis": "tests ran pass at ef72f86: tests/test_daemon.py::test_two_shells_share_one_agent_and_swap_sessions=pass, tests/test_daemon.py::test_sessions_max_two_builds_a_second_agent=pass, tests/test_daemon_lifecycle.py::test_one_pi_serves_two_shells_by_swapping_sessions=pass",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-13T17:04:26Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 126
+    },
+    {
+      "id": "e104",
+      "obligation_ref": "o52",
+      "test_ref": "tests/test_slash.py::test_undo_never_calls_the_executor_with_no_daemon ; tests/test_daemon.py::test_undo_control_drops_the_last_turn_and_pending_proposal",
+      "behavior_text": "asserts /undo never calls the command executor and, at the daemon level, drops the last agent turn and its pending proposal from the conversation.",
+      "contract_text": "obligation o52 on claim c52",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "tests ran pass at ef72f86: tests/test_slash.py::test_undo_never_calls_the_executor_with_no_daemon=pass, tests/test_daemon.py::test_undo_control_drops_the_last_turn_and_pending_proposal=pass",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-13T17:04:26Z",
+        "commit": "ef72f86"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 127
+    }
+  ],
   "deltas": [],
   "supersessions": []
 }

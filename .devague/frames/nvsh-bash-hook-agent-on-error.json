@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-09-13T10:08:02Z",
-  "updated": "2026-09-13T16:32:27Z",
+  "updated": "2026-09-13T17:03:12Z",
   "claims": [
     {
       "id": "c1",
@@ -1637,6 +1637,15 @@
       "id": "l27",
       "code": "assumption-for-measurement",
       "what": "d21: the operator's transcript could not be reproduced as described (the audit log shows each whatis class asked once, in [u] order); the reproducible ENOENT failure mode was fixed instead, and the agent spent a long stretch on theories before reading the audit log",
+      "skipped_check": "",
+      "refs": [],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l28",
+      "code": "grader-unverified",
+      "what": "validate-delivery first pass: file_evidence.py ran pytest with a stale node id (tests renamed by d21/d23), pytest collected nothing, and the script filed e2-e52 as 'fail' without checking that any test ran; the records are wrong and await the user's --reject; a second pass with verified node ids follows",
       "skipped_check": "",
       "refs": [],
       "origin": "llm",
