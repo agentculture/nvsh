@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-09-13T10:08:02Z",
-  "updated": "2026-09-13T12:46:13Z",
+  "updated": "2026-09-13T13:07:19Z",
   "claims": [
     {
       "id": "c1",
@@ -1483,6 +1483,18 @@
       "refs": [
         "t9",
         "t10"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l12",
+      "code": "grader-unverified",
+      "what": "t17: first terminfo test depended on this machine's real terminfo dirs (passed/failed by host state); fixed by making TERMINFO_DIRS replace the defaults; and agent_reachable first probed without pi's bearer, reporting 401 on a working setup until verified against the gateway",
+      "skipped_check": "",
+      "refs": [
+        "t17",
+        "c49"
       ],
       "origin": "llm",
       "status": "proposed"
