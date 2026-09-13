@@ -2,7 +2,7 @@
   "plan_slug": "nvsh-bash-hook-agent-on-error",
   "schema_version": 2,
   "created": "2026-09-13T13:17:31Z",
-  "updated": "2026-09-13T16:23:46Z",
+  "updated": "2026-09-13T16:41:45Z",
   "deviations": [
     {
       "id": "d1",
@@ -339,6 +339,22 @@
       "status": "proposed",
       "classification": "acceptable",
       "seq": 22
+    },
+    {
+      "id": "d23",
+      "what": "operator: an explicit AI mark at the prompt - a leading '?' (and '@<harness>' such as @pi or @qwen to pick which agent answers) - routes the rest of the line to the agent as a request, bypasses the auto-call rate limit (it is explicit, like Ctrl+G), and should not fall through to bash's 'command not found'; today '? What are the ram memory levels?' produced ': command not found' and 'held back (auto calls limited to 1 per 30s)'",
+      "task_ref": "t19",
+      "reason": "operator on 2026-09-13: 'I used ? as a sign to force AI help... I like ? and also @ as it lets us choose which agent replies (like @pi or @qwen)'",
+      "affects": [
+        "t7",
+        "t14",
+        "t2",
+        "c5"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "classification": "needs-follow-up",
+      "seq": 23
     }
   ],
   "evidence": [],
