@@ -338,6 +338,75 @@ def test_autostart_never_starts_a_rival_daemon_and_says_why(
         _kill(first)
 
 
+# --- d14: a daemon-routed pi turn answers, and failures are never silent ---
+#
+# On the Spark, every request routed through the daemon produced no event at
+# all: the daemon logged "new conversation for shell N" and then nothing, the
+# client waited out its 120 s stream timeout and answered one-shot. The cause
+# was pipelining -- the daemon wrote new_session and then the prompt without
+# waiting for pi's acknowledgement of the first, and pi 0.85.1 answers
+# neither. ``FAKE_PI_STRICT_ACK=1`` makes tests/fakes/pi behave the same way,
+# so this test is red against the pipelining daemon and green against the
+# acknowledged one.
+
+
+def test_daemon_routed_request_answers_quickly_and_records_pis_session_file(
+    tmp_path: Path,
+) -> None:
+    env = _env(tmp_path)
+    env["FAKE_PI_STRICT_ACK"] = "1"
+    proc = _spawn_daemon(env)
+    try:
+        start = time.monotonic()
+        events = _drain(
+            client_transport.send(_failure("boom"), shell_id="7", env=env, autostart=False)
+        )
+        elapsed = time.monotonic() - start
+        kinds = [event.kind for event in events]
+        assert EventKind.TEXT_DELTA in kinds, f"the daemon answered nothing: {events}"
+        assert elapsed < 2.0, f"first answer took {elapsed:.2f}s"
+
+        state = client_transport.status(env=env)
+        session_path = state["conversations"]["7"]["session_path"]
+        assert session_path, "the shell's conversation must know its session file"
+        assert Path(session_path).is_file(), "pi's session file must exist on disk"
+        assert Path(session_path).parent == Path(env["XDG_STATE_HOME"]) / "nvsh" / "pi-sessions"
+    finally:
+        _kill(proc)
+        wait_for(lambda: live_pis(env) == [])
+
+
+def test_daemon_reports_a_pi_that_exits_at_once_as_an_error(tmp_path: Path) -> None:
+    """A backend that dies on launch is an error event, not a silent wait."""
+    env = _env(tmp_path)
+    bindir = tmp_path / "deadbin"
+    bindir.mkdir()
+    stub = bindir / "pi"
+    stub.write_text(
+        "#!/usr/bin/env python3\n"
+        "import sys\n"
+        "sys.stderr.write('pi: cannot find module foo\\n')\n"
+        "sys.exit(3)\n",
+        encoding="utf-8",
+    )
+    stub.chmod(0o755)
+    env["PATH"] = f"{bindir}:{env['PATH']}"
+    proc = _spawn_daemon(env)
+    try:
+        start = time.monotonic()
+        events = _drain(
+            client_transport.send(_failure("boom"), shell_id="1", env=env, autostart=False)
+        )
+        elapsed = time.monotonic() - start
+        errors = [event.error for event in events if event.kind is EventKind.ERROR]
+        assert errors, f"a dead backend must produce an error event: {events}"
+        assert elapsed < 2.0, f"the error took {elapsed:.2f}s"
+        assert "code 3" in errors[-1], errors
+        assert "cannot find module foo" in errors[-1], errors
+    finally:
+        _kill(proc)
+
+
 def test_fallback_reports_that_the_daemon_never_started(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

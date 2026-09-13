@@ -23,6 +23,7 @@ to ``$XDG_STATE_HOME/nvsh/daemon.log`` (0600).
 from __future__ import annotations
 
 import argparse
+import contextlib
 import fcntl
 import json
 import logging
@@ -90,6 +91,11 @@ class DaemonAlreadyRunning(OSError):
 
 
 # --- paths -----------------------------------------------------------------
+
+
+def _suppressed() -> contextlib.AbstractContextManager:
+    """Swallow anything a best-effort teardown raises. Never used for logic."""
+    return contextlib.suppress(Exception)
 
 
 def _resolve_env(env: Mapping[str, str] | None) -> Mapping[str, str]:
@@ -665,7 +671,15 @@ class Daemon:
             max_agents = max(1, int(self.config.sessions_max or 1))
             if len(self._slots) < max_agents:
                 agent = self._build_agent()
-                agent.start()
+                try:
+                    agent.start()
+                except Exception:
+                    # A backend that will not start owns no slot: close it
+                    # so no half-live process is left behind, and let the
+                    # next request build a fresh one.
+                    with _suppressed():
+                        agent.close()
+                    raise
                 slot = _Slot(agent=agent)
                 self._slots.append(slot)
             else:
@@ -676,25 +690,71 @@ class Daemon:
                         sleeping.sleeping = True
                         self._log.info("putting shell %s to sleep", slot.shell)
 
-            self._activate(slot, conversation)
+            try:
+                self._activate(slot, conversation)
+            except Exception:
+                # The agent is in an unknown session state; retire it rather
+                # than run a turn against it (d14).
+                self._retire(slot)
+                raise
             slot.shell = shell
             slot.last_used = time.monotonic()
             conversation.sleeping = False
             return slot, conversation
 
+    def _retire(self, slot: _Slot) -> None:
+        """Drop *slot* and close its agent. Never raises."""
+        with self._lock:
+            if slot in self._slots:
+                self._slots.remove(slot)
+        with _suppressed():
+            slot.agent.close()
+
     def _activate(self, slot: _Slot, conversation: Conversation) -> None:
+        """Point the agent at *conversation*'s session before the turn runs.
+
+        Both calls are synchronous against the backend -- ``PiAgent`` waits
+        for pi's acknowledgement before returning -- so the prompt the
+        daemon sends next cannot overtake the session command. It used to,
+        and pi then answered neither: the daemon-routed turn produced no
+        event at all until the client's 120 s stream timeout gave up
+        (deviation d14).
+        """
         new_session = getattr(slot.agent, "new_session", None)
         switch_session = getattr(slot.agent, "switch_session", None)
         if not callable(new_session) or not callable(switch_session):
             return  # a stateless adapter has nothing to swap
         if conversation.started and conversation.session_path:
-            switch_session(conversation.session_path)
+            try:
+                switch_session(conversation.session_path)
+            except Exception as exc:  # noqa: BLE001 - a stale/missing session file
+                # Losing the history of one terminal is a nuisance; refusing
+                # to answer at all is the d14 failure. Say so and start over.
+                self._log.error(
+                    "shell %s: could not resume session %s (%s); starting a fresh one",
+                    conversation.shell,
+                    conversation.session_path,
+                    exc,
+                )
+                conversation.started = False
+                conversation.session_path = None
+                self._activate(slot, conversation)
+                return
             self._log.info("resumed shell %s", conversation.shell)
         else:
-            conversation.session_path = str(self._session_path(conversation.shell))
-            new_session()
+            # The backend names its own session file (pi has no rpc command
+            # that chooses one), so remember what it reports and fall back
+            # to this daemon's per-shell key only when it reports nothing.
+            reported = new_session()
+            conversation.session_path = (
+                str(reported) if reported else str(self._session_path(conversation.shell))
+            )
             conversation.started = True
-            self._log.info("new conversation for shell %s", conversation.shell)
+            self._log.info(
+                "new conversation for shell %s (session %s)",
+                conversation.shell,
+                conversation.session_path,
+            )
 
     def cancel_shell(self, shell: str) -> None:
         """Cancel whatever the agent serving *shell* is streaming."""
@@ -955,7 +1015,10 @@ class Daemon:
         try:
             slot, conversation = self._acquire(shell)
         except Exception as exc:  # noqa: BLE001 - a backend that won't start
-            self._log.warning("could not start an agent: %s", exc)
+            # Loud on both channels: the operator sees an error panel, and
+            # the log keeps the traceback that says which backend broke and
+            # how (d14 -- this used to be a silent wait).
+            self._log.error("shell %s: could not start an agent: %s", shell, exc, exc_info=True)
             yield AgentEvent(kind=EventKind.ERROR, error=f"no agent available: {exc}")
             return
 
@@ -997,7 +1060,11 @@ class Daemon:
                 if active.aborted:
                     break
         except Exception as exc:  # noqa: BLE001 - adapter crash must not kill us
-            self._log.warning("agent run failed: %s", exc)
+            self._log.error("shell %s: agent run failed: %s", shell, exc, exc_info=True)
+            # The backend's state after a mid-turn failure is unknown (a pi
+            # that never acked its prompt may still answer it later), so the
+            # process is retired rather than reused for the next request.
+            self._retire(slot)
             yield AgentEvent(kind=EventKind.ERROR, error=f"agent error: {exc}")
             return
         finally:

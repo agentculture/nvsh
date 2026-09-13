@@ -37,6 +37,28 @@ import json
 import os
 import select
 import sys
+import uuid
+from pathlib import Path
+
+#: The session file this process is "writing", the way the real pi owns the
+#: name of its own session file inside ``--session-dir``.
+SESSION_FILE = ""
+
+
+def session_file(create: bool = False) -> str:
+    """Report (and optionally create) this process's session file."""
+    global SESSION_FILE
+    if not create:
+        return SESSION_FILE
+    argv = sys.argv
+    if "--session-dir" not in argv:
+        return ""
+    directory = Path(argv[argv.index("--session-dir") + 1])
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"{uuid.uuid4()}.jsonl"
+    path.write_text("", encoding="utf-8")
+    SESSION_FILE = str(path)
+    return SESSION_FILE
 
 
 def emit(obj: dict) -> None:
@@ -100,13 +122,21 @@ def main() -> None:
             record(cmd)
             pending, awaiting = emit_script(pending, await_ui)
         else:
+            data: dict = {}
+            if cmd_type == "new_session":
+                session_file(create=True)
+                data = {"cancelled": False}
+            elif cmd_type == "switch_session":
+                data = {"cancelled": False}
+            elif cmd_type == "get_state":
+                data = {"isStreaming": False, "sessionFile": session_file()}
             emit(
                 {
                     "id": cmd.get("id"),
                     "type": "response",
                     "command": cmd_type,
                     "success": True,
-                    "data": {},
+                    "data": data,
                 }
             )
 
