@@ -29,10 +29,18 @@ import time
 
 import pytest
 
+from tests.test_triggers_prose import _TARGET_NEGATIVES, _TARGET_POSITIVES
+
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 READLINE_BASH = os.path.join(REPO_ROOT, "nvsh", "shell", "readline.bash")
 HOOK_BASH = os.path.join(REPO_ROOT, "nvsh", "shell", "hook.bash")
 FAKE_DIR = os.path.join(REPO_ROOT, "tests", "fakes")
+
+# The real console-script, resolved once against this process's own PATH
+# (before any test overrides PATH for the child bash's environment), so the
+# t7 sync tests below can drive `nvsh complete --json` for real instead of
+# through the fixture-backed tests/fakes/nvsh.
+REAL_NVSH = shutil.which("nvsh")
 
 PROMPT = "@nvsh@ "
 KEYMAPS = ("emacs", "vi-insert", "vi-command")
@@ -192,6 +200,51 @@ def shim(tmp_path, *, doctor_exit=0):
         "NVSH_SHIM_LOG": str(log),
     }
     return env, log
+
+
+def real_nvsh_shim(tmp_path):
+    """A fake ``nvsh`` that answers ``slash`` locally (records only, exit 0,
+    same record format as ``tests/fakes/nvsh``) and delegates everything
+    else -- in particular ``complete --json``, both the full palette and the
+    ``/ask --agent`` adapter-only list -- to the *real* ``nvsh`` console
+    script this checkout installs.
+
+    Used only by the t7 @target sync tests below: they must drive the
+    actual palette ``nvsh.slash.agent_mark_items`` / the actual adapter list
+    ``nvsh.slash._complete_ask`` computes, not the fixed fixture list
+    ``tests/fakes/nvsh`` answers with, or a real grammar difference between
+    the bash and Python sides could hide behind two fakes that happen to
+    agree with each other instead of with ``nvsh`` itself.
+    """
+    assert REAL_NVSH, "the real 'nvsh' console-script must be on PATH to run the t7 sync tests"
+    bindir = tmp_path / "realshimbin"
+    bindir.mkdir(exist_ok=True)
+    script = bindir / "nvsh"
+    body = (
+        "#!/bin/sh\n"
+        'if [ "$1" = "slash" ]; then\n'
+        "    shift\n"
+        '    printf "slash %s\\n" "$*" >> "$NVSH_FAKE_RECORD"\n'
+        "    exit 0\n"
+        "fi\n"
+        'exec "__REAL_NVSH__" "$@"\n'
+    )
+    script.write_text(body.replace("__REAL_NVSH__", REAL_NVSH))
+    script.chmod(0o755)
+    return {"PATH": str(bindir) + os.pathsep + os.environ.get("PATH", "/usr/bin:/bin")}
+
+
+def aliased_config_env(tmp_path):
+    """The same ``[aliases]`` table as ``tests/test_triggers_prose.py``'s
+    ``aliased_config`` fixture (``reviewer`` -> ``claude/opus/high``,
+    ``local``/``default`` -> ``pi``), so ``_TARGET_POSITIVES`` /
+    ``_TARGET_NEGATIVES`` parse identically here and there."""
+    config_home = tmp_path / "xdg-config"
+    (config_home / "nvsh").mkdir(parents=True)
+    (config_home / "nvsh" / "config.toml").write_text(
+        '[aliases]\ndefault = "pi"\nreviewer = "claude/opus/high"\nlocal = "pi"\n'
+    )
+    return {"XDG_CONFIG_HOME": str(config_home)}
 
 
 @pytest.fixture
@@ -550,5 +603,81 @@ def test_tab_on_an_at_word_stays_bash_hostname_completion(tmp_path):
         sh.send("@p\t", settle=0.8)
         assert "@pineapple" in sh.since(mark, settle=0.3)
         sh.send("\x15", settle=0.2)
+    finally:
+        sh.close()
+
+
+def test_tab_still_not_offered_for_a_slashed_at_target(tmp_path):
+    """The same hostname-completion limitation holds for the extended
+    `backend/model[/effort]` grammar: Tab on `@claude/s` is bash's own
+    hostname completion (or nothing, with no matching host), never nvsh's."""
+    hosts = tmp_path / "hostfile"
+    hosts.write_text("claude-workstation\n")
+    sh = start(tmp_path, env_extra={"HOSTFILE": str(hosts)})
+    try:
+        mark = sh.mark()
+        sh.send("@claude/s\t", settle=0.8)
+        out = sh.since(mark, settle=0.3)
+        # bash's hostname completer only ever matches on the *hostname*
+        # word (no '/'), so this offers nothing nvsh-shaped either way --
+        # the point is that nvsh's own completer was never consulted.
+        assert "/ask" not in out, out
+        sh.send("\x15", settle=0.2)
+    finally:
+        sh.close()
+
+
+# -- task t7: the bash side of the @target grammar (h10, c33, c14, h11) -----
+#
+# tests/test_triggers_prose.py's _TARGET_POSITIVES / _TARGET_NEGATIVES is the
+# one grammar table for nvsh.triggers.parse_mark's @target rule (task t6);
+# these tests import it directly rather than keeping a second copy here, so
+# a row added to one side can never silently go untested on the other.
+
+
+def test_bash_and_python_share_the_same_at_target_table():
+    """No bash-side copy of the grammar table exists to drift out of sync:
+    the tests below parametrize on the *same* list objects test_triggers_
+    prose.py defines for nvsh.triggers.parse_mark."""
+    from tests import test_triggers_prose
+
+    assert _TARGET_POSITIVES is test_triggers_prose._TARGET_POSITIVES
+    assert _TARGET_NEGATIVES is test_triggers_prose._TARGET_NEGATIVES
+
+
+def test_bash_at_target_grammar_accepts_every_python_positive_row(tmp_path):
+    """__nvsh_mark_line must rewrite every line nvsh.triggers.parse_mark's
+    @target grammar accepts to the matching `/ask --agent <target> ...`
+    dispatch -- driven against the real `nvsh complete --json` palette and
+    adapter list, not a hand-written fixture."""
+    env = {}
+    env.update(real_nvsh_shim(tmp_path))
+    env.update(aliased_config_env(tmp_path))
+    sh = start(tmp_path, env_extra=env)
+    try:
+        for line, question, agent in _TARGET_POSITIVES:
+            sh.run(line, settle=0.8)
+            assert sh.records()[-1] == "slash /ask --agent %s %s" % (agent, question), (
+                line,
+                sh.records(),
+            )
+        assert len(sh.records()) == len(_TARGET_POSITIVES)
+    finally:
+        sh.close()
+
+
+def test_bash_at_target_grammar_rejects_every_python_negative_row(tmp_path):
+    """The same rows nvsh.triggers.parse_mark's @target grammar rejects must
+    never dispatch on the bash side either -- they fall through to plain
+    bash exactly as an ordinary command or address-in-argument-position
+    line would."""
+    env = {}
+    env.update(real_nvsh_shim(tmp_path))
+    env.update(aliased_config_env(tmp_path))
+    sh = start(tmp_path, env_extra=env)
+    try:
+        for line in _TARGET_NEGATIVES:
+            sh.run(line, settle=0.5)
+        assert sh.records() == []
     finally:
         sh.close()
