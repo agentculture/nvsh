@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/). This project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.1] - 2026-09-14
+
+### Changed
+
+- Recorded the owner's adjudication of the 0.11.0 "setup works with any installed agent" run in devague state: plan task `t5` confirmed, deviations `d1` and `d2` approved, reasoning lapses `l1`–`l9` approved, obligations `o1`–`o15` and evidence `e1`–`e15` approved, and delta `b1` approved.
+- Re-filed and approved the three behavioral deltas that cite `d1` and `d2` (bare-machine pi/node bootstrap offers, bare `--agent` adapter names, and `setup --json` staying parseable when the daemon stop prints), which devague refuses to file against an unapproved deviation.
+- Committed the re-exported plan and its implementation split artifact, and refreshed the delivery summary so its deviations, lapses and claims read as approved instead of pending.
+- Superseded delta `b1` ("probe lists both qwen and qwen-p"), which the PR #12 review fix made false, with `b5` (one probe row per shared binary), backed by obligation `o16` and passing evidence `e16`; all three are filed as proposed for the owner. `docs/current-spec.md` is not committed yet, because `devague today` still projects the unapproved `b5`'s predecessor until `b5` is adjudicated.
+
 ## [0.11.0] - 2026-09-14
 
 ### Added
