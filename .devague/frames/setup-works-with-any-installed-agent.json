@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-09-14T13:42:34Z",
-  "updated": "2026-09-14T15:19:42Z",
+  "updated": "2026-09-14T15:25:28Z",
   "claims": [
     {
       "id": "c1",
@@ -1037,7 +1037,7 @@
       "behavior": "probe keeps one row per AdapterSpec.binary, so a qwen-only PATH is one harness picked silently; qwen-p stays selectable explicitly",
       "source_text": "default resolution on first setup: probe PATH for every adapter; one hit is the default; several hits on a terminal always prompt the operator with the list, tool-calling adapters first then ADAPTERS order, each non-tool-calling entry marked with a read-only/plan-mode warning; --yes answers install prompts only and never the pick; non-tty/--json takes the first entry of that ordered list; `--agent <target>` skips the probe; openai-compat is the pick only when no harness binary exists",
       "origin": "llm",
-      "status": "proposed"
+      "status": "approved"
     }
   ]
 }

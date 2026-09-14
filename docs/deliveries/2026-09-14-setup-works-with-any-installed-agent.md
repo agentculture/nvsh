@@ -100,7 +100,7 @@ and are quoted as the recorded ground truth.
 - PRs / issues: PR #12; issue #11 (zsh/macOS, deferred)
 - deltas: `b1` (approved, then superseded by `b5`) — `probe()` listed
   both `qwen` and `qwen-p` when the `qwen` binary was present; `b5`
-  (proposed, with obligation `o16` and evidence `e16`) — the PR #12 review
+  (approved, with obligation `o16` and evidence `e16`) — the PR #12 review
   fix keeps one probe row per shared binary, so a qwen-only PATH picks
   `qwen` silently; `b2` (`d1`) — an empty
   probe still offers node and pi as the bootstrap path; `b3` (`d2`) — a
@@ -136,9 +136,9 @@ Obligations `o1`–`o15` and evidence `e1`–`e15` are approved.
   `d1`/`d2` re-filed as `b2`–`b4` and approved; plan re-exported.
 - PR #12 review (merged as `4162f2f`): ten Qodo findings fixed, SonarCloud
   gate OK with 0 issues.
-- Owner adjudication of `o16`, `e16` and `b5` (filed in 0.11.1 when the
-  current-spec projection showed `b1` was stale); then run `devague today`
-  and commit `docs/current-spec.md`.
+- `o16`, `e16` and `b5` (filed in 0.11.1 when the current-spec projection
+  showed `b1` was stale) approved by the owner; `docs/current-spec.md`
+  committed from `devague today`.
 - Issue #11 — zsh and macOS: `.zshrc`, a zsh hook (`precmd`, `$pipestatus`,
   zle binding), brew installers, a mac in the verification fleet.
 - Plan risk `r3` (follow-up) — the rc block's `nvsh()` function calls

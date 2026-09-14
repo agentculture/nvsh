@@ -2,7 +2,7 @@
   "plan_slug": "setup-works-with-any-installed-agent",
   "schema_version": 2,
   "created": "2026-09-14T14:25:30Z",
-  "updated": "2026-09-14T15:19:43Z",
+  "updated": "2026-09-14T15:25:28Z",
   "deviations": [
     {
       "id": "d1",
@@ -333,7 +333,7 @@
         "commit": "4162f2f"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 18
     }
@@ -406,7 +406,7 @@
         "e16"
       ],
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false
     }
   ],
