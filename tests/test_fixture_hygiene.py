@@ -40,6 +40,7 @@ fires.
 from __future__ import annotations
 
 import importlib.util
+import json
 import re
 import sys
 from dataclasses import dataclass
@@ -315,7 +316,12 @@ def test_scan_secrets_covers_a_dirty_fixture_under_tests_fixtures(tmp_path: Path
     fixtures_dir = tmp_path / "tests" / "fixtures" / "platform" / "planted"
     fixtures_dir.mkdir(parents=True)
     planted = fixtures_dir / "leaked.json"
-    planted.write_text('{"apiKey": "sk-liveAbCdEfGhIjKlMnOpQrStUvWxYz1234"}\n', encoding="utf-8")
+    # Assembled at runtime so the planted key never sits literally in this
+    # file: scripts/scan-secrets.py scans the whole tracked tree, this test
+    # included, and must not trip over its own bait.
+    key_name = "api" + "Key"
+    planted_value = "sk-" + "live" + "AbCdEfGhIjKlMnOpQrStUvWxYz1234"
+    planted.write_text(json.dumps({key_name: planted_value}) + "\n", encoding="utf-8")
 
     findings = scan_secrets.scan_paths([str(planted)])
     assert any(f.kind == "credential" for f in findings), findings
