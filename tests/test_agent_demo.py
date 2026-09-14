@@ -70,7 +70,8 @@ def _text(events) -> str:
 
 def test_the_fixture_is_committed_json_so_a_scenario_edit_needs_no_python():
     data = json.loads(FIXTURE.read_text(encoding="utf-8"))
-    assert isinstance(data["events"], list) and data["events"]
+    assert isinstance(data["events"], list)
+    assert data["events"]
     kinds = [event["kind"] for event in data["events"]]
     assert "text_delta" in kinds
     assert kinds.count("proposal") == 1

@@ -37,13 +37,13 @@ def test_script_documents_agg_fallback() -> None:
     text = SCRIPT.read_text()
     assert "agg" in text
     assert "asciinema-agg" in text or "agg " in text
-    assert "--cols" in text and "--rows" in text
+    assert "--cols" in text
+    assert "--rows" in text
     assert "github.com/asciinema/agg" in text
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="bash script")
 def test_script_no_args_exits_nonzero() -> None:
-    if sys.platform == "win32":
-        return
     result = subprocess.run(
         ["bash", str(SCRIPT)],
         capture_output=True,

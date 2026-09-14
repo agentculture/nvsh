@@ -266,7 +266,8 @@ def test_demo_record_end_to_end(tmp_path):
 
     # and the daemon the second run started was stopped with it
     kept = _kept_sandbox(proc.stderr)
-    assert kept is not None and kept.is_dir()
+    assert kept is not None
+    assert kept.is_dir()
     sockets = list((kept / "run" / "nvsh").glob("*.sock"))
     assert sockets == [], f"daemon socket left behind: {sockets}"
     shutil.rmtree(kept, ignore_errors=True)
@@ -287,4 +288,5 @@ def test_scrub_rules_leave_a_token_inside_a_protected_word_alone(capsys):
 
 def test_protected_words_is_the_detected_platform_kind():
     words = demo_record.protected_words()
-    assert len(words) == 1 and words[0]
+    assert len(words) == 1
+    assert words[0]
