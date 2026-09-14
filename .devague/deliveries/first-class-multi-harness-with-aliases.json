@@ -2,7 +2,7 @@
   "plan_slug": "first-class-multi-harness-with-aliases",
   "schema_version": 2,
   "created": "2026-09-14T06:16:12Z",
-  "updated": "2026-09-14T06:17:29Z",
+  "updated": "2026-09-14T06:50:49Z",
   "deviations": [
     {
       "id": "d1",
@@ -73,6 +73,74 @@
       "status": "proposed",
       "classification": "acceptable",
       "seq": 5
+    },
+    {
+      "id": "d6",
+      "what": "t7's bash/python sync test imports the @target table from tests/test_triggers_prose.py (where d2 put it) instead of tests/test_slash.py, which holds no grammar table",
+      "task_ref": "t7",
+      "reason": "consequence of d2; tests/test_slash.py only tables the palette ordering",
+      "affects": [
+        "t6"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "classification": "acceptable",
+      "seq": 6
+    },
+    {
+      "id": "d7",
+      "what": "doctor detects auth state only for kiro (kiro-cli whoami); claude, codex, qwen and agy report auth 'not verified' because their only auth signal comes from a real print-mode invocation that would be a model call; login-command remediation for those four is a generic '<binary> login' guess and the kiro trust file path is unconfirmed",
+      "task_ref": "t17",
+      "reason": "the spec asks for auth detection without a model or network call; no such probe exists for those four CLIs (verified against their --help/--version output)",
+      "affects": [
+        "c17",
+        "h14"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "classification": "needs-follow-up",
+      "seq": 7
+    },
+    {
+      "id": "d8",
+      "what": "AcpAgent's stderr drain races an instant launch failure (~1 in 10 runs the ERROR says 'no stderr'); conformance pins qwen/kiro as STDERR_TAIL_RACE and accepts the exit status alone for them",
+      "task_ref": "t15",
+      "reason": "measured by t15 over 37 repeats; agy.py waits a beat for the drain, acp.py does not; adapters were out of t15's scope",
+      "affects": [
+        "t12"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "classification": "needs-follow-up",
+      "seq": 8
+    },
+    {
+      "id": "d9",
+      "what": "ACP effort is not passed verbatim: AcpAgent sends session/set_config_option only when the operator's effort matches an option the harness advertised, else silently sends nothing while capabilities().effort stays True (tension with decision c24)",
+      "task_ref": "t15",
+      "reason": "t12 chose to filter rather than send a value the harness would reject; the conformance effort case for qwen-acp therefore proves only that the bytes sent are unedited",
+      "affects": [
+        "t12",
+        "c24"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "classification": "needs-follow-up",
+      "seq": 9
+    },
+    {
+      "id": "d10",
+      "what": "for stream-json harnesses (claude, agy, qwen-p) the daemon reuses the adapter and its session (--resume <session-id>) across consecutive failures, not one OS process: those CLIs end the process per turn by design; ACP keeps one child (measured); app-server keeps one rpc process (adapter-level tests only)",
+      "task_ref": "t16",
+      "reason": "acceptance text said 'reuse one warm process for stream-json/ACP/app-server'; the print-mode CLIs cannot hold one process across turns",
+      "affects": [
+        "c25",
+        "c45"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "classification": "acceptable",
+      "seq": 10
     }
   ],
   "evidence": [],

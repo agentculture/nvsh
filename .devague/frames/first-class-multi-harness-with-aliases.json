@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-09-14T03:50:29Z",
-  "updated": "2026-09-14T05:55:18Z",
+  "updated": "2026-09-14T06:50:49Z",
   "claims": [
     {
       "id": "c1",
@@ -1499,6 +1499,76 @@
       "skipped_check": "",
       "refs": [
         "wave 1 / t2 merge gate"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l3",
+      "code": "assumption-for-measurement",
+      "what": "c53's premise that qwen plan mode never asks permission is asserted only via tool_calling=False; the only recorded ACP session (tests/fakes/acp) did ask, and no plan-mode qwen turn is recorded in the tree",
+      "skipped_check": "record a plan-mode qwen --acp turn and replay it",
+      "refs": [
+        "t15",
+        "c53"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l4",
+      "code": "grader-unverified",
+      "what": "t15 accepts start()-time exceptions from pi/acp adapters as the rejected-effort ERROR path on the strength of reading nvsh/daemon.py's conversion, without an end-to-end daemon test",
+      "skipped_check": "daemon-level test that a start() exception yields ERROR with the stderr tail",
+      "refs": [
+        "t15",
+        "t16"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l5",
+      "code": "provenance-missing",
+      "what": "pi and kiro have no recorded-from transcript: tests/fakes/pi* are hand-written and the kiro 2.21.4 ACP session cited in acp.py prose was never captured",
+      "skipped_check": "",
+      "refs": [
+        "t15",
+        "t12"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l6",
+      "code": "assumption-for-measurement",
+      "what": "codex app-server warm-process reuse across two daemon-routed failures was not measured at daemon level (codex fake blocks on approval mid-turn); relied on the 'exactly one adapter built' test plus adapter-level _rpc persistence",
+      "skipped_check": "daemon-level child-pid identity test for codex",
+      "refs": [
+        "t16"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l7",
+      "code": "n-below-claim",
+      "what": "the version-handshake probe adds one unix-socket connect+ping per daemon-routed request; judged negligible on the failure path, not benchmarked",
+      "skipped_check": "",
+      "refs": [
+        "t16"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l8",
+      "code": "grader-unverified",
+      "what": "'no child harness process after nvsh uninstall' is tested through client_transport.stop -> daemon teardown, the mechanism cmd_uninstall invokes, not by running the nvsh uninstall verb against an rc file",
+      "skipped_check": "end-to-end nvsh uninstall containment test",
+      "refs": [
+        "t16",
+        "t21"
       ],
       "origin": "llm",
       "status": "proposed"
