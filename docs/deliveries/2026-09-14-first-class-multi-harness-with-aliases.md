@@ -186,6 +186,7 @@ pending approval (not yet evidence): `l2`, `l3`, `l4`, `l5`, `l6`, `l7`, `l8`
 
 ## Remaining Work / Follow-up
 
+- PR #9 review (Qodo, 19 threads): 14 fixed in be748a4 (approval-bypass `extra_args` refused in claude/codex/agy; codex `respond_ui` and -32601 replies to unknown server requests; pi factory forwards effort/extra_args/approval; setup keeps a usable default alias; bare-key alias names; doctor probes the default alias backend and fails a non-zero `--version`; `@default` stays warm; agy/ACP bind the request cwd; panel proposal-boundary test). Deferred, threads left open: a turn watcher for daemon-side targeted runs; panel/audit attribution when the daemon falls back to openai-compat; type guards for malformed claude stream frames; comparing the client's resolved default with the daemon's warm target when the alias changes under one version.
 - Operator adjudication of `d1`–`d11`, `l2`–`l8`, `o1`–`o24`, `e1`–`e26`, `b1`–`b7` (`devague deviate|lapse|oblige|evidence|delta --confirm`).
 - `d7`: a model-free auth probe for claude, codex, qwen and agy (or a documented "login and retry" remediation per CLI) — owner: follow-up issue.
 - `d9`: decide whether ACP effort should be sent verbatim (c24) or stay filtered; if verbatim, surface the harness's rejection as ERROR.
