@@ -339,8 +339,10 @@ def test_probe_row_shape():
         (set(), [], None),
         ({"claude"}, ["claude"], True),
         ({"claude", "codex"}, ["claude", "codex"], True),
-        # qwen and qwen-p share the 'qwen' binary, so both show up installed.
-        ({"qwen", "claude"}, ["claude", "qwen", "qwen-p"], True),
+        # qwen and qwen-p share the 'qwen' binary: only the first adapter
+        # registered for that binary (qwen, ahead of qwen-p in ADAPTERS
+        # order) shows up -- qwen-p stays selectable, just not probed.
+        ({"qwen", "claude"}, ["claude", "qwen"], True),
         ({"pi", "claude"}, ["pi", "claude"], True),
     ],
 )
@@ -352,25 +354,32 @@ def test_probe_table_over_which_sets(present, expected_names, expected_first_too
 
 
 def test_probe_orders_tool_calling_first_then_adapters_order():
-    # qwen/qwen-p (acp/print, tool_calling False by default) and
-    # claude/codex/pi (tool_calling True) present: tool-calling adapters
-    # come first, in ADAPTERS registration order (pi, claude, codex), then
-    # qwen, qwen-p (also ADAPTERS order).
+    # qwen (acp, tool_calling False by default) and claude/codex/pi
+    # (tool_calling True) present: tool-calling adapters come first, in
+    # ADAPTERS registration order (pi, claude, codex), then qwen. qwen-p
+    # shares qwen's binary and is de-duplicated out of the probe table.
     rows = registry.probe(_which_factory({"pi", "qwen", "claude", "codex"}))
-    assert [row["name"] for row in rows] == ["pi", "claude", "codex", "qwen", "qwen-p"]
+    assert [row["name"] for row in rows] == ["pi", "claude", "codex", "qwen"]
 
 
 def test_probe_reflects_config_overrides_like_build_adapter_rows():
     # qwen's tool_calling flips to True when [agents.qwen] approval="harness"
-    # -- the same underlying source build_adapter_rows uses. qwen-p (same
-    # binary) is unaffected: it has no approval override and stays False.
+    # -- the same underlying source build_adapter_rows uses.
     config = Config()
     config.agents["qwen"] = {"approval": "harness"}
     rows = registry.probe(_which_factory({"qwen"}), config=config)
     assert rows == [
         {"name": "qwen", "hosted": False, "tool_calling": True},
-        {"name": "qwen-p", "hosted": False, "tool_calling": False},
     ]
+
+
+def test_probe_lists_one_row_per_binary():
+    # A qwen-only machine sees exactly one row -- 'qwen' -- not both 'qwen'
+    # and 'qwen-p' (Qodo #2, PR #12 review): they share one binary, and
+    # qwen-p is a fallback meant for explicit selection, not a second row
+    # setup would prompt between.
+    rows = registry.probe(_which_factory({"qwen"}))
+    assert [row["name"] for row in rows] == ["qwen"]
 
 
 # -- choose() consulting probe() ----------------------------------------------
@@ -443,3 +452,12 @@ def test_choose_forced_bare_name_still_fails_when_not_installed():
     with pytest.raises(CliError) as excinfo:
         registry.choose(cfg, lambda _n: None, forced="claude")
     assert "claude" in str(excinfo.value.message)
+
+
+def test_choose_forced_qwen_p_still_selectable_despite_probe_dedup():
+    # qwen-p is dropped from probe()'s table (it shares qwen's binary), but
+    # remains fully reachable through an explicit forced target.
+    cfg = Config()
+    name, reason = registry.choose(cfg, which=_which_factory({"qwen"}), forced="qwen-p")
+    assert name == "qwen-p"
+    assert "forced" in reason
