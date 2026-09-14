@@ -1,0 +1,2 @@
+# recorded-from: kiro-cli 2.21.4
+kiro-cli 2.21.4

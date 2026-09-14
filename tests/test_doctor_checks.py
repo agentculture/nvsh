@@ -13,6 +13,7 @@ from __future__ import annotations
 import http.server
 import json
 import socket
+import subprocess
 import threading
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -22,6 +23,16 @@ import pytest
 from nvsh import doctor_checks
 from nvsh.config import Config
 from nvsh.platform import Platform, Value
+
+FIXTURES = Path(__file__).parent / "fixtures" / "doctor"
+
+
+def _fixture_text(name: str) -> str:
+    """A recorded doctor fixture's body, with its '# recorded-from:' header
+    line stripped -- the header is provenance for the fixture file itself,
+    not part of what a real CLI invocation would print on stdout/stderr."""
+    lines = (FIXTURES / name).read_text(encoding="utf-8").splitlines(keepends=True)
+    return "".join(line for line in lines if not line.startswith("#"))
 
 
 @pytest.fixture(autouse=True)
@@ -704,7 +715,7 @@ def test_terminfo_present_finds_entry_via_search_dirs(tmp_path):
 # --- collect_checks -------------------------------------------------------------
 
 
-def test_collect_checks_returns_every_new_check_id():
+def test_collect_checks_returns_every_new_check_id(tmp_path):
     checks = doctor_checks.collect_checks(
         env={},
         current_version="1.2.3",
@@ -713,12 +724,14 @@ def test_collect_checks_returns_every_new_check_id():
         platform=Platform(kind="generic", values=()),
         which=lambda name: None,
         run=lambda argv, timeout: (1, "", ""),
+        home=tmp_path,
     )
     ids = {c["id"] for c in checks}
     assert ids == {
         "platform_detected",
         "agent_configured",
         "agent_reachable",
+        "agent_allowlist",
         "hook_sourced",
         "hook_first_in_prompt_command",
         "bindings_present",
@@ -815,3 +828,302 @@ def test_agent_reachable_reports_a_refused_key_file_without_the_key(tmp_path):
     finally:
         server.shutdown()
         thread.join()
+
+
+# ---------------------------------------------------------------------------
+# agent_reachable: per-harness CLI dispatch (task t17) -----------------------
+#
+# claude/codex/qwen/qwen-p/agy/kiro are driven as plain subprocess CLIs
+# instead of the pi-rpc/openai-compat-http probes above. Every fake ``run``
+# here is a plain Python callable -- no real binary is ever spawned and no
+# network or model call happens, per this task's own instruction.
+# ---------------------------------------------------------------------------
+
+
+def _fake_run(responses: dict[tuple[str, ...], tuple[int, str, str]]):
+    """A CliRunner fake keyed by the exact argv tuple; unlisted argv errors loudly."""
+
+    def run(argv: list[str], timeout: float) -> tuple[int, str, str]:
+        key = tuple(argv)
+        if key not in responses:
+            raise AssertionError(f"unexpected CLI invocation in test: {argv!r}")
+        return responses[key]
+
+    return run
+
+
+def test_agent_reachable_cli_harness_missing_binary():
+    cfg = Config(agent_provider="claude")
+    check = doctor_checks.check_agent_reachable(cfg, which=lambda name: None)
+    assert check["passed"] is False
+    assert check["severity"] == "error"
+    assert "claude-missing" in check["message"]
+    assert "nvsh agent install claude" in check["remediation"]
+
+
+def test_agent_reachable_claude_version_ok_reports_reachable():
+    cfg = Config(agent_provider="claude")
+    run = _fake_run({("claude", "--version"): (0, _fixture_text("claude-version.txt"), "")})
+    check = doctor_checks.check_agent_reachable(cfg, which=lambda name: "/usr/bin/claude", run=run)
+    assert check["passed"] is True
+    assert check["severity"] == "info"
+    assert "2.1.270" in check["message"]
+    assert "not verified" in check["message"]  # claude has no verified auth probe (t17 honesty)
+
+
+def test_agent_reachable_codex_version_ok():
+    cfg = Config(agent_provider="codex")
+    run = _fake_run({("codex", "--version"): (0, _fixture_text("codex-version.txt"), "")})
+    check = doctor_checks.check_agent_reachable(cfg, which=lambda name: "/usr/bin/codex", run=run)
+    assert check["passed"] is True
+    assert "0.147.0" in check["message"]
+
+
+def test_agent_reachable_qwen_version_ok():
+    cfg = Config(agent_provider="qwen")
+    run = _fake_run({("qwen", "--version"): (0, _fixture_text("qwen-version.txt"), "")})
+    check = doctor_checks.check_agent_reachable(cfg, which=lambda name: "/usr/bin/qwen", run=run)
+    assert check["passed"] is True
+    assert "0.23.3" in check["message"]
+
+
+def test_agent_reachable_qwen_p_shares_the_qwen_binary_and_range():
+    cfg = Config(agent_provider="qwen-p")
+    run = _fake_run({("qwen", "--version"): (0, _fixture_text("qwen-version.txt"), "")})
+    check = doctor_checks.check_agent_reachable(cfg, which=lambda name: "/usr/bin/qwen", run=run)
+    assert check["passed"] is True
+    assert "0.23.3" in check["message"]
+
+
+def test_agent_reachable_agy_version_ok():
+    cfg = Config(agent_provider="agy")
+    run = _fake_run({("agy", "--version"): (0, _fixture_text("agy-version.txt"), "")})
+    check = doctor_checks.check_agent_reachable(cfg, which=lambda name: "/usr/bin/agy", run=run)
+    assert check["passed"] is True
+    assert "1.2.2" in check["message"]
+
+
+def test_agent_reachable_below_supported_range_warns():
+    cfg = Config(agent_provider="agy")
+    run = _fake_run({("agy", "--version"): (0, "0.9.0\n", "")})
+    check = doctor_checks.check_agent_reachable(cfg, which=lambda name: "/usr/bin/agy", run=run)
+    assert check["passed"] is False
+    assert check["severity"] == "warning"
+    assert "0.9.0" in check["message"]
+    assert "supported range" in check["message"]
+    assert "install a supported agy version" in check["remediation"]
+
+
+def test_agent_reachable_unparseable_version_is_a_warning():
+    cfg = Config(agent_provider="claude")
+    run = _fake_run({("claude", "--version"): (1, "", "unexpected output")})
+    check = doctor_checks.check_agent_reachable(cfg, which=lambda name: "/usr/bin/claude", run=run)
+    assert check["passed"] is False
+    assert check["severity"] == "warning"
+    assert "could not determine claude version" in check["message"]
+
+
+def test_agent_reachable_cli_hang_is_a_failed_check_with_remediation():
+    def run(argv, timeout):
+        raise subprocess.TimeoutExpired(cmd=argv, timeout=timeout)
+
+    cfg = Config(agent_provider="codex")
+    check = doctor_checks.check_agent_reachable(cfg, which=lambda name: "/usr/bin/codex", run=run)
+    assert check["passed"] is False
+    assert check["severity"] == "error"
+    assert "codex-hung" in check["message"]
+    assert "hanging" in check["remediation"]
+    assert "codex --version" in check["remediation"]
+
+
+def test_agent_reachable_cli_oserror_is_a_failed_check():
+    def run(argv, timeout):
+        raise OSError("no such file or directory")
+
+    cfg = Config(agent_provider="claude")
+    check = doctor_checks.check_agent_reachable(cfg, which=lambda name: "/usr/bin/claude", run=run)
+    assert check["passed"] is False
+    assert check["severity"] == "error"
+    assert "claude-unreachable" in check["message"]
+
+
+# --- agent_reachable: kiro's verified 'kiro-cli whoami' auth probe ----------
+
+
+def test_agent_reachable_kiro_unauthenticated_fails_with_login_remediation():
+    cfg = Config(agent_provider="kiro")
+    run = _fake_run(
+        {
+            ("kiro-cli", "--version"): (0, _fixture_text("kiro-version.txt"), ""),
+            ("kiro-cli", "whoami"): (0, _fixture_text("kiro-whoami-unauthenticated.txt"), ""),
+        }
+    )
+    check = doctor_checks.check_agent_reachable(
+        cfg, which=lambda name: "/usr/bin/kiro-cli", run=run
+    )
+    assert check["passed"] is False
+    assert check["severity"] == "error"
+    assert "not authenticated" in check["message"]
+    assert check["remediation"] == "kiro-cli login"
+
+
+def test_agent_reachable_kiro_authenticated_passes():
+    cfg = Config(agent_provider="kiro")
+    run = _fake_run(
+        {
+            ("kiro-cli", "--version"): (0, _fixture_text("kiro-version.txt"), ""),
+            ("kiro-cli", "whoami"): (0, _fixture_text("kiro-whoami-authenticated.txt"), ""),
+        }
+    )
+    check = doctor_checks.check_agent_reachable(
+        cfg, which=lambda name: "/usr/bin/kiro-cli", run=run
+    )
+    assert check["passed"] is True
+    assert check["severity"] == "info"
+    # kiro has a verified probe, so (unlike claude/codex/qwen/agy) the message
+    # does not carry the "not verified" auth disclaimer.
+    assert "not verified" not in check["message"]
+
+
+def test_agent_reachable_kiro_auth_probe_hang_is_a_failed_check():
+    def run(argv, timeout):
+        if argv == ["kiro-cli", "--version"]:
+            return 0, _fixture_text("kiro-version.txt"), ""
+        raise subprocess.TimeoutExpired(cmd=argv, timeout=timeout)
+
+    cfg = Config(agent_provider="kiro")
+    check = doctor_checks.check_agent_reachable(
+        cfg, which=lambda name: "/usr/bin/kiro-cli", run=run
+    )
+    assert check["passed"] is False
+    assert check["severity"] == "error"
+    assert "kiro-hung" in check["message"]
+
+
+def test_agent_reachable_cli_harness_never_calls_run_more_than_documented():
+    """No network access and no model call: the fake run() only ever answers
+    --version / whoami-shaped argv, so anything else raises inside _fake_run."""
+    cfg = Config(agent_provider="claude")
+    run = _fake_run({("claude", "--version"): (0, _fixture_text("claude-version.txt"), "")})
+    doctor_checks.check_agent_reachable(cfg, which=lambda name: "/usr/bin/claude", run=run)
+    # No assertion needed beyond "did not raise": _fake_run raises
+    # AssertionError itself on any unexpected argv (e.g. a prompt/model call).
+
+
+def test_agent_reachable_unknown_cli_provider_still_falls_back_to_the_generic_message():
+    cfg = Config(agent_provider="not-a-real-adapter")
+    check = doctor_checks.check_agent_reachable(cfg)
+    assert check["passed"] is False
+    assert check["severity"] == "warning"
+    assert "has no reachability probe" in check["message"]
+
+
+# ---------------------------------------------------------------------------
+# agent_allowlist (task t17) --------------------------------------------------
+# ---------------------------------------------------------------------------
+
+
+def test_agent_allowlist_reports_info_when_nothing_is_found(tmp_path):
+    check = doctor_checks.check_agent_allowlist(home=tmp_path)
+    assert check["id"] == "agent_allowlist"
+    assert check["passed"] is True
+    assert check["severity"] == "info"
+
+
+def test_agent_allowlist_warns_and_names_the_claude_settings_file(tmp_path):
+    dest = tmp_path / ".claude" / "settings.json"
+    dest.parent.mkdir(parents=True)
+    dest.write_text(
+        (FIXTURES / "claude-settings-with-allow.json").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    check = doctor_checks.check_agent_allowlist(home=tmp_path)
+    assert check["passed"] is False
+    assert check["severity"] == "warning"
+    assert str(dest) in check["message"]
+
+
+def test_agent_allowlist_warns_and_names_the_agy_settings_file(tmp_path):
+    dest = tmp_path / ".gemini" / "antigravity-cli" / "settings.json"
+    dest.parent.mkdir(parents=True)
+    dest.write_text(
+        (FIXTURES / "agy-settings-with-allow.json").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    check = doctor_checks.check_agent_allowlist(home=tmp_path)
+    assert check["passed"] is False
+    assert str(dest) in check["message"]
+
+
+def test_agent_allowlist_warns_and_names_the_codex_config_file(tmp_path):
+    dest = tmp_path / ".codex" / "config.toml"
+    dest.parent.mkdir(parents=True)
+    dest.write_text(
+        (FIXTURES / "codex-config-with-approval-policy.toml").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    check = doctor_checks.check_agent_allowlist(home=tmp_path)
+    assert check["passed"] is False
+    assert str(dest) in check["message"]
+
+
+def test_agent_allowlist_reports_multiple_files_together(tmp_path):
+    claude_dest = tmp_path / ".claude" / "settings.json"
+    claude_dest.parent.mkdir(parents=True)
+    claude_dest.write_text(
+        (FIXTURES / "claude-settings-with-allow.json").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    codex_dest = tmp_path / ".codex" / "config.toml"
+    codex_dest.parent.mkdir(parents=True)
+    codex_dest.write_text(
+        (FIXTURES / "codex-config-with-approval-policy.toml").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    check = doctor_checks.check_agent_allowlist(home=tmp_path)
+    assert check["passed"] is False
+    assert str(claude_dest) in check["message"]
+    assert str(codex_dest) in check["message"]
+
+
+def test_agent_allowlist_ignores_an_empty_allow_list(tmp_path):
+    dest = tmp_path / ".claude" / "settings.json"
+    dest.parent.mkdir(parents=True)
+    dest.write_text(json.dumps({"permissions": {"allow": []}}), encoding="utf-8")
+    check = doctor_checks.check_agent_allowlist(home=tmp_path)
+    assert check["passed"] is True
+
+
+def test_agent_allowlist_ignores_malformed_json(tmp_path):
+    dest = tmp_path / ".claude" / "settings.json"
+    dest.parent.mkdir(parents=True)
+    dest.write_text("{not json", encoding="utf-8")
+    check = doctor_checks.check_agent_allowlist(home=tmp_path)
+    assert check["passed"] is True
+
+
+def test_agent_allowlist_never_writes_to_any_file(tmp_path):
+    dest = tmp_path / ".claude" / "settings.json"
+    dest.parent.mkdir(parents=True)
+    original = (FIXTURES / "claude-settings-with-allow.json").read_text(encoding="utf-8")
+    dest.write_text(original, encoding="utf-8")
+    mtime_before = dest.stat().st_mtime_ns
+
+    doctor_checks.check_agent_allowlist(home=tmp_path)
+
+    assert dest.read_text(encoding="utf-8") == original
+    assert dest.stat().st_mtime_ns == mtime_before
+
+
+def test_agent_allowlist_is_included_in_collect_checks(tmp_path):
+    checks = doctor_checks.collect_checks(
+        env={},
+        current_version="1.2.3",
+        config=Config(),
+        config_error=None,
+        platform=Platform(kind="generic", values=()),
+        which=lambda name: None,
+        home=tmp_path,
+    )
+    check = _check(checks, "agent_allowlist")
+    assert check["passed"] is True
