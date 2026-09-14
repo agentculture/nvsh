@@ -325,12 +325,15 @@ def test_ctrl_c_returns_to_a_prompt_within_one_second(tmp_path):
         "from nvsh.agent.base import AgentEvent, EventKind\n"
         "cancelled = []\n"
         "def events():\n"
+        "    # READY is announced from inside the stream, once the panel's\n"
+        "    # SIGINT handler is installed: announcing it before stream()\n"
+        "    # left a window where Ctrl+C hit Python's default handler.\n"
+        "    sys.stdout.write('READY\\n'); sys.stdout.flush()\n"
         "    yield AgentEvent(kind=EventKind.TEXT_DELTA, text='working')\n"
         "    while True:\n"
         "        time.sleep(0.05)\n"
         "        yield AgentEvent(kind=EventKind.TEXT_DELTA, text='.')\n"
         "p = Panel(out=sys.stdout, env={'NO_COLOR': '1'}, isatty=False)\n"
-        "sys.stdout.write('READY\\n'); sys.stdout.flush()\n"
         "res = p.stream(events(), cancel=lambda: cancelled.append(1))\n"
         "open(sys.argv[1], 'w').write('cancelled' if cancelled else 'no')\n"
         "sys.exit(130 if res.interrupted else 0)\n",
@@ -357,6 +360,53 @@ def test_ctrl_c_returns_to_a_prompt_within_one_second(tmp_path):
     assert proc.returncode == 130
     assert elapsed < 1.0, f"took {elapsed:.3f}s"
     assert marker.read_text(encoding="utf-8") == "cancelled"
+
+
+def test_ctrl_c_that_lands_before_the_handler_is_installed_still_cancels(monkeypatch):
+    """A SIGINT that lands after stream() is entered but before its handler
+    is installed arrives through Python's default handler as a
+    KeyboardInterrupt. It must still end as an interrupted stream with
+    ``cancel`` called once, not escape as an uncaught exception."""
+    before = signal.getsignal(signal.SIGINT)
+    cancelled = []
+
+    def raise_interrupt(*_args):
+        raise KeyboardInterrupt()
+
+    # _save_termios runs before the handler is installed; a signal landing
+    # there is exactly this.
+    monkeypatch.setattr(panel_mod, "_save_termios", raise_interrupt)
+    out = io.StringIO()
+    p = _panel(out=out, env={"NO_COLOR": "1"})
+    result = p.stream(iter([]), cancel=lambda: cancelled.append(1))
+    assert result.interrupted is True
+    assert cancelled == [1]
+    assert "nvsh: interrupted" in out.getvalue()
+    assert signal.getsignal(signal.SIGINT) is before
+
+
+def test_cancel_runs_once_across_the_handler_and_the_late_interrupt_paths(monkeypatch):
+    """The installed handler and the ``except KeyboardInterrupt`` path share
+    one guard: a Ctrl+C through the handler followed by one through Python's
+    default handler still calls ``cancel`` exactly once."""
+    before = signal.getsignal(signal.SIGINT)
+    cancelled = []
+    real_install = panel_mod._install_sigint
+
+    def install_then_interrupt_twice(handler):
+        real_install(handler)
+        try:
+            handler(signal.SIGINT, None)  # Ctrl+C via the panel's handler
+        except KeyboardInterrupt:
+            pass
+        raise KeyboardInterrupt()  # ...and the default handler firing next
+
+    monkeypatch.setattr(panel_mod, "_install_sigint", install_then_interrupt_twice)
+    p = _panel(env={"NO_COLOR": "1"})
+    result = p.stream(iter([]), cancel=lambda: cancelled.append(1))
+    assert result.interrupted is True
+    assert cancelled == [1]
+    assert signal.getsignal(signal.SIGINT) is before
 
 
 # --- waiting indicator (d13) --------------------------------------------

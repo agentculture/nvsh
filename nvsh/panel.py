@@ -533,8 +533,9 @@ class Panel:
         result = StreamResult()
         if self._target is not None:
             self.line(self._target_header_line())
-        saved_attrs = _save_termios(self.in_, self.isatty)
-        previous = _install_sigint(self._on_sigint(cancel))
+        cancelled: list[bool] = []  # plain list: no lock for a nested Ctrl+C to deadlock on
+        saved_attrs = None
+        previous = None
         started_text = False
         self._thinking_open = False
         stop_waiting = threading.Event()
@@ -544,8 +545,16 @@ class Panel:
             target=self._wait_ticker, args=(stop_waiting,), daemon=True, name="nvsh-wait"
         )
         try:
-            # Started inside the try: a SIGINT that lands during start() must
-            # still end as an interrupted stream, not a traceback.
+            # All setup happens inside the try: a SIGINT that lands before
+            # the handler is in place (Python's default handler raises
+            # KeyboardInterrupt too) or during start() must still end as
+            # an interrupted stream, not a traceback.
+            saved_attrs = _save_termios(self.in_, self.isatty)
+            # The previous handler is captured *before* ours goes in, so a
+            # SIGINT landing between the install and the store of
+            # ``previous`` cannot leave the panel handler stuck.
+            previous = _current_sigint()
+            _install_sigint(self._on_sigint(cancel, cancelled))
             ticker.start()
             self._arm_waiting()
             for event in events:
@@ -561,12 +570,19 @@ class Panel:
                 self._arm_waiting()
         except KeyboardInterrupt:
             result.interrupted = True
+            # Raised by Python's default handler, before ours was installed:
+            # the operator still pressed Ctrl+C, so the agent is still told.
+            if cancel is not None and not cancelled:
+                cancelled.append(True)
+                _quiet(cancel)
         finally:
+            # Handler first: a second Ctrl+C during the ticker join below
+            # must not escape stream() with our handler still installed.
+            _restore_sigint(previous)
             stop_waiting.set()
             if ticker.ident is not None:
                 _quiet(ticker.join, 2.0)
             self._pause_waiting()
-            _restore_sigint(previous)
             _restore_termios(saved_attrs)
             self._close_thinking()
             if started_text:
@@ -670,9 +686,12 @@ class Panel:
             return started_text, True
         return started_text, False
 
-    def _on_sigint(self, cancel: Callable[[], object] | None) -> Callable[[int, object], None]:
+    def _on_sigint(
+        self, cancel: Callable[[], object] | None, cancelled: list[bool]
+    ) -> Callable[[int, object], None]:
         def handler(_signum: int, _frame: object) -> None:
-            if cancel is not None:
+            if cancel is not None and not cancelled:
+                cancelled.append(True)
                 _quiet(cancel)
             # KeyboardInterrupt, like the one _interrupt_handler raises: a
             # BaseException is what breaks a blocking read without any of
@@ -754,7 +773,8 @@ class Panel:
         choices = ",".join(["all"] + [str(n) for n in every])
         for attempt in range(2):
             self.write(f"stages [{choices}]: ")
-            previous = _install_sigint(_interrupt_handler)
+            previous = _current_sigint()
+            _install_sigint(_interrupt_handler)
             try:
                 raw = self._read_line()
             except KeyboardInterrupt:
@@ -939,7 +959,8 @@ class Panel:
         which is the opposite of what an operator who mistyped wants.
         """
         self.write("nvsh> ")
-        previous = _install_sigint(_interrupt_handler)
+        previous = _current_sigint()
+        _install_sigint(_interrupt_handler)
         try:
             raw = self._read_line()
         except KeyboardInterrupt:
@@ -1042,6 +1063,11 @@ def _restore_termios(saved) -> None:
 def _interrupt_handler(_signum: int, _frame: object) -> None:
     """SIGINT while the panel is reading a line: cancel the read, nothing else."""
     raise KeyboardInterrupt()
+
+
+def _current_sigint():
+    """The SIGINT handler in place right now, read before ours is installed."""
+    return signal.getsignal(signal.SIGINT)
 
 
 def _install_sigint(handler):
