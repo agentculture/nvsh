@@ -242,13 +242,21 @@ def test_demo_record_end_to_end(tmp_path):
     assert demo_record.SUCCESS_LINE in text
     assert "nvsh$ " in text
 
-    # nothing identifying this machine survived into either recording
-    tokens = [socket.gethostname(), getpass.getuser()] + demo_record.local_ipv4s()
+    # nothing identifying this machine survived into either recording -- the
+    # scrub tokens the driver actually applied (a user called "spark" inside
+    # the platform word "dgx-spark" is deliberately kept; see scrub_rules)
+    rules = demo_record.scrub_rules(
+        socket.gethostname(),
+        getpass.getuser(),
+        demo_record.local_ipv4s(),
+        protect=demo_record.protected_words(),
+    )
+    tokens = [rule.partition("=")[0] for rule in rules]
+    assert tokens, "expected at least one scrub token on this box"
     for cast in (first, second):
         raw = cast.read_text(encoding="utf-8")
         for token in tokens:
-            if len(token) >= demo_record.MIN_SCRUB_LEN:
-                assert token not in raw, f"{token!r} leaked into {cast.name}"
+            assert token not in raw, f"{token!r} leaked into {cast.name}"
 
     # the second run opened the panel too: the rate limit did not hold it back
     assert LEGEND in _plain_text(second)
