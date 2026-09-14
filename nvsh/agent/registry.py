@@ -50,9 +50,29 @@ PATH_VALUES = {"rpc", "stream-json", "app-server", "acp", "http", "fixture"}
 #: because it is always "installed" and would win every auto-pick; ``demo``
 #: for the same reason and a stronger one -- it answers from a fixture, so
 #: auto-picking it would silently replace the operator's harness with a
-#: canned reply. Both stay fully selectable by name (``nvsh agent use``, an
-#: alias, ``@demo``, ``nvsh setup --agent demo``).
+#: canned reply. ``demo`` stays selectable *per request* (``--agent demo``,
+#: ``@demo``, an alias whose target is ``demo``), but ``nvsh agent use
+#: demo`` and ``nvsh setup --agent demo`` refuse to persist it as the
+#: default -- see :data:`DEMO_DEFAULT_MESSAGE` -- because a demo default
+#: would make every ordinary failure replay a canned fixture instead of
+#: calling a real backend.
 PROBE_EXCLUDED = frozenset({"openai-compat", "demo"})
+
+#: Shared by every place that refuses to persist ``demo`` as the default
+#: backend (``nvsh agent use demo``, ``nvsh setup --agent demo``, and
+#: doctor's ``default_target_not_demo`` check): ``demo`` is a scripted
+#: fixture replay (see ``nvsh/agent/demo.py``'s module docstring), not a
+#: real backend, so it must never become what a bare ``--agent`` or the
+#: daemon's warm session resolves to. Per-request use (``--agent demo``,
+#: ``@demo``, an alias pointing at demo) is unaffected -- only persisting
+#: it as the default is refused.
+DEMO_DEFAULT_MESSAGE = (
+    "demo is a scripted fixture (no model, no network); it cannot be the persisted default agent"
+)
+DEMO_DEFAULT_HINT = (
+    "choose a real backend with 'nvsh agent use <name>' (see 'nvsh agent list'); "
+    "run the demo for one request with --agent demo or @demo instead"
+)
 
 
 @dataclass(frozen=True)

@@ -59,6 +59,7 @@ from typing import Callable, Mapping, NamedTuple
 from nvsh import capture as capture_mod
 from nvsh import daemon as daemon_mod
 from nvsh.agent import registry as agent_registry
+from nvsh.agent.demo import FIXTURE_PATH as DEMO_FIXTURE_PATH
 from nvsh.config import (
     DEFAULT_ALIAS,
     DEFAULT_KEY_FILE_DISPLAY,
@@ -452,6 +453,39 @@ def _openai_compat_probe_inputs(config: Config) -> _ProbeInputs:
     )
 
 
+def _check_demo_reachable(config: Config) -> dict:
+    """``demo``'s "reachability" is just: can the fixture be read?
+
+    ``demo`` runs no subprocess and opens no socket (see
+    ``nvsh/agent/demo.py``'s module docstring), so there is nothing to probe
+    the way a CLI harness or an HTTP endpoint is probed above. What *can*
+    fail is the fixture itself -- an ``[agents.demo] fixture`` override
+    pointing at a path that does not exist or is not readable -- so this
+    reports that instead, never the file's contents.
+    """
+    settings = config.agents.get("demo", {})
+    fixture = settings.get("fixture")
+    path = Path(str(fixture)) if fixture else DEMO_FIXTURE_PATH
+    try:
+        path.read_text(encoding="utf-8")
+    except OSError as exc:
+        return _check(
+            "agent_reachable",
+            False,
+            "error",
+            f"demo fixture unreadable ({path}): {exc}",
+            "point [agents.demo] fixture at a readable JSON file, or remove the "
+            "override to use the committed fixture",
+        )
+    return _check(
+        "agent_reachable",
+        True,
+        "info",
+        f"demo reachable via fixture ({path})",
+        "",
+    )
+
+
 #: Harnesses driven as a plain subprocess CLI (as opposed to pi's rpc mode or
 #: openai-compat's HTTP probe), dispatched by :func:`check_agent_reachable`
 #: to :func:`_check_cli_harness_reachable`. Keys are ``registry.ADAPTERS``
@@ -805,6 +839,8 @@ def check_agent_reachable(
         inputs = _pi_probe_inputs(config, home, which)
     elif provider == "openai-compat":
         inputs = _openai_compat_probe_inputs(config)
+    elif provider == "demo":
+        return _check_demo_reachable(config)
     elif provider in _CLI_HARNESS_PROVIDERS:
         spec = agent_registry.ADAPTERS.get(provider)
         binary = spec.binary if spec is not None else None
@@ -845,6 +881,64 @@ def check_agent_reachable(
         inputs.bearer_note,
         timeout,
         remediation_401=inputs.remediation_401,
+    )
+
+
+# ---------------------------------------------------------------------------
+# default_target_not_demo
+# ---------------------------------------------------------------------------
+
+
+def check_default_target_not_demo(config: Config | None) -> dict:
+    """Fail when the resolved default target is ``demo``.
+
+    ``demo`` is a scripted fixture replay (:data:`nvsh.agent.registry.DEMO_DEFAULT_MESSAGE`),
+    never a real backend -- ``nvsh agent use demo`` and ``nvsh setup --agent
+    demo`` already refuse to write it as ``[aliases].default``, but nothing
+    stops an operator from hand-editing ``config.toml``. This is the doctor
+    check that catches that: a hand-edited default resolving to ``demo``
+    means every ordinary failure on this machine would replay the same
+    canned fixture instead of calling a real backend.
+
+    Passes -- with an info message, never a failure -- when there is no
+    ``config`` to check (a wheel install with no ``config.toml``, or one
+    that failed to load and is already reported by ``agent_configured``) and
+    when the default target does not resolve at all (``agent_configured``
+    and ``agent_reachable`` already report that failure; this check has
+    nothing more useful to add).
+    """
+    if config is None:
+        return _check(
+            "default_target_not_demo",
+            True,
+            "info",
+            "no config.toml loaded; nothing resolves to demo",
+            "",
+        )
+    try:
+        backend = config.resolve_target(DEFAULT_ALIAS)[0]
+    except ConfigError:
+        return _check(
+            "default_target_not_demo",
+            True,
+            "info",
+            "default target does not resolve; see agent_configured",
+            "",
+        )
+    if backend == "demo":
+        return _check(
+            "default_target_not_demo",
+            False,
+            "error",
+            "[aliases].default resolves to demo, a scripted fixture -- not a real backend",
+            "run `nvsh agent use <name>` with a real backend (see `nvsh agent list`)",
+        )
+    return _check(
+        "default_target_not_demo",
+        True,
+        "info",
+        f"default target resolves to {backend!r}, not demo",
+        "",
     )
 
 
@@ -1358,6 +1452,7 @@ def collect_checks(
                 "fix or remove $XDG_CONFIG_HOME/nvsh/config.toml",
             )
         )
+    checks.append(check_default_target_not_demo(config))
     checks.append(check_agent_allowlist(home=home))
     checks.append(check_hook_sourced(env, current_version))
     checks.append(check_hook_first_in_prompt_command(prompt_command_text))

@@ -457,6 +457,21 @@ def _setup_lines(result: dict, install_rows: list[dict], offer_only: bool) -> li
 
 
 def cmd_setup(args: argparse.Namespace, prompt=None) -> int:
+    # Refused before any side effect (rc edit, install probe, daemon
+    # restart): 'demo' is a scripted fixture (see
+    # registry.DEMO_DEFAULT_MESSAGE), never a persisted default. A literal
+    # '--agent demo'/'--agent @demo' names the adapter directly, so this
+    # catches it without waiting on _pick_agent's alias resolution -- an
+    # alias whose *target* happens to be demo is unaffected, it is still a
+    # per-request pick until something asks for it as the default.
+    forced = getattr(args, "agent", None)
+    if forced in ("demo", "@demo"):
+        raise CliError(
+            code=EXIT_USER_ERROR,
+            message=registry.DEMO_DEFAULT_MESSAGE,
+            remediation=registry.DEMO_DEFAULT_HINT,
+        )
+
     rc_path = _rc_path(args)
 
     shell_dir = render.render_shell_files()

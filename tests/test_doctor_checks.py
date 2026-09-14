@@ -776,6 +776,7 @@ def test_collect_checks_returns_every_new_check_id(tmp_path):
         "platform_detected",
         "agent_configured",
         "agent_reachable",
+        "default_target_not_demo",
         "agent_allowlist",
         "hook_sourced",
         "hook_first_in_prompt_command",
