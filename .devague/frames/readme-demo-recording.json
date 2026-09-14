@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-09-14T16:14:56Z",
-  "updated": "2026-09-14T16:58:26Z",
+  "updated": "2026-09-14T17:17:50Z",
   "claims": [
     {
       "id": "c1",
@@ -713,5 +713,141 @@
       "status": "proposed"
     }
   ],
-  "obligations": []
+  "obligations": [
+    {
+      "id": "o1",
+      "claim_id": "c4",
+      "seam": "nvsh --agent demo through daemon + client + panel + audit",
+      "behavior": "a failing command with demo as default streams the fixture through the real daemon and the audit log records target demo",
+      "source_text": "A 'demo' adapter is registered in nvsh/agent/registry.py's ADAPTERS (scripted kind, tool_calling=True, hosted=False) that replays a committed fixture transcript (text deltas plus one PROPOSAL) through the real daemon and client path, so 'nvsh --agent demo' and 'nvsh agent list' see it like any other harness; nvsh/agent/fake.py's FakeAgent is the engine underneath; prompt composer, redaction and audit log run unchanged",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o2",
+      "claim_id": "c18",
+      "seam": "registry.probe / setup auto-pick / installed()",
+      "behavior": "demo is never probed or auto-picked and installed('demo') is true without which(None)",
+      "source_text": "The demo adapter is excluded from registry.probe() exactly as openai-compat is (nvsh/agent/registry.py:301) and from nvsh setup's auto-pick and prompt rows (setup.py:298,356), so a box with no real harness never gets demo as its default; it stays reachable only by explicit --agent demo, @demo or an alias. Because registry.installed() calls shutil.which(spec.binary) (registry.py:240) and which(None) raises TypeError, the spec either declares a binary that is always present or installed() special-cases binary=None as installed=true",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o3",
+      "claim_id": "c23",
+      "seam": "nvsh agent use / nvsh setup --agent / nvsh doctor",
+      "behavior": "demo is refused as a persisted default and doctor fails default_target_not_demo",
+      "source_text": "nvsh agent use demo and nvsh setup --agent demo raise CliError(1) with a hint that demo is a scripted fixture and cannot be the default; [aliases].default = \"demo\" in config.toml is reported by nvsh doctor as a failed check; demo remains selectable per request via --agent demo and @demo",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o4",
+      "claim_id": "c22",
+      "seam": "the committed recordings",
+      "behavior": "each cast shows permission denied, the chmod +x proposal, Enter, and a successful retry",
+      "source_text": "The recorded scenario is a planted script in the sandbox HOME that fails with 'permission denied'; the committed fixture transcript diagnoses it and proposes 'chmod +x' on that script; the feed presses Enter, nvsh runs the fix through the real approval loop (nvsh/agent/loop.py) and the retried command succeeds on screen \u2014 identical on Spark, Thor and Orin",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o5",
+      "claim_id": "c10",
+      "seam": "the committed recordings vs the device's detected platform",
+      "behavior": "each cast names the platform kind nvsh doctor reports on that device",
+      "source_text": "The recording shows the real platform block of the device it was recorded on: the driver runs on each of DGX Spark, Jetson AGX Thor and Jetson AGX Orin (the same three machines as docs/verification.md) and each device's .cast is committed under docs/demos/; nvsh/platform/_detect.py gets no root override",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o6",
+      "claim_id": "c16",
+      "seam": "drift alarm between panel/fixture and the committed casts",
+      "behavior": "a panel legend or fixture wording change fails tests until the casts are re-recorded",
+      "source_text": "The committed image matches the current panel; re-running the driver on the Spark reproduces the committed cast except for timing stamps",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o7",
+      "claim_id": "c3",
+      "seam": "scripts/demo-record.py sandbox",
+      "behavior": "a recording never touches the operator's rc file, config, data or runtime dirs and stops its daemon",
+      "source_text": "The recording is produced by one committed driver that runs scripts/record-cast.py record --feed in a sandbox: HOME, XDG_CONFIG_HOME, XDG_DATA_HOME and XDG_RUNTIME_DIR pointed at a temp dir, a fixed PS1, and bash --rcfile sourcing nvsh/shell/hook.bash + readline.bash directly instead of running nvsh setup (precedent: tests/test_setup_timing.py:60), so a re-record never touches the operator's real rc file, config or daemon socket",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o8",
+      "claim_id": "c7",
+      "seam": "scrubbing at record time",
+      "behavior": "hostname, user and LAN IPs never reach the cast; the platform kind survives",
+      "source_text": "Scrubbing happens at record time, not in CI: scripts/scan-secrets.py never inspects .cast content (JSON-lines fails its whole-file json.loads at scan-secrets.py:225-229; verified clean on docs/demos/orin-missing-package.cast which contains a Tailscale IP) and skips binary GIFs, and nvsh/redact.py has no rule for user@host:cwd in a PS1 \u2014 so the driver pins PS1 and passes --replace-from for anything host-specific",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o9",
+      "claim_id": "c20",
+      "seam": "rate limiter across re-records",
+      "behavior": "two runs 10 s apart both record a panel",
+      "source_text": "The driver also points XDG_STATE_HOME at a fresh temp dir per run: the automatic-call rate limit is enforced from $XDG_STATE_HOME/nvsh/rate.json across processes (nvsh/client.py:10-13,155), so a second re-record inside the rate window would otherwise record a silent no-panel session (the same trap tests/test_timing.py:161-169 works around)",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o10",
+      "claim_id": "c11",
+      "seam": "scripts/record-cast.py determinism",
+      "behavior": "two --feed runs are identical except stamps",
+      "source_text": "scripts/record-cast.py gets the small determinism fixes a repeatable recording needs: it sets COLUMNS/LINES env only (record-cast.py:95-96) and never sets the pty window size via TIOCSWINSZ, its header timestamp is wall-clock (record-cast.py:107), --replace-from is literal-only; nvsh/panel.py's width is fixed (_BOX_WIDTH=72, _SCOPE_WIDTH=80) so a pinned 100x34 pty renders the panel identically every run",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o11",
+      "claim_id": "c19",
+      "seam": "adapter count across docs and tests",
+      "behavior": "no 'eight adapters' remains and nine names are asserted",
+      "source_text": "Every place that says 'eight adapters' is updated to nine: README.md:28, CLAUDE.md:75, QWEN.md:49, AGENTS.override.md:46, AGENTS.colleague.md:53, .pi/SYSTEM.md:22, docs/harness-selection.md, tests/test_agent_registry.py:44,163 and tests/test_cli_agent.py:196,245 \u2014 the four-prompt-file no-drift rule and scripts/harness-smoke.py make this a CI matter, not a docs nicety",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o12",
+      "claim_id": "c2",
+      "seam": "README.md shape",
+      "behavior": "the embed is a plain markdown image with an absolute URL, no new H2, no relative links, lint-clean",
+      "source_text": "README.md gains the recording as a plain-markdown image (![...](absolute GitHub URL)) in the announcement position, right after the tagline blockquote (README.md:8) and before '## Install' \u2014 tests/test_docs_architecture.py fixes README_H2_ORDER (no new H2 without updating that tuple) and bans relative ](docs/ links because README is the PyPI long description; .markdownlint-cli2.yaml leaves MD033 (inline HTML) enabled",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o13",
+      "claim_id": "c5",
+      "seam": "cast to image rendering",
+      "behavior": "one command renders a committed .cast into the committed SVG",
+      "source_text": "A cast-to-image conversion step is new work: GitHub's README renderer cannot play asciicast .cast files, scripts/record-cast.py only has record/play (no GIF/SVG output), and no renderer exists in the repo or on this machine (asciinema, agg, vhs, svg-term, termsvg, ffmpeg all absent; node/npx v24, docker and Pillow 10.2 present)",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o14",
+      "claim_id": "c12",
+      "seam": "README on github.com and PyPI",
+      "behavior": "the image renders on the PR page and the TestPyPI project page",
+      "source_text": "The README embeds exactly one rendered recording (the DGX Spark one) after the tagline and links the Thor and Orin recordings from the same line via absolute GitHub URLs, keeping the announcement-first shape and the page weight low",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o15",
+      "claim_id": "c13",
+      "seam": "docs/demos/README.md re-record loop",
+      "behavior": "a maintainer reproduces a device recording in three commands",
+      "source_text": "Because rendering happens centrally, the re-record loop is: run the driver on a device (over ssh for thor/orin), copy the scrubbed .cast back, render it with the chosen renderer on the dev box, commit both .cast and image; docs/demos/README.md documents this loop and the driver is one committed script with no per-device edits",
+      "origin": "llm",
+      "status": "proposed"
+    }
+  ]
 }
