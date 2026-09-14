@@ -253,6 +253,53 @@ def available_adapters(which: WhichFn = shutil.which) -> list[dict]:
     ]
 
 
+def _tool_calling(name: str, config: Config) -> bool:
+    """Derive ``tool_calling`` for adapter ``name`` the same way
+    ``build_adapter_rows`` does (``nvsh/cli/_commands/agent.py``'s
+    ``_adapter_capabilities``): construct the adapter and read
+    ``.capabilities().tool_calling`` -- without importing the CLI module.
+    Every adapter's ``__init__`` is cheap and never spawns a subprocess, so
+    building one just to read this is safe for a probe. A factory that
+    validates its own settings and raises is treated as ``tool_calling=False``
+    rather than failing the whole probe.
+    """
+    try:
+        agent = ADAPTERS[name].factory(config)
+        return bool(agent.capabilities().tool_calling)
+    except Exception:  # noqa: BLE001 - defensive: factories may validate/raise
+        return False
+
+
+def probe(which: WhichFn = shutil.which, config: Config | None = None) -> list[dict]:
+    """Installed adapters (``openai-compat`` excluded), tool-calling first.
+
+    Each row carries ``name``, ``hosted`` and ``tool_calling``. Rows are
+    ordered tool-calling adapters first, then the rest -- within each group,
+    ``ADAPTERS`` registration order is preserved (``list.sort`` is stable).
+    ``tool_calling`` comes from :func:`_tool_calling`, the same underlying
+    source (the constructed adapter's ``.capabilities()``) that
+    ``build_adapter_rows`` reports for 'nvsh agent list'.
+
+    ``config`` defaults to a bare :class:`~nvsh.config.Config` -- enough to
+    derive ``tool_calling`` for every adapter's default settings; pass the
+    live config to reflect an operator's ``[agents.<name>]`` overrides
+    (e.g. ``[agents.qwen] approval = "harness"``).
+    """
+    if config is None:
+        config = Config()
+    rows = [
+        {
+            "name": name,
+            "hosted": spec.hosted,
+            "tool_calling": _tool_calling(name, config),
+        }
+        for name, spec in ADAPTERS.items()
+        if name != "openai-compat" and installed(name, which)
+    ]
+    rows.sort(key=lambda row: 0 if row["tool_calling"] else 1)
+    return rows
+
+
 def _forced_backend(config: Config, forced: str | Target) -> str:
     """Resolve a ``forced`` argument to a bare backend name.
 
@@ -278,11 +325,12 @@ def choose(
     which: WhichFn = shutil.which,
     forced: str | Target | None = None,
 ) -> tuple[str, str]:
-    """Pick a backend: the configured provider if installed, else openai-compat.
+    """Pick a backend: the configured provider if installed, else whatever
+    :func:`probe` finds installed, else openai-compat.
 
     Returns ``(name, reason)``. ``reason`` always explains the pick, so
     ``nvsh setup`` (t21) can print it verbatim -- e.g. "pi not on PATH and
-    node missing; using openai-compat against http://host:8000/v1".
+    node missing; installed: claude, codex; picked claude".
 
     ``forced`` (task t20's ``nvsh --agent <target>``) overrides the
     configured provider entirely: an alias name, a literal
@@ -292,6 +340,12 @@ def choose(
     fails loudly with a :class:`~nvsh.cli._errors.CliError` naming the
     missing binary. A forced target never silently falls back to
     ``openai-compat``; that fallback is only for the unforced path below.
+
+    When the configured provider is not installed, :func:`probe` is
+    consulted: if anything is installed, the first probe row (tool-calling
+    adapters first) is picked and the full probe list is named in the
+    reason. Only when ``probe`` finds nothing installed does the pick fall
+    back to ``openai-compat``, exactly as before.
     """
     if forced is not None:
         backend = _forced_backend(config, forced)
@@ -323,6 +377,13 @@ def choose(
             why = f"{configured} not on PATH and node missing"
         else:
             why = f"{configured} not on PATH"
+
+    probed = probe(which, config)
+    if probed:
+        picked = probed[0]["name"]
+        installed_names = ", ".join(row["name"] for row in probed)
+        reason = f"{why}; installed: {installed_names}; picked {picked}"
+        return picked, reason
 
     base_url = config.agents.get("openai-compat", {}).get("base_url")
     if base_url:
