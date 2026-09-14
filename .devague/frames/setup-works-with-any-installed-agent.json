@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-09-14T13:42:34Z",
-  "updated": "2026-09-14T14:17:10Z",
+  "updated": "2026-09-14T14:30:46Z",
   "claims": [
     {
       "id": "c1",
@@ -823,6 +823,50 @@
       "skipped_check": "",
       "refs": [
         "t2 brief / README.md Work with it + Safety first"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l4",
+      "code": "assumption-for-measurement",
+      "what": "t1 registry agent first assumed only qwen (not qwen-p) shows up for which={qwen,claude}; the shared qwen binary means probe() lists both; test corrected, behaviour kept",
+      "skipped_check": "",
+      "refs": [
+        "t1 / registry.probe qwen-p shared binary"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l5",
+      "code": "assumption-for-measurement",
+      "what": "t4 setup agent wrote the empty-probe production line assuming a monkeypatched shutil.which reaches registry.choose(); choose binds the real shutil.which as a default at import time; caught by its own sticky-fallback test, fixed on the caller side",
+      "skipped_check": "",
+      "refs": [
+        "t4 / setup.py empty-probe path, registry.choose which default"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l6",
+      "code": "assumption-for-measurement",
+      "what": "t7 setup agent's first tests used --agent claude / --agent pi and failed with 'cannot resolve forced target'; it worked around it by dropping --agent instead of reporting that a bare backend name is refused",
+      "skipped_check": "",
+      "refs": [
+        "t7 / registry.choose forced path, Config.resolve_target"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l7",
+      "code": "assumption-for-measurement",
+      "what": "t6 doctor agent assumed resolve_target's by_alias flag distinguishes an explicit [aliases].default from the legacy-provider fallback; it does not (both return True); worked around by checking DEFAULT_ALIAS in config.aliases",
+      "skipped_check": "",
+      "refs": [
+        "t6 / Config.resolve_target by_alias"
       ],
       "origin": "llm",
       "status": "proposed"

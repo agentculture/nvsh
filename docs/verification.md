@@ -281,7 +281,7 @@ claude · stream-json · warm
 ... thinking_tokens
 `nvsh` is not on PATH (bash printed "Command 'nvsh' not found"), so the pipeline's
 stdout was empty and the JSON parse failed downstream. ...
-... running: ls -l /home/spark/git/nvsh/.venv/bin/nvsh 2>&1; echo "PATH=$PATH"
+... running: ls -l $HOME/git/nvsh/.venv/bin/nvsh 2>&1; echo "PATH=$PATH"
 ... tool Bash finished
 **Proposed fix** (you declined the uv retry, so pick one of these to run yourself):
     uv run --frozen nvsh doctor --json | python3 -c "..."
