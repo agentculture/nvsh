@@ -60,7 +60,7 @@ from collections import deque
 from typing import Iterator, Mapping
 
 from ._env import child_env
-from ._subprocess import redacted_tail
+from ._subprocess import escalate_close, redacted_tail
 from .base import AgentContext, AgentEvent, AgentRequest, Capabilities, EventKind, NvshAgent
 from .prompt import build_full_prompt
 
@@ -402,15 +402,12 @@ class AgyAgent(NvshAgent):
                 proc.kill()
 
     def close(self) -> None:
+        # Shared escalation (stdin, wait, terminate, kill) -- deviation d5.
+        # ``cancel`` keeps using ``_terminate`` on purpose: it ends one cold
+        # turn's child, it does not retire the adapter.
         if self._closed:
             return
-        if self._proc is not None:
-            try:
-                if self._proc.stdin is not None:
-                    self._proc.stdin.close()
-            except (OSError, ValueError):
-                pass
-            self._terminate(self._proc)
+        escalate_close(self._proc, wait=_TERMINATE_TIMEOUT_SECONDS)
         self._closed = True
 
     # -- capabilities ---------------------------------------------------

@@ -16,6 +16,9 @@ line (``nvsh/agent/_subprocess.py::redacted_tail``).
 
 from __future__ import annotations
 
+import os
+import signal
+import subprocess  # nosec B404 - fixed argv, no shell
 import sys
 import threading
 from collections import deque
@@ -23,7 +26,7 @@ from collections import deque
 import pytest
 
 from nvsh.agent._env import child_env
-from nvsh.agent._subprocess import SubprocessAgent, redacted_tail
+from nvsh.agent._subprocess import SubprocessAgent, escalate_close, redacted_tail
 from nvsh.agent.base import (
     AgentContext,
     AgentEvent,
@@ -205,3 +208,81 @@ def test_stderr_tail_is_redacted_before_the_error_event():
     error_text = events[-1].error or ""
     assert "HF_TOKEN=abc" not in error_text
     assert "<REDACTED:env_assignment>" in error_text
+
+
+# ---------------------------------------------------------------------------
+# nvsh/agent/_subprocess.py::escalate_close -- the one wait/terminate/kill
+# escalation every adapter closes through (task t16, deviation d5)
+# ---------------------------------------------------------------------------
+
+
+def _spawn(script: str) -> subprocess.Popen:
+    proc = subprocess.Popen(  # nosec B603 - fixed argv, no shell
+        [sys.executable, "-u", "-c", script],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+    )
+    assert proc.stdout is not None
+    assert proc.stdout.readline().strip() == "up"  # it is really running
+    return proc
+
+
+#: Reads stdin to EOF and exits 0 -- what every long-lived harness does.
+_EOF_EXITS = "import sys\nprint('up')\nsys.stdin.read()\nsys.exit(0)\n"
+
+#: Ignores its stdin entirely; only a signal ends it.
+_IGNORES_EOF = "import sys, time\nprint('up')\ntime.sleep(600)\n"
+
+#: Ignores stdin *and* SIGTERM; only SIGKILL ends it.
+_IGNORES_SIGTERM = (
+    "import signal, sys, time\n"
+    "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+    "print('up')\n"
+    "time.sleep(600)\n"
+)
+
+
+def test_escalate_close_reaps_a_child_that_exits_on_stdin_eof():
+    """Rung 1: closing stdin is enough, and no signal is ever sent."""
+    proc = _spawn(_EOF_EXITS)
+    assert escalate_close(proc, wait=5.0, grace=0.2) == 0
+
+
+def test_escalate_close_terminates_a_child_that_ignores_stdin():
+    """Rung 2: EOF did nothing, so ``terminate()`` does."""
+    proc = _spawn(_IGNORES_EOF)
+    assert escalate_close(proc, wait=0.2, grace=5.0) == -signal.SIGTERM
+
+
+def test_escalate_close_kills_a_child_that_ignores_sigterm():
+    """Rung 3: a harness that traps SIGTERM is still gone when close returns."""
+    proc = _spawn(_IGNORES_SIGTERM)
+    assert escalate_close(proc, wait=0.2, grace=0.2) == -signal.SIGKILL
+    assert proc.poll() is not None
+
+
+def test_escalate_close_is_a_no_op_without_a_process():
+    assert escalate_close(None) is None
+
+
+def test_escalate_close_survives_a_child_someone_else_already_reaped():
+    """Teardown on the failure path must never raise, whatever it finds."""
+    proc = _spawn(_EOF_EXITS)
+    proc.kill()
+    proc.wait(timeout=5)
+    assert escalate_close(proc, wait=0.2, grace=0.2) is not None
+
+
+def test_subprocess_agent_close_escalates_and_leaves_no_child():
+    """``SubprocessAgent.close`` routes through the shared helper, so a
+    stream-json harness that ignores SIGTERM is gone once close returns."""
+    agent = _ScriptedAgent(_IGNORES_SIGTERM)
+    agent.start()
+    agent._proc = _spawn(_IGNORES_SIGTERM)  # stand in for a live turn's child
+    pid = agent._proc.pid
+    agent.close()
+    assert agent._proc.poll() is not None
+    with pytest.raises(OSError):
+        os.kill(pid, 0)

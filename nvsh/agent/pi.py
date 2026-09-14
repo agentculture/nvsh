@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Any, Iterator, Mapping
 
 from ..redact import redact
+from ._subprocess import escalate_close
 from .base import (
     AgentContext,
     AgentEvent,
@@ -843,39 +844,19 @@ class PiAgent(NvshAgent):
         if self._proc is not None and self._proc.poll() is None:
             self._send({"type": "abort"})
 
-    @staticmethod
-    def _wait_out(proc: subprocess.Popen) -> None:
-        """Wait for *proc*, escalating politely: wait, terminate, kill.
-
-        Each rung gets its own ``_CLOSE_WAIT_SECONDS``; a process that
-        survives even ``kill()`` is left alone rather than waited on forever
-        (a reaped-by-someone-else child would hang teardown).
-        """
-        for escalate in (None, proc.terminate, proc.kill):
-            if escalate is not None:
-                escalate()
-            try:
-                proc.wait(timeout=_CLOSE_WAIT_SECONDS)
-                return
-            except subprocess.TimeoutExpired:
-                continue
-
     def close(self) -> None:
-        """Idempotent teardown: close stdin, wait, then escalate to kill."""
+        """Idempotent teardown: close stdin, wait, then escalate to kill.
+
+        The escalation itself is :func:`~nvsh.agent._subprocess.escalate_close`,
+        shared with every other adapter (deviation d5).
+        """
         if self._closed:
             return
         self._closed = True
         proc = self._proc
         if proc is None:
             return
-        try:
-            if proc.stdin is not None:
-                proc.stdin.close()
-        except (ValueError, OSError):  # OSError covers BrokenPipeError
-            pass
-
-        if proc.poll() is None:
-            self._wait_out(proc)
+        escalate_close(proc, wait=_CLOSE_WAIT_SECONDS)
         for thread in (self._reader_thread, self._stderr_thread):
             if thread is not None:
                 thread.join(timeout=_CLOSE_WAIT_SECONDS)

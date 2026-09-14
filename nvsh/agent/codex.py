@@ -48,7 +48,12 @@ import time
 from typing import Any, Iterator, Mapping
 
 from ._env import child_env
-from ._subprocess import SubprocessAgent, build_full_prompt, redacted_tail
+from ._subprocess import (
+    SubprocessAgent,
+    build_full_prompt,
+    escalate_close,
+    redacted_tail,
+)
 from .base import (
     AgentContext,
     AgentEvent,
@@ -719,28 +724,10 @@ class CodexAgent(SubprocessAgent):
                 )
         super().cancel()
 
-    @staticmethod
-    def _wait_out(proc: subprocess.Popen) -> None:
-        """Wait for *proc*, escalating politely: wait, terminate, kill."""
-        for escalate in (None, proc.terminate, proc.kill):
-            if escalate is not None:
-                escalate()
-            try:
-                proc.wait(timeout=_CLOSE_WAIT_SECONDS)
-                return
-            except subprocess.TimeoutExpired:
-                continue
-
     def _teardown_app_server(self) -> None:
-        proc = self._rpc
-        if proc is not None:
-            try:
-                if proc.stdin is not None:
-                    proc.stdin.close()
-            except (ValueError, OSError):  # OSError covers BrokenPipeError
-                pass
-            if proc.poll() is None:
-                self._wait_out(proc)
+        # The escalation (stdin, wait, terminate, kill) is the shared
+        # helper every adapter closes through (deviation d5).
+        escalate_close(self._rpc, wait=_CLOSE_WAIT_SECONDS)
         for thread in (self._reader, self._stderr_reader):
             if thread is not None:
                 thread.join(timeout=_CLOSE_WAIT_SECONDS)

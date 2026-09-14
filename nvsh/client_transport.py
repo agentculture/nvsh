@@ -28,9 +28,18 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Iterator, Mapping
 
+from . import __version__
 from . import daemon as _daemon
-from .agent.base import AgentContext, AgentEvent, AgentRequest, EventKind, event_from_dict
-from .config import Config
+from .agent.base import (
+    AgentContext,
+    AgentEvent,
+    AgentRequest,
+    EventKind,
+    Target,
+    event_from_dict,
+    request_to_dict,
+)
+from .config import DEFAULT_ALIAS, Config
 
 #: How long a ``connect()`` on an existing socket may take.
 _CONNECT_TIMEOUT = 5.0
@@ -46,6 +55,9 @@ _DEFAULT_START_TIMEOUT = 10.0
 
 #: Environment override for that bound (seconds).
 START_TIMEOUT_ENV = "NVSH_DAEMON_START_TIMEOUT"
+
+#: How long to wait for a stale daemon's socket to go away after ``stop``.
+_STOP_TIMEOUT = 5.0
 
 daemon_socket_path = _daemon.socket_path
 
@@ -229,6 +241,26 @@ def _stream(sock: socket.socket, payload: dict) -> Iterator[AgentEvent]:
                 return
 
 
+def targeted_config(cfg: Config, target: Target) -> Config:
+    """A copy of *cfg* whose ``[agents.<backend>]`` carries *target*.
+
+    The mirror of ``Daemon._config_for``: every adapter factory reads its
+    own table for ``model``/``effort``/``extra_args``/``approval``, so this
+    is how a resolved target's model and effort reach the adapter without
+    the caller knowing which keyword each adapter takes.
+    """
+    from dataclasses import replace
+
+    settings = dict(cfg.agents.get(target.backend, {}))
+    if target.model:
+        settings["model"] = target.model
+    if target.effort:
+        settings["effort"] = target.effort
+    agents = dict(cfg.agents)
+    agents[target.backend] = settings
+    return replace(cfg, agent_provider=target.backend, agents=agents)
+
+
 def one_shot(
     request: AgentRequest,
     context: AgentContext | None = None,
@@ -238,8 +270,9 @@ def one_shot(
 ) -> Iterator[AgentEvent]:
     """Run *request* in this process, with no daemon, and close the adapter.
 
-    Used when the daemon is missing or crashed. Slower (a cold backend per
-    call) but it always produces something.
+    Used when the daemon is missing or crashed, and -- always -- when the
+    request names a target other than ``default`` (decision c25).  Slower (a
+    cold backend per call) but it always produces something.
 
     ``responder``, when given, is bound to the live adapter before the first
     event is yielded, so a caller answering a dialog raised during this run
@@ -248,8 +281,16 @@ def one_shot(
     from .agent import registry
 
     cfg = config if config is not None else _load_config()
+    target = request.target
     try:
-        name, reason = registry.choose(cfg)
+        if target is not None:
+            # A named target is *forced*: a missing binary is a loud error,
+            # never a silent swap for openai-compat. The operator asked for
+            # that harness on purpose.
+            cfg = targeted_config(cfg, target)
+            name, reason = registry.choose(cfg, forced=target)
+        else:
+            name, reason = registry.choose(cfg)
         agent = registry.ADAPTERS[name].factory(cfg)
     except Exception as exc:  # noqa: BLE001 - reported rather than raised on the failure path
         yield AgentEvent(kind=EventKind.ERROR, error=f"no agent available: {exc}")
@@ -286,6 +327,77 @@ def _load_config() -> Config:
         return Config()
 
 
+def daemon_version(env: Mapping[str, str] | None = None) -> str | None:
+    """The ``nvsh`` version of the daemon that is listening, if one is.
+
+    ``None`` means "no daemon answered"; ``""`` means one answered but named
+    no version -- a daemon from before the handshake existed, which is by
+    definition not this version.
+    """
+    state = status(env=env)
+    if not state.get("running"):
+        return None
+    raw = state.get("version")
+    return raw if isinstance(raw, str) else ""
+
+
+def _wait_socket_gone(env: Mapping[str, str] | None, timeout: float) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if not _daemon.is_running(env) and not _daemon.lock_held(env):
+            return True
+        time.sleep(0.02)
+    return not _daemon.is_running(env)
+
+
+def _retire_stale_daemon(env: Mapping[str, str] | None) -> str:
+    """Stop a listening daemon built from a different nvsh. Returns a notice.
+
+    The half of the handshake the client owns. A daemon is a long-lived
+    process started lazily and kept for 15 minutes, so an ``nvsh`` upgrade
+    (or a ``uv sync`` in a checkout) routinely leaves one running that
+    predates the code now talking to it -- adapters, wire fields and
+    protocol alike. Rather than guess which differences are survivable, the
+    client stops it; the very next ``_connect``/``_autostart`` starts one
+    from the wheel this process is running. ``""`` when nothing was done.
+    """
+    running = daemon_version(env)
+    if running is None or running == __version__:
+        return ""
+    stop(env=env)
+    _wait_socket_gone(env, _STOP_TIMEOUT)
+    return (
+        f"restarted the daemon: it was running nvsh {running or 'an older build'}, "
+        f"this client is {__version__}"
+    )
+
+
+def _payload(
+    request: AgentRequest,
+    context: AgentContext | None,
+    shell_id: str | int | None,
+) -> dict:
+    """One request line: the shell, the version handshake, request, context."""
+    return {
+        "shell": _shell_id(shell_id),
+        "kind": request.kind.value,
+        _daemon.VERSION_KEY: __version__,
+        "request": request_to_dict(request),
+        "context": asdict(context) if context is not None else {},
+    }
+
+
+def is_default_target(target: Target | None) -> bool:
+    """Is *target* the warm daemon session's own target (decision c25)?
+
+    ``None`` (the caller said nothing) and the resolved ``default`` alias
+    both are; every other target runs one-shot, because the warm session
+    holds a conversation with the *default* backend and serving someone
+    else's ``@claude/opus`` out of it would answer from the wrong model.
+    """
+    return target is None or target.alias == DEFAULT_ALIAS
+
+
 def send(
     request: AgentRequest,
     context: AgentContext | None = None,
@@ -305,13 +417,21 @@ def send(
     or autostart wait: those are :data:`_CONNECT_TIMEOUT` and
     :func:`start_timeout`. A fallback to one-shot is always preceded by a
     ``status`` event naming the reason.
+
+    A request naming a non-default target never reaches the daemon at all
+    (:func:`is_default_target`, decision c25), and a daemon left over from a
+    different nvsh is stopped and replaced before the request goes out
+    (:func:`_retire_stale_daemon`).
     """
-    payload = {
-        "shell": _shell_id(shell_id),
-        "kind": request.kind.value,
-        "request": asdict(request) | {"kind": request.kind.value},
-        "context": asdict(context) if context is not None else {},
-    }
+    if not is_default_target(request.target):
+        yield from one_shot(request, context, config=config, responder=responder)
+        return
+
+    payload = _payload(request, context, shell_id)
+
+    notice = _retire_stale_daemon(env)
+    if notice:
+        yield AgentEvent(kind=EventKind.STATUS, text=notice)
 
     sock = _connect(env, _CONNECT_TIMEOUT)
     reason = ""
@@ -327,7 +447,73 @@ def send(
     # as a cold backend needs to say its first word.
     sock.settimeout(timeout)
     try:
-        yield from _stream(sock, payload)
+        events = _stream(sock, payload)
+        first = next(events, None)
+        if first is not None and _is_version_mismatch(first):
+            # The probe above raced an upgrade, or a daemon came up between
+            # it and the connect. Same cure, one retry deep.
+            yield from _retry_after_mismatch(
+                first, payload, request, context, env, config, responder, timeout, autostart
+            )
+            return
+        if first is not None:
+            yield first
+            if first.kind not in (EventKind.DONE, EventKind.ERROR):
+                yield from events
+    except OSError as exc:
+        yield AgentEvent(kind=EventKind.STATUS, text=f"daemon connection lost: {exc}")
+        yield from one_shot(request, context, config=config, responder=responder)
+
+
+def _is_version_mismatch(event: AgentEvent) -> bool:
+    """Is *event* the daemon's "I am a different nvsh" answer?
+
+    Read off ``args``, not the prose: the message is for the operator, the
+    flag is for this code.
+    """
+    return event.kind is EventKind.ERROR and bool((event.args or {}).get("version_mismatch"))
+
+
+def _retry_after_mismatch(
+    event: AgentEvent,
+    payload: dict,
+    request: AgentRequest,
+    context: AgentContext | None,
+    env: Mapping[str, str] | None,
+    config: Config | None,
+    responder: Responder | None,
+    timeout: float,
+    autostart: bool,
+) -> Iterator[AgentEvent]:
+    """Stop the mismatched daemon, start a fresh one, and send again. Once."""
+    running = str((event.args or {}).get("daemon_version") or "an older build")
+    yield AgentEvent(
+        kind=EventKind.STATUS,
+        text=(
+            f"restarted the daemon: it was running nvsh {running}, " f"this client is {__version__}"
+        ),
+    )
+    stop(env=env)
+    _wait_socket_gone(env, _STOP_TIMEOUT)
+    sock = _connect(env, _CONNECT_TIMEOUT)
+    reason = ""
+    if sock is None and autostart:
+        sock, reason = _autostart(env, start_timeout(env))
+    if sock is None:
+        if reason:
+            yield AgentEvent(kind=EventKind.STATUS, text=reason)
+        yield from one_shot(request, context, config=config, responder=responder)
+        return
+    sock.settimeout(timeout)
+    try:
+        for retried in _stream(sock, payload):
+            if _is_version_mismatch(retried):
+                # Twice is not a race, it is a broken install: say so and
+                # answer in this process rather than loop.
+                yield AgentEvent(kind=EventKind.STATUS, text=retried.error)
+                yield from one_shot(request, context, config=config, responder=responder)
+                return
+            yield retried
     except OSError as exc:
         yield AgentEvent(kind=EventKind.STATUS, text=f"daemon connection lost: {exc}")
         yield from one_shot(request, context, config=config, responder=responder)
@@ -349,7 +535,11 @@ def control(
     sock = _connect(env, timeout)
     if sock is None:
         return []
-    payload = {"shell": _shell_id(shell_id), "kind": kind} | dict(extra)
+    payload = {
+        "shell": _shell_id(shell_id),
+        "kind": kind,
+        _daemon.VERSION_KEY: __version__,
+    } | dict(extra)
     try:
         return list(_stream(sock, payload))
     except OSError:

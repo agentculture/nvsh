@@ -43,6 +43,63 @@ _STDERR_TAIL_LINES = 200
 #: How long the drain thread is given to finish once the child is gone.
 _STDERR_JOIN_TIMEOUT = 2.0
 
+#: Default seconds :func:`escalate_close` spends on each rung of its
+#: wait -> terminate -> kill escalation.
+CLOSE_WAIT_SECONDS = 2.0
+
+
+def escalate_close(
+    proc: subprocess.Popen | None,
+    *,
+    wait: float | None = None,
+    grace: float | None = None,
+) -> int | None:
+    """Close *proc*'s stdin and see it out: wait, then terminate, then kill.
+
+    One helper for every adapter (deviation d5). Each wave-2 adapter grew
+    its own copy of this loop -- ``PiAgent.close``, ``AcpAgent._wait_out``,
+    ``CodexAgent._wait_out``, ``AgyAgent._terminate``,
+    :meth:`SubprocessAgent.close` -- which is exactly the kind of drift that
+    leaves one harness's child running after ``nvsh uninstall`` while the
+    others exit cleanly. The rungs, in order:
+
+    1. **Close stdin.** Every long-lived harness nvsh drives (pi's rpc loop,
+       ACP, ``codex app-server``, ``claude`` in stream-json input mode)
+       exits on EOF, so that is the only rung most closes ever reach.
+    2. **Wait** up to ``wait`` seconds for that clean exit.
+    3. **``terminate()``**, then wait up to ``grace`` seconds.
+    4. **``kill()``**, then wait up to ``grace`` seconds.
+
+    Returns the child's exit status, or ``None`` when it survived even
+    ``kill()`` (a process stuck in uninterruptible sleep, or one already
+    reaped by somebody else) -- waiting on such a child forever is how
+    teardown hangs, so this never does. Never raises: a close on the failure
+    path must not itself become the failure.
+    """
+    if proc is None:
+        return None
+    # Resolved here, not in the signature's defaults, so the module constant
+    # is read at call time (a default argument would freeze it at import).
+    wait = CLOSE_WAIT_SECONDS if wait is None else wait
+    grace = wait if grace is None else grace
+    stdin = getattr(proc, "stdin", None)
+    if stdin is not None:
+        try:
+            stdin.close()
+        except (OSError, ValueError):  # OSError covers BrokenPipeError
+            pass
+    for escalate, timeout in ((None, wait), (proc.terminate, grace), (proc.kill, grace)):
+        if escalate is not None:
+            try:
+                escalate()
+            except (OSError, ValueError):  # already gone, or already reaped
+                return proc.poll()
+        try:
+            return proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            continue
+    return proc.poll()
+
 
 def _drain(stream: IO[str], sink: deque[str]) -> None:
     """Read ``stream`` to EOF into ``sink`` (bounded). Never raises."""
@@ -175,7 +232,11 @@ class SubprocessAgent(NvshAgent):
                 self._proc.kill()
 
     def close(self) -> None:
+        # Close, not cancel: the stdin rung matters here and must not run
+        # mid-turn (``claude`` keeps stdin a live pipe for the whole turn),
+        # which is why ``cancel``/``run``'s teardown still go through
+        # ``_terminate_if_running`` instead.
         if self._closed:
             return
-        self._terminate_if_running()
         self._closed = True
+        escalate_close(self._proc)
