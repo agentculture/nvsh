@@ -11,7 +11,9 @@ agent (shell → agent), which diagnoses the problem and proposes a fix.
 **Status: hook implemented.** The bash hook (`nvsh setup`/`uninstall`/`on`/`off`),
 the per-user session daemon, the trigger table, redaction, platform
 detection, output capture, the pluggable `NvshAgent` backends (fake, Pi,
-OpenAI-compatible, Claude, Codex, Qwen), the failure panel, slash commands
+OpenAI-compatible, Claude, Codex, Qwen over ACP with a `qwen-p` read-only
+print-mode fallback, Agy, and Kiro over ACP — eight adapters total, see
+`nvsh agent list --json`), the failure panel, slash commands
 and the approve/execute/verify loop are all on disk and covered by tests —
 see [`docs/architecture.md`](docs/architecture.md) for the design and
 [`docs/verification.md`](docs/verification.md) for what has been checked on
@@ -52,6 +54,18 @@ nvsh **hooks into your existing bash** rather than replacing or wrapping it:
 - **Offline by default, pluggable.** The agent backend sits behind an
   adapter: a local/LAN model first (Nemotron's "associate", via Pi, is the
   initial default), with the Culture mesh or a hosted API as options.
+- **Aliases and `@target` marks.** `[aliases]` in
+  `$XDG_CONFIG_HOME/nvsh/config.toml` maps a short name to a
+  `backend[/model[/effort]]` target, with `default` reserved for a bare
+  `nvsh --agent default` (or no `--agent` at all). `@target` at the prompt
+  (`@reviewer explain the last failure`, `@claude/sonnet/medium ...`) asks
+  one specific harness for that request only, one-shot unless it names the
+  default target; see [`docs/shell-integration.md`](docs/shell-integration.md).
+  Where a harness has no client-side approval channel (qwen's ACP session
+  never sends a permission request today; agy headless auto-denies command
+  execution) it runs read-only rather than being auto-approved, and an
+  operator opts it into its own agent-side approval only explicitly, with
+  `[agents.<name>] approval = "harness"`.
 - **Reversible.** `nvsh uninstall` removes the marked block from your rc
   file (restoring it from a backup), the hook file, and any runtime state
   it created. `NVSH_DISABLE=1` and `nvsh off`/`nvsh on` are kill switches
@@ -76,6 +90,17 @@ not a current goal (see `docs/architecture.md`).
   assignments are scrubbed from the context before it is handed to the
   agent. `--show-context` prints exactly the bytes that would be sent, so
   you can check before you trust it.
+- **Subprocess-backed harnesses never see nvsh's own dev-session markers.**
+  Every adapter that spawns a CLI (`claude`, `codex`, `qwen`, `agy`,
+  `kiro`) builds its child environment through `nvsh/agent/_env.py`, which
+  strips `CLAUDECODE` and the whole `CLAUDE_CODE_*` family so a spawned
+  harness never believes it is nested inside the Claude Code session that
+  may itself be running nvsh's own development.
+- **nvsh never edits a harness's own settings or trust files.** It only
+  passes launch flags and protocol-level policy (`--effort`, `-c
+  model_reasoning_effort=`, ACP `set_config_option`, and so on) and reports
+  what it finds — it does not write to `claude`/`agy` `settings.json`,
+  `codex`'s `config.toml`, kiro's trust settings, or qwen's settings.
 
 ## Quickstart (development)
 

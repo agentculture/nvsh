@@ -53,9 +53,12 @@ converged. The hook installer (`nvsh setup`/`nvsh uninstall`, `nvsh on`/`off`,
 trigger table (`nvsh/triggers.py`), redaction (`nvsh/redact.py`), platform
 detection (`nvsh/platform/`), output capture (`nvsh/capture.py`), the
 pluggable `NvshAgent` backends (`nvsh/agent/`: `base`, `fake`, `pi`,
-`openai_compat`, `claude`, `codex`, `qwen`, `registry`, `loop`, `audit`, and
-the Pi extension at `nvsh/agent/pi_ext/approval.ts`), the per-user session
-daemon (`nvsh/daemon.py`), the failure client and panel (`nvsh/client.py`,
+`openai_compat`, `claude`, `codex`, `qwen` (ACP and the `qwen-p`
+stream-json print-mode fallback), `agy`, `acp` (the generic ACP client
+behind the `kiro` and `qwen` registry entries), `registry`, `loop`,
+`audit`, `playbooks`, and the Pi extension at
+`nvsh/agent/pi_ext/approval.ts`), the per-user session daemon
+(`nvsh/daemon.py`), the failure client and panel (`nvsh/client.py`,
 `nvsh/panel.py`), slash-command routing (`nvsh/slash.py`; `nvsh slash`,
 `nvsh complete`), the approval store (`nvsh/approvals.py`, `nvsh approve`)
 and the helper-tool installers (`nvsh/installers.py`) are all on disk,
@@ -68,6 +71,47 @@ of this as implemented in a future change, confirm the file still exists
 and the verb still runs (`uv run --frozen nvsh --help`,
 `uv run --frozen nvsh doctor --json`) rather than assuming this paragraph
 stays accurate forever.
+
+nvsh registers eight harness adapters in `nvsh/agent/registry.py`'s
+`ADAPTERS` table: `pi` (rpc), `qwen` (acp, `qwen --acp`, plan mode by
+default), `qwen-p` (stream-json print-mode, read-only fallback for when
+ACP is unavailable), `claude` (stream-json, `claude -p --output-format
+stream-json --input-format stream-json --permission-prompt-tool stdio`),
+`codex` (app-server, falling back to `exec`), `agy` (stream-json, always
+read-only — see below), `kiro` (acp, `kiro-cli acp`) and `openai-compat`
+(http). `[aliases]` in `$XDG_CONFIG_HOME/nvsh/config.toml` is a flat TOML
+table mapping a short name to a `backend[/model[/effort]]` target, with
+`default` reserved for the bare `nvsh --agent default` (or no `--agent` at
+all) case (`Config.resolve_target`, `nvsh/config.py`); `nvsh agent use
+<name>` and `nvsh setup` write `[aliases].default`, and `nvsh agent list
+--json` reports every adapter with its `installed`/`path`/`hosted`/
+`capabilities` state, default first. At the prompt, `@target` (`@name` for
+a registered alias or adapter, `@backend/model/effort` for a literal) marks
+one request for that harness only, rewritten to `/ask --agent <target>`; an
+ad-hoc target runs one-shot, the default target rides the daemon's warm
+session. See [`docs/shell-integration.md`](docs/shell-integration.md) for
+the full `@target` grammar and [`docs/daemon.md`](docs/daemon.md) for how
+the target travels on the wire.
+
+Approval channels differ per harness, and where none exists the harness
+runs read-only rather than getting nvsh's own auto-approve switches passed
+to it. The spec (`docs/specs/2026-09-14-first-class-multi-harness-with-aliases.md`)
+states the boundary this way: "nvsh never edits, creates or overrides a
+harness's own settings or trust files (agy/claude settings.json, codex
+config.toml, kiro trust settings, qwen settings): it only passes launch
+flags and protocol-level policy, and reports what it finds." Qwen over ACP
+never sends `session/request_permission` (verified against qwen 0.23.3), so
+it ships in plan mode with `tool_calling=False` by default; the spec's opt-out
+reads: "an operator may opt a harness into its own agent-side approval with
+`[agents.<name>] approval = "harness"`, which is recorded in capabilities and
+the audit log." `agy` headless auto-denies any tool needing the `command`
+permission, so it is always registered `tool_calling=False` for commands
+regardless of `approval`. Everything that leaves the process — the prompt
+composer's output, `--show-context`, log lines — is redacted first
+(`nvsh/redact.py`), and every subprocess-backed adapter's child environment
+has `CLAUDECODE` and the whole `CLAUDE_CODE_*` family dropped
+(`nvsh/agent/_env.py`) so a spawned harness never believes it is nested
+inside the Claude Code session that may be driving nvsh's own development.
 
 What is still genuinely open, so don't describe it as implemented: the
 default-login-shell (`chsh`) mode stays parked, not built — see
