@@ -288,6 +288,14 @@ class AgyAgent(NvshAgent):
     def _run_warm(self, prompt: str) -> Iterator[AgentEvent]:
         if self._proc is None or self._proc.poll() is not None:
             self._spawn_warm()
+        failure = self._write_turn(prompt)
+        if failure is not None:
+            yield failure
+            return
+        yield from self._warm_events()
+
+    def _write_turn(self, prompt: str) -> AgentEvent | None:
+        """Write one turn to the warm child. Returns an ERROR event on failure."""
         assert self._proc is not None and self._proc.stdin is not None
         payload = json.dumps({"event": "user", "message": {"role": "user", "content": prompt}})
         with self._write_lock:
@@ -295,26 +303,25 @@ class AgyAgent(NvshAgent):
                 self._proc.stdin.write(payload + "\n")
                 self._proc.stdin.flush()
             except OSError as exc:
-                yield AgentEvent(kind=EventKind.ERROR, error=f"agy stdin closed: {exc}")
-                return
+                return AgentEvent(kind=EventKind.ERROR, error=f"agy stdin closed: {exc}")
+        return None
 
-        while True:
-            if self._cancelled:
-                return
+    def _warm_events(self) -> Iterator[AgentEvent]:
+        """Drain the warm child's queue until this turn's "result" line."""
+        assert self._proc is not None
+        while not self._cancelled:
             try:
                 obj = self._stdout_queue.get(timeout=_QUEUE_POLL_SECONDS)
             except queue.Empty:
-                if self._proc.poll() is not None:
-                    yield from self._final_status(self._proc.returncode or 0, self._stderr_tail)
-                    return
-                continue
+                if self._proc.poll() is None:
+                    continue
+                yield from self._final_status(self._proc.returncode or 0, self._stderr_tail)
+                return
             if obj is None:
                 # stdout hit EOF (process exited) without a "result" line.
-                rc = self._proc.wait()
-                yield from self._final_status(rc, self._stderr_tail)
+                yield from self._final_status(self._proc.wait(), self._stderr_tail)
                 return
-            for event in self._handle_object(obj, self._stderr_tail, self._stderr_thread):
-                yield event
+            yield from self._handle_object(obj, self._stderr_tail, self._stderr_thread)
             if obj.get("event") == "result":
                 return
 
@@ -326,11 +333,8 @@ class AgyAgent(NvshAgent):
         """Map one decoded NDJSON object to zero or more ``AgentEvent``s."""
         kind = obj.get("event")
         if kind == "init":
-            conversation_id = (obj.get("init") or {}).get("conversation_id") or obj.get(
-                "conversation_id"
-            )
-            if conversation_id:
-                self._conversation_id = str(conversation_id)
+            init = obj.get("init") or {}
+            self._remember_conversation(init.get("conversation_id") or obj.get("conversation_id"))
             return
         if kind == "step_update":
             event = self._map_step_update(obj.get("step_update") or {})
@@ -338,29 +342,37 @@ class AgyAgent(NvshAgent):
                 yield event
             return
         if kind == "result":
-            result = obj.get("result") or {}
-            conversation_id = result.get("conversation_id")
-            if conversation_id:
-                self._conversation_id = str(conversation_id)
-            # Give the concurrent stderr drain a beat to catch a line agy
-            # writes right as it finishes the turn (the auto-deny notice),
-            # so it is visible for this same turn instead of the next one.
-            if drain is not None:
-                drain.join(timeout=_STDERR_SETTLE_SECONDS)
-            deny_text = redacted_tail(tail)
-            if _AUTO_DENY_MARKER in deny_text:
-                yield AgentEvent(kind=EventKind.STATUS, text=deny_text)
-            if result.get("status") == "SUCCESS":
-                yield AgentEvent(kind=EventKind.DONE, text=str(result.get("response", "")))
-            else:
-                yield AgentEvent(
-                    kind=EventKind.ERROR,
-                    error=str(result.get("error") or result.get("response") or "agy error"),
-                )
+            yield from self._result_events(obj.get("result") or {}, tail, drain)
         # Unrecognized event types (a newer agy) are silently ignored rather
         # than surfaced as noise -- there is no catch-all STATUS mapping
         # here the way pi.py has one, because agy's ``event`` vocabulary is
         # small and closed per the verified transcripts.
+
+    def _remember_conversation(self, conversation_id: object) -> None:
+        """Latch a conversation id off an ``init``/``result`` line, if present."""
+        if conversation_id:
+            self._conversation_id = str(conversation_id)
+
+    def _result_events(
+        self, result: dict, tail: deque[str], drain: threading.Thread | None
+    ) -> Iterator[AgentEvent]:
+        """Terminal event(s) for one ``result`` line."""
+        self._remember_conversation(result.get("conversation_id"))
+        # Give the concurrent stderr drain a beat to catch a line agy
+        # writes right as it finishes the turn (the auto-deny notice),
+        # so it is visible for this same turn instead of the next one.
+        if drain is not None:
+            drain.join(timeout=_STDERR_SETTLE_SECONDS)
+        deny_text = redacted_tail(tail)
+        if _AUTO_DENY_MARKER in deny_text:
+            yield AgentEvent(kind=EventKind.STATUS, text=deny_text)
+        if result.get("status") == "SUCCESS":
+            yield AgentEvent(kind=EventKind.DONE, text=str(result.get("response", "")))
+            return
+        yield AgentEvent(
+            kind=EventKind.ERROR,
+            error=str(result.get("error") or result.get("response") or "agy error"),
+        )
 
     def _map_step_update(self, step_update: dict) -> AgentEvent | None:
         step_type = step_update.get("step_type")
