@@ -1,0 +1,33 @@
+{
+  "script_placeholder": "{script}",
+  "default_script": "./run-model.sh",
+  "events": [
+    {
+      "kind": "text_delta",
+      "text": "Exit 126 means the shell found {script} but was not allowed to run it.\n"
+    },
+    {
+      "kind": "text_delta",
+      "text": "The file is not executable -- a copy, a git checkout or an unzip drops the bit.\n"
+    },
+    {
+      "kind": "text_delta",
+      "text": "Putting it back is enough; nothing else about the script has to change.\n"
+    },
+    {
+      "kind": "text_delta",
+      "text": "(scripted demo reply)\n"
+    },
+    {
+      "kind": "proposal",
+      "proposal": {
+        "command": "chmod +x {script}",
+        "rationale": "restore the execute bit so the shell can run the script",
+        "kind": "fix"
+      }
+    },
+    {
+      "kind": "done"
+    }
+  ]
+}
