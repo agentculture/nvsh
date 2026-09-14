@@ -120,7 +120,60 @@ def test_capabilities(tmp_path):
         cancellation=True,
         persistent_session=True,
         local_model=True,
+        thinking=True,
+        effort=True,
+        path="rpc",
+        approval="nvsh",
+        unmediated_file_access=False,
     )
+
+
+def test_capabilities_reports_configured_approval(tmp_path):
+    agent = PiAgent(pi_path="pi", env=_env(tmp_path), approval="harness")
+    assert agent.capabilities().approval == "harness"
+
+
+# --- effort / --thinking --------------------------------------------------
+
+
+def test_build_argv_adds_thinking_flag_when_effort_set(tmp_path):
+    agent = PiAgent(pi_path="pi", env=_env(tmp_path), effort="high")
+    argv = agent.build_argv()
+    assert "--thinking" in argv
+    assert argv[argv.index("--thinking") + 1] == "high"
+    # comes after --provider/--model, per build_argv's documented order.
+    assert argv.index("--thinking") > argv.index("--no-approve")
+
+
+def test_build_argv_omits_thinking_flag_when_effort_unset(tmp_path):
+    agent = PiAgent(pi_path="pi", env=_env(tmp_path))
+    argv = agent.build_argv()
+    assert "--thinking" not in argv
+
+
+def test_build_argv_appends_extra_args_verbatim(tmp_path):
+    agent = PiAgent(pi_path="pi", env=_env(tmp_path), extra_args=["--foo", "bar"])
+    argv = agent.build_argv()
+    assert argv[-2:] == ["--foo", "bar"]
+
+
+def test_run_thinking_delta_maps_to_thinking_event(tmp_path):
+    script = [
+        {
+            "type": "message_update",
+            "assistantMessageEvent": {"type": "thinking_delta", "delta": "considering..."},
+        },
+        {"type": "agent_end"},
+    ]
+    agent = PiAgent(pi_path="pi_scripted", env=_env(tmp_path))
+    agent._env["NVSH_TEST_PI_SCRIPT"] = json.dumps(script)
+    agent.start()
+    try:
+        events = list(agent.run(_request(), _context()))
+    finally:
+        agent.close()
+    assert [e.kind for e in events] == [EventKind.THINKING, EventKind.DONE]
+    assert events[0].text == "considering..."
 
 
 # --- run() / event mapping ----------------------------------------------

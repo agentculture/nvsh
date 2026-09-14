@@ -89,10 +89,13 @@ Events have no `id` (except `bash_execution_update`, unused here). The ones
 `PiAgent._map_event` understands:
 
 - `message_update` with `"assistantMessageEvent": {"type": "text_delta", "delta": "<text>"}`
-  → `EventKind.TEXT_DELTA`. (Other `assistantMessageEvent` sub-types —
-  `text_start`/`text_end`, `thinking_*`, `toolcall_*` — are currently
-  ignored; nvsh streams assistant text and tool execution, not the raw
-  tool-call argument deltas.)
+  → `EventKind.TEXT_DELTA`. (`text_start`/`text_end`/`toolcall_*` are
+  currently ignored; nvsh streams assistant text and tool execution, not the
+  raw tool-call argument deltas.)
+- `message_update` with `"assistantMessageEvent": {"type": "thinking_delta", "delta": "<text>"}`
+  → `EventKind.THINKING` (task t9). Mirrors `text_delta` exactly, except the
+  delta is never folded into `PiAgent._said` — the next proposal's rationale
+  is what the model *said*, not what it *thought* on the way there.
 - `tool_execution_start` with `"toolName"`, `"args"` → `EventKind.TOOL_CALL`.
 - `tool_execution_end` with `"toolName"`, `"result"` → `EventKind.TOOL_RESULT`.
 - `extension_ui_request` with `"id"`, `"method"` (`select`/`confirm`/`input`/
@@ -238,6 +241,39 @@ gets the operator's words for free — and delivers the same words to the
 model where they *are* guaranteed to land: as a steering message on the
 same conversation, written before the deny so the turn is provably still
 streaming when it is queued.
+
+## Effort → `--thinking`, and `extra_args`/`approval` (task t9)
+
+`PiAgent.__init__` takes `effort: str | None`, `extra_args: list[str] |
+None`, and `approval: str = "nvsh"` (the constructor convention shared
+across every backend adapter in this wave; task t5 added the matching
+`[agents.pi]` config keys of the same names).
+
+- `effort` is passed **verbatim**, never validated (decision c24 — nvsh
+  never second-guesses a harness-specific string), as `--thinking <effort>`
+  in `build_argv()`, placed after `--provider`/`--model` and before
+  `extra_args`. pi 0.85.1's `--help` documents `--thinking <level>` as
+  accepting `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` — but
+  `PiAgent` does not enforce that set; an invalid value is pi's rejection to
+  report, not nvsh's to pre-empt. `effort=None` (the default, and
+  `[agents.pi]`'s default when unset) omits the flag entirely.
+- `extra_args`, when given, is appended to argv **verbatim and last** —
+  after `--thinking` — so an operator can pass a flag `PiAgent` does not
+  otherwise know about without waiting on a code change.
+- `approval` only affects `PiAgent.capabilities().approval` (default
+  `"nvsh"`); it does not change how `pi` itself is launched or how the
+  approval extension behaves — the extension already always shells out to
+  `nvsh approve check` regardless (see above). Overriding it to `"harness"`
+  is for a caller that has separately arranged for `pi`'s own approval UI to
+  own the gate instead (e.g. a different extension), which is out of scope
+  for this backend as shipped.
+
+`PiAgent.capabilities()` reports `thinking=True` (this backend can stream
+`EventKind.THINKING`), `effort=True` (it honors `AgentRequest.target.effort`
+via the config/constructor `effort` above — this is a stable ability
+declaration, not a report of the value in effect for a given call), and
+`path="rpc"` (this adapter is reached by prompting `pi`'s own `--mode rpc`
+protocol described above, not a plain HTTP path or a wrapped subcommand).
 
 ## What `PiAgent` never sends
 
