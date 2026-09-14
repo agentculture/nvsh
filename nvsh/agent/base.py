@@ -29,6 +29,7 @@ class EventKind(str, Enum):
     TOOL_RESULT = "tool_result"
     PROPOSAL = "proposal"
     STATUS = "status"
+    THINKING = "thinking"
     DONE = "done"
     ERROR = "error"
 
@@ -58,6 +59,22 @@ class Proposal:
 
 
 @dataclass(frozen=True)
+class Target:
+    """Which backend/model/effort/alias a request should be routed to.
+
+    All fields but ``backend`` default to ``None``, meaning "let the caller
+    decide" (e.g. the adapter's configured default model). Kept as its own
+    small immutable value so ``nvsh/daemon.py`` can adopt it without this
+    module reaching into daemon internals.
+    """
+
+    backend: str
+    model: str | None = None
+    effort: str | None = None
+    alias: str | None = None
+
+
+@dataclass(frozen=True)
 class AgentRequest:
     """What the caller is asking the agent to do."""
 
@@ -72,6 +89,95 @@ class AgentRequest:
     #: question, and this is what lets the panel say "asking the agent: ..."
     #: instead of "<line> failed (exit 127)".
     ask: str = ""
+    #: Which backend/model/effort/alias to route this request to. ``None``
+    #: means "use whatever the caller is already configured with" -- the
+    #: common case, and why the wire codec omits it entirely by default.
+    target: Target | None = None
+
+
+def target_to_dict(target: Target) -> dict:
+    """Encode a :class:`Target` as a JSON-serializable dict.
+
+    Default-valued (``None``) fields are omitted, matching
+    :func:`event_to_dict`'s convention.
+    """
+    data: dict[str, object] = {"backend": target.backend}
+    if target.model is not None:
+        data["model"] = target.model
+    if target.effort is not None:
+        data["effort"] = target.effort
+    if target.alias is not None:
+        data["alias"] = target.alias
+    return data
+
+
+def target_from_dict(data: Mapping[str, object] | None) -> Target | None:
+    """Decode what :func:`target_to_dict` produced.
+
+    Returns ``None`` for ``None`` input or a dict without a usable
+    ``backend`` -- a pre-change wire message never had a ``target`` key at
+    all, so this makes "absent" and "malformed" behave the same way.
+    """
+    if not isinstance(data, Mapping):
+        return None
+    backend = data.get("backend")
+    if not isinstance(backend, str) or not backend:
+        return None
+    return Target(
+        backend=backend,
+        model=data.get("model") if isinstance(data.get("model"), str) else None,
+        effort=data.get("effort") if isinstance(data.get("effort"), str) else None,
+        alias=data.get("alias") if isinstance(data.get("alias"), str) else None,
+    )
+
+
+def request_to_dict(request: AgentRequest) -> dict:
+    """Encode an :class:`AgentRequest` as a JSON-serializable dict.
+
+    Default-valued fields are omitted so a request predating ``target``
+    round-trips identically, and old daemons/clients that don't know about
+    ``target`` still see a familiar shape.
+    """
+    data: dict[str, object] = {"kind": request.kind.value}
+    if request.prompt:
+        data["prompt"] = request.prompt
+    if request.command:
+        data["command"] = request.command
+    if request.exit_code is not None:
+        data["exit_code"] = request.exit_code
+    if request.failure_id:
+        data["failure_id"] = request.failure_id
+    if request.ask:
+        data["ask"] = request.ask
+    if request.target is not None:
+        data["target"] = target_to_dict(request.target)
+    return data
+
+
+def request_from_dict(data: Mapping[str, object] | None) -> AgentRequest:
+    """Decode what :func:`request_to_dict` produced, tolerating junk.
+
+    A dict without a ``target`` key -- exactly what a pre-change caller
+    sends -- decodes with ``target=None``.
+    """
+    data = data or {}
+    try:
+        kind = RequestKind(str(data.get("kind", RequestKind.EXPLICIT.value)))
+    except ValueError:
+        kind = RequestKind.EXPLICIT
+    raw_exit = data.get("exit_code")
+    exit_code = int(raw_exit) if isinstance(raw_exit, (int, float)) else None
+    raw_target = data.get("target")
+    target = target_from_dict(raw_target) if isinstance(raw_target, Mapping) else None
+    return AgentRequest(
+        kind=kind,
+        prompt=str(data.get("prompt", "")),
+        command=str(data.get("command", "")),
+        exit_code=exit_code,
+        failure_id=str(data.get("failure_id", "")),
+        ask=str(data.get("ask", "")),
+        target=target,
+    )
 
 
 @dataclass(frozen=True)
@@ -179,6 +285,19 @@ class Capabilities:
     cancellation: bool = True
     persistent_session: bool = False
     local_model: bool = False
+    #: Whether the adapter can stream :attr:`EventKind.THINKING` events.
+    thinking: bool = False
+    #: Whether the adapter honors ``AgentRequest.target.effort``.
+    effort: bool = False
+    #: Filesystem path to the adapter's binary/entrypoint, when known.
+    path: str = ""
+    #: Who mediates approval of a proposed command: ``"nvsh"`` (nvsh's own
+    #: propose/approve loop decides), ``"harness"`` (the backend's own
+    #: approval UI decides), or ``"none"`` (no approval gate at all).
+    approval: str = "none"
+    #: Whether the adapter can read/write files on its own, outside of
+    #: nvsh's deterministic operator tools.
+    unmediated_file_access: bool = False
 
 
 class NvshAgent(abc.ABC):
