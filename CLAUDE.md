@@ -85,7 +85,10 @@ table mapping a short name to a `backend[/model[/effort]]` target, with
 all) case (`Config.resolve_target`, `nvsh/config.py`); `nvsh agent use
 <name>` and `nvsh setup` write `[aliases].default`, and `nvsh agent list
 --json` reports every adapter with its `installed`/`path`/`hosted`/
-`capabilities` state, default first. At the prompt, `@target` (`@name` for
+`capabilities` state, default first. `nvsh setup` probes `PATH` for every
+adapter and defaults to whichever harness is already installed (prompting
+the operator when several are, tool-calling adapters listed first), rather
+than hard-wiring pi. At the prompt, `@target` (`@name` for
 a registered alias or adapter, `@backend/model/effort` for a literal) marks
 one request for that harness only, rewritten to `/ask --agent <target>`; an
 ad-hoc target runs one-shot, the default target rides the daemon's warm
