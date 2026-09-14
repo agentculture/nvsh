@@ -37,8 +37,8 @@ your approval — nvsh proposes, you accept, edit or reject.
 
 | Command | What it does |
 |---------|--------------|
-| `nvsh ask`, `Ctrl+G` | Call the agent on demand. |
-| `/doctor`, `/ask` | Slash commands at the prompt. |
+| `Ctrl+G`, `/ask` | Call the agent on demand at the prompt. |
+| `/fix`, `/doctor` | More slash commands at the prompt. |
 | `@claude ...`, `@codex ...` | Send one request to a specific harness. |
 | `nvsh doctor` | Health checks: platform, agent reachable, hook, capture, daemon. |
 | `nvsh context --show` | Print exactly the bytes that would be sent. |
