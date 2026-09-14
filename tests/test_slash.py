@@ -367,6 +367,53 @@ def test_complete_full_palette_offers_the_agent_marks():
     assert "@openai-compat" in values
 
 
+# --- task t6: @target grammar (backend[/model[/effort]] and aliases) ------
+
+
+def test_agent_mark_items_default_first_then_aliases_then_adapters(xdg):
+    (xdg.config / "nvsh").mkdir()
+    (xdg.config / "nvsh" / "config.toml").write_text(
+        '[aliases]\ndefault = "pi"\nreviewer = "claude/opus/high"\nlocal = "pi"\n'
+    )
+    values = [item.value for item in slash_mod.agent_mark_items()]
+    assert values[0] == "@default"
+    # aliases (minus 'default') come next, alphabetically, ahead of any
+    # adapter not itself an alias name.
+    alias_names = ["@local", "@reviewer"]
+    assert values[1 : 1 + len(alias_names)] == alias_names
+    for name in ("@pi", "@qwen", "@claude", "@codex", "@openai-compat"):
+        assert name in values
+    # no duplicates: 'pi' and 'claude' are both an alias target's backend
+    # and a registered adapter name, but each mark appears once.
+    assert len(values) == len(set(values))
+
+
+def test_agent_mark_items_tolerates_missing_config(xdg):
+    # No config.toml written at all: 'default' still appears, no exception.
+    values = [item.value for item in slash_mod.agent_mark_items()]
+    assert values[0] == "@default"
+
+
+def test_agent_mark_items_tolerates_invalid_config(xdg):
+    (xdg.config / "nvsh").mkdir()
+    (xdg.config / "nvsh" / "config.toml").write_text("not valid toml [[[")
+    values = [item.value for item in slash_mod.agent_mark_items()]
+    assert values[0] == "@default"
+
+
+def test_split_agent_flag_returns_the_full_target_string():
+    for target in ("claude/sonnet/medium", "reviewer", "local", "default", "pi"):
+        name, rest = slash_mod.split_agent_flag(f"--agent {target} why is the gpu slow")
+        assert name == target
+        assert rest == "why is the gpu slow"
+
+
+def test_split_agent_flag_equals_form_full_target_string():
+    name, rest = slash_mod.split_agent_flag("--agent=claude/sonnet/medium why is the gpu slow")
+    assert name == "claude/sonnet/medium"
+    assert rest == "why is the gpu slow"
+
+
 def test_complete_ask_offers_the_agent_flag_and_names():
     values = {item.value for item in slash_mod.complete(["/ask"], "dgx-spark")}
     assert "--agent" in values
