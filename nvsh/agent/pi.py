@@ -293,6 +293,9 @@ class PiAgent(NvshAgent):
         pi_path: str = "pi",
         provider: str | None = None,
         model: str | None = None,
+        effort: str | None = None,
+        extra_args: list[str] | None = None,
+        approval: str = "nvsh",
         env: Mapping[str, str] | None = None,
         session_dir: str | Path | None = None,
         extension_path: str | Path | None = None,
@@ -310,6 +313,19 @@ class PiAgent(NvshAgent):
         defaults = _default_pi_agent_config()
         self._provider = provider if provider is not None else defaults.get("provider")
         self._model = model if model is not None else defaults.get("model")
+        #: Opaque effort string (decision c24: never validated by nvsh),
+        #: passed verbatim to pi as ``--thinking <effort>`` when set.
+        self._effort = effort if effort is not None else defaults.get("effort")
+        #: Extra argv appended verbatim after every other flag (task t5's
+        #: per-harness ``extra_args`` knob).
+        self._extra_args = (
+            list(extra_args) if extra_args is not None else list(defaults.get("extra_args") or [])
+        )
+        #: Who mediates approval of a proposed command. pi's approval
+        #: extension always gates tool calls through ``nvsh approve check``
+        #: (see ``docs/pi-rpc.md``), so this backend's own answer is
+        #: ``"nvsh"`` unless a caller explicitly overrides it.
+        self._approval = approval
 
         self._session_dir = Path(session_dir) if session_dir else default_session_dir(self._env)
         self._extension_path = (
@@ -348,7 +364,9 @@ class PiAgent(NvshAgent):
         the hygiene flags, then ``--session-dir``, then ``-e <extension>``,
         then ``--append-system-prompt`` (the system brief, once for the
         session -- deviation d19), then ``--provider``/``--model`` (never an
-        API key -- pi reads its own ``models.json``).
+        API key -- pi reads its own ``models.json``), then ``--thinking
+        <effort>`` when an effort is configured, then any ``extra_args``
+        verbatim (task t5/t9's per-harness knobs).
         """
         if self._system_prompt is None:
             self._system_prompt = default_system_prompt()
@@ -372,6 +390,10 @@ class PiAgent(NvshAgent):
             argv += ["--provider", str(self._provider)]
         if self._model:
             argv += ["--model", str(self._model)]
+        if self._effort:
+            argv += ["--thinking", str(self._effort)]
+        if self._extra_args:
+            argv += list(self._extra_args)
         return argv
 
     def start(self) -> None:
@@ -654,9 +676,18 @@ class PiAgent(NvshAgent):
         return None
 
     def _message_update_event(self, obj: dict) -> AgentEvent | None:
-        """Assistant text deltas, also kept as the next proposal's rationale."""
+        """Assistant text deltas, also kept as the next proposal's rationale.
+
+        ``thinking_delta`` mirrors ``text_delta`` (task t9) but maps to
+        :attr:`EventKind.THINKING` instead and is never folded into
+        :attr:`_said` -- the next proposal's rationale is what the model
+        *said*, not what it thought on the way there.
+        """
         ame = obj.get("assistantMessageEvent") or {}
-        if ame.get("type") != "text_delta":
+        ame_type = ame.get("type")
+        if ame_type == "thinking_delta":
+            return AgentEvent(kind=EventKind.THINKING, text=str(ame.get("delta", "")))
+        if ame_type != "text_delta":
             return None
         delta = str(ame.get("delta", ""))
         self._said.append(delta)
@@ -857,4 +888,9 @@ class PiAgent(NvshAgent):
             cancellation=True,
             persistent_session=True,
             local_model=True,
+            thinking=True,
+            effort=True,
+            path="rpc",
+            approval=self._approval,
+            unmediated_file_access=False,
         )
