@@ -549,86 +549,123 @@ def _cli_harness_login_command(display_name: str, binary: str) -> str:
     return f"{binary} login"
 
 
-def _check_cli_harness_reachable(
+def _probe_cli_version(
     display_name: str,
     binary: str,
-    which: Which,
     run: CliRunner,
     timeout: float,
-) -> dict:
-    """Binary present, version parsed + range-checked, auth state where a
-    verified probe exists -- never a model call (task t17).
-    """
-    if which(binary) is None:
-        return _check(
-            "agent_reachable",
-            False,
-            "error",
-            f"'{binary}' is not on PATH ({display_name}-missing)",
-            f"nvsh agent install {display_name}, or nvsh agent use openai-compat",
-        )
+) -> tuple[dict | None, str]:
+    """Step one: run ``<binary> --version``.
 
+    Returns either ``(finished failed check, "")`` or ``(None, combined
+    stdout/stderr)`` for the next step to parse.
+    """
     try:
-        _rc, stdout, stderr = run([binary, "--version"], timeout)
+        returncode, stdout, stderr = run([binary, "--version"], timeout)
     except subprocess.TimeoutExpired:
-        return _check(
-            "agent_reachable",
-            False,
-            "error",
-            f"'{binary} --version' timed out after {timeout}s ({display_name}-hung)",
-            f"the {binary} CLI is hanging; check it manually ('{binary} --version')",
+        return (
+            _check(
+                "agent_reachable",
+                False,
+                "error",
+                f"'{binary} --version' timed out after {timeout}s ({display_name}-hung)",
+                f"the {binary} CLI is hanging; check it manually ('{binary} --version')",
+            ),
+            "",
         )
     except OSError as exc:
-        return _check(
-            "agent_reachable",
-            False,
-            "error",
-            f"'{binary} --version' could not be run: {exc.__class__.__name__} "
-            f"({display_name}-unreachable)",
-            f"check the {binary} installation ('{binary} --version')",
+        return (
+            _check(
+                "agent_reachable",
+                False,
+                "error",
+                f"'{binary} --version' could not be run: {exc.__class__.__name__} "
+                f"({display_name}-unreachable)",
+                f"check the {binary} installation ('{binary} --version')",
+            ),
+            "",
         )
 
-    if _rc != 0 and _parse_cli_version(f"{stdout}\n{stderr}"):
+    version_text = f"{stdout}\n{stderr}"
+    if returncode != 0 and _parse_cli_version(version_text):
         # A parseable version printed by a failing process is not "reachable";
         # an unparseable one keeps the softer "could not determine" warning.
-        return _check(
-            "agent_reachable",
-            False,
-            "error",
-            f"'{binary} --version' exited {_rc} ({display_name}-unreachable)",
-            f"check the {binary} installation ('{binary} --version')",
+        return (
+            _check(
+                "agent_reachable",
+                False,
+                "error",
+                f"'{binary} --version' exited {returncode} ({display_name}-unreachable)",
+                f"check the {binary} installation ('{binary} --version')",
+            ),
+            "",
         )
-    version_text = f"{stdout}\n{stderr}"
-    version = _parse_cli_version(version_text)
-    version_note = f"version {_format_version(version)}" if version else "version unknown"
+    return None, version_text
 
-    range_note = ""
+
+def _version_range_note(display_name: str, version: tuple[int, int, int] | None) -> str:
+    """Step two: the `` (outside the supported range ...)`` suffix, or ``""``.
+
+    Empty when the version could not be parsed, when this harness declares no
+    supported range, or when the version falls inside it.
+    """
     version_range = _SUPPORTED_VERSIONS.get(display_name)
-    if version and version_range:
-        minimum, maximum = version_range
-        below_min = version < minimum
-        above_max = maximum is not None and version > maximum
-        if below_min or above_max:
-            range_note = f" (outside the supported range >= {_format_version(minimum)}"
-            range_note += f" <= {_format_version(maximum)})" if maximum else ")"
+    if not version or not version_range:
+        return ""
+    minimum, maximum = version_range
+    below_min = version < minimum
+    above_max = maximum is not None and version > maximum
+    if not (below_min or above_max):
+        return ""
+    range_note = f" (outside the supported range >= {_format_version(minimum)}"
+    range_note += f" <= {_format_version(maximum)})" if maximum else ")"
+    return range_note
 
+
+def _probe_cli_auth(
+    display_name: str,
+    binary: str,
+    run: CliRunner,
+    timeout: float,
+    version_text: str,
+) -> tuple[dict | None, str]:
+    """Step three: run this harness's verified auth probe, if it has one.
+
+    Returns either ``(finished failed check, "")`` or ``(None, the text to
+    scan for :data:`_UNAUTH_MARKERS`)`` -- ``version_text`` itself when there
+    is no registered probe, or when running it raised ``OSError``.
+    """
     auth_probe = _AUTH_PROBES.get(display_name)
-    auth_text = version_text
-    if auth_probe is not None:
-        try:
-            _rc2, out2, err2 = run([binary, *auth_probe.args], timeout)
-            auth_text = f"{out2}\n{err2}"
-        except subprocess.TimeoutExpired:
-            probe_cmd = " ".join((binary, *auth_probe.args))
-            return _check(
+    if auth_probe is None:
+        return None, version_text
+    try:
+        _rc, out, err = run([binary, *auth_probe.args], timeout)
+    except subprocess.TimeoutExpired:
+        probe_cmd = " ".join((binary, *auth_probe.args))
+        return (
+            _check(
                 "agent_reachable",
                 False,
                 "error",
                 f"'{probe_cmd}' timed out after {timeout}s ({display_name}-hung)",
                 f"the {binary} CLI is hanging; check it manually ('{probe_cmd}')",
-            )
-        except OSError:
-            auth_text = version_text  # fall back to scanning --version's own output
+            ),
+            "",
+        )
+    except OSError:
+        return None, version_text  # fall back to scanning --version's own output
+    return None, f"{out}\n{err}"
+
+
+def _cli_harness_verdict(
+    display_name: str,
+    binary: str,
+    version: tuple[int, int, int] | None,
+    range_note: str,
+    auth_text: str,
+) -> dict:
+    """Turn the three steps' collected facts into the one rubric-shaped dict."""
+    version_note = f"version {_format_version(version)}" if version else "version unknown"
 
     if any(marker in auth_text.lower() for marker in _UNAUTH_MARKERS):
         return _check(
@@ -658,7 +695,9 @@ def _check_cli_harness_reachable(
         )
 
     auth_suffix = (
-        "" if auth_probe is not None else "; auth state not verified (no safe non-model probe)"
+        ""
+        if display_name in _AUTH_PROBES
+        else "; auth state not verified (no safe non-model probe)"
     )
     return _check(
         "agent_reachable",
@@ -666,6 +705,43 @@ def _check_cli_harness_reachable(
         "info",
         f"{display_name} reachable ({version_note}{auth_suffix})",
         "",
+    )
+
+
+def _check_cli_harness_reachable(
+    display_name: str,
+    binary: str,
+    which: Which,
+    run: CliRunner,
+    timeout: float,
+) -> dict:
+    """Binary present, version parsed + range-checked, auth state where a
+    verified probe exists -- never a model call (task t17).
+    """
+    if which(binary) is None:
+        return _check(
+            "agent_reachable",
+            False,
+            "error",
+            f"'{binary}' is not on PATH ({display_name}-missing)",
+            f"nvsh agent install {display_name}, or nvsh agent use openai-compat",
+        )
+
+    failure, version_text = _probe_cli_version(display_name, binary, run, timeout)
+    if failure is not None:
+        return failure
+    version = _parse_cli_version(version_text)
+
+    failure, auth_text = _probe_cli_auth(display_name, binary, run, timeout, version_text)
+    if failure is not None:
+        return failure
+
+    return _cli_harness_verdict(
+        display_name,
+        binary,
+        version,
+        _version_range_note(display_name, version),
+        auth_text,
     )
 
 
@@ -1185,6 +1261,32 @@ def check_terminfo_present(env: Mapping[str, str], run: Runner = default_run) ->
 # ---------------------------------------------------------------------------
 
 
+@dataclass(frozen=True)
+class Probes:
+    """The injectables :func:`collect_checks` passes straight through.
+
+    Grouped into one frozen bundle (rather than one keyword argument each) so
+    ``collect_checks`` stays inside the parameter limit; every field keeps the
+    same default it had as a standalone keyword, and nothing in-tree overrides
+    them, so the defaults are what production always uses.
+
+    ``cli_run`` is deliberately *not* ``collect_checks``'s ``run``: ``run``
+    (``platform._subprocess.Runner``) feeds ``check_terminfo_present`` and
+    always returns a tuple, even on a timeout; ``cli_run`` feeds the
+    per-harness CLI reachability probes inside ``check_agent_reachable`` and
+    *raises* ``subprocess.TimeoutExpired`` on a hang, because that probe
+    reports a hang as its own failed check (task t17), not a generic
+    ``(1, "", "")``.
+    """
+
+    cli_run: CliRunner = _default_cli_run
+    is_running: Callable[[Mapping[str, str]], bool] = daemon_mod.is_running
+    socket_path: Callable[[Mapping[str, str]], Path] = daemon_mod.socket_path
+
+
+_DEFAULT_PROBES = Probes()
+
+
 def collect_checks(
     *,
     env: Mapping[str, str],
@@ -1194,13 +1296,11 @@ def collect_checks(
     platform: Platform,
     which: Which = default_which,
     run: Runner = default_run,
-    cli_run: CliRunner = _default_cli_run,
     home: Path | None = None,
     prompt_command_text: str | None = None,
     bind_p_text: str | None = None,
     keymap: str | None = None,
-    is_running: Callable[[Mapping[str, str]], bool] = daemon_mod.is_running,
-    socket_path: Callable[[Mapping[str, str]], Path] = daemon_mod.socket_path,
+    probes: Probes = _DEFAULT_PROBES,
 ) -> list[dict]:
     """Run every doctor extension check and return their rubric-shaped dicts.
 
@@ -1208,18 +1308,13 @@ def collect_checks(
     the wheel-install branch where no ``culture.yaml`` exists, since these
     checks are about the shell/backend, not the mesh-identity invariants.
 
-    ``run`` and ``cli_run`` are deliberately different injectables:  ``run``
-    (``platform._subprocess.Runner``) feeds ``check_terminfo_present`` and
-    always returns a tuple, even on a timeout; ``cli_run`` feeds the
-    per-harness CLI reachability probes inside ``check_agent_reachable`` and
-    *raises* ``subprocess.TimeoutExpired`` on a hang, because that probe
-    reports a hang as its own failed check (task t17), not a generic
-    ``(1, "", "")``.
+    ``run`` stays a keyword of its own; the remaining injectables live on
+    :class:`Probes`, which documents why its ``cli_run`` is not this ``run``.
     """
     checks = [check_platform_detected(platform)]
     checks.append(check_agent_configured(config, config_error))
     if config is not None:
-        checks.append(check_agent_reachable(config, which=which, home=home, run=cli_run))
+        checks.append(check_agent_reachable(config, which=which, home=home, run=probes.cli_run))
     else:
         checks.append(
             _check(
@@ -1235,6 +1330,8 @@ def collect_checks(
     checks.append(check_hook_first_in_prompt_command(prompt_command_text))
     checks.append(check_bindings_present(bind_p_text, keymap))
     checks.append(check_capture_active(env))
-    checks.append(check_daemon_status(env, is_running=is_running, socket_path=socket_path))
+    checks.append(
+        check_daemon_status(env, is_running=probes.is_running, socket_path=probes.socket_path)
+    )
     checks.append(check_terminfo_present(env, run=run))
     return checks
