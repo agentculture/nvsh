@@ -2,7 +2,7 @@
   "plan_slug": "readme-demo-recording",
   "schema_version": 2,
   "created": "2026-09-14T16:59:37Z",
-  "updated": "2026-09-14T17:57:45Z",
+  "updated": "2026-09-14T18:03:47Z",
   "deviations": [
     {
       "id": "d1",
@@ -11,7 +11,7 @@
       "reason": "c22 and t5's criterion read as if approving the fix re-runs the failed command; nvsh does not, and the driver records what nvsh actually does",
       "affects": [],
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "classification": "acceptable",
       "seq": 1
     },
@@ -22,7 +22,7 @@
       "reason": "svg-term-cli's yargs parser rejects '--window off' (unknown flag 'off'); --no-window is the same negation",
       "affects": [],
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "classification": "acceptable",
       "seq": 2
     },
@@ -33,7 +33,7 @@
       "reason": "the dev box carries an older uv-tool nvsh (0.10.0, no demo adapter); preferring PATH blindly would record a broken demo",
       "affects": [],
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "classification": "acceptable",
       "seq": 3
     },
@@ -44,7 +44,7 @@
       "reason": "real nvsh behaviour surfaced by the recording; cosmetically reads as a bug in a README demo; fixing it is a readline.bash change outside any planned task",
       "affects": [],
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "classification": "needs-follow-up",
       "seq": 4
     },
@@ -55,7 +55,7 @@
       "reason": "c10/h8 expect the recording to show the device's platform, but the panel header only shows harness/path/warm and the platform block is never printed; without this the three recordings would be visually identical and h8 unverifiable",
       "affects": [],
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "classification": "acceptable",
       "seq": 5
     }

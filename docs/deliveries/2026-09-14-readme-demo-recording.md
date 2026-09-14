@@ -52,9 +52,9 @@ Quoted verbatim from the `devague summary` skeleton:
 
 ## Mid-work Decisions
 
-All five deviation records are `proposed` (LLM-filed) and await the owner's
-`devague deviate --confirm`; they are listed as decisions taken, not as
-approved ground truth.
+All five deviation records were approved by the owner (`devague deviate
+--confirm d1 d2 d3 d4 d5`, 2026-09-14) and are quoted here as the recorded
+ground truth.
 
 - `d1` — the retry after the approved fix is a third fed line (`./run-model.sh` typed again), not something Enter triggers — `handle_failure` runs the proposal and ends the turn; `/retry` is a separate slash verb.
 - `d2` — `scripts/demo-render.sh` passes `--no-window` instead of the literal `--window off` — svg-term-cli's parser rejects `--window off`.
@@ -68,15 +68,16 @@ approved ground truth.
 
 ## Drift From Plan
 
-No deviation record is approved yet, so every entry below is worked out from
-the task contract; the `dN` in parentheses is the proposed record that covers it.
+Entries covered by an approved deviation cite it and inherit its reason and
+classification verbatim; the rest are worked out from the task contract.
 
 | Plan item | Reason for divergence | Classification |
 |-----------|-----------------------|----------------|
-| `t5` (`d1`) | the criterion "Enter, wait for the retry" reads as if approval re-runs the command; nvsh does not, so the driver feeds the retry as a third line and the recordings show that | acceptable |
-| `t6` (`d2`) | `--no-window` instead of `--window off`; same negation, the literal flag is rejected by svg-term-cli | acceptable |
-| `t5` (`d3`) | `NVSH_BIN` resolution is version-gated instead of "prefer PATH", to avoid recording an older installed nvsh | acceptable |
-| `t8` (`d5`) | `nvsh/agent/demo.py` and the fixture were changed after t1 merged to add the platform placeholder; `h8` was not verifiable without it | acceptable |
+| `t5` (`d1`) | c22 and t5's criterion read as if approving the fix re-runs the failed command; nvsh does not, and the driver records what nvsh actually does | acceptable |
+| `t6` (`d2`) | svg-term-cli's yargs parser rejects '--window off' (unknown flag 'off'); --no-window is the same negation | acceptable |
+| `t5` (`d3`) | the dev box carries an older uv-tool nvsh (0.10.0, no demo adapter); preferring PATH blindly would record a broken demo | acceptable |
+| `t8` (`d5`) | c10/h8 expect the recording to show the device's platform, but the panel header only shows harness/path/warm and the platform block is never printed; without this the three recordings would be visually identical and h8 unverifiable | acceptable |
+| `t8` (`d4`) | real nvsh behaviour surfaced by the recording; cosmetically reads as a bug in a README demo; fixing it is a readline.bash change outside any planned task — settled by inspection as an in-place redraw with no visible defect | needs-follow-up |
 | `t4` | `h9` says two runs differ only in stamps; they differ in pty chunk boundaries too, so equality is asserted on the concatenated stream (delta `b2`) | acceptable |
 | `t2` | one test outside t2's file set edited at merge to exclude `demo` from "agent use accepts every adapter" | acceptable |
 | `t9` | rendering on github.com and TestPyPI unchecked until the PR exists (evidence `e15`) | needs-follow-up |
