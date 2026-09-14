@@ -44,6 +44,38 @@ base_url = "http://localhost:8000/v1"
 api_key_env = "NVSH_API_KEY"
 # api_key_file = "$XDG_CONFIG_HOME/nvsh/api_key"
 
+[agents.claude]
+# A harness-backend example: effort, extra_args and approval are per-harness
+# knobs (task t5). effort and model are opaque strings nvsh never validates
+# against an enum -- pass whatever the backend itself accepts. approval is
+# checked against a fixed two-value set because it picks a code path:
+#   "nvsh"    -- nvsh's own approval prompt gates every proposed fix (default
+#                behavior described in CLAUDE.md's "Propose, don't run").
+#   "harness" -- the harness's own approval/sandbox flow gates it instead.
+provider = "claude"
+model = "sonnet"
+effort = "high"
+extra_args = ["--dangerously-skip-permissions"]
+approval = "harness"
+
+# [aliases] maps a short name to a 'backend[/model[/effort]]' target (1-3
+# non-empty '/'-separated segments; model and effort are optional). A
+# literal target of the same shape also resolves directly, without being
+# registered here -- e.g. `nvsh --agent claude/sonnet/medium` or, with a
+# leading '@' to make the "this is a target, not an alias" intent explicit,
+# `nvsh --agent @claude/sonnet/medium`.
+#
+# 'default' is reserved: it is what a bare `nvsh --agent default` (or no
+# --agent at all) resolves to. When [aliases].default is absent, 'default'
+# falls back to [agent] provider above and that backend's configured model,
+# with no effort. `nvsh agent use <name>` (set_provider) keeps writing
+# [agent] provider for backward compatibility and now also writes
+# [aliases].default = <name>.
+[aliases]
+default = "pi"
+reviewer = "claude/opus/high"
+local = "pi"
+
 [sessions]
 # Maximum number of concurrent agent sessions this nvsh process holds open.
 max = 1

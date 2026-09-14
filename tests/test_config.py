@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import pytest
 
+import nvsh.config
 from nvsh.config import Config, ConfigError, default_toml, load, save, set_provider
 
 
@@ -307,6 +308,13 @@ def test_resolve_bearer_reports_a_missing_configured_key_file(tmp_path):
     assert "api_key" in got.diagnostic
 
 
+def test_no_yaml_import_anywhere():
+    import pathlib
+
+    text = pathlib.Path(nvsh.config.__file__).read_text(encoding="utf-8")
+    assert "yaml" not in text
+
+
 def test_resolve_bearer_strips_surrounding_whitespace(tmp_path):
     from nvsh.config import resolve_bearer
 
@@ -331,3 +339,314 @@ def test_config_example_documents_the_key_file():
     text = example.read_text(encoding="utf-8")
     assert "api_key_file" in text
     assert "0600" in text
+
+
+# --- per-agent effort / extra_args / approval (task t5, c10) ---------------
+
+
+def test_agent_effort_extra_args_approval_accepted(xdg_home):
+    cfg_dir = xdg_home / "nvsh"
+    cfg_dir.mkdir(parents=True)
+    (cfg_dir / "config.toml").write_text(
+        """
+        [agents.claude]
+        provider = "claude"
+        model = "sonnet"
+        effort = "high"
+        extra_args = ["--foo", "--bar=baz"]
+        approval = "harness"
+        """,
+        encoding="utf-8",
+    )
+    cfg = load()
+    assert cfg.agents["claude"]["effort"] == "high"
+    assert cfg.agents["claude"]["extra_args"] == ["--foo", "--bar=baz"]
+    assert cfg.agents["claude"]["approval"] == "harness"
+
+
+def test_agent_effort_is_opaque_string_never_validated(xdg_home):
+    # decision c24: effort (and model) are opaque strings, never checked
+    # against an enum — any non-empty string is accepted.
+    cfg_dir = xdg_home / "nvsh"
+    cfg_dir.mkdir(parents=True)
+    (cfg_dir / "config.toml").write_text(
+        '[agents.claude]\neffort = "whatever-the-backend-calls-it"\n',
+        encoding="utf-8",
+    )
+    cfg = load()
+    assert cfg.agents["claude"]["effort"] == "whatever-the-backend-calls-it"
+
+
+def test_agent_approval_rejects_invalid_value(xdg_home):
+    cfg_dir = xdg_home / "nvsh"
+    cfg_dir.mkdir(parents=True)
+    (cfg_dir / "config.toml").write_text(
+        '[agents.claude]\napproval = "sometimes"\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(ConfigError) as exc:
+        load()
+    assert "approval" in str(exc.value)
+
+
+def test_agent_extra_args_rejects_non_list(xdg_home):
+    cfg_dir = xdg_home / "nvsh"
+    cfg_dir.mkdir(parents=True)
+    (cfg_dir / "config.toml").write_text(
+        '[agents.claude]\nextra_args = "--foo"\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(ConfigError) as exc:
+        load()
+    assert "extra_args" in str(exc.value)
+
+
+def test_agent_extra_args_rejects_non_string_items(xdg_home):
+    cfg_dir = xdg_home / "nvsh"
+    cfg_dir.mkdir(parents=True)
+    (cfg_dir / "config.toml").write_text(
+        "[agents.claude]\nextra_args = [1, 2]\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ConfigError) as exc:
+        load()
+    assert "extra_args" in str(exc.value)
+
+
+def test_unknown_agent_subkey_still_rejected_with_new_keys_present(xdg_home):
+    cfg_dir = xdg_home / "nvsh"
+    cfg_dir.mkdir(parents=True)
+    (cfg_dir / "config.toml").write_text(
+        '[agents.claude]\neffort = "high"\nbogus_key = "x"\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(ConfigError) as exc:
+        load()
+    assert "bogus_key" in str(exc.value)
+
+
+# --- [aliases] flat table (task t5, c10/h8) ---------------------------------
+
+
+def test_aliases_table_loads_flat_strings(xdg_home):
+    cfg_dir = xdg_home / "nvsh"
+    cfg_dir.mkdir(parents=True)
+    (cfg_dir / "config.toml").write_text(
+        """
+        [aliases]
+        default = "claude/sonnet/medium"
+        reviewer = "claude/opus"
+        local = "pi"
+        """,
+        encoding="utf-8",
+    )
+    cfg = load()
+    assert cfg.aliases["default"] == "claude/sonnet/medium"
+    assert cfg.aliases["reviewer"] == "claude/opus"
+    assert cfg.aliases["local"] == "pi"
+
+
+def test_aliases_value_must_be_string(xdg_home):
+    cfg_dir = xdg_home / "nvsh"
+    cfg_dir.mkdir(parents=True)
+    (cfg_dir / "config.toml").write_text(
+        "[aliases]\ndefault = 5\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ConfigError):
+        load()
+
+
+def test_aliases_value_rejects_more_than_three_segments(xdg_home):
+    cfg_dir = xdg_home / "nvsh"
+    cfg_dir.mkdir(parents=True)
+    (cfg_dir / "config.toml").write_text(
+        '[aliases]\ndefault = "claude/sonnet/medium/extra"\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(ConfigError):
+        load()
+
+
+def test_aliases_value_rejects_empty_segment(xdg_home):
+    cfg_dir = xdg_home / "nvsh"
+    cfg_dir.mkdir(parents=True)
+    (cfg_dir / "config.toml").write_text(
+        '[aliases]\ndefault = "claude//medium"\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(ConfigError):
+        load()
+
+
+def test_aliases_value_rejects_empty_string(xdg_home):
+    cfg_dir = xdg_home / "nvsh"
+    cfg_dir.mkdir(parents=True)
+    (cfg_dir / "config.toml").write_text(
+        '[aliases]\ndefault = ""\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(ConfigError):
+        load()
+
+
+def test_aliases_added_to_valid_top_level_keys(xdg_home):
+    # [aliases] itself must not be rejected as an unknown top-level table.
+    cfg_dir = xdg_home / "nvsh"
+    cfg_dir.mkdir(parents=True)
+    (cfg_dir / "config.toml").write_text('[aliases]\ndefault = "pi"\n', encoding="utf-8")
+    cfg = load()
+    assert cfg.aliases["default"] == "pi"
+
+
+def test_aliases_round_trip_through_save_and_load(xdg_home):
+    cfg = Config()
+    cfg.aliases = {"default": "claude/sonnet/medium", "reviewer": "claude/opus"}
+    save(cfg)
+    reloaded = load()
+    assert reloaded.aliases == {"default": "claude/sonnet/medium", "reviewer": "claude/opus"}
+
+
+# --- Config.resolve_target (task t5, c10/h8) --------------------------------
+
+
+def test_resolve_target_uses_defined_alias(xdg_home):
+    cfg_dir = xdg_home / "nvsh"
+    cfg_dir.mkdir(parents=True)
+    (cfg_dir / "config.toml").write_text(
+        """
+        [aliases]
+        reviewer = "claude/opus/high"
+        """,
+        encoding="utf-8",
+    )
+    cfg = load()
+    backend, model, effort, alias = cfg.resolve_target("reviewer")
+    assert (backend, model, effort, alias) == ("claude", "opus", "high", True)
+
+
+def test_resolve_target_alias_without_model_falls_back_to_agents_model(xdg_home):
+    cfg_dir = xdg_home / "nvsh"
+    cfg_dir.mkdir(parents=True)
+    (cfg_dir / "config.toml").write_text(
+        """
+        [agents.pi]
+        provider = "nemotron"
+        model = "associate"
+
+        [aliases]
+        local = "pi"
+        """,
+        encoding="utf-8",
+    )
+    cfg = load()
+    backend, model, effort, alias = cfg.resolve_target("local")
+    assert backend == "pi"
+    assert model == "associate"
+    assert effort is None
+    assert alias is True
+
+
+def test_resolve_target_default_from_aliases(xdg_home):
+    cfg_dir = xdg_home / "nvsh"
+    cfg_dir.mkdir(parents=True)
+    (cfg_dir / "config.toml").write_text(
+        """
+        [aliases]
+        default = "claude/sonnet/medium"
+        """,
+        encoding="utf-8",
+    )
+    cfg = load()
+    backend, model, effort, alias = cfg.resolve_target("default")
+    assert (backend, model, effort, alias) == ("claude", "sonnet", "medium", True)
+
+
+def test_resolve_target_default_falls_back_to_legacy_agent_provider(xdg_home):
+    cfg_dir = xdg_home / "nvsh"
+    cfg_dir.mkdir(parents=True)
+    (cfg_dir / "config.toml").write_text(
+        """
+        [agent]
+        provider = "pi"
+
+        [agents.pi]
+        provider = "nemotron"
+        model = "associate"
+        """,
+        encoding="utf-8",
+    )
+    cfg = load()
+    backend, model, effort, alias = cfg.resolve_target("default")
+    assert backend == "pi"
+    assert model == "associate"
+    assert effort is None
+    assert alias is True
+
+
+def test_resolve_target_default_falls_back_with_no_config_at_all(xdg_home):
+    cfg = load()
+    backend, model, effort, alias = cfg.resolve_target("default")
+    assert backend == "pi"
+    assert model == "associate"
+    assert effort is None
+    assert alias is True
+
+
+def test_resolve_target_literal_spec_not_registered_as_alias(xdg_home):
+    cfg = load()
+    backend, model, effort, alias = cfg.resolve_target("claude/sonnet/medium")
+    assert (backend, model, effort, alias) == ("claude", "sonnet", "medium", False)
+
+
+def test_resolve_target_literal_spec_with_at_prefix(xdg_home):
+    cfg = load()
+    backend, model, effort, alias = cfg.resolve_target("@claude/sonnet/medium")
+    assert (backend, model, effort, alias) == ("claude", "sonnet", "medium", False)
+
+
+def test_resolve_target_unknown_bare_name_raises(xdg_home):
+    cfg = load()
+    with pytest.raises(ConfigError):
+        cfg.resolve_target("nonexistent-alias")
+
+
+# --- set_provider now also writes [aliases].default -------------------------
+
+
+def test_set_provider_writes_aliases_default(xdg_home):
+    cfg = set_provider("claude")
+    assert cfg.aliases["default"] == "claude"
+    reloaded = load()
+    assert reloaded.aliases["default"] == "claude"
+    backend, _model, _effort, alias = reloaded.resolve_target("default")
+    assert backend == "claude"
+    assert alias is True
+
+
+# --- docs/config.example.toml documents aliases (task t5) -------------------
+
+
+def test_config_example_documents_aliases():
+    from pathlib import Path
+
+    example = Path(__file__).resolve().parents[1] / "docs" / "config.example.toml"
+    if not example.is_file():  # pragma: no cover - wheel install, no docs tree
+        pytest.skip("docs/config.example.toml not present")
+    text = example.read_text(encoding="utf-8")
+    assert "[aliases]" in text
+    assert "default" in text
+    assert "reviewer" in text
+    assert "local" in text
+
+
+def test_default_toml_documents_aliases():
+    text = default_toml()
+    data_ = None
+    import tomllib
+
+    data_ = tomllib.loads(text)
+    assert "aliases" in data_
+    assert "default" in data_["aliases"]
+    assert "reviewer" in data_["aliases"]
+    assert "local" in data_["aliases"]

@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import Mapping
 
 #: Top-level tables this config format recognizes.
-_VALID_TOP_KEYS = {"agent", "agents", "sessions", "triggers"}
+_VALID_TOP_KEYS = {"agent", "agents", "aliases", "sessions", "triggers"}
 
 #: Keys recognized inside ``[agent]``.
 _VALID_AGENT_KEYS = {"provider"}
@@ -39,8 +39,29 @@ _VALID_AGENT_KEYS = {"provider"}
 #: backend's fields — a given backend only uses a subset (e.g. ``pi`` never
 #: sets ``base_url``). ``api_key`` is deliberately NOT in this set: it is
 #: rejected explicitly below with a dedicated message, not silently allowed
-#: through as "unknown".
-_VALID_AGENT_BACKEND_KEYS = {"provider", "model", "base_url", "api_key_env", "api_key_file"}
+#: through as "unknown". ``effort`` and ``extra_args`` and ``approval`` are
+#: per-harness knobs (task t5): ``effort`` and ``model`` are opaque strings
+#: nvsh never validates against an enum (decision c24) -- a given backend
+#: decides what values it accepts; ``approval`` is checked against a fixed
+#: two-value set below because it controls a nvsh-vs-harness code path, not
+#: a backend-specific string.
+_VALID_AGENT_BACKEND_KEYS = {
+    "provider",
+    "model",
+    "base_url",
+    "api_key_env",
+    "api_key_file",
+    "effort",
+    "extra_args",
+    "approval",
+}
+
+#: Valid values for ``[agents.<name>].approval``.
+_VALID_APPROVAL_VALUES = {"nvsh", "harness"}
+
+#: Reserved alias name: ``[aliases].default`` is what a bare ``nvsh --agent
+#: default`` (or no ``--agent`` at all) resolves to.
+DEFAULT_ALIAS = "default"
 
 #: Keys recognized inside ``[sessions]``.
 _VALID_SESSIONS_KEYS = {"max"}
@@ -57,6 +78,25 @@ class ConfigError(ValueError):
     """Raised when ``config.toml`` is malformed or carries an unknown/refused key."""
 
 
+def _parse_alias_target(spec: str) -> tuple[str, str | None, str | None]:
+    """Parse a ``'backend[/model[/effort]]'`` string into its segments.
+
+    At most three ``/``-separated segments, none of them empty. ``model``
+    and ``effort`` are opaque strings (decision c24): never validated
+    against an enum, just passed through.
+    """
+    parts = spec.split("/")
+    if not (1 <= len(parts) <= 3) or any(part == "" for part in parts):
+        raise ConfigError(
+            f"invalid alias target {spec!r}: expected 'backend[/model[/effort]]' "
+            "(1-3 non-empty '/'-separated segments)"
+        )
+    backend = parts[0]
+    model = parts[1] if len(parts) > 1 else None
+    effort = parts[2] if len(parts) > 2 else None
+    return backend, model, effort
+
+
 @dataclass
 class Config:
     """Resolved nvsh configuration — defaults merged with ``config.toml``."""
@@ -65,8 +105,44 @@ class Config:
     agents: dict[str, dict[str, object]] = field(
         default_factory=lambda: {k: dict(v) for k, v in _DEFAULT_AGENTS.items()}
     )
+    aliases: dict[str, str] = field(default_factory=dict)
     sessions_max: int = 1
     triggers: dict[str, object] = field(default_factory=dict)
+
+    def resolve_target(self, name: str) -> tuple[str, str | None, str | None, bool]:
+        """Resolve *name* to ``(backend, model, effort, alias)``.
+
+        *name* is either an alias registered in ``[aliases]`` (including the
+        reserved ``'default'``, which falls back to the legacy ``[agent]``
+        provider when no ``[aliases].default`` is set), or a literal
+        ``'backend[/model[/effort]]'`` target string (an optional leading
+        ``@`` is stripped, so ``'@claude/sonnet/medium'`` resolves the same
+        as ``'claude/sonnet/medium'``). ``alias`` tells the caller whether
+        *name* was resolved by alias lookup (``True``) or parsed directly as
+        a literal target string (``False``). When an alias omits the model
+        segment, the model falls back to that backend's configured
+        ``[agents.<name>].model``.
+        """
+        if name in self.aliases:
+            backend, model, effort = _parse_alias_target(self.aliases[name])
+            model = model or self.agents.get(backend, {}).get("model")
+            return backend, model, effort, True
+
+        if name == DEFAULT_ALIAS:
+            backend = self.agent_provider
+            model = self.agents.get(backend, {}).get("model")
+            return backend, model, None, True
+
+        stripped = name[1:] if name.startswith("@") else name
+        if "/" in stripped:
+            backend, model, effort = _parse_alias_target(stripped)
+            model = model or self.agents.get(backend, {}).get("model")
+            return backend, model, effort, False
+
+        raise ConfigError(
+            f"unknown alias {name!r}: not in [aliases] and not a "
+            "'backend[/model[/effort]]' target"
+        )
 
 
 def default_toml() -> str:
@@ -92,6 +168,19 @@ api_key_env = "NVSH_API_KEY"
 # Or keep the key in a file nvsh reads at call time (mode 0600). Unset, nvsh
 # still falls back to the default key file below.
 # api_key_file = "$XDG_CONFIG_HOME/nvsh/api_key"
+
+[agents.claude]
+provider = "claude"
+model = "sonnet"
+
+# [aliases] maps a short name to a 'backend[/model[/effort]]' target.
+# 'default' is reserved: it is what a bare --agent (or no --agent at all)
+# resolves to. When [aliases].default is absent, 'default' falls back to
+# [agent] provider above and that backend's configured model, no effort.
+[aliases]
+default = "pi"
+reviewer = "claude/opus/high"
+local = "pi"
 
 [sessions]
 max = 1
@@ -134,6 +223,11 @@ def _dump_toml(cfg: Config) -> str:
             lines.append(f"{key} = {_toml_scalar(value)}")
         lines.append("")
 
+    lines.append("[aliases]")
+    for name, spec in cfg.aliases.items():
+        lines.append(f"{name} = {_toml_str(spec)}")
+    lines.append("")
+
     lines.append("[sessions]")
     lines.append(f"max = {_toml_scalar(cfg.sessions_max)}")
     lines.append("")
@@ -161,6 +255,7 @@ def set_provider(name: str, path: Path | None = None) -> Config:
     """
     cfg = load(path)
     cfg.agent_provider = name
+    cfg.aliases[DEFAULT_ALIAS] = name
     save(cfg, path)
     return cfg
 
@@ -218,9 +313,30 @@ def _apply_agents(raw: dict, cfg: Config) -> None:
                 "environment variable instead"
             )
         _reject_unknown(backend_table, _VALID_AGENT_BACKEND_KEYS, f"[agents.{name}]")
+        if "approval" in backend_table and backend_table["approval"] not in _VALID_APPROVAL_VALUES:
+            allowed = ", ".join(sorted(_VALID_APPROVAL_VALUES))
+            raise ConfigError(
+                f"[agents.{name}] approval={backend_table['approval']!r} is invalid "
+                f"(valid values: {allowed})"
+            )
+        if "extra_args" in backend_table:
+            extra_args = backend_table["extra_args"]
+            if not isinstance(extra_args, list) or not all(
+                isinstance(item, str) for item in extra_args
+            ):
+                raise ConfigError(f"[agents.{name}] extra_args must be a list of strings")
         merged.setdefault(name, {})
         merged[name].update(backend_table)
     cfg.agents = merged
+
+
+def _apply_aliases(raw: dict, cfg: Config) -> None:
+    aliases_table = _table(raw, "aliases", "[aliases] must be a table")
+    for name, spec in aliases_table.items():
+        if not isinstance(spec, str):
+            raise ConfigError(f"[aliases] {name!r} must be a string 'backend[/model[/effort]]'")
+        _parse_alias_target(spec)  # validated eagerly; raises ConfigError on a bad shape
+    cfg.aliases = dict(aliases_table)
 
 
 def _apply_sessions(raw: dict, cfg: Config) -> None:
@@ -262,6 +378,7 @@ def load(path: Path | None = None) -> Config:
     cfg = Config()
     _apply_agent(raw, cfg)
     _apply_agents(raw, cfg)
+    _apply_aliases(raw, cfg)
     _apply_sessions(raw, cfg)
     _apply_triggers(raw, cfg)
     return cfg
