@@ -214,3 +214,94 @@ pi and agy are not installed on orin and were not exercised.
 
 Every `@target` ran one-shot with its header line; the default target ran
 through the warm daemon session on all three machines.
+
+## Setup works with any installed agent (0.11.0)
+
+Spec: `docs/specs/2026-09-14-setup-works-with-any-installed-agent.md`.
+Both runs below use a scratch `$HOME`/`$XDG_*` and a `PATH` that carries
+only `claude` (plus `node` and `python3`) so the box's own pi/codex/qwen
+installs cannot leak in. Machine: spark (DGX Spark, GB10).
+
+### Before, on `main` (0.10.1) -- the challenge-pass probe
+
+```text
+$ nvsh setup --no-install --json --rc $HOME/.bashrc
+agent: {"name": "openai-compat",
+        "reason": "pi not on PATH; using openai-compat (no base_url configured, defaults apply)",
+        "key_hint": "no bearer resolved: put the gateway's key in $XDG_CONFIG_HOME/nvsh/api_key (mode 0600), ..."}
+installs: ['pi']
+$ nvsh setup --no-install --json --rc $HOME/.bashrc      # second run, same PATH
+agent: openai-compat | [aliases].default = 'openai-compat' kept
+```
+
+while `nvsh agent list --json` on the same box reported every one of the
+eight adapters `installed: true`. Setup steered a claude-only operator to
+an OpenAI-compatible key it did not need, offered to install pi, and kept
+that wrong pick on every later run.
+
+### After, on this branch
+
+```text
+$ nvsh setup --no-install --json --rc $HOME/.bashrc      # nothing on PATH
+agent: openai-compat | pi not on PATH and node missing; using openai-compat (...)
+key_hint: yes | installs: ['node', 'pi']                  # bootstrap offers, deviation d1
+$ nvsh setup --no-install --json --rc $HOME/.bashrc      # claude appears
+agent: claude | claude is the only agent harness on PATH
+key_hint: None | installs: [] | daemon_stopped: True
+$ grep -A1 aliases $XDG_CONFIG_HOME/nvsh/config.toml
+[aliases]
+default = "claude"
+$ nvsh setup --no-install --json --rc $HOME/.bashrc --agent codex/gpt-5/high
+{"code": 2, "message": "codex is not installed (forced backend 'codex')",
+ "remediation": "install codex, or drop --agent to let nvsh choose"}
+```
+
+Text mode, `nvsh setup --agent claude`:
+
+```text
+agent: claude (forced via --agent 'claude')
+default target: claude
+daemon stopped: True
+claude is hosted: on a failure the redacted command, output and device context leave this machine
+agent reachable: True (claude reachable (version 2.1.270; auth state not verified (no safe non-model probe)))
+```
+
+### End to end: a failure reaches claude with no pi and no key prompt
+
+A fresh interactive bash sourcing the rc block setup just wrote (tmux,
+same restricted `PATH`). The first failing pipeline was a `nvsh doctor
+--json | python3 ...` line in which bash's `nvsh` shell function called
+`command nvsh`, which is not on that `PATH` (plan risk r3):
+
+```text
+nvsh: nvsh doctor --json | python3 -c "..." failed (exit 1), forwarding to claude
+claude · stream-json · warm
+... init
+... requesting
+... thinking_tokens
+`nvsh` is not on PATH (bash printed "Command 'nvsh' not found"), so the pipeline's
+stdout was empty and the JSON parse failed downstream. ...
+... running: ls -l /home/spark/git/nvsh/.venv/bin/nvsh 2>&1; echo "PATH=$PATH"
+... tool Bash finished
+**Proposed fix** (you declined the uv retry, so pick one of these to run yourself):
+    uv run --frozen nvsh doctor --json | python3 -c "..."
+or, to avoid uv, call the venv entrypoint directly:
+    .venv/bin/nvsh doctor --json | python3 -c "..."
+If you want a bare `nvsh` to work in this shell, `source .venv/bin/activate` or
+prepend the venv's bin directory to `PATH`. No sudo and no package install is needed.
+```
+
+No pi was installed or offered, no key was asked for, the hosted line
+was printed at setup, and the `uv` install claude proposed was held at the
+approval gate ("you declined the uv retry"). A second failure inside the
+same 30-second window was rate-limited as designed:
+
+```text
+$ ls /nonexistent-dir-for-nvsh-test
+ls: cannot access '/nonexistent-dir-for-nvsh-test': No such file or directory
+nvsh: held back (auto calls limited to 1 per 30s window); /fix or Ctrl+G asks now
+```
+
+Not exercised here: the several-harnesses prompt on a real tty (covered
+by `tests/test_cli_setup.py` with an injected prompt), thor and orin
+(unchanged hook, same wheel), and macOS/zsh (issue #11).

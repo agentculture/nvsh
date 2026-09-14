@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/). This project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.0] - 2026-09-14
+
+### Added
+
+- `nvsh setup --agent <target>`: make an alias, a bare adapter name (`claude`) or a `backend[/model[/effort]]` literal the default in one run; a missing binary fails with exit 2 naming it and writes nothing.
+- `nvsh setup` without `--agent` probes `PATH` for every adapter (`registry.probe()`): one installed harness becomes the default silently, several prompt once on a terminal with tool-calling adapters first and `read-only / plan mode` labels, `--yes` never answers the pick, `--json`/non-tty takes the first row; `openai-compat` is the pick only when no harness binary exists.
+- Setup reports `agent.hosted` and prints `<name> is hosted: on a failure the redacted command, output and device context leave this machine` for claude/codex/agy/kiro picks, runs doctor's reachability probe for the pick (`agent.reachable`, 2-second budget, never fatal), and warns `nvsh is not tested on macOS/zsh yet (see issue #11)` on Darwin or a zsh login shell.
+- `nvsh agent use` accepts all eight adapters; `nvsh agent install <name>` knows `npm install -g` for claude, codex, qwen and qwen-p, pi's own command, and says `no known installer` for agy, kiro and openai-compat; every install goes through `run_install` and the audit log.
+- `installers.missing_tools(chosen=...)` scopes the pi/node offers to a pi pick; `installers.harness_install_step()`.
+- Doctor's `agent_configured` check reports what `[aliases].default` resolves to and says whether it came from the alias or the legacy `[agent] provider`.
+- README rewritten in the announcement-first shape (Install, Set up, Work with it, Safety first, What nvsh never does, What lands where) with absolute links for the PyPI page; a test pins the heading order and forbids relative links.
+
+### Fixed
+
+- A fallback pick no longer sticks: an `[aliases].default = "openai-compat"` written when nothing was installed is re-probed on the next `nvsh setup` once a harness appears (it used to be kept forever because a binary-less adapter always counted as installed).
+- Setup stops a running daemon after changing the default, so a warm session never keeps the previous harness; the child's `daemon: not running` line no longer lands on setup's `--json` stdout.
+- `registry.choose()` consults the probe before falling back to `openai-compat`, so a box with claude or codex installed is never steered to an OpenAI-compatible endpoint and an API key it does not need.
+
 ## [0.10.1] - 2026-09-14
 
 ### Fixed
