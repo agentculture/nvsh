@@ -498,7 +498,13 @@ def _stop_daemon(nvsh_bin: str) -> bool:
         return False
     try:
         proc = subprocess.run(  # nosec B603 - fixed argv, no shell
-            [nvsh_bin, "daemon", "stop"], check=False, timeout=5
+            # Quiet: the child's "daemon: not running" line would otherwise
+            # land on *this* verb's stdout, ahead of its --json payload.
+            [nvsh_bin, "daemon", "stop"],
+            check=False,
+            timeout=5,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
         )
     except (OSError, subprocess.SubprocessError):
         return False

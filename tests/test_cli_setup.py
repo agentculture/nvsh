@@ -1005,3 +1005,38 @@ def test_setup_no_warning_on_linux_bash(tmp_path, monkeypatch):
     code, out, err = _run(["setup", "--rc", str(rc), "--no-install"])
     assert code == 0, err
     assert "warning:" not in out
+
+
+def test_setup_json_stays_parseable_when_daemon_stop_prints(tmp_path, monkeypatch):
+    """``nvsh daemon stop`` says "daemon: not running" on its own stdout; that
+    line must never land ahead of setup's ``--json`` payload."""
+    import stat
+
+    chatty = tmp_path / "nvsh-chatty"
+    chatty.write_text("#!/bin/sh\necho 'daemon: not running'\nexit 0\n", encoding="utf-8")
+    chatty.chmod(chatty.stat().st_mode | stat.S_IXUSR)
+    monkeypatch.setattr(_setup_mod().render, "resolve_nvsh_bin", lambda: str(chatty))
+    rc = _rc(tmp_path)
+    rc.write_text(UBUNTU_RC)
+    monkeypatch.setattr(
+        "nvsh.cli._commands.setup.shutil.which", _which_factory({"claude", "uv", "tmux"})
+    )
+    code, out, err = _run(["setup", "--rc", str(rc), "--json", "--no-install"])
+    assert code == 0, err
+    payload = json.loads(out)
+    assert payload["daemon_stopped"] is True
+
+
+def test_setup_agent_accepts_a_bare_adapter_name(tmp_path, monkeypatch):
+    """``nvsh setup --agent claude`` is the README's on-ramp; no alias needed."""
+    rc = _rc(tmp_path)
+    rc.write_text(UBUNTU_RC)
+    monkeypatch.setattr(
+        "nvsh.cli._commands.setup.shutil.which",
+        _which_factory({"claude", "codex", "uv", "tmux"}),
+    )
+    code, out, err = _run(["setup", "--rc", str(rc), "--json", "--no-install", "--agent", "codex"])
+    assert code == 0, err
+    payload = json.loads(out)
+    assert payload["agent"]["name"] == "codex"
+    assert _default_alias() == "codex"

@@ -309,6 +309,14 @@ def _forced_backend(config: Config, forced: str | Target) -> str:
     """
     if isinstance(forced, Target):
         return forced.backend
+    # A bare adapter name (``claude``, ``@codex``) is a valid target even
+    # when no alias spells it: the shell's ``@target`` grammar already
+    # accepts it (nvsh/client.py ``_bare_backend_target``), and ``nvsh setup
+    # --agent claude`` is the documented on-ramp. Checked before
+    # ``resolve_target`` so an alias of the same name still wins there.
+    bare = forced[1:] if forced.startswith("@") else forced
+    if bare in ADAPTERS and forced not in config.aliases:
+        return bare
     try:
         backend, _model, _effort, _alias = config.resolve_target(forced)
     except ConfigError as exc:

@@ -413,3 +413,33 @@ def test_choose_configured_and_installed_provider_still_wins_over_probe():
     name, reason = registry.choose(cfg, which=_which_factory({"codex", "claude"}))
     assert name == "codex"
     assert "configured" in reason
+
+
+# ---------------------------------------------------------------------------
+# forced target: a bare adapter name (post-plan fix, deviation d2)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("forced", ["claude", "@claude", "codex"])
+def test_choose_forced_accepts_a_bare_adapter_name(forced):
+    """``nvsh setup --agent claude`` is the documented on-ramp; a bare name
+    resolves without an alias, exactly like ``@claude`` at the prompt."""
+    cfg = Config()
+    which = lambda name: "/usr/bin/x" if name in {"claude", "codex"} else None  # noqa: E731
+    backend, reason = registry.choose(cfg, which, forced=forced)
+    assert backend == forced.lstrip("@")
+    assert "forced" in reason
+
+
+def test_choose_forced_bare_name_prefers_an_alias_of_the_same_name():
+    cfg = Config(aliases={"claude": "codex/gpt-5/high"})
+    which = lambda name: "/usr/bin/x" if name in {"claude", "codex"} else None  # noqa: E731
+    backend, _ = registry.choose(cfg, which, forced="claude")
+    assert backend == "codex"
+
+
+def test_choose_forced_bare_name_still_fails_when_not_installed():
+    cfg = Config()
+    with pytest.raises(CliError) as excinfo:
+        registry.choose(cfg, lambda _n: None, forced="claude")
+    assert "claude" in str(excinfo.value.message)
