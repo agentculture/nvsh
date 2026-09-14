@@ -2,7 +2,7 @@
   "plan_slug": "first-class-multi-harness-with-aliases",
   "schema_version": 2,
   "created": "2026-09-14T06:16:12Z",
-  "updated": "2026-09-14T06:50:49Z",
+  "updated": "2026-09-14T07:55:50Z",
   "deviations": [
     {
       "id": "d1",
@@ -141,6 +141,20 @@
       "status": "proposed",
       "classification": "acceptable",
       "seq": 10
+    },
+    {
+      "id": "d11",
+      "what": "'nvsh agent list --json' shows eight adapters with paths (pi, qwen, qwen-p, claude, codex, agy, kiro, openai-compat), not six: qwen-p (print-mode fallback, d3) and the pre-existing openai-compat are listed too",
+      "task_ref": "t21",
+      "reason": "the count in the acceptance text predates d3; every entry carries its path and hosted flag, verified live on spark, thor and orin 2026-09-14",
+      "affects": [
+        "t8",
+        "t19"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "classification": "acceptable",
+      "seq": 11
     }
   ],
   "evidence": [],
