@@ -1,0 +1,799 @@
+{
+  "plan_slug": "first-class-multi-harness-with-aliases",
+  "schema_version": 2,
+  "created": "2026-09-14T06:16:12Z",
+  "updated": "2026-09-14T08:17:05Z",
+  "deviations": [
+    {
+      "id": "d1",
+      "what": "qwen 0.23.3 sends session/request_permission in 'default' ACP mode (and once in 'plan' for read_file); the spec/brief said default mode executes with NO request_permission. AcpAgent answers it via nvsh approve either way; c53 (plan by default, approval='harness' opts into default) stands, and 'harness' mode is now also nvsh-mediated at the wire",
+      "task_ref": "t12",
+      "reason": "t12's live probe contradicted the 2026-09-14 scope probe; behaviour is safer than assumed, no code change needed beyond what t12 shipped",
+      "affects": [
+        "c53",
+        "t8"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "classification": "acceptable",
+      "seq": 1
+    },
+    {
+      "id": "d2",
+      "what": "t6's @target grammar table rows live in tests/test_triggers_prose.py (where the existing @name mark tests already are) instead of tests/test_triggers.py, which is the decide() rule table only",
+      "task_ref": "t6",
+      "reason": "keeps test_triggers.py single-purpose; same coverage, different file than the acceptance text named",
+      "affects": [],
+      "origin": "llm",
+      "status": "proposed",
+      "classification": "acceptable",
+      "seq": 2
+    },
+    {
+      "id": "d3",
+      "what": "the no-ACP qwen fallback (t13's stream-json print-mode QwenAgent) is selected explicitly by the operator as backend 'qwen-p' (alias default = 'qwen-p' or @qwen-p/model) rather than auto-picked by the registry when 'the ACP path is disabled'; it runs read-only (tool_calling=False, --approval-mode plan)",
+      "task_ref": "t13",
+      "reason": "no task defined a disable-ACP switch; an explicit backend name needs no new config key and keeps 'qwen' = ACP unambiguous",
+      "affects": [
+        "t8",
+        "c53"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "classification": "acceptable",
+      "seq": 3
+    },
+    {
+      "id": "d4",
+      "what": "for codex (app-server) and the qwen print-mode fallback, [agents.X] approval='harness' only changes what capabilities() reports: codex app-server has no approval UI of its own (the client is the UI) so nvsh mediates via requestApproval regardless; print-mode qwen has no approval channel at all",
+      "task_ref": "t11",
+      "reason": "reported by t11 and t13; the approval knob is meaningful only for harnesses with their own approval UI (qwen --acp, kiro)",
+      "affects": [
+        "t13",
+        "c53"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "classification": "needs-follow-up",
+      "seq": 4
+    },
+    {
+      "id": "d5",
+      "what": "t16 adds the shared close() escalation helper (wait -> terminate -> kill) to nvsh/agent/_subprocess.py and routes pi/acp/codex/agy/claude close() through it, touching those adapter files minimally",
+      "task_ref": "t16",
+      "reason": "the brief says 'import the shared escalation helper from _subprocess.py' but no such helper exists after wave 2; each wave-2 adapter shipped its own copy",
+      "affects": [
+        "t9",
+        "t10",
+        "t11",
+        "t12",
+        "t14"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "classification": "acceptable",
+      "seq": 5
+    },
+    {
+      "id": "d6",
+      "what": "t7's bash/python sync test imports the @target table from tests/test_triggers_prose.py (where d2 put it) instead of tests/test_slash.py, which holds no grammar table",
+      "task_ref": "t7",
+      "reason": "consequence of d2; tests/test_slash.py only tables the palette ordering",
+      "affects": [
+        "t6"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "classification": "acceptable",
+      "seq": 6
+    },
+    {
+      "id": "d7",
+      "what": "doctor detects auth state only for kiro (kiro-cli whoami); claude, codex, qwen and agy report auth 'not verified' because their only auth signal comes from a real print-mode invocation that would be a model call; login-command remediation for those four is a generic '<binary> login' guess and the kiro trust file path is unconfirmed",
+      "task_ref": "t17",
+      "reason": "the spec asks for auth detection without a model or network call; no such probe exists for those four CLIs (verified against their --help/--version output)",
+      "affects": [
+        "c17",
+        "h14"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "classification": "needs-follow-up",
+      "seq": 7
+    },
+    {
+      "id": "d8",
+      "what": "AcpAgent's stderr drain races an instant launch failure (~1 in 10 runs the ERROR says 'no stderr'); conformance pins qwen/kiro as STDERR_TAIL_RACE and accepts the exit status alone for them",
+      "task_ref": "t15",
+      "reason": "measured by t15 over 37 repeats; agy.py waits a beat for the drain, acp.py does not; adapters were out of t15's scope",
+      "affects": [
+        "t12"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "classification": "needs-follow-up",
+      "seq": 8
+    },
+    {
+      "id": "d9",
+      "what": "ACP effort is not passed verbatim: AcpAgent sends session/set_config_option only when the operator's effort matches an option the harness advertised, else silently sends nothing while capabilities().effort stays True (tension with decision c24)",
+      "task_ref": "t15",
+      "reason": "t12 chose to filter rather than send a value the harness would reject; the conformance effort case for qwen-acp therefore proves only that the bytes sent are unedited",
+      "affects": [
+        "t12",
+        "c24"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "classification": "needs-follow-up",
+      "seq": 9
+    },
+    {
+      "id": "d10",
+      "what": "for stream-json harnesses (claude, agy, qwen-p) the daemon reuses the adapter and its session (--resume <session-id>) across consecutive failures, not one OS process: those CLIs end the process per turn by design; ACP keeps one child (measured); app-server keeps one rpc process (adapter-level tests only)",
+      "task_ref": "t16",
+      "reason": "acceptance text said 'reuse one warm process for stream-json/ACP/app-server'; the print-mode CLIs cannot hold one process across turns",
+      "affects": [
+        "c25",
+        "c45"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "classification": "acceptable",
+      "seq": 10
+    },
+    {
+      "id": "d11",
+      "what": "'nvsh agent list --json' shows eight adapters with paths (pi, qwen, qwen-p, claude, codex, agy, kiro, openai-compat), not six: qwen-p (print-mode fallback, d3) and the pre-existing openai-compat are listed too",
+      "task_ref": "t21",
+      "reason": "the count in the acceptance text predates d3; every entry carries its path and hosted flag, verified live on spark, thor and orin 2026-09-14",
+      "affects": [
+        "t8",
+        "t19"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "classification": "acceptable",
+      "seq": 11
+    }
+  ],
+  "evidence": [
+    {
+      "id": "e1",
+      "obligation_ref": "o1",
+      "test_ref": "tests/test_pi_agent.py::test_run_thinking_delta_maps_to_thinking_event",
+      "behavior_text": "a scripted thinking_delta yields an EventKind.THINKING event not folded into the rationale",
+      "contract_text": "pi thinking_* sub-types surface as THINKING; --thinking passed verbatim",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "no behavioral marker in this repo; the task test files are the behavioral tests; ran green in 'uv run --frozen pytest -n auto' (1616 passed, 5 skipped) at the named commit",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-14T07:57:03Z",
+        "commit": "59d1e71"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 12
+    },
+    {
+      "id": "e2",
+      "obligation_ref": "o2",
+      "test_ref": "tests/test_agent_claude.py::test_a_permission_request_becomes_a_proposal",
+      "behavior_text": "replayed claude 2.1.270 transcript: control_request can_use_tool -> PROPOSAL; allow and deny control_responses are written",
+      "contract_text": "official claude -p path with host permission prompts as PROPOSAL",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "no behavioral marker in this repo; the task test files are the behavioral tests; ran green in 'uv run --frozen pytest -n auto' (1616 passed, 5 skipped) at the named commit; live allow/deny round-trip against claude 2.1.270 done by t10 (transcripts not checked in)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-14T07:57:03Z",
+        "commit": "59d1e71"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 13
+    },
+    {
+      "id": "e3",
+      "obligation_ref": "o3",
+      "test_ref": "tests/test_agent_codex.py::test_approval_is_answered_with_accept_and_decline",
+      "behavior_text": "requestApproval server request -> PROPOSAL; respond_approval writes accept or decline",
+      "contract_text": "codex threads start on-request, never 'never'; requestApproval is nvsh's proposal",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "no behavioral marker in this repo; the task test files are the behavioral tests; ran green in 'uv run --frozen pytest -n auto' (1616 passed, 5 skipped) at the named commit",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-14T07:57:03Z",
+        "commit": "59d1e71"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 14
+    },
+    {
+      "id": "e4",
+      "obligation_ref": "o4",
+      "test_ref": "tests/test_agent_acp.py::test_qwen_defaults_to_plan_mode_without_tool_calling",
+      "behavior_text": "build('qwen') sets mode plan and reports tool_calling=False; approval='harness' flips to default mode",
+      "contract_text": "qwen read-only by default; opt-in via approval = harness",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "no behavioral marker in this repo; the task test files are the behavioral tests; ran green in 'uv run --frozen pytest -n auto' (1616 passed, 5 skipped) at the named commit",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-14T07:57:03Z",
+        "commit": "59d1e71"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 15
+    },
+    {
+      "id": "e5",
+      "obligation_ref": "o5",
+      "test_ref": "tests/test_agent_agy.py::test_auto_deny_is_status_not_error",
+      "behavior_text": "recorded agy 1.2.2 auto-deny turn maps to STATUS with a result",
+      "contract_text": "agy runs read-only; auto-deny is status",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "no behavioral marker in this repo; the task test files are the behavioral tests; ran green in 'uv run --frozen pytest -n auto' (1616 passed, 5 skipped) at the named commit",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-14T07:57:03Z",
+        "commit": "59d1e71"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 16
+    },
+    {
+      "id": "e6",
+      "obligation_ref": "o6",
+      "test_ref": "tests/test_config.py::test_resolve_target_uses_defined_alias",
+      "behavior_text": "resolve_target returns the alias's backend/model/effort and alias=True",
+      "contract_text": "one flat alias table with reserved default",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "no behavioral marker in this repo; the task test files are the behavioral tests; ran green in 'uv run --frozen pytest -n auto' (1616 passed, 5 skipped) at the named commit",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-14T07:57:03Z",
+        "commit": "59d1e71"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 17
+    },
+    {
+      "id": "e7",
+      "obligation_ref": "o7",
+      "test_ref": "tests/test_readline_bash.py::test_bash_and_python_share_the_same_at_target_table",
+      "behavior_text": "bash __nvsh_mark_line is driven through a pty against the python positive/negative rows",
+      "contract_text": "both parsers stay in lockstep",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "no behavioral marker in this repo; the task test files are the behavioral tests; ran green in 'uv run --frozen pytest -n auto' (1616 passed, 5 skipped) at the named commit",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-14T07:57:03Z",
+        "commit": "59d1e71"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 18
+    },
+    {
+      "id": "e8",
+      "obligation_ref": "o8",
+      "test_ref": "tests/test_readline_bash.py::test_tab_still_not_offered_for_a_slashed_at_target",
+      "behavior_text": "Tab after a slashed @target inserts nothing",
+      "contract_text": "Tab completion of @targets stays unavailable",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "no behavioral marker in this repo; the task test files are the behavioral tests; ran green in 'uv run --frozen pytest -n auto' (1616 passed, 5 skipped) at the named commit",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-14T07:57:03Z",
+        "commit": "59d1e71"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 19
+    },
+    {
+      "id": "e9",
+      "obligation_ref": "o9",
+      "test_ref": "tests/test_daemon_targets.py::test_build_agent_passes_model_effort_extra_args_and_approval",
+      "behavior_text": "the factory receives the resolved target's four settings",
+      "contract_text": "daemon warm agent = configured default target",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "no behavioral marker in this repo; the task test files are the behavioral tests; ran green in 'uv run --frozen pytest -n auto' (1616 passed, 5 skipped) at the named commit",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-14T07:57:03Z",
+        "commit": "59d1e71"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 20
+    },
+    {
+      "id": "e10",
+      "obligation_ref": "o10",
+      "test_ref": "tests/test_daemon_targets.py::test_non_default_target_never_reaches_the_warm_daemon",
+      "behavior_text": "a request with a non-default target bypasses the daemon",
+      "contract_text": "ad-hoc @targets always one-shot",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "no behavioral marker in this repo; the task test files are the behavioral tests; ran green in 'uv run --frozen pytest -n auto' (1616 passed, 5 skipped) at the named commit",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-14T07:57:03Z",
+        "commit": "59d1e71"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 21
+    },
+    {
+      "id": "e11",
+      "obligation_ref": "o10",
+      "test_ref": "docs/verification.md",
+      "behavior_text": "on spark, thor and orin every @target printed '<target> \u00b7 <path> \u00b7 one-shot' and the default printed '\u00b7 warm'",
+      "contract_text": "ad-hoc @targets one-shot; default warm",
+      "evidence_type": "manual",
+      "strength": "execution",
+      "strength_basis": "live hooked bash through a pty on all three machines, transcripts in docs/verification.md; nvsh 0.10.0 installed from the built wheel",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-14T07:57:03Z",
+        "commit": "59d1e71"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 22
+    },
+    {
+      "id": "e12",
+      "obligation_ref": "o11",
+      "test_ref": "tests/test_panel.py::test_thinking_is_a_dimmed_run_closed_before_the_first_text_delta",
+      "behavior_text": "dim SGR opened once, reset+newline before the first text delta",
+      "contract_text": "thinking rendered distinctly",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "no behavioral marker in this repo; the task test files are the behavioral tests; ran green in 'uv run --frozen pytest -n auto' (1616 passed, 5 skipped) at the named commit",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-14T07:57:03Z",
+        "commit": "59d1e71"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 23
+    },
+    {
+      "id": "e13",
+      "obligation_ref": "o12",
+      "test_ref": "tests/test_doctor_checks.py::test_agent_reachable_kiro_unauthenticated_fails_with_login_remediation",
+      "behavior_text": "recorded kiro whoami 'not logged in' output yields a failed check with a login remediation",
+      "contract_text": "auth state without a model call",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "no behavioral marker in this repo; the task test files are the behavioral tests; ran green in 'uv run --frozen pytest -n auto' (1616 passed, 5 skipped) at the named commit; only kiro has a model-free auth probe (deviation d7)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-14T07:57:03Z",
+        "commit": "59d1e71"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 24
+    },
+    {
+      "id": "e14",
+      "obligation_ref": "o13",
+      "test_ref": "tests/test_invariants.py::test_no_adapter_tells_its_child_to_auto_approve",
+      "behavior_text": "argv and wire frames of every adapter are scanned for the bypass tokens",
+      "contract_text": "harness auto-approval never bypasses nvsh approve",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "no behavioral marker in this repo; the task test files are the behavioral tests; ran green in 'uv run --frozen pytest -n auto' (1616 passed, 5 skipped) at the named commit",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-14T07:57:03Z",
+        "commit": "59d1e71"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 25
+    },
+    {
+      "id": "e15",
+      "obligation_ref": "o14",
+      "test_ref": "tests/test_invariants.py::test_no_nvsh_code_path_opens_a_harness_settings_file_for_writing",
+      "behavior_text": "AST scan: no function both writes a file and names a settings/trust file",
+      "contract_text": "nvsh never edits harness settings",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "no behavioral marker in this repo; the task test files are the behavioral tests; ran green in 'uv run --frozen pytest -n auto' (1616 passed, 5 skipped) at the named commit",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-14T07:57:03Z",
+        "commit": "59d1e71"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 26
+    },
+    {
+      "id": "e16",
+      "obligation_ref": "o15",
+      "test_ref": "tests/test_agent_conformance.py::test_effort_reaches_the_child_verbatim",
+      "behavior_text": "parametrised over pi, agy, claude, codex, qwen, qwen-p, kiro: the operator's effort bytes reach the child unedited",
+      "contract_text": "same conformance suite for every harness",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "no behavioral marker in this repo; the task test files are the behavioral tests; ran green in 'uv run --frozen pytest -n auto' (1616 passed, 5 skipped) at the named commit; ACP effort is filtered against advertised options (d9), so that case proves only unedited bytes",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-14T07:57:03Z",
+        "commit": "59d1e71"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 27
+    },
+    {
+      "id": "e17",
+      "obligation_ref": "o16",
+      "test_ref": "tests/test_agent_subprocess.py::test_subprocess_agent_child_does_not_see_claudecode_markers",
+      "behavior_text": "a real child process reports the markers absent",
+      "contract_text": "no nested-harness markers reach the child",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "no behavioral marker in this repo; the task test files are the behavioral tests; ran green in 'uv run --frozen pytest -n auto' (1616 passed, 5 skipped) at the named commit",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-14T07:57:03Z",
+        "commit": "59d1e71"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 28
+    },
+    {
+      "id": "e18",
+      "obligation_ref": "o17",
+      "test_ref": "tests/test_daemon_targets.py::test_the_daemon_answers_a_mismatched_client_with_its_own_version",
+      "behavior_text": "a mismatched client gets an error carrying daemon_version/client_version; control lines still answer",
+      "contract_text": "version handshake",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "no behavioral marker in this repo; the task test files are the behavioral tests; ran green in 'uv run --frozen pytest -n auto' (1616 passed, 5 skipped) at the named commit",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-14T07:57:03Z",
+        "commit": "59d1e71"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 29
+    },
+    {
+      "id": "e19",
+      "obligation_ref": "o18",
+      "test_ref": "tests/test_daemon_targets.py::test_an_idle_exit_leaves_no_harness_child",
+      "behavior_text": "a SIGTERM-trapping fake harness child is reaped after the idle watchdog fires",
+      "contract_text": "child containment",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "no behavioral marker in this repo; the task test files are the behavioral tests; ran green in 'uv run --frozen pytest -n auto' (1616 passed, 5 skipped) at the named commit; uninstall covered through the stop mechanism, not the verb (lapse l8)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-14T07:57:03Z",
+        "commit": "59d1e71"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 30
+    },
+    {
+      "id": "e20",
+      "obligation_ref": "o19",
+      "test_ref": "tests/test_audit.py::test_the_resolved_target_is_recorded_on_proposal_decision_and_outcome",
+      "behavior_text": "three JSONL lines carry the same target dict",
+      "contract_text": "observability of the resolved target",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "no behavioral marker in this repo; the task test files are the behavioral tests; ran green in 'uv run --frozen pytest -n auto' (1616 passed, 5 skipped) at the named commit",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-14T07:57:03Z",
+        "commit": "59d1e71"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 31
+    },
+    {
+      "id": "e21",
+      "obligation_ref": "o20",
+      "test_ref": "tests/test_cli_setup.py::test_setup_writes_aliases_default",
+      "behavior_text": "setup writes [aliases].default = the chosen backend",
+      "contract_text": "default alias written by setup and agent use",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "no behavioral marker in this repo; the task test files are the behavioral tests; ran green in 'uv run --frozen pytest -n auto' (1616 passed, 5 skipped) at the named commit; also observed live: setup on spark/thor/orin reported default_alias_written=True",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-14T07:57:03Z",
+        "commit": "59d1e71"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 32
+    },
+    {
+      "id": "e22",
+      "obligation_ref": "o21",
+      "test_ref": "tests/test_fixture_hygiene.py::test_repo_fixtures_have_no_pii",
+      "behavior_text": "scans every fixture for home paths, e-mail and key-shaped strings",
+      "contract_text": "fixtures scrubbed before commit",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "no behavioral marker in this repo; the task test files are the behavioral tests; ran green in 'uv run --frozen pytest -n auto' (1616 passed, 5 skipped) at the named commit",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-14T07:57:03Z",
+        "commit": "59d1e71"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 33
+    },
+    {
+      "id": "e23",
+      "obligation_ref": "o22",
+      "test_ref": "tests/test_agent_registry.py::test_choose_forced_raises_cli_error_naming_binary_when_not_installed",
+      "behavior_text": "choose(forced=...) raises CliError naming the binary",
+      "contract_text": "forced targets never fall back to openai-compat",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "no behavioral marker in this repo; the task test files are the behavioral tests; ran green in 'uv run --frozen pytest -n auto' (1616 passed, 5 skipped) at the named commit",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-14T07:57:03Z",
+        "commit": "59d1e71"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 34
+    },
+    {
+      "id": "e24",
+      "obligation_ref": "o22",
+      "test_ref": "docs/verification.md",
+      "behavior_text": "'nvsh agent list --json' on spark, thor and orin listed eight adapters with path and hosted (d11)",
+      "contract_text": "registry lists every harness with its path",
+      "evidence_type": "manual",
+      "strength": "execution",
+      "strength_basis": "live on all three machines, nvsh 0.10.0",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-14T07:57:03Z",
+        "commit": "59d1e71"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 35
+    },
+    {
+      "id": "e25",
+      "obligation_ref": "o23",
+      "test_ref": "scripts/harness-smoke.py --stage config --require config",
+      "behavior_text": "6 passed, 0 failed after the t20 merge; git diff main -- culture.yaml .claude/skills .pi/skills is empty",
+      "contract_text": "docs move together; identity axis untouched",
+      "evidence_type": "integration",
+      "strength": "execution",
+      "strength_basis": "ran at commit ca82953 after merging t20 and again at 59d1e71",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-14T07:57:03Z",
+        "commit": "59d1e71"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 36
+    },
+    {
+      "id": "e26",
+      "obligation_ref": "o24",
+      "test_ref": "docs/verification.md",
+      "behavior_text": "spark: ls failure -> 'pi/associate \u00b7 rpc \u00b7 warm' with a thinking run; thor/orin: 'openai-compat/associate \u00b7 http \u00b7 warm'; @reviewer/@fast/@local/@claude/sonnet/medium/@qwen/@qwen-p/@agy/@codex one-shot",
+      "contract_text": "the after-state as announced",
+      "evidence_type": "manual",
+      "strength": "execution",
+      "strength_basis": "live hooked bash via pty on spark, thor, orin; codex on thor NOT verified (not logged in); pi/agy absent on the Jetsons",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-14T07:57:03Z",
+        "commit": "59d1e71"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 37
+    }
+  ],
+  "deltas": [
+    {
+      "id": "b1",
+      "kind": "removed",
+      "behavior_text": "the '[status] ' line-prefix heuristic in QwenAgent is gone; stream-json envelopes are parsed instead",
+      "caused_by": [
+        "c7"
+      ],
+      "evidence_refs": [
+        "e16"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    },
+    {
+      "id": "b2",
+      "kind": "added",
+      "behavior_text": "print-mode qwen is an explicit backend 'qwen-p' (read-only, stream-json) selectable by alias or @qwen-p (deviation d3, pending)",
+      "caused_by": [
+        "c7"
+      ],
+      "evidence_refs": [
+        "e24"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    },
+    {
+      "id": "b3",
+      "kind": "amended",
+      "behavior_text": "qwen 'default' ACP mode (approval='harness') still routes session/request_permission through nvsh approve (deviation d1, pending)",
+      "caused_by": [
+        "c53"
+      ],
+      "evidence_refs": [
+        "e4"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    },
+    {
+      "id": "b4",
+      "kind": "amended",
+      "behavior_text": "doctor reports auth state 'not verified' for claude, codex, qwen and agy; only kiro has a model-free probe (deviation d7, pending)",
+      "caused_by": [
+        "c51"
+      ],
+      "evidence_refs": [
+        "e13"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    },
+    {
+      "id": "b5",
+      "kind": "amended",
+      "behavior_text": "for stream-json harnesses the warm session reuses the adapter and --resume session, not one OS process (deviation d10, pending)",
+      "caused_by": [
+        "c25"
+      ],
+      "evidence_refs": [
+        "e10"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    },
+    {
+      "id": "b6",
+      "kind": "amended",
+      "behavior_text": "ACP effort is applied via set_config_option only when it matches an advertised option; unmatched values are dropped silently (deviation d9, pending)",
+      "caused_by": [
+        "c24"
+      ],
+      "evidence_refs": [
+        "e16"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    },
+    {
+      "id": "b7",
+      "kind": "amended",
+      "behavior_text": "AcpAgent may report 'no stderr' on an instant launch failure (drain race); conformance accepts the exit status alone for qwen/kiro (deviation d8, pending)",
+      "caused_by": [
+        "c42"
+      ],
+      "evidence_refs": [
+        "e16"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    },
+    {
+      "id": "b8",
+      "kind": "added",
+      "behavior_text": "claude, codex and agy refuse [agents.<name>] extra_args that would bypass approval (--dangerously-skip-permissions, --full-auto, --yolo, --trust-all-tools, bypassPermissions, approval_policy=never) at construction, matching acp.py's FORBIDDEN_ARGS (PR #9 review threads 9-11)",
+      "caused_by": [
+        "c38"
+      ],
+      "evidence_refs": [
+        "e14"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    },
+    {
+      "id": "b9",
+      "kind": "amended",
+      "behavior_text": "CodexAgent exposes respond_ui() so the shared responder can answer app-server approvals, and answers unknown server requests with JSON-RPC -32601 instead of leaving them pending (PR #9 threads 7, 17)",
+      "caused_by": [
+        "c40"
+      ],
+      "evidence_refs": [
+        "e3"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    },
+    {
+      "id": "b10",
+      "kind": "amended",
+      "behavior_text": "doctor's agent_reachable probes the backend the default alias resolves to and fails on a non-zero --version exit; @default routes to the warm daemon; setup keeps an explicit usable default alias; the pi factory forwards effort/extra_args/approval; agy and ACP children run in the requesting shell's cwd (PR #9 threads 2, 3, 4, 8, 14, 15, 19)",
+      "caused_by": [
+        "c30"
+      ],
+      "evidence_refs": [
+        "e26"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    }
+  ],
+  "supersessions": []
+}

@@ -1,11 +1,30 @@
 #!/usr/bin/env python3
-"""Fake ``claude -p --output-format stream-json`` for the conformance suite.
+"""Fake ``claude`` CLI for the conformance suite and ``tests/test_agent_claude.py``.
 
-Reads a JSON events spec from ``$NVSH_FAKE_EVENTS`` (a list of
-``{"kind": ..., "text": ..., "error": ...}`` dicts -- see
-``tests/_fake_adapters.py``) and emits claude's stream-json envelope lines
-so ``nvsh.agent.claude.ClaudeAgent`` can be exercised end to end without a
-real ``claude`` binary on PATH.
+Two modes, both speaking the real 2.1.270 stream-json wire shapes:
+
+``NVSH_FAKE_EVENTS``
+    Path to a JSON list of ``{"kind": ..., "text": ..., "error": ...}`` dicts
+    (see ``tests/_fake_adapters.py``). Each is emitted as the envelope the
+    real CLI would use for it -- ``system`` for a status, a
+    ``stream_event``/``content_block_delta``/``text_delta`` for a text delta,
+    and a ``result`` line for done/error. This is what the shared conformance
+    suite drives.
+
+``NVSH_FAKE_TRANSCRIPT``
+    Path to a recorded transcript (``tests/fakes/claude-2.1.270-*.jsonl``,
+    carrying a ``# recorded-from:`` header). Its lines are replayed verbatim,
+    except that a ``control_request`` line pauses the replay until a matching
+    ``control_response`` arrives on stdin -- exactly what the real CLI does
+    when it is started with ``--permission-prompt-tool stdio``.
+
+Optional, in either mode:
+
+``NVSH_FAKE_ARGV``       write this process's argv to that path as JSON.
+``NVSH_FAKE_STDIN``      append every JSON line read from stdin to that path.
+``NVSH_FAKE_UI_TIMEOUT`` seconds to wait for a control_response before giving
+                         up with an error line (default 10) -- a broken host
+                         fails the test quickly instead of hanging the suite.
 """
 
 from __future__ import annotations
@@ -13,33 +32,123 @@ from __future__ import annotations
 import json
 import os
 import sys
+import threading
+
+DEFAULT_UI_TIMEOUT = 10.0
 
 
-def main() -> int:
-    events_path = os.environ.get("NVSH_FAKE_EVENTS")
-    events = json.loads(open(events_path, encoding="utf-8").read()) if events_path else []
+def emit(obj: dict) -> None:
+    sys.stdout.write(json.dumps(obj) + "\n")
+    sys.stdout.flush()
 
+
+def record(variable: str, payload: object) -> None:
+    path = os.environ.get(variable)
+    if not path:
+        return
+    with open(path, "a", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload) + "\n")
+
+
+def read_transcript(path: str) -> list:
+    lines = []
+    with open(path, encoding="utf-8") as handle:
+        for raw in handle:
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            lines.append(json.loads(line))
+    return lines
+
+
+def await_control_response(request_id: str) -> None:
+    """Block until the host answers ``request_id`` (or the watchdog fires)."""
+    timeout = float(os.environ.get("NVSH_FAKE_UI_TIMEOUT", DEFAULT_UI_TIMEOUT))
+
+    def give_up() -> None:
+        error = f"no control_response in {timeout:g}s"
+        emit({"type": "result", "subtype": "error", "error": error})
+        os._exit(1)
+
+    watchdog = threading.Timer(timeout, give_up)
+    watchdog.daemon = True
+    watchdog.start()
+    try:
+        while True:
+            raw = sys.stdin.readline()
+            if not raw:
+                return
+            line = raw.strip()
+            if not line:
+                continue
+            try:
+                message = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            record("NVSH_FAKE_STDIN", message)
+            response = message.get("response") or {}
+            if message.get("type") == "control_response":
+                if response.get("request_id") == request_id:
+                    return
+    finally:
+        watchdog.cancel()
+
+
+def replay_transcript(path: str) -> int:
+    for obj in read_transcript(path):
+        emit(obj)
+        if obj.get("type") == "control_request":
+            await_control_response(str(obj.get("request_id", "")))
+        if obj.get("type") == "result":
+            return 0 if obj.get("subtype") == "success" else 1
+    return 0
+
+
+def replay_events(path: str) -> int:
+    events = json.loads(open(path, encoding="utf-8").read())
     for event in events:
         kind = event.get("kind")
         if kind == "status":
-            line = {"type": "system", "subtype": "status", "text": event.get("text", "")}
+            emit({"type": "system", "subtype": "status", "text": event.get("text", "")})
         elif kind == "text_delta":
-            line = {
-                "type": "assistant",
-                "message": {"content": [{"type": "text", "text": event.get("text", "")}]},
-            }
+            emit(
+                {
+                    "type": "stream_event",
+                    "event": {
+                        "type": "content_block_delta",
+                        "index": 0,
+                        "delta": {"type": "text_delta", "text": event.get("text", "")},
+                    },
+                }
+            )
+        elif kind == "thinking":
+            emit(
+                {
+                    "type": "stream_event",
+                    "event": {
+                        "type": "content_block_delta",
+                        "index": 0,
+                        "delta": {"type": "thinking_delta", "thinking": event.get("text", "")},
+                    },
+                }
+            )
         elif kind == "error":
-            print(json.dumps({"type": "result", "subtype": "error", "error": event.get("error", "")}))
-            sys.stdout.flush()
+            emit({"type": "result", "subtype": "error", "error": event.get("error", "")})
             return 1
         elif kind == "done":
-            print(json.dumps({"type": "result", "subtype": "success"}))
-            sys.stdout.flush()
+            emit({"type": "result", "subtype": "success"})
             return 0
-        else:
-            continue
-        print(json.dumps(line))
-        sys.stdout.flush()
+    return 0
+
+
+def main() -> int:
+    record("NVSH_FAKE_ARGV", sys.argv)
+    transcript = os.environ.get("NVSH_FAKE_TRANSCRIPT")
+    if transcript:
+        return replay_transcript(transcript)
+    events_path = os.environ.get("NVSH_FAKE_EVENTS")
+    if events_path:
+        return replay_events(events_path)
     return 0
 
 

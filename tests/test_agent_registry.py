@@ -1,11 +1,18 @@
-"""Tests for nvsh.agent.registry — the harness chooser (task t10).
+"""Tests for nvsh.agent.registry — the harness chooser (tasks t10, t8).
 
 Acceptance criteria covered:
-- 'nvsh agent list' reports pi, qwen, claude, codex, openai-compat with
-  installed status derived from PATH.
+- 'nvsh agent list' reports pi, qwen, qwen-p, claude, codex, agy, kiro,
+  openai-compat with installed status derived from PATH.
+- Every AdapterSpec carries a 'path' (transport protocol) and 'hosted' flag.
 - choose() picks the configured provider when installed, else falls back to
   openai-compat (always "available", no binary needed) with a reason string
   naming why (missing binary, missing node).
+- choose(config, forced=...) resolves an alias/literal target/Target through
+  Config.resolve_target, returns the forced adapter when installed, and
+  raises a CliError naming the missing binary otherwise -- never falling
+  back to openai-compat.
+- The agy/kiro/qwen(acp) factories import their concrete adapter modules
+  lazily, so this module imports cleanly before nvsh.agent.agy/acp exist.
 - install_offer() only returns the npm command when npm exists and the user
   answered y; it never runs anything itself.
 - no_harness_message() offers 'install pi' and 'choose another harness'.
@@ -13,8 +20,14 @@ Acceptance criteria covered:
 
 from __future__ import annotations
 
+import pytest
+
 from nvsh.agent import registry
+from nvsh.agent.base import Target
+from nvsh.cli._errors import CliError
 from nvsh.config import Config
+
+_ALL_ADAPTER_NAMES = {"pi", "qwen", "qwen-p", "claude", "codex", "agy", "kiro", "openai-compat"}
 
 
 def _which_all_missing(_name: str) -> str | None:
@@ -28,8 +41,94 @@ def _which_factory(present: set[str]):
     return _which
 
 
-def test_adapters_registry_has_all_five_names():
-    assert set(registry.ADAPTERS) == {"pi", "qwen", "claude", "codex", "openai-compat"}
+def test_adapters_registry_has_all_eight_names():
+    assert set(registry.ADAPTERS) == _ALL_ADAPTER_NAMES
+
+
+def test_agy_and_kiro_adapter_specs():
+    agy = registry.ADAPTERS["agy"]
+    assert agy.binary == "agy"
+    assert agy.path == "stream-json"
+    assert agy.hosted is True
+
+    kiro = registry.ADAPTERS["kiro"]
+    assert kiro.binary == "kiro-cli"
+    assert kiro.path == "acp"
+    assert kiro.hosted is True
+
+
+def test_qwen_switched_to_acp_path():
+    qwen = registry.ADAPTERS["qwen"]
+    assert qwen.path == "acp"
+    assert qwen.hosted is False
+    # the print-mode fallback stays reachable under its own name
+    assert "qwen-p" in registry.ADAPTERS
+
+
+def test_every_adapter_spec_carries_path_and_hosted():
+    for name, spec in registry.ADAPTERS.items():
+        assert isinstance(spec.path, str), name
+        assert spec.path, name
+        assert spec.path in registry.PATH_VALUES, (name, spec.path)
+        assert isinstance(spec.hosted, bool), name
+
+
+def test_hosted_flags_match_acceptance_criteria():
+    hosted_true = {"agy", "claude", "codex", "kiro"}
+    hosted_false = {"pi", "qwen", "qwen-p", "openai-compat"}
+    for name in hosted_true:
+        assert registry.ADAPTERS[name].hosted is True, name
+    for name in hosted_false:
+        assert registry.ADAPTERS[name].hosted is False, name
+
+
+def test_path_values_match_acceptance_criteria():
+    expected = {
+        "pi": "rpc",
+        "claude": "stream-json",
+        "codex": "app-server",
+        "qwen": "acp",
+        "kiro": "acp",
+        "agy": "stream-json",
+        "openai-compat": "http",
+    }
+    for name, path in expected.items():
+        assert registry.ADAPTERS[name].path == path, name
+
+
+def test_agy_and_acp_modules_are_imported_lazily():
+    # Importing the registry must not import the agy/acp adapter modules:
+    # they are only pulled in by the factory that actually needs them.
+    import subprocess
+    import sys
+
+    code = (
+        "import sys, nvsh.agent.registry; "
+        "print(sorted(m for m in sys.modules if m in "
+        "('nvsh.agent.agy', 'nvsh.agent.acp')))"
+    )
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
+    assert out.stdout.strip() == "[]"
+
+
+def test_agy_and_acp_factories_build_the_right_adapters():
+    from nvsh.agent.acp import AcpAgent
+    from nvsh.agent.agy import AgyAgent
+
+    assert isinstance(registry.ADAPTERS["agy"].factory(Config()), AgyAgent)
+    kiro = registry.ADAPTERS["kiro"].factory(Config())
+    assert isinstance(kiro, AcpAgent)
+    assert kiro.capabilities().path == "acp"
+    qwen = registry.ADAPTERS["qwen"].factory(Config())
+    assert isinstance(qwen, AcpAgent)
+    # decision c53: qwen is read-only (plan mode) unless approval = "harness"
+    assert qwen.capabilities().tool_calling is False
+    assert qwen.capabilities().approval == "nvsh"
+    config = Config()
+    config.agents["qwen"] = {"approval": "harness"}
+    opted_in = registry.ADAPTERS["qwen"].factory(config)
+    assert opted_in.capabilities().tool_calling is True
+    assert opted_in.capabilities().approval == "harness"
 
 
 def test_adapter_spec_shape():
@@ -61,15 +160,17 @@ def test_installed_openai_compat_always_true():
     assert registry.installed("openai-compat", which=_which_all_missing) is True
 
 
-def test_available_adapters_reports_all_five_with_installed_status():
+def test_available_adapters_reports_all_eight_with_installed_status():
     which = _which_factory({"pi", "claude"})
     rows = registry.available_adapters(which=which)
     by_name = {row["name"]: row for row in rows}
-    assert set(by_name) == {"pi", "qwen", "claude", "codex", "openai-compat"}
+    assert set(by_name) == _ALL_ADAPTER_NAMES
     assert by_name["pi"]["installed"] is True
     assert by_name["claude"]["installed"] is True
     assert by_name["qwen"]["installed"] is False
     assert by_name["codex"]["installed"] is False
+    assert by_name["agy"]["installed"] is False
+    assert by_name["kiro"]["installed"] is False
     assert by_name["openai-compat"]["installed"] is True
     for row in rows:
         assert "binary" in row
@@ -155,6 +256,55 @@ def test_choose_orin_without_node_selects_openai_compat_with_reason():
     name, reason = registry.choose(cfg, which=_which_all_missing)
     assert name == "openai-compat"
     assert "node" in reason
+
+
+def test_choose_with_no_customization_returns_pi():
+    # A default Config() (agent_provider defaults to 'pi') with pi on PATH
+    # still resolves to pi -- the unforced default behaviour is unchanged.
+    name, _reason = registry.choose(Config(), which=_which_factory({"pi"}))
+    assert name == "pi"
+
+
+def test_choose_forced_alias_returns_adapter_when_installed():
+    cfg = Config()
+    cfg.aliases["fast"] = "claude/haiku"
+    name, reason = registry.choose(cfg, which=_which_factory({"claude"}), forced="fast")
+    assert name == "claude"
+    assert "fast" in reason
+
+
+def test_choose_forced_literal_target_returns_adapter_when_installed():
+    cfg = Config()
+    name, reason = registry.choose(cfg, which=_which_factory({"codex"}), forced="codex/o1")
+    assert name == "codex"
+
+
+def test_choose_forced_target_object_returns_adapter_when_installed():
+    cfg = Config()
+    target = Target(backend="codex", model="o1")
+    name, _reason = registry.choose(cfg, which=_which_factory({"codex"}), forced=target)
+    assert name == "codex"
+
+
+def test_choose_forced_raises_cli_error_naming_binary_when_not_installed():
+    cfg = Config()
+    with pytest.raises(CliError) as excinfo:
+        registry.choose(cfg, which=_which_all_missing, forced="claude/opus")
+    assert "claude" in str(excinfo.value.message)
+    # never silently falls back to openai-compat
+    assert "openai-compat" not in str(excinfo.value.message)
+
+
+def test_choose_forced_unknown_backend_raises_cli_error():
+    cfg = Config()
+    with pytest.raises(CliError):
+        registry.choose(cfg, which=_which_all_missing, forced="not-a-real-backend/model")
+
+
+def test_choose_forced_unresolvable_alias_raises_cli_error():
+    cfg = Config()
+    with pytest.raises(CliError):
+        registry.choose(cfg, which=_which_all_missing, forced="no-such-alias")
 
 
 def test_no_harness_message_offers_both_options():

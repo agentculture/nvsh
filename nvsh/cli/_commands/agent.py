@@ -2,17 +2,26 @@
 
 Backs the harness chooser (see :mod:`nvsh.agent.registry`):
 
-* ``nvsh agent list``       — {adapters: [{name, installed, binary, description, configured}]}
-* ``nvsh agent use <name>`` — validates *name*, writes ``[agent] provider`` via :mod:`nvsh.config`
-  (and, for ``openai-compat``, says where to put the gateway key when no
-  bearer resolves — deviation d10)
+* ``nvsh agent list``       — {adapters: [{name, installed, binary, path, hosted,
+  capabilities, default, configured, description}]}, sorted so the row whose
+  name matches the resolved ``[aliases].default`` (falling back to
+  ``[agent] provider`` when no alias table is set — see
+  :meth:`nvsh.config.Config.resolve_target`) comes first.
+* ``nvsh agent use <name>`` — validates *name*, writes ``[agent] provider`` AND
+  ``[aliases].default`` via :mod:`nvsh.config` (:func:`nvsh.config.set_provider`
+  does both) (and, for ``openai-compat``, says where to put the gateway key when
+  no bearer resolves — deviation d10)
 * ``nvsh agent install pi`` — prints the npm install command; runs it only with ``--yes``
                                or an interactive 'y' (never on its own)
+
+``build_adapter_rows`` is the shared row-builder :mod:`nvsh.slash`'s
+``/agent`` handler imports, so the CLI and slash surfaces never drift apart.
 """
 
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import shlex
 import shutil
 import subprocess  # nosec B404 - fixed argv below, no shell=True
@@ -35,21 +44,86 @@ KEY_HINT = (
 )
 
 
-def cmd_agent_list(args: argparse.Namespace) -> int:
-    cfg = nvsh_config.load()
+def resolved_default_backend(cfg: nvsh_config.Config) -> str:
+    """The backend name ``'default'`` resolves to right now.
+
+    Goes through :meth:`nvsh.config.Config.resolve_target`, which falls back
+    to the legacy ``[agent] provider`` when ``[aliases]`` has no ``default``
+    entry (or no ``[aliases]`` table at all) — so a config with only
+    ``[agent] provider`` still resolves a default here.
+    """
+    try:
+        backend, _model, _effort, _alias = cfg.resolve_target(nvsh_config.DEFAULT_ALIAS)
+    except nvsh_config.ConfigError:
+        return cfg.agent_provider
+    return backend
+
+
+def _adapter_capabilities(name: str, cfg: nvsh_config.Config) -> dict | None:
+    """Cheaply construct adapter *name* and report its capabilities, or ``None``.
+
+    Every adapter's ``__init__`` is cheap and never spawns a subprocess (that
+    happens lazily on first turn), so building one just to read
+    ``.capabilities()`` is safe for a listing verb. A factory that validates
+    its own settings and raises is caught here rather than failing the whole
+    ``agent list`` call -- the row just reports ``capabilities: null``.
+    """
+    spec = registry.ADAPTERS[name]
+    try:
+        agent = spec.factory(cfg)
+        return dataclasses.asdict(agent.capabilities())
+    except Exception:  # noqa: BLE001 - defensive: factories may validate/raise
+        return None
+
+
+def build_adapter_rows(cfg: nvsh_config.Config) -> list[dict]:
+    """Enriched 'nvsh agent list' rows, the resolved default backend sorted first.
+
+    Each row from :func:`nvsh.agent.registry.available_adapters` (name,
+    installed, binary, description) gains ``path``, ``hosted``,
+    ``capabilities`` and two boolean markers: ``default`` (this is what
+    ``'default'``/a bare ``--agent`` currently resolves to) and
+    ``configured`` (kept for backward compatibility: this is the legacy
+    ``[agent] provider``, which coincides with ``default`` unless
+    ``[aliases].default`` overrides it).
+    """
+    default_backend = resolved_default_backend(cfg)
     rows = registry.available_adapters()
     for row in rows:
+        spec = registry.ADAPTERS[row["name"]]
+        row["path"] = spec.path
+        row["hosted"] = spec.hosted
+        row["capabilities"] = _adapter_capabilities(row["name"], cfg)
+        row["default"] = row["name"] == default_backend
         row["configured"] = row["name"] == cfg.agent_provider
+    # list.sort is stable: rows keep registry order except the default's hop
+    # to the front, so the ordering stays deterministic and easy to test.
+    rows.sort(key=lambda row: 0 if row["default"] else 1)
+    return rows
+
+
+def _agent_list_text(rows: list[dict]) -> str:
+    lines = []
+    for row in rows:
+        status = "installed" if row["installed"] else "not installed"
+        tags = []
+        if row["default"]:
+            tags.append("default")
+        if row["hosted"]:
+            tags.append("hosted")
+        marker = f" ({', '.join(tags)})" if tags else ""
+        lines.append(f"{row['name']} [{row['path']}]: {status}{marker} — {row['description']}")
+    return "\n".join(lines)
+
+
+def cmd_agent_list(args: argparse.Namespace) -> int:
+    cfg = nvsh_config.load()
+    rows = build_adapter_rows(cfg)
     json_mode = bool(getattr(args, "json", False))
     if json_mode:
         emit_result({"adapters": rows}, json_mode=True)
     else:
-        lines = []
-        for row in rows:
-            status = "installed" if row["installed"] else "not installed"
-            marker = " (configured)" if row["configured"] else ""
-            lines.append(f"{row['name']}: {status}{marker} — {row['description']}")
-        emit_result("\n".join(lines), json_mode=False)
+        emit_result(_agent_list_text(rows), json_mode=False)
     return 0
 
 

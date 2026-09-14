@@ -109,22 +109,29 @@ __nvsh_dispatch_line() {
     return 0
 }
 
-# The d23 marks. `? text` asks the default agent; `@name text` asks that
+# The d23 marks. `? text` asks the default agent; `@target text` asks that
 # harness for this one request. Both are explicit calls, so they are routed
 # here instead of being left to bash -- otherwise the operator gets
 # `?: command not found` before nvsh ever sees the line.
 #
-# Rules (mirrored exactly by nvsh.triggers.parse_mark, for the shells where
-# only hook.bash is sourced; see docs/shell-integration.md):
+# Rules (mirrored exactly by nvsh.triggers.parse_mark / _is_agent_name, for
+# the shells where only hook.bash is sourced; see docs/shell-integration.md):
 #   ?  the next character is a space or an ASCII letter (so `?*.txt`, `?1x`
 #      and `?.config` stay globs), the line has a space or ends in `?` (so a
 #      bare `?foo` stays a glob), and text is left after the mark.
-#   @  the name is a plain word listed in the palette `nvsh complete --json`
-#      returns (the harness list lives in nvsh, never here), followed by a
-#      non-empty question.
+#   @  target is one of (task t6's @target grammar):
+#        * a plain name -- a letter, then letters, digits, `_` or `-` --
+#          listed in the palette `nvsh complete --json` returns as `@name`
+#          (an alias or an adapter; the list lives in nvsh, never here);
+#        * a literal `backend/model[/effort]` token (1-3 non-empty
+#          `/`-separated segments, first char an ASCII letter) whose first
+#          segment is one of the *adapter* names `nvsh complete --json --
+#          /ask --agent` returns -- an alias name is never a valid backend
+#          segment, exactly as nvsh.triggers._parse_agent_mark requires.
+#      Either way target is followed by whitespace and a non-empty question.
 # Sets __NVSH_MARK_LINE to the slash line to dispatch and returns 0, else 1.
 __nvsh_mark_line() {
-    local line=$1 rest name item
+    local line=$1 rest name backend item
     __NVSH_MARK_LINE=
     case $line in
     '?'*)
@@ -140,12 +147,27 @@ __nvsh_mark_line() {
     @*)
         name=${line#@}
         name=${name%%[[:space:]]*}
-        [[ $name =~ ^[A-Za-z][A-Za-z0-9_-]*$ ]] || return 1
+        # 1-3 non-empty '/'-separated segments, first char an ASCII letter;
+        # mirrors nvsh.triggers._is_agent_name without importing it.
+        [[ $name =~ ^[A-Za-z][A-Za-z0-9_-]*(/[A-Za-z0-9_-]+){0,2}$ ]] || return 1
         rest=${line#@"${name}"}
         [[ $rest == [[:space:]]* ]] || return 1
         rest=${rest#"${rest%%[![:space:]]*}"}
         rest=${rest%"${rest##*[![:space:]]}"}
         [[ -n $rest ]] || return 1
+        if [[ $name == */* ]]; then
+            backend=${name%%/*}
+            __nvsh_items -- /ask --agent || return 1
+            for item in "${__NVSH_ITEMS[@]}"; do
+                if [[ $item == "$backend" ]]; then
+                    __NVSH_ITEMS=()
+                    __NVSH_MARK_LINE="/ask --agent ${name} ${rest}"
+                    return 0
+                fi
+            done
+            __NVSH_ITEMS=()
+            return 1
+        fi
         __nvsh_items || return 1
         for item in "${__NVSH_ITEMS[@]}"; do
             if [[ $item == "@${name}" ]]; then

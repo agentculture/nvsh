@@ -15,17 +15,21 @@ def xdg_home(tmp_path, monkeypatch):
     return tmp_path
 
 
-def test_agent_list_json_reports_all_five(capsys):
+def test_agent_list_json_reports_all_adapters(capsys):
     rc = main(["agent", "list", "--json"])
     assert rc == 0
     payload = json.loads(capsys.readouterr().out)
     names = {row["name"] for row in payload["adapters"]}
-    assert names == {"pi", "qwen", "claude", "codex", "openai-compat"}
+    assert names == {"pi", "qwen", "qwen-p", "claude", "codex", "agy", "kiro", "openai-compat"}
     for row in payload["adapters"]:
         assert "installed" in row
         assert "binary" in row
         assert "description" in row
         assert "configured" in row
+        assert "path" in row
+        assert "hosted" in row
+        assert "capabilities" in row
+        assert "default" in row
 
 
 def test_agent_list_marks_configured_provider(capsys):
@@ -46,16 +50,97 @@ def test_agent_list_text(capsys):
     assert "openai-compat" in out
 
 
+def test_agent_list_reports_path_and_hosted(capsys):
+    rc = main(["agent", "list", "--json"])
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    by_name = {row["name"]: row for row in payload["adapters"]}
+    assert by_name["pi"]["path"] == "rpc"
+    assert by_name["pi"]["hosted"] is False
+    assert by_name["claude"]["path"] == "stream-json"
+    assert by_name["claude"]["hosted"] is True
+    assert by_name["codex"]["hosted"] is True
+    assert by_name["agy"]["hosted"] is True
+    assert by_name["kiro"]["hosted"] is True
+    assert by_name["qwen"]["hosted"] is False
+    assert by_name["openai-compat"]["hosted"] is False
+
+
+def test_agent_list_reports_capabilities(capsys):
+    rc = main(["agent", "list", "--json"])
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    by_name = {row["name"]: row for row in payload["adapters"]}
+    # every adapter's __init__ is cheap (no subprocess started), so every
+    # one of the 8 built-in adapters should report real capabilities, never
+    # null, when constructed with default config.
+    for name, row in by_name.items():
+        assert row["capabilities"] is not None, name
+        assert "streaming" in row["capabilities"]
+
+
+def test_agent_list_default_backend_sorts_first(capsys):
+    rc = main(["agent", "list", "--json"])
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    adapters = payload["adapters"]
+    # default provider is 'pi' with no config on disk
+    assert adapters[0]["name"] == "pi"
+    assert adapters[0]["default"] is True
+    assert sum(1 for row in adapters if row["default"]) == 1
+
+
+def test_agent_list_default_follows_aliases_default_override(capsys, xdg_home):
+    cfg_dir = xdg_home / "nvsh"
+    cfg_dir.mkdir(parents=True)
+    (cfg_dir / "config.toml").write_text(
+        '[agent]\nprovider = "pi"\n\n[aliases]\ndefault = "claude"\n', encoding="utf-8"
+    )
+    rc = main(["agent", "list", "--json"])
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    adapters = payload["adapters"]
+    assert adapters[0]["name"] == "claude"
+    assert adapters[0]["default"] is True
+    by_name = {row["name"]: row for row in adapters}
+    assert by_name["pi"]["default"] is False
+
+
+def test_agent_list_resolves_default_with_only_agent_provider_configured(capsys, xdg_home):
+    """A config with only [agent] provider (no [aliases] table) still resolves 'default'."""
+    cfg_dir = xdg_home / "nvsh"
+    cfg_dir.mkdir(parents=True)
+    (cfg_dir / "config.toml").write_text('[agent]\nprovider = "codex"\n', encoding="utf-8")
+    rc = main(["agent", "list", "--json"])
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    by_name = {row["name"]: row for row in payload["adapters"]}
+    assert by_name["codex"]["default"] is True
+    assert payload["adapters"][0]["name"] == "codex"
+
+
+def test_agent_list_text_tags_hosted_and_default(capsys):
+    rc = main(["agent", "list"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    lines = {line: line for line in out.splitlines()}
+    pi_line = next(line for line in lines if line.startswith("pi "))
+    claude_line = next(line for line in lines if line.startswith("claude "))
+    assert "default" in pi_line
+    assert "hosted" in claude_line
+
+
 def test_agent_use_writes_config(capsys, xdg_home):
     rc = main(["agent", "use", "claude", "--json"])
     assert rc == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["provider"] == "claude"
 
-    from nvsh.config import load
+    from nvsh.config import DEFAULT_ALIAS, load
 
     cfg = load()
     assert cfg.agent_provider == "claude"
+    assert cfg.aliases[DEFAULT_ALIAS] == "claude"
 
 
 def test_agent_use_unknown_name_is_user_error(capsys):

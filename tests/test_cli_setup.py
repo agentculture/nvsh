@@ -114,6 +114,61 @@ def test_setup_reports_agent_choice(tmp_path):
     assert "reason" in payload["agent"]
 
 
+def test_setup_writes_aliases_default(tmp_path):
+    """'nvsh setup' persists the chosen backend as [aliases].default."""
+    rc = _rc(tmp_path)
+    rc.write_text(UBUNTU_RC)
+    code, out, err = _run(["setup", "--rc", str(rc), "--json"])
+    assert code == 0, err
+    payload = json.loads(out)
+    assert payload["agent"]["default_alias_written"] is True
+
+    from nvsh.config import DEFAULT_ALIAS, load
+
+    cfg = load()
+    assert cfg.aliases[DEFAULT_ALIAS] == payload["agent"]["name"]
+
+
+def test_setup_is_idempotent_for_the_default_alias(tmp_path):
+    rc = _rc(tmp_path)
+    rc.write_text(UBUNTU_RC)
+    _run(["setup", "--rc", str(rc), "--json"])
+    code, out, err = _run(["setup", "--rc", str(rc), "--json"])
+    assert code == 0, err
+    payload = json.loads(out)
+    # the second run finds [aliases].default already matching, so it writes
+    # nothing further.
+    assert payload["agent"]["default_alias_written"] is False
+
+
+def test_setup_never_overwrites_agent_provider_when_falling_back(tmp_path, monkeypatch):
+    """A fallback pick (e.g. openai-compat, nothing else on PATH) only touches
+    [aliases].default -- [agent] provider (the operator's own intent) is left
+    alone."""
+    rc = _rc(tmp_path)
+    rc.write_text(UBUNTU_RC)
+    cfg_dir = tmp_path / "xdg-config" / "nvsh"
+    cfg_dir.mkdir(parents=True)
+    (cfg_dir / "config.toml").write_text('[agent]\nprovider = "pi"\n', encoding="utf-8")
+
+    from nvsh.agent import registry
+
+    which = _which_factory(set())  # nothing on PATH -- pi falls back to openai-compat
+    monkeypatch.setattr("nvsh.cli._commands.setup.shutil.which", which)
+    monkeypatch.setattr(registry, "choose", lambda cfg: ("openai-compat", "fallback"))
+
+    code, out, err = _run(["setup", "--rc", str(rc), "--json", "--no-install"])
+    assert code == 0, err
+    payload = json.loads(out)
+    assert payload["agent"]["name"] == "openai-compat"
+
+    from nvsh.config import DEFAULT_ALIAS, load
+
+    cfg = load()
+    assert cfg.agent_provider == "pi"
+    assert cfg.aliases[DEFAULT_ALIAS] == "openai-compat"
+
+
 # --------------------------------------------------------------------------
 # setup: missing-tool detection and install offers (deviation d1)
 # --------------------------------------------------------------------------

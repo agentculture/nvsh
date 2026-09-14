@@ -46,6 +46,28 @@ confirmation (out of scope for v1), and machine-level undo beyond the
 approve/execute/verify loop (issue #7). If you describe any of those three
 as though they exist, mark it `(planned)`.
 
+nvsh now registers eight harness adapters in `nvsh/agent/registry.py`:
+`pi`, `qwen` itself (over ACP, `qwen --acp`, plan mode by default —
+`tool_calling=False` — because qwen 0.23.3 never sends
+`session/request_permission`), `qwen-p` (a stream-json print-mode,
+read-only fallback for when ACP is unavailable), `claude`, `codex`, `agy`
+(stream-json, always read-only for commands), `kiro` (over ACP) and
+`openai-compat`. `[aliases]` in `$XDG_CONFIG_HOME/nvsh/config.toml` maps a
+short name to a `backend[/model[/effort]]` target, with `default` reserved
+for a bare `nvsh --agent default`; `@target` at the prompt marks one
+request for that harness only, one-shot unless it is the default target.
+An operator can opt qwen into its own agent-side approval with
+`[agents.qwen] approval = "harness"` — the spec's own wording: "an
+operator may opt a harness into its own agent-side approval with
+`[agents.<name>] approval = "harness"`, which is recorded in capabilities
+and the audit log." Outside that opt-in, nvsh never touches qwen's own
+settings: "nvsh never edits, creates or overrides a harness's own settings
+or trust files (agy/claude settings.json, codex config.toml, kiro trust
+settings, qwen settings): it only passes launch flags and protocol-level
+policy, and reports what it finds." Everything leaving the process is
+redacted first (`nvsh/redact.py`), and a spawned harness's environment has
+`CLAUDECODE`/`CLAUDE_CODE_*` stripped (`nvsh/agent/_env.py`).
+
 ## Design constraints (implemented)
 
 `CLAUDE.md` and `docs/architecture.md` have the full write-up. The essentials:

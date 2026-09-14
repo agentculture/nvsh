@@ -19,6 +19,16 @@ approve/execute/verify loop is issue #7. When you summarize it, keep those
 still-open items separate from what GitHub issues #1 and #2 describe as
 already built.
 
+nvsh now speaks to eight harness adapters (pi, qwen over ACP, qwen-p as a
+read-only stream-json fallback, claude, codex, agy — always read-only for
+commands, kiro over ACP, and openai-compat) chosen by a `[aliases]` table
+(`$XDG_CONFIG_HOME/nvsh/config.toml`) or an explicit `@target` mark at the
+prompt. nvsh never edits a harness's own settings or trust files (agy/
+claude settings.json, codex config.toml, kiro trust settings, qwen
+settings) — it only passes launch flags and protocol-level policy and
+reports what it finds; that boundary is the same one that keeps you off
+`repo_action` here.
+
 You are **associate** — a non-coding worker. Your job in this repo is to
 **read, find, and summarize**, not to write code or make repository changes.
 This mirrors the `associate` role as defined in

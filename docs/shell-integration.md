@@ -102,8 +102,8 @@ function cannot itself call `accept-line`, so the macro chain is required
   `" nvsh slash '<line>'"` — note the single leading space — and the
   original line is pushed with `history -s`, so `history` shows what the
   operator typed and not the dispatch.
-- a line carrying one of the marks below (`? …`, `@name …`) is rewritten the
-  same way, to `/ask …`.
+- a line carrying one of the marks below (`? …`, `@target …`) is rewritten
+  the same way, to `/ask …`.
 
 `/notacmd` therefore still runs as bash and still fails as bash.
 `command_not_found_handle` does **not** fire for `/doctor`, which is why
@@ -125,15 +125,24 @@ Five ways in, all landing on the same request (deviation d23):
 
 | You type | What happens |
 |----------|--------------|
-| `/ask <text>` | The slash verb. `--agent <name>` (or `--agent=<name>`) makes one named harness answer this request. |
+| `/ask <text>` | The slash verb. `--agent <target>` (or `--agent=<target>`) makes one named harness — or a `backend/model[/effort]` literal — answer this request. |
 | `? <text>` | A request to the **default** agent. |
-| `@<name> <text>` | A request answered by **that harness**, for this request only — `@pi`, `@qwen`, `@claude`, `@codex`, `@openai-compat`, i.e. any name in `nvsh.agent.registry.ADAPTERS`. |
+| `@<target> <text>` | A request answered by **that target**, for this request only — a plain harness name (`@pi`, `@qwen`, `@claude`, `@codex`, `@openai-compat`, an alias, or `default`) or a `backend/model[/effort]` literal (`@claude/sonnet/medium why is the gpu slow`, `@claude/sonnet …`). See "The `@target` grammar" below. |
 | `Ctrl+G` | Asks with the half-typed line as the draft, not as the question. |
 | a plain sentence (`what are the memory levels?`) | A *guess*: bash reports `command not found` and nvsh's `prose_request` heuristic recognises the shape (deviation d20). |
 
-`?` and `@name` are **explicit**, exactly like `Ctrl+G`: they are never held
+`?` and `@target` are **explicit**, exactly like `Ctrl+G`: they are never held
 back by the automatic-call rate limiter and never consume its window. The
 plain-sentence route is a guess, so it stays rate-limited.
+
+Whichever route a request takes, and whichever of the eight registered
+adapters (`nvsh agent list --json`) answers a resolved target, the same
+redaction boundary applies before anything leaves the process: `nvsh/redact.py`
+runs on the prompt composer's output, `--show-context` prints exactly
+those redacted bytes, and every subprocess-backed adapter's child
+environment has `CLAUDECODE`/`CLAUDE_CODE_*` stripped
+(`nvsh/agent/_env.py`) — see `CLAUDE.md`'s "Device context, with redaction
+always on" for the full rule.
 
 A harness that is not installed or configured produces one line and nothing
 else — no panel, no fallback to the default:
@@ -146,8 +155,11 @@ nvsh: @qwen is not available: 'qwen' is not on PATH
 #### When a mark counts
 
 The rules are implemented twice — in `__nvsh_mark_line` (bash, the preferred
-route) and in `nvsh.triggers.parse_mark` (Python, the hook fallback) — and
-they are deliberately identical:
+route) and in `nvsh.triggers.parse_mark` / `_is_agent_name` (Python, the hook
+fallback) — and they are deliberately identical, table-tested against each
+other by `tests/test_readline_bash.py`'s import of
+`tests/test_triggers_prose.py`'s `_TARGET_POSITIVES` / `_TARGET_NEGATIVES`
+(task t7's bash/python sync test):
 
 - `?` — the character after the `?` is a space or an ASCII letter, **and**
   the line either contains a space or ends in `?`, **and** something is left
@@ -155,29 +167,61 @@ they are deliberately identical:
   level`, `?whats the cuda version?` and `? ram` are requests, while `?`,
   a lone `?` with a trailing blank, `?*.txt`, `?1x`, `?.bashrc` and a bare `?foo` are left to bash as the
   globs they look like.
-- `@name` — `name` is a plain word (a letter, then letters, digits, `_` or
-  `-`) that is a *registered* harness, followed by whitespace and a non-empty
-  question. `@`, `@pi` alone, `@foo.bar hello` and `@notaharness what is up`
-  are ordinary commands, and an address in argument position (`mail a@b.c`)
-  never starts the line, so it is never a mark.
 
-The bash side gets the harness list the same way it gets the command list:
-`@pi`, `@qwen`, … are entries of the `nvsh complete --json` palette
-(`nvsh.slash.agent_mark_items`). No name is hard-coded in the `.bash` file.
+##### The `@target` grammar (task t6)
+
+- `@target` — `target` is followed by whitespace and a non-empty question,
+  and is one of:
+  - a **plain name** — a letter, then letters, digits, `_` or `-` — that is
+    a *registered* alias (including `default`) or adapter, e.g. `@pi`,
+    `@reviewer`, `@default`; or
+  - a **`backend/model[/effort]` literal** — 1 to 3 non-empty
+    `/`-separated segments, the first character an ASCII letter — whose
+    *first* segment is a *registered adapter* name (never merely an alias),
+    e.g. `@claude/sonnet/medium why is the gpu slow` or
+    `@claude/sonnet why is the gpu slow`.
+
+  `@`, `@pi` alone, `@foo.bar hello`, `@notaharness what is up` (an
+  unregistered plain name), `@notaharness/model what is up` (an unregistered
+  backend segment), `@claude//` and `@claude/sonnet/` (an empty segment),
+  `@claude/sonnet/medium/extra` (too many segments), `@/claude/sonnet` (a
+  `/` cannot lead) are all ordinary commands, and an address in argument
+  position (`mail a@b.c`, `mail a@b.c/d`) never starts the line, so it is
+  never a mark.
+
+The bash side gets the harness list the same way it gets the command list,
+and holds no list of its own:
+
+- a plain `@name` is checked against the `@name` entries of the
+  `nvsh complete --json` palette (`nvsh.slash.agent_mark_items` — the union
+  of configured aliases and registered adapters);
+- a slashed `@backend/…` target is checked against
+  `nvsh complete --json -- /ask --agent`'s answer — the *adapter-only* list
+  `nvsh.slash._complete_ask` returns for `/ask --agent <TAB>` — so an alias
+  name is never accepted as a backend segment, on either side.
+
+No name — alias, adapter or otherwise — is hard-coded in the `.bash` file.
+
+No Tab completion is offered for either shape of `@target` — bash completes
+a first word starting with `@` as a *hostname* before any programmable
+completer is consulted (see "Tab" below), so both `@name` and
+`@backend/model[/effort]` marks are Enter-only.
 
 #### The two routes
 
 - **Readline (preferred).** `__nvsh_enter` rewrites `? what is the ram level`
-  to `" nvsh slash '/ask what is the ram level'"` and `@pi how much ram` to
-  `" nvsh slash '/ask --agent pi how much ram'"`, pushing the original line
-  with `history -s`. Bash never runs the mark, so there is no
-  `?: command not found` on screen at all.
+  to `" nvsh slash '/ask what is the ram level'"`, `@pi how much ram` to
+  `" nvsh slash '/ask --agent pi how much ram'"`, and
+  `@claude/sonnet/medium why is the gpu slow` to
+  `" nvsh slash '/ask --agent claude/sonnet/medium why is the gpu slow'"`,
+  pushing the original line with `history -s`. Bash never runs the mark, so
+  there is no `?: command not found` on screen at all.
 - **Hook fallback.** In a shell where only `hook.bash` is sourced, bash does
   run the line and reports 127; `nvsh hook` then classifies it with
-  `prose_request`, which returns the same question and harness name, skips
+  `prose_request`, which returns the same question and target string, skips
   the rate limit because the request is explicit, and answers it.
 
-A `@name` request always runs **one-shot** rather than through the warm
+A `@target` request always runs **one-shot** rather than through the warm
 daemon: the daemon holds a session for the *configured* harness, so asking
 it would quietly answer from the default backend instead.
 
@@ -198,10 +242,11 @@ it would quietly answer from the default backend instead.
 The command list lives in a bash variable only for the duration of one call
 and is cleared afterwards; there is no static list in the file.
 
-Tab does **not** complete the `@name` marks: bash completes a first word
-starting with `@` as a *hostname* before any programmable completer is
-consulted (checked on bash 5.2), so `@` + Tab stays bash's own behaviour and
-the marks are Enter-only.
+Tab does **not** complete the `@target` marks — neither a plain `@name` nor
+a slashed `@backend/model[/effort]` target (task t6/t7): bash completes a
+first word starting with `@` as a *hostname* before any programmable
+completer is consulted (checked on bash 5.2), so `@` + Tab stays bash's own
+behaviour and the marks are Enter-only.
 
 ### Ctrl+G
 

@@ -51,12 +51,20 @@ import shlex
 import subprocess  # nosec B404 - argv is always ["bash", "-c", <approved command>]
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 from . import client_transport
-from .agent.base import AgentContext, AgentEvent, AgentRequest, Proposal, ProposalKind, RequestKind
+from .agent.base import (
+    AgentContext,
+    AgentEvent,
+    AgentRequest,
+    Proposal,
+    ProposalKind,
+    RequestKind,
+    Target,
+)
 from .panel import (
     APPROVE,
     APPROVE_SESSION,
@@ -420,35 +428,92 @@ def _ask_header(panel: Panel, state: Mapping[str, Any], question: str) -> None:
     panel.line(f"nvsh: asking the agent: {question}")
 
 
-def agent_override(config, name: str):
-    """Point *config* at one harness for a single request (deviation d23).
+def resolve_target(config, name: str) -> Target | None:
+    """Resolve one ``@mark`` / ``--agent`` name to a :class:`Target`.
 
-    Returns ``(config, "")`` when ``name`` is a registered, installed
-    harness -- a copy of *config* whose provider is ``name``, so
-    :func:`nvsh.agent.registry.choose` picks it and :func:`backend_label`
-    names it -- and ``(None, line)`` otherwise, where ``line`` is the single
-    line the operator gets and the whole of nvsh's answer. A harness that is
-    not there must never be silently swapped for the default: the operator
-    asked ``@qwen`` on purpose.
+    Everything the operator may type goes through
+    :meth:`Config.resolve_target` -- an alias (``fast``, ``default``), a
+    literal ``backend/model/effort`` string, with or without a leading
+    ``@``. A bare harness name that is *not* an alias (``@qwen``) is not a
+    target string at all, so it is resolved here against the registry
+    instead, picking up that harness's configured model. ``None`` when the
+    name means nothing; the caller turns that into the refusal line.
     """
-    from dataclasses import replace
+    try:
+        backend, model, effort, by_alias = config.resolve_target(name)
+    except Exception:  # noqa: BLE001 - not an alias and not a target string
+        return _bare_backend_target(config, name)
+    return Target(backend=backend, model=model, effort=effort, alias=name if by_alias else None)
 
+
+def _bare_backend_target(config, name: str) -> Target | None:
+    """``@qwen``: a registered harness named on its own, with its own model."""
     from .agent import registry
 
-    if name not in registry.ADAPTERS:
+    bare = name[1:] if name.startswith("@") else name
+    if bare not in registry.ADAPTERS:
+        return None
+    try:
+        model = str((config.agents.get(bare) or {}).get("model") or "") or None
+    except Exception:  # noqa: BLE001 - a config too broken to read names no model
+        model = None
+    return Target(backend=bare, model=model)
+
+
+def default_target(config) -> Target | None:
+    """What this machine's ``default`` resolves to, for the panel header."""
+    from .config import DEFAULT_ALIAS
+
+    return resolve_target(config, DEFAULT_ALIAS)
+
+
+def _is_one_shot(target) -> bool:
+    """c25: a named target runs one-shot -- except ``default`` itself, which
+    *is* the warm daemon target and must stay in its conversation."""
+    from .config import DEFAULT_ALIAS
+
+    return target is not None and getattr(target, "alias", None) != DEFAULT_ALIAS
+
+
+def agent_override(config, name: str):
+    """Point *config* at one target for a single request (d23, decision c25).
+
+    Returns ``(config, target, "")`` when ``name`` resolves to a registered,
+    installed harness -- a copy of *config* whose provider is that backend
+    and whose ``[agents.<backend>]`` carries the target's model/effort, so
+    :func:`nvsh.agent.registry.choose` picks it and :func:`backend_label`
+    names it -- and ``(None, None, line)`` otherwise, where ``line`` is the
+    single line the operator gets and the whole of nvsh's answer. A harness
+    that is not there must never be silently swapped for the default: the
+    operator asked ``@qwen`` on purpose.
+    """
+    from .agent import registry
+
+    target = resolve_target(config, name)
+    if target is None:
         known = ", ".join(registry.ADAPTERS)
-        return None, f"nvsh: @{name} is not available: unknown harness (known: {known})"
+        return None, None, f"nvsh: @{name} is not available: unknown harness (known: {known})"
+    if target.backend not in registry.ADAPTERS:
+        known = ", ".join(registry.ADAPTERS)
+        return (
+            None,
+            None,
+            (
+                f"nvsh: @{name} is not available: unknown harness "
+                f"{target.backend!r} (known: {known})"
+            ),
+        )
     try:
-        ok = registry.installed(name)
+        ok = registry.installed(target.backend)
     except Exception as exc:  # noqa: BLE001 - a broken probe is a plain refusal
-        return None, f"nvsh: @{name} is not available: {exc}"
+        return None, None, f"nvsh: @{name} is not available: {exc}"
     if not ok:
-        binary = registry.ADAPTERS[name].binary or name
-        return None, f"nvsh: @{name} is not available: '{binary}' is not on PATH"
+        binary = registry.ADAPTERS[target.backend].binary or target.backend
+        return None, None, f"nvsh: @{name} is not available: '{binary}' is not on PATH"
     try:
-        return replace(config, agent_provider=name), ""
+        return client_transport.targeted_config(config, target), target, ""
     except Exception as exc:  # noqa: BLE001
-        return None, f"nvsh: @{name} is not available: {exc}"
+        return None, None, f"nvsh: @{name} is not available: {exc}"
 
 
 def _prose_request(state: Mapping[str, Any], question: str) -> AgentRequest:
@@ -1222,6 +1287,43 @@ def _print_run(panel: Panel, command: str, result: RunResult) -> None:
     panel.note(f"nvsh: {command} -> exit {result.exit_code}")
 
 
+def _target_path(target: Target) -> str:
+    """The protocol path (``acp``, ``stream-json``, ...) *target* speaks."""
+    try:
+        from .agent import registry
+
+        return registry.ADAPTERS[target.backend].path
+    except Exception:  # noqa: BLE001 - an unregistered backend has no known path
+        return ""
+
+
+class _TargetedAudit:
+    """An audit log that stamps every entry with the resolved target (t16).
+
+    A thin wrapper rather than a ``target=`` keyword threaded through
+    ``_proposal_handler``, ``_auto_inspected`` and ``_apply_decision``: the
+    answer is the same for every line of one turn, and a call site that
+    forgets to pass it is exactly the drift this is meant to prevent.
+    """
+
+    def __init__(self, audit, target: Target | None) -> None:
+        self._audit = audit
+        self._target = target
+
+    def record(self, *args, **kwargs):
+        kwargs.setdefault("target", self._target)
+        return self._audit.record(*args, **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self._audit, name)
+
+
+def _targeted_audit(audit, target: Target | None):
+    if audit is None or target is None:
+        return audit
+    return _TargetedAudit(audit, target)
+
+
 def _stream_request(
     panel: Panel,
     request: AgentRequest,
@@ -1235,7 +1337,20 @@ def _stream_request(
     audit=None,
     steers: list[str] | None = None,
     one_shot: bool = False,
+    target: Target | None = None,
 ) -> StreamResult:
+    # One resolution, used three ways: the adapter routes on it, the panel
+    # header names it, and every audit line is stamped with it (t16/t18).
+    # ``target=None`` means the operator named nothing, so the request goes
+    # to whatever ``default`` resolves to -- which is also what the warm
+    # daemon session holds (decision c25).
+    warm = not one_shot and target is None
+    resolved = target if target is not None else default_target(config)
+    if resolved is not None:
+        panel.set_target(resolved, _target_path(resolved), warm)
+    if target is not None:
+        request = replace(request, target=target)
+    audit = _targeted_audit(audit, resolved)
     responder = client_transport.Responder(shell_id=shell_id, env=env)
     on_proposal = None
     if approvals is not None and inspections is not None:
@@ -1317,20 +1432,22 @@ def _failed_line(state: Mapping[str, Any]) -> tuple[str, int]:
     return str(state.get("line", "") or ""), int(state.get("exit", 0) or 0)
 
 
-def _apply_agent_mark(panel: Panel, config, marked) -> tuple[Any, bool]:
-    """Apply an ``@name`` mark's one-request harness override (d23).
+def _apply_agent_mark(panel: Panel, config, marked) -> tuple[Any, Target | None]:
+    """Apply an ``@name`` mark's one-request target override (d23/c25).
 
-    Returns ``(config, one_shot)``. A refused override (an unknown or
-    uninstalled harness) returns ``(None, False)`` having printed the
-    one-line refusal: the caller must then do nothing else at all.
+    Returns ``(config, target)``; ``target`` is ``None`` when the operator
+    marked nothing, which is what keeps the request on the warm daemon
+    session. A refused override (an unknown or uninstalled harness) returns
+    ``(None, None)`` having printed the one-line refusal: the caller must
+    then do nothing else at all.
     """
     if marked is None or not marked.agent:
-        return config, False
-    config, refusal = agent_override(config, marked.agent)
+        return config, None
+    config, target, refusal = agent_override(config, marked.agent)
     if config is None:
         panel.line(refusal)
-        return None, False
-    return config, True
+        return None, None
+    return config, target
 
 
 def _opening_request(panel: Panel, state: Mapping[str, Any], marked, config) -> AgentRequest:
@@ -1379,9 +1496,13 @@ def handle_failure(
         _note_held_back(config, resolved, time.time())
         return 0
 
-    config, one_shot = _apply_agent_mark(panel, config, marked)
+    config, target = _apply_agent_mark(panel, config, marked)
     if config is None:
         return 0
+    # c25: a named target never rides the warm daemon session -- that
+    # session belongs to ``default``, and answering `@claude/opus` out of it
+    # would quietly answer from the default model instead.
+    one_shot = _is_one_shot(target)
 
     shell_id = _shell_pid(resolved)
     context = build_context(args, resolved)
@@ -1403,6 +1524,7 @@ def handle_failure(
         audit=audit,
         steers=steers,
         one_shot=one_shot,
+        target=target,
     )
     if result.interrupted:
         return 130
@@ -1420,6 +1542,7 @@ def handle_failure(
             inspections=[],
             audit=audit,
             one_shot=one_shot,
+            target=target,
         )
         if follow.interrupted:
             return 130
@@ -1450,8 +1573,9 @@ def ask(
     resolved = dict(os.environ if env is None else env)
     panel = _panel_for(panel, resolved)
     config = _load_config()
+    target: Target | None = None
     if agent:
-        config, refusal = agent_override(config, agent)
+        config, target, refusal = agent_override(config, agent)
         if config is None:
             panel.line(refusal)
             return 1
@@ -1479,7 +1603,8 @@ def ask(
         env=resolved,
         shell_id=_shell_pid(resolved),
         config=config,
-        one_shot=bool(agent),
+        one_shot=_is_one_shot(target),
+        target=target,
     )
     return 130 if result.interrupted else 0
 

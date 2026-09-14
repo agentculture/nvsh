@@ -50,6 +50,20 @@ mode is parked, auto-apply (running a fix without confirmation) is out of
 scope for v1, and machine-level undo beyond the approve/execute/verify loop
 is tracked as issue #7 — don't describe those as implemented.
 
+nvsh now registers eight harness adapters (pi, qwen over ACP, qwen-p as a
+read-only stream-json fallback, claude, codex, agy — always read-only for
+commands, kiro over ACP, and openai-compat; `nvsh/agent/registry.py`).
+`[aliases]` in `$XDG_CONFIG_HOME/nvsh/config.toml` maps a short name to a
+`backend[/model[/effort]]` target, `default` reserved for a bare
+`nvsh --agent default`; `@target` at the prompt marks one request for that
+harness only. Where a harness has no approval channel it runs read-only:
+"nvsh never edits, creates or overrides a harness's own settings or trust
+files (agy/claude settings.json, codex config.toml, kiro trust settings,
+qwen settings): it only passes launch flags and protocol-level policy, and
+reports what it finds." Everything leaving the process is redacted first
+(`nvsh/redact.py`), and a spawned harness's environment has
+`CLAUDECODE`/`CLAUDE_CODE_*` stripped (`nvsh/agent/_env.py`).
+
 `CLAUDE.md` is written for a Claude Code session working *on* the repo. It is
 not your runtime prompt, but it is the fullest write-up of the shell design
 and the repo's conventions. Read it before any design or implementation

@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/). This project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.0] - 2026-09-14
+
+### Added
+
+- First-class multi-harness support: eight registered `NvshAgent` adapters in `nvsh/agent/registry.py` (`pi`, `qwen` over ACP, `qwen-p` read-only stream-json fallback, `claude`, `codex` app-server with `exec` fallback, `agy` read-only stream-json, `kiro` over ACP, `openai-compat`), each reporting its protocol path (rpc/stream-json/app-server/acp/http) and hosted/installed state via `nvsh agent list --json`
+- A flat `[aliases]` config table (`$XDG_CONFIG_HOME/nvsh/config.toml`) mapping short names to `backend[/model[/effort]]` targets, with `default` reserved for a bare `nvsh --agent default`; `nvsh agent use <name>` and `nvsh setup` write `[aliases].default`
+- The `@target` grammar at the prompt (`@name` for a registered alias/adapter, `@backend/model/effort` for a literal) on both the Python side (`triggers.py`, `slash.py`) and the bash readline layer, rewritten to `/ask --agent <target>`; an ad-hoc target runs one-shot, the default target rides the daemon's warm session
+- Per-harness config knobs (`model`, `effort`, `extra_args`, `approval`) passed verbatim to each backend's own flags (`pi --thinking`, `claude --effort`, `codex -c model_reasoning_effort=`, `agy --effort`, ACP `set_config_option`), plus a generic `AcpAgent` (`nvsh/agent/acp.py`) speaking ACP JSON-RPC for `qwen` and `kiro`
+- A `THINKING` event kind through the `NvshAgent` contract, rendered dim in the panel, plus a panel header (`harness/model/effort · path · warm|one-shot`) and an audit log that records the resolved target for every turn
+- Doctor checks for per-harness version/auth reachability and harness-side allowlist warnings (never writes to a harness's own settings)
+- Scrubbed child environments for every subprocess-backed adapter (`CLAUDECODE`/`CLAUDE_CODE_*` stripped, `nvsh/agent/_env.py`) and redacted stderr tails; a fixture-hygiene scan for recorded transcripts
+- Daemon/client wiring for the resolved target on the wire, a version handshake, and shared close escalation across concurrent shells
+- Docs updated across all four harness prompt files (`CLAUDE.md`, `AGENTS.override.md` + `.pi/SYSTEM.md`, `QWEN.md`, `AGENTS.colleague.md`), `docs/architecture.md`, `README.md`, `docs/config.example.toml` and `docs/shell-integration.md` to describe the default alias, `@target` grammar, per-harness adapter paths and the redaction/settings-write boundary consistently
+
 ## [0.9.2] - 2026-09-13
 
 ### Added

@@ -34,8 +34,14 @@ def test_claude_appends_the_brief_as_a_system_prompt_flag():
     argv = ClaudeAgent({})._argv(_REQUEST, _CONTEXT)
     assert "--append-system-prompt" in argv
     assert argv[argv.index("--append-system-prompt") + 1] == _brief()
-    # the prompt itself stays the facts block, not the brief
-    assert build_prompt(_REQUEST, _CONTEXT) in argv
+    # The prompt itself stays the facts block, not the brief -- but it is no
+    # longer an argv element: ``claude`` now runs with ``--input-format
+    # stream-json`` (that is what makes a permission prompt reachable at all,
+    # see ``nvsh/agent/claude.py``), so the prompt is written to stdin as a
+    # stream-json user message instead. The brief still travels as a flag,
+    # which is what this test is here to pin.
+    assert build_prompt(_REQUEST, _CONTEXT) not in argv
+    assert _brief() not in build_prompt(_REQUEST, _CONTEXT)
 
 
 def test_qwen_appends_the_brief_as_a_system_prompt_flag():

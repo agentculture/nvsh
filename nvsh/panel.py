@@ -65,7 +65,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Callable, Iterable, Mapping, Sequence, TextIO
 
-from .agent.base import AgentEvent, EventKind, Proposal
+from .agent.base import AgentEvent, EventKind, Proposal, Target
 from .approvals import parse_stages
 
 #: The panel's fixed width for its ASCII boxes.
@@ -293,6 +293,9 @@ class Panel:
         in_: TextIO | None = None,
         env: Mapping[str, str] | None = None,
         isatty: bool | None = None,
+        target: Target | None = None,
+        path: str = "",
+        warm: bool = False,
     ) -> None:
         self.out = out if out is not None else sys.stdout
         self.in_ = in_ if in_ is not None else sys.stdin
@@ -313,6 +316,47 @@ class Panel:
         # stores nothing); a list is what the ``stages [all,1,2]: `` prompt
         # read back, and the caller stores exactly those stages.
         self.stage_choice: list[int] | None = None
+        # t18: which backend/model/effort this panel is talking to, and
+        # whether the run is served warm (a live daemon session) or as a
+        # one-shot process -- rendered as one header line at the start of
+        # :meth:`stream`. ``target`` stays ``None`` for a caller that does
+        # not know (or does not care) which target is serving the request,
+        # in which case :meth:`stream` renders nothing new (backward
+        # compatible with every pre-t18 caller).
+        self._target: Target | None = None
+        self._target_path = ""
+        self._target_warm = False
+        # Whether a THINKING run is currently open (styled mode only; the
+        # plain-mode fallback prints one line per delta and never needs to
+        # track an open run).
+        self._thinking_open = False
+        self.set_target(target, path, warm)
+
+    def set_target(self, target: Target | None, path: str = "", warm: bool = False) -> None:
+        """Set (or clear) which target this panel is talking to (t18).
+
+        ``target=None`` (the default) opts a panel out of the header line
+        entirely -- :meth:`stream` renders nothing new, exactly as before
+        this method existed. Callers that know the target may pass it here
+        instead of through the constructor, e.g. once the daemon resolves an
+        alias to a concrete backend/model after the panel is already built.
+        """
+        self._target = target
+        self._target_path = path
+        self._target_warm = warm
+
+    def _target_header_line(self) -> str:
+        """``harness/model/effort · path · warm|one-shot`` (t18)."""
+        target = self._target
+        assert target is not None
+        parts = [target.backend]
+        if target.model:
+            parts.append(target.model)
+        if target.effort:
+            parts.append(target.effort)
+        harness = "/".join(parts)
+        warmth = "warm" if self._target_warm else "one-shot"
+        return f"{harness} · {self._target_path} · {warmth}"
 
     # -- low-level writing -------------------------------------------------
 
@@ -487,9 +531,12 @@ class Panel:
         handler are always restored.
         """
         result = StreamResult()
+        if self._target is not None:
+            self.line(self._target_header_line())
         saved_attrs = _save_termios(self.in_, self.isatty)
         previous = _install_sigint(self._on_sigint(cancel))
         started_text = False
+        self._thinking_open = False
         stop_waiting = threading.Event()
         self._waiting_shown = False
         self._waiting_plain = False
@@ -521,6 +568,7 @@ class Panel:
             self._pause_waiting()
             _restore_sigint(previous)
             _restore_termios(saved_attrs)
+            self._close_thinking()
             if started_text:
                 self.line()
             if result.interrupted:
@@ -539,6 +587,33 @@ class Panel:
             self.line()
         return False
 
+    def _render_thinking(self, text: str) -> None:
+        """Render one THINKING delta: a dimmed run on a tty, plain lines off it.
+
+        Styled mode opens the dim SGR once (``\\x1b[2m``) and writes each
+        delta into that same run as it arrives; the run is closed (reset +
+        newline) by :meth:`_close_thinking` before the first TEXT_DELTA,
+        TOOL_CALL, PROPOSAL or DONE reaches the screen (or at the end of
+        :meth:`stream`, if none of those follow). Off a tty, or under
+        NO_COLOR/TERM=dumb, no SGR is ever emitted: each delta becomes its
+        own ``thinking: `` prefixed plain line.
+        """
+        if not text:
+            return
+        if self.style.enabled:
+            if not self._thinking_open:
+                self.write(self.style.dim)
+                self._thinking_open = True
+            self.write(text)
+        else:
+            self.line(f"thinking: {text}")
+
+    def _close_thinking(self) -> None:
+        """Close an open dim THINKING run, if one is open. No-op otherwise."""
+        if self._thinking_open:
+            self.write(f"{self.style.reset}\n")
+            self._thinking_open = False
+
     def _render_event(
         self,
         event: AgentEvent,
@@ -555,6 +630,14 @@ class Panel:
         event whose kind carries nothing this panel renders).
         """
         kind = event.kind
+        if kind is EventKind.THINKING:
+            self._render_thinking(event.text)
+            return started_text, False
+        # Any non-THINKING event closes an open THINKING run first, so it is
+        # always closed before the first TEXT_DELTA/TOOL_CALL/PROPOSAL/DONE
+        # (and before STATUS/ERROR too, for the same reason: nothing else may
+        # ever land mid-dim-run).
+        self._close_thinking()
         if kind is EventKind.TEXT_DELTA:
             result.text += event.text
             self.write(event.text)

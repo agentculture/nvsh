@@ -27,6 +27,17 @@ the spec (claims c43, c51) and in `docs/architecture.md`.
   the socket and exits.
 - **Stopped when idle.** With no request for `--idle-timeout` seconds
   (default 900) the daemon shuts down the same way.
+- **A daemon from another nvsh is replaced.** A daemon is long-lived (15
+  minutes idle, longer in use), so an upgrade routinely leaves one running
+  that predates the client now talking to it. Before every request the
+  client asks the listening daemon its version; if it is not the client's
+  own, the client stops it and the next step starts a fresh one. See
+  "Version handshake" below.
+- **A stop takes the harness with it.** Teardown — idle exit, last shell
+  out, `nvsh daemon stop`, `nvsh uninstall` — closes every adapter, and
+  every adapter closes through one escalation
+  (`nvsh.agent._subprocess.escalate_close`): close the child's stdin, wait,
+  `terminate()`, `kill()`. No harness child outlives the daemon.
 - **Stale sockets are reaped.** Holding the lock, the daemon tries to
   connect to an existing socket: if the connect fails it unlinks it and
   binds; if it succeeds another daemon owns it and this one refuses to
@@ -120,14 +131,23 @@ Request line:
 {
   "shell": "12345",
   "kind": "failure",
+  "version": "0.9.2",
   "request": {"kind": "failure", "prompt": "", "command": "ls /nope",
-              "exit_code": 2, "failure_id": "f1"},
+              "exit_code": 2, "failure_id": "f1",
+              "target": {"backend": "claude", "model": "opus",
+                         "alias": "default"}},
   "context": {"platform": "dgx-spark", "output": "...", "cwd": "/srv",
               "shell_pid": 12345, "redaction_report": []}
 }
 ```
 
-`shell` is the hook's `$$`; it keys the conversation. `kind` is one of:
+`shell` is the hook's `$$`; it keys the conversation. `version` is the
+client's `nvsh.__version__` (see "Version handshake"). `request` is encoded
+by `nvsh.agent.base.request_to_dict` and decoded by `request_from_dict` —
+one codec, shared with the client, with default-valued fields omitted. Both
+`version` and `request.target` are optional: a line written by a client that
+predates them parses exactly as before, with `target = None` and no
+handshake. `kind` is one of:
 
 | kind | meaning |
 | --- | --- |
@@ -205,18 +225,76 @@ Nothing about a broken backend is silent:
   (closed and dropped), so the next request builds a fresh one instead of
   talking to a backend in an unknown state.
 
+## Targets: what the warm session is, and what is not
+
+The warm session belongs to **one** target: whatever `default` resolves to.
+`Daemon.default_target()` asks `Config.resolve_target("default")`, so
+`[aliases] default` decides, falling back to the legacy `[agent] provider`
+when there is no such alias. `Daemon._build_agent()` then folds that
+target's `model` and `effort` into a copy of the config's
+`[agents.<backend>]` table and hands it to the adapter's factory — which is
+how the resolved model and effort reach the adapter alongside that table's
+own `extra_args` and `approval`, without the daemon knowing which keyword
+each adapter takes. `nvsh daemon status --json` reports the result in
+`target` (`{backend, model, effort, alias}`).
+
+Anything else — `@claude/opus`, `/ask --agent fast`, any `Target` whose
+`alias` is not `default` — runs **one-shot** (decision c25). The client
+makes that call itself in `client_transport.send`, because the warm session
+holds a conversation with the default backend and answering someone's
+`@claude/opus` out of it would quietly answer from the wrong model. A
+targeted request that reaches the daemon anyway (an older client, a direct
+API caller) is served the same way *inside* the daemon: a fresh adapter,
+built `forced` so a missing binary is a loud error rather than a silent
+swap for `openai-compat`, and closed when the turn ends. The warm slot is
+never touched.
+
+Two consecutive failures from one shell therefore reuse one warm adapter:
+`_acquire` returns the slot already serving that shell without rebuilding
+or re-activating it. For the ACP and app-server harnesses that is literally
+one child process across both turns; for the stream-json harnesses
+(`claude`, `agy`, `qwen-p`) the *process* is per turn by the CLI's own
+design, and what the warm adapter carries across is the session it resumes.
+
+## Version handshake
+
+A daemon outlives the code that started it: 15 minutes idle by default,
+indefinitely while a shell keeps failing. An `nvsh` upgrade (or a `uv sync`
+in a checkout) therefore routinely leaves one running that predates the
+client now talking to it — different adapters, different wire fields,
+different protocol. Rather than guess which differences are survivable,
+both ends declare a version:
+
+- every client message carries `version` (`nvsh.__version__`);
+- the daemon reports its own in `status`/`ping` (`state()["version"]`);
+- before each request the client reads that (`client_transport.daemon_version`)
+  and, when it differs, stops the daemon and lets the next step start a
+  fresh one — announcing it as a `status` event, `restarted the daemon: it
+  was running nvsh 0.9.1, this client is 0.9.2`;
+- if one slips through anyway (a daemon that came up between the check and
+  the connect), the daemon answers an agent request with a single `error`
+  whose `args` carry `{"version_mismatch": true, "daemon_version": …,
+  "client_version": …}`; the client restarts it and retries **once**, then
+  answers one-shot rather than loop.
+
+Control messages (`status`, `ping`, `stop`, `register`, `unregister`,
+`cancel`, `undo`, `ui_response`, `steer`) are never refused on a version
+mismatch — `stop` is exactly what the client needs next. A message with no
+`version` at all is not a mismatch: a pre-handshake client gets an answer,
+not an error it has no code to read.
+
 ## Backends and fallback
 
 With no injected `agent_factory` the daemon picks a backend through
-`registry.choose(config)`. When that is not the configured provider, the
-first run for each shell is preceded by a `status` event —
+`registry.choose(config)`. When that is not the target's backend, the first
+run for each shell is preceded by a `status` event —
 `pi unavailable: <reason>` — and `nvsh daemon status` reports the same in
 `fallback_notice`.
 
 ## CLI
 
 ```bash
-nvsh daemon status --json     # {running, pid, socket, shells, agents, backend, ...}
+nvsh daemon status --json     # {running, pid, socket, version, target, backend, ...}
 nvsh daemon run --foreground  # serve here (what the tests and supervisors use)
 nvsh daemon run               # spawn detached, report the pid
 nvsh daemon stop              # idempotent

@@ -35,11 +35,11 @@ import subprocess  # nosec B404 - fixed argv, no shell
 import sys
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Callable, Iterator, Mapping, Optional
+from typing import Callable, Iterator, Mapping, Optional, cast
 
-from nvsh import runtimedir
+from nvsh import __version__, runtimedir
 
 from .agent.base import (
     AgentContext,
@@ -47,10 +47,12 @@ from .agent.base import (
     AgentRequest,
     EventKind,
     NvshAgent,
-    RequestKind,
+    Target,
     event_to_dict,
+    request_from_dict,
+    target_to_dict,
 )
-from .config import Config
+from .config import DEFAULT_ALIAS, Config
 
 #: Seconds with no request after which the daemon shuts itself down.
 DEFAULT_IDLE_TIMEOUT = 900.0
@@ -91,6 +93,28 @@ _CONTROL_KINDS = frozenset(
 )
 
 _LOGGER_NAME = "nvsh.daemon"
+
+#: Wire key carrying the sender's ``nvsh.__version__`` (task t16). A client
+#: that predates the handshake omits it, and is served normally -- the point
+#: of the handshake is to notice a daemon left over from an *upgrade*, not to
+#: refuse anyone.
+VERSION_KEY = "version"
+
+
+def peer_version(message: Mapping[str, object]) -> str:
+    """The ``nvsh`` version the sender declared, or ``""`` when it declared none."""
+    raw = message.get(VERSION_KEY)
+    return raw if isinstance(raw, str) and raw else ""
+
+
+def version_mismatch(message: Mapping[str, object], ours: str = __version__) -> str:
+    """The sender's version when it differs from *ours*, else ``""``.
+
+    An absent version is never a mismatch: a pre-handshake client still gets
+    an answer rather than an error it has no code to understand.
+    """
+    declared = peer_version(message)
+    return "" if not declared or declared == ours else declared
 
 
 class DaemonAlreadyRunning(OSError):
@@ -234,23 +258,12 @@ def spawn(env: Mapping[str, str] | None = None, *, idle_timeout: float | None = 
 # --- request decoding ------------------------------------------------------
 
 
-def request_from_dict(data: Mapping[str, object] | None) -> AgentRequest:
-    """Decode an :class:`AgentRequest` from the wire, tolerating junk."""
-    data = data or {}
-    try:
-        kind = RequestKind(str(data.get("kind", RequestKind.EXPLICIT.value)))
-    except ValueError:
-        kind = RequestKind.EXPLICIT
-    raw_exit = data.get("exit_code")
-    exit_code = int(raw_exit) if isinstance(raw_exit, (int, float)) else None
-    return AgentRequest(
-        kind=kind,
-        prompt=str(data.get("prompt", "")),
-        command=str(data.get("command", "")),
-        exit_code=exit_code,
-        failure_id=str(data.get("failure_id", "")),
-        ask=str(data.get("ask", "")),
-    )
+#: Re-exported so ``nvsh.daemon.request_from_dict`` keeps working. The codec
+#: itself lives in :mod:`nvsh.agent.base` next to ``request_to_dict``, so the
+#: encoder and the decoder cannot drift apart (they did: the daemon's own
+#: copy never learned about ``AgentRequest.target``). It stays lenient about
+#: missing keys, so a request line written by a pre-``target`` client still
+#: parses -- it simply decodes with ``target=None``.
 
 
 def context_from_dict(data: Mapping[str, object] | None) -> AgentContext:
@@ -459,6 +472,12 @@ class Daemon:
         self._agent_factory = agent_factory
         self._which = which
 
+        #: The ``nvsh`` version this daemon reports and compares clients
+        #: against. An attribute rather than a module constant so a test can
+        #: stand up a daemon that looks like a leftover from another build
+        #: without patching the module every other daemon reads.
+        self.version = __version__
+
         self._lock = threading.RLock()
         self._run_lock = threading.RLock()
         self._slots: list[_Slot] = []
@@ -467,6 +486,10 @@ class Daemon:
         self._had_shells = False
         self._backend_name = "" if agent_factory is None else "injected"
         self._backend_reason = ""
+        #: The target the warm agent was actually built for (t16). ``None``
+        #: until the first agent is built; ``state()`` falls back to the
+        #: freshly resolved default so a caller can render it before then.
+        self._target: Target | None = None
         self._fallback_notice = ""
         self._notified: set[str] = set()
         self._active: _ActiveTurn | None = None
@@ -648,23 +671,83 @@ class Daemon:
         safe = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in shell)
         return self._session_dir() / f"shell-{safe}.jsonl"
 
-    def _build_agent(self) -> NvshAgent:
-        if self._agent_factory is not None:
-            return self._agent_factory()
+    def default_target(self) -> Target:
+        """What ``default`` resolves to right now (t16, decision c25).
+
+        One call into :meth:`Config.resolve_target`, so the daemon's warm
+        session honours ``[aliases] default`` exactly like every other entry
+        point instead of reading the legacy ``[agent] provider`` directly. A
+        config too broken to resolve still yields a usable target -- the
+        legacy provider -- because a daemon that cannot name a backend is a
+        daemon that cannot diagnose anything.
+        """
+        try:
+            backend, model, effort, by_alias = self.config.resolve_target(DEFAULT_ALIAS)
+        except Exception:  # noqa: BLE001 - a broken alias must not block a diagnosis
+            backend = self.config.agent_provider
+            model = str(self.config.agents.get(backend, {}).get("model") or "") or None
+            effort, by_alias = None, True
+        return Target(
+            backend=backend,
+            model=model,
+            effort=effort,
+            alias=DEFAULT_ALIAS if by_alias else None,
+        )
+
+    def _config_for(self, target: Target) -> Config:
+        """A copy of the config whose ``[agents.<backend>]`` carries *target*.
+
+        Every adapter factory reads its own ``[agents.<name>]`` table for
+        ``model``/``effort``/``extra_args``/``approval``, so folding a
+        resolved target's model and effort into that table is what passes
+        all four to the adapter -- without the daemon having to know which
+        keyword each of the seven adapters happens to take.
+        """
+        settings = dict(self.config.agents.get(target.backend, {}))
+        if target.model:
+            settings["model"] = target.model
+        if target.effort:
+            settings["effort"] = target.effort
+        agents = dict(self.config.agents)
+        agents[target.backend] = settings
+        return cast(Config, replace(self.config, agent_provider=target.backend, agents=agents))
+
+    def _make_agent(self, target: Target, *, forced: bool = False) -> tuple[NvshAgent, str, str]:
+        """Build one adapter for *target*. Records nothing on the daemon.
+
+        ``forced=True`` is the explicitly-targeted path: a missing binary
+        raises rather than silently becoming ``openai-compat``, because the
+        operator asked for *that* harness on purpose.
+        """
         from .agent import registry
 
-        which = self._which if self._which is not None else None
-        if which is None:
-            name, reason = registry.choose(self.config)
-        else:
-            name, reason = registry.choose(self.config, which=which)
-        configured = self.config.agent_provider
+        cfg = self._config_for(target)
+        kwargs: dict = {}
+        if self._which is not None:
+            kwargs["which"] = self._which
+        if forced:
+            kwargs["forced"] = target
+        name, reason = registry.choose(cfg, **kwargs)
+        return registry.ADAPTERS[name].factory(cfg), name, reason
+
+    def _build_agent(self) -> NvshAgent:
+        """Build the *warm* agent: whatever ``default`` resolves to."""
+        if self._agent_factory is not None:
+            return self._agent_factory()
+
+        wanted = self.default_target()
+        agent, name, reason = self._make_agent(wanted)
         self._backend_name = name
         self._backend_reason = reason
-        if name != configured:
-            self._fallback_notice = f"{configured} unavailable: {reason}"
+        if name == wanted.backend:
+            self._target = wanted
+        else:
+            # The fallback backend is a different harness, so the resolved
+            # model/effort belonged to the one that was not there.
+            self._target = Target(backend=name, alias=wanted.alias)
+            self._fallback_notice = f"{wanted.backend} unavailable: {reason}"
             self._log.info("%s", self._fallback_notice)
-        return registry.ADAPTERS[name].factory(self.config)
+        return agent
 
     def _acquire(self, shell: str) -> tuple[_Slot, Conversation]:
         """Return the slot serving *shell*, switching sessions if it must."""
@@ -886,6 +969,8 @@ class Daemon:
                     }
                     for shell, conversation in self._conversations.items()
                 },
+                "version": self.version,
+                "target": target_to_dict(self._target or self.default_target()),
                 "backend": self._backend_name or self.config.agent_provider,
                 "backend_reason": self._backend_reason,
                 "fallback_notice": self._fallback_notice,
@@ -915,6 +1000,14 @@ class Daemon:
 
         if not shell:
             yield AgentEvent(kind=EventKind.ERROR, error="request is missing 'shell'")
+            return
+
+        stale = version_mismatch(message, self.version)
+        if stale:
+            # Only agent requests are refused: ``stop``/``status``/``ping``
+            # and the register/unregister bookkeeping still answer, because
+            # stopping this daemon is exactly what the client does next.
+            yield self._version_error(stale)
             return
 
         with self._lock:
@@ -1053,6 +1146,80 @@ class Daemon:
         yield AgentEvent(kind=EventKind.STATUS, text=f"ui response {request_id} delivered")
         yield AgentEvent(kind=EventKind.DONE)
 
+    def _version_error(self, client_version: str) -> AgentEvent:
+        """The daemon's half of the handshake: its own version, out loud.
+
+        The client uses ``args`` to tell this apart from any other error
+        without parsing prose: it stops this daemon, starts one built from
+        the same wheel it is running, and retries the request.
+        """
+        self._log.info(
+            "refusing a request from nvsh %s (this daemon runs %s)", client_version, self.version
+        )
+        return AgentEvent(
+            kind=EventKind.ERROR,
+            error=(
+                f"nvsh version mismatch: this daemon runs {self.version}, "
+                f"the client runs {client_version}"
+            ),
+            args={
+                "version_mismatch": True,
+                "daemon_version": self.version,
+                "client_version": client_version,
+            },
+        )
+
+    def _targeted(self, target: Target | None) -> bool:
+        """Does *target* name something other than this daemon's warm default?
+
+        Decision c25: the warm session belongs to ``default``; anything else
+        runs one-shot. The client normally makes that call itself and never
+        sends a non-default target here -- this is what happens when one
+        arrives anyway (an older client, or a direct API caller).
+        """
+        if target is None or target.alias == DEFAULT_ALIAS:
+            return False
+        default = self.default_target()
+        return (target.backend, target.model, target.effort) != (
+            default.backend,
+            default.model,
+            default.effort,
+        )
+
+    def _run_targeted(self, request: AgentRequest, context: AgentContext) -> Iterator[AgentEvent]:
+        """Serve one non-default target without touching the warm session."""
+        target = request.target
+        assert target is not None
+        try:
+            agent, name, reason = self._make_agent(target, forced=True)
+        # Reported to the client as an ERROR event, never raised.
+        except Exception as exc:  # noqa: BLE001
+            self._log.error("could not build %s: %s", target.backend, exc)
+            yield AgentEvent(kind=EventKind.ERROR, error=f"no agent available: {exc}")
+            return
+        yield AgentEvent(kind=EventKind.STATUS, text=f"one-shot {name}: {reason}")
+        saw_terminal = False
+        try:
+            agent.start()
+            for event in agent.run(request, context):
+                self._last_activity = time.monotonic()
+                saw_terminal = event.kind in (EventKind.DONE, EventKind.ERROR)
+                yield event
+                if saw_terminal:
+                    break
+        except Exception as exc:  # noqa: BLE001 - an adapter crash must not kill us
+            self._log.error("targeted run failed: %s", exc, exc_info=True)
+            yield AgentEvent(kind=EventKind.ERROR, error=f"agent error: {exc}")
+            return
+        finally:
+            # Whatever happened, the one-shot child goes with the turn: this
+            # is the path that would otherwise leak a harness per request.
+            with _suppressed():
+                agent.close()
+            self._last_activity = time.monotonic()
+        if not saw_terminal:
+            yield AgentEvent(kind=EventKind.DONE)
+
     def _run(
         self,
         shell: str,
@@ -1078,6 +1245,9 @@ class Daemon:
         context: AgentContext,
         connection: socket.socket | None,
     ) -> Iterator[AgentEvent]:
+        if self._targeted(request.target):
+            yield from self._run_targeted(request, context)
+            return
         try:
             slot, conversation = self._acquire(shell)
         except Exception as exc:  # noqa: BLE001 - a backend that won't start

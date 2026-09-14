@@ -298,7 +298,15 @@ AGENT_MARK = "@"
 
 
 def _is_agent_name(word: str) -> bool:
-    """A plain harness word: a letter, then letters, digits, ``_`` or ``-``.
+    """A plain harness word, or a ``backend/model/effort`` target token.
+
+    A letter, then letters, digits, ``_``, ``-`` or ``/`` (task t6's
+    ``@target`` grammar) -- ``/`` is allowed *inside* the word but the first
+    character rule is unchanged, so ``/foo`` and ``@/x`` never qualify. At
+    most three ``/``-separated segments, none of them empty (mirrors
+    :func:`nvsh.config._parse_alias_target`), so ``claude//sonnet``,
+    ``claude/`` and ``a/b/c/d`` are all rejected here rather than reaching
+    the known-adapter check.
 
     Hand-rolled rather than a regex so this module keeps to the three
     stdlib imports its contract test allows (``dataclasses``, ``shlex``,
@@ -306,22 +314,58 @@ def _is_agent_name(word: str) -> bool:
     """
     if not word or not (word[0].isascii() and word[0].isalpha()):
         return False
-    return all((ch.isascii() and (ch.isalnum())) or ch in "_-" for ch in word)
+    if not all((ch.isascii() and ch.isalnum()) or ch in "_-/" for ch in word):
+        return False
+    segments = word.split("/")
+    return len(segments) <= 3 and all(segment != "" for segment in segments)
 
 
-def known_agents() -> frozenset[str]:
-    """Harness names an ``@name`` mark may address.
+def _known_adapters() -> frozenset[str]:
+    """Registered backend names (``nvsh.agent.registry.ADAPTERS``).
 
-    Imported lazily from :mod:`nvsh.agent.registry` so this module stays
-    importable (and pure) without the agent package; an import failure
-    yields an empty set, which makes every ``@name`` line an ordinary
-    command rather than a guess.
+    Imported lazily so this module stays importable (and mostly pure)
+    without the agent package; an import failure yields an empty set.
     """
     try:
         from .agent.registry import ADAPTERS
     except Exception:  # noqa: BLE001 - classification must never raise
         return frozenset()
     return frozenset(ADAPTERS)
+
+
+def _known_aliases() -> frozenset[str]:
+    """Alias names an ``@name`` mark may address (config ``[aliases]``, task t6).
+
+    Loaded lazily -- this reads ``config.toml`` from disk, unlike the rest
+    of this module -- and tolerant of a missing or invalid config: any
+    failure yields an empty set (plus the always-valid ``'default'``,
+    which :meth:`nvsh.config.Config.resolve_target` accepts even with no
+    ``[aliases]`` table at all), so a broken config file never crashes mark
+    classification, it only makes alias names other than ``'default'``
+    fall through as ordinary lines.
+    """
+    try:
+        from . import config as nvsh_config
+
+        cfg = nvsh_config.load()
+        names = set(cfg.aliases)
+        default_alias = nvsh_config.DEFAULT_ALIAS
+    except Exception:  # noqa: BLE001 - classification must never raise
+        names = set()
+        default_alias = "default"
+    names.add(default_alias)
+    return frozenset(names)
+
+
+def known_agents() -> frozenset[str]:
+    """Harness names an ``@name`` mark may address: adapters plus aliases.
+
+    Union of the registered backend names (:func:`_known_adapters`) and the
+    configured alias names, including the always-valid ``'default'``
+    (:func:`_known_aliases`). Either source failing to load still leaves
+    the other usable.
+    """
+    return _known_adapters() | _known_aliases()
 
 
 def parse_mark(line: str) -> ProseRequest | None:
@@ -334,12 +378,16 @@ def parse_mark(line: str) -> ProseRequest | None:
       an ASCII letter (so ``?*.txt``, ``?1x`` and ``?.config`` stay globs),
       the line either contains a space or ends in ``?`` (so a bare ``?foo``
       stays a glob), and something is left once the mark is stripped.
-    * ``@name`` — ``name`` is a plain word (a letter, then letters, digits,
-      ``_`` or ``-``) that is a *registered* harness, followed by whitespace
-      and a non-empty question. ``@`` alone, ``@pi`` alone, ``@foo.bar
-      hello`` and an unregistered ``@name`` are all ordinary commands, and
-      an address in argument position (``mail a@b.c``) never starts the
-      line, so it is never a mark.
+    * ``@target`` — ``target`` is a plain word (a letter, then letters,
+      digits, ``_``, ``-`` or ``/``) followed by whitespace and a non-empty
+      question. It is either a *registered* alias or adapter name
+      (``@reviewer ...``, ``@pi ...``, ``@default ...``), or a
+      ``backend/model[/effort]`` literal whose first segment is a
+      *registered* adapter (``@claude/sonnet/medium ...``). ``@`` alone,
+      ``@pi`` alone, ``@foo.bar hello``, an unregistered ``@name`` and a
+      slashed target with an unregistered backend segment are all ordinary
+      commands, and an address in argument position (``mail a@b.c``) never
+      starts the line, so it is never a mark.
     """
     text = (line or "").strip()
     if not text:
@@ -366,12 +414,30 @@ def _parse_question_mark(text: str) -> ProseRequest | None:
 
 
 def _parse_agent_mark(text: str) -> ProseRequest | None:
-    """The ``@name ...`` half of :func:`parse_mark`; ``text`` starts with ``@``."""
+    """The ``@target ...`` half of :func:`parse_mark`; ``text`` starts with ``@``.
+
+    ``target`` is one of (task t6's ``@target`` grammar):
+
+    * a plain name registered as an alias (including ``'default'``) or an
+      adapter -- ``@reviewer ...`` / ``@pi ...``;
+    * a literal ``backend/model/effort`` (or ``backend/model``) token whose
+      *first* segment is a known adapter -- ``@claude/sonnet/medium ...``.
+
+    An unrecognized plain name or an unrecognized backend segment leaves
+    the line an ordinary command, exactly like today's unregistered
+    ``@name``.
+    """
     parts = text[1:].split(None, 1)
     if len(parts) != 2:
         return None
     name, question = parts[0], parts[1].strip()
-    if not question or not _is_agent_name(name) or name not in known_agents():
+    if not question or not _is_agent_name(name):
+        return None
+    if "/" in name:
+        backend = name.split("/", 1)[0]
+        if backend not in _known_adapters():
+            return None
+    elif name not in known_agents():
         return None
     return ProseRequest(question=question, agent=name, explicit=True)
 

@@ -173,10 +173,16 @@ def _handle_context(inv: SlashInvocation) -> int:
 
 
 def _agent_lines(rows: list[dict]) -> str:
+    """Mirrors ``nvsh agent list``'s text rendering (see ``build_adapter_rows``)."""
     lines = []
     for row in rows:
         status = "installed" if row["installed"] else "not installed"
-        marker = " (configured)" if row.get("configured") else ""
+        tags = []
+        if row.get("default"):
+            tags.append("default")
+        if row.get("hosted"):
+            tags.append("hosted")
+        marker = f" ({', '.join(tags)})" if tags else ""
         lines.append(f"{row['name']}: {status}{marker} — {row['description']}")
     return "\n".join(lines)
 
@@ -184,15 +190,14 @@ def _agent_lines(rows: list[dict]) -> str:
 def _handle_agent(inv: SlashInvocation) -> int:
     from . import config as nvsh_config
     from .agent import registry
+    from .cli._commands.agent import build_adapter_rows
 
     panel = inv.panel_or()
     sub = inv.args[0] if inv.args else "list"
 
     if sub == "list":
         cfg = nvsh_config.load()
-        rows = registry.available_adapters()
-        for row in rows:
-            row["configured"] = row["name"] == cfg.agent_provider
+        rows = build_adapter_rows(cfg)
         panel.line(_agent_lines(rows))
         return 0
 
@@ -360,18 +365,44 @@ def _complete_ask(args: list[str]) -> list[Item]:
 
 
 def agent_mark_items() -> list[Item]:
-    """``@name`` entries of the first-word palette (deviation d23).
+    """``@target`` entries of the first-word palette (deviation d23, task t6).
 
     The bash layer holds no harness list either (``docs/shell-integration.md``):
     ``__nvsh_enter`` decides that ``@qwen ...`` is a mark by finding ``@qwen``
-    in this palette, exactly as it decides ``/doctor`` is a command. Every
-    registered adapter is listed, installed or not -- an uninstalled one gets
-    the one-line "not available" refusal, which is more use than a line bash
-    answers with ``command not found``.
+    in this palette, exactly as it decides ``/doctor`` is a command. Ordered
+    ``'default'`` first, then the other configured aliases (alphabetically),
+    then every registered adapter not already listed as an alias --
+    installed or not, since an uninstalled one gets the one-line "not
+    available" refusal, which is more use than a line bash answers with
+    ``command not found``. A missing or invalid config yields no aliases
+    beyond ``'default'``, never an exception.
     """
+    from . import config as nvsh_config
     from .agent import registry
 
-    return [Item(f"@{name}", f"ask {name} this one request") for name in registry.ADAPTERS]
+    try:
+        aliases = dict(nvsh_config.load().aliases)
+    except Exception:  # noqa: BLE001 - the palette must never fail to build
+        aliases = {}
+
+    seen: set[str] = set()
+    items: list[Item] = []
+
+    def _add(name: str, description: str) -> None:
+        if name in seen:
+            return
+        seen.add(name)
+        items.append(Item(f"@{name}", description))
+
+    _add(nvsh_config.DEFAULT_ALIAS, "ask the default harness this one request")
+    for name in sorted(aliases):
+        if name == nvsh_config.DEFAULT_ALIAS:
+            continue
+        _add(name, f"ask {name} this one request")
+    for name in registry.ADAPTERS:
+        _add(name, f"ask {name} this one request")
+
+    return items
 
 
 def _complete_agent(args: list[str]) -> list[Item]:
