@@ -9,6 +9,8 @@ from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Mapping
 
+from .base import Target, target_to_dict
+
 
 def default_audit_path(env: Mapping[str, str] | None = None) -> Path:
     """Resolve ``$XDG_STATE_HOME/nvsh/audit.jsonl`` through an injectable env mapping.
@@ -59,14 +61,29 @@ class AuditLog:
         proposal: object = None,
         decision: object = None,
         outcome: object = None,
+        target: Target | Mapping[str, object] | None = None,
     ) -> dict:
-        """Append one JSON line and return the entry that was written."""
+        """Append one JSON line and return the entry that was written.
+
+        ``target`` is optional (t18): existing call sites (``nvsh/agent/
+        loop.py``, ``nvsh/installers.py``) never pass it and keep recording
+        ``"target": null``. A :class:`~nvsh.agent.base.Target` is encoded via
+        :func:`~nvsh.agent.base.target_to_dict`; a caller that already has a
+        plain dict (e.g. decoded off the wire) may pass that instead.
+        """
+        if isinstance(target, Target):
+            target_data: object = target_to_dict(target)
+        elif target is not None:
+            target_data = dict(target)
+        else:
+            target_data = None
         entry = {
             "ts": time.time(),
             "event": event,
             "proposal": _to_jsonable(proposal),
             "decision": decision,
             "outcome": _to_jsonable(outcome),
+            "target": target_data,
         }
         line = json.dumps(entry, sort_keys=True)
         with open(self.path, "a", encoding="utf-8") as handle:
