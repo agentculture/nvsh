@@ -1,0 +1,430 @@
+#!/usr/bin/env python3
+# recorded-from: codex-cli 0.147.0
+"""Fake ``codex app-server`` (and ``codex exec --json``) replaying a transcript.
+
+The ``RECORDED`` script below is a **redacted composite of two real sessions**
+captured from ``codex app-server`` on codex-cli 0.147.0 by driving its stdio
+JSON-RPC by hand: one session that asked for command approval and one that
+streamed reasoning summaries and was interrupted mid-turn. Every id
+(``threadId``, ``turnId``, item ids), path and user-facing string has been
+replaced with a fixed fake value -- nothing recorded here identifies a
+machine or a person -- but the *shapes* (method names, param field names,
+response envelopes, event ordering) are exactly what 0.147.0 emitted.
+
+Which path it takes is decided by argv, the way the real binary decides:
+
+* ``... app-server``   -- JSON-RPC replay (the default, below).
+* ``... exec --json``  -- the legacy line protocol, so the same fake can
+  stand in for the fallback path ``CodexAgent`` uses when ``initialize``
+  fails.
+
+Environment knobs (all optional):
+
+* ``NVSH_FAKE_CODEX_NO_APP_SERVER=1`` -- refuse ``app-server`` with a usage
+  error on stderr and exit non-zero, the way a codex old enough not to have
+  the subcommand would. This is how a test reaches the fallback path.
+* ``NVSH_FAKE_CODEX_LEGACY_APPROVAL=1`` -- ask for approval with the legacy
+  ``execCommandApproval`` method (argv-list ``command``, ``ReviewDecision``
+  reply vocabulary) instead of ``item/commandExecution/requestApproval``.
+* ``NVSH_FAKE_CODEX_COMMANDS=<path>`` -- append every client line received,
+  one JSON object per line, so a test can assert on what the client sent.
+* ``NVSH_FAKE_CODEX_APPROVAL_TIMEOUT=<seconds>`` -- give up waiting for an
+  approval answer after this long (default 10) and emit an ``error``
+  notification, so a broken client fails the test fast instead of hanging
+  the suite.
+* ``NVSH_FAKE_EVENTS=<path>`` -- for the ``exec --json`` path only: a JSON
+  array of ``{"kind", "text", "error"}`` events to replay (the same file
+  ``tests/_fake_adapters.py`` writes for ``tests/fakes/codex``).
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+import threading
+
+THREAD_ID = "th-fake-0000-0001"
+TURN_ID = "turn-fake-0000-0001"
+USER_ITEM = "item-fake-user-1"
+REASONING_ITEM = "item-fake-reasoning-1"
+MESSAGE_ITEM = "item-fake-message-1"
+FINAL_ITEM = "item-fake-message-2"
+EXEC_ITEM = "exec-fake-0001"
+APPROVAL_REQUEST_ID = 0
+FAKE_CWD = "/work"
+FAKE_COMMAND = "/bin/bash -lc 'mount -o remount,rw /boot'"
+FAKE_REASON = "Allow remounting /boot read-write to fix the failing update?"
+
+THREAD = {
+    "id": THREAD_ID,
+    "sessionId": THREAD_ID,
+    "cwd": FAKE_CWD,
+    "ephemeral": False,
+    "modelProvider": "openai",
+    "name": None,
+    "preview": "",
+    "status": {"type": "idle"},
+    "turns": [],
+}
+
+
+def _turn(status: str, error: dict | None = None) -> dict:
+    return {
+        "id": TURN_ID,
+        "items": [],
+        "itemsView": "notLoaded",
+        "status": status,
+        "error": error,
+        "startedAt": 1700000000,
+        "completedAt": None,
+        "durationMs": None,
+    }
+
+
+def _note(method: str, params: dict) -> dict:
+    return {"method": method, "params": params, "emittedAtMs": 1700000000000}
+
+
+def _item_note(method: str, item: dict) -> dict:
+    params = {"item": item, "threadId": THREAD_ID, "turnId": TURN_ID}
+    params["startedAtMs" if method == "item/started" else "completedAtMs"] = 1700000000000
+    return _note(method, params)
+
+
+def _delta(method: str, item_id: str, delta: str, extra: dict | None = None) -> dict:
+    params = {"threadId": THREAD_ID, "turnId": TURN_ID, "itemId": item_id, "delta": delta}
+    params.update(extra or {})
+    return _note(method, params)
+
+
+#: Responses keyed by the method that asked for them. ``turn/steer`` and
+#: ``turn/interrupt`` answer exactly as the real server did (``{"turnId":
+#: ...}`` and ``{}`` respectively).
+RESPONSES = {
+    "initialize": {
+        "userAgent": "nvsh/0.147.0 (Linux; aarch64)",
+        "codexHome": "/work/.codex",
+        "platformFamily": "unix",
+        "platformOs": "linux",
+    },
+    "thread/start": {
+        "thread": THREAD,
+        "approvalPolicy": "on-request",
+        "sandbox": "read-only",
+        "cwd": FAKE_CWD,
+        "model": "fake-model",
+        "reasoningEffort": "low",
+    },
+    "thread/resume": {"thread": THREAD, "approvalPolicy": "on-request", "sandbox": "read-only"},
+    "turn/start": {"turn": _turn("inProgress")},
+    "turn/steer": {"turnId": TURN_ID},
+    "turn/interrupt": {},
+}
+
+#: Everything the server said between ``turn/start``'s response and the
+#: approval request, in recorded order.
+BEFORE_APPROVAL = [
+    _note("thread/status/changed", {"threadId": THREAD_ID, "status": {"type": "active"}}),
+    _note("turn/started", {"threadId": THREAD_ID, "turn": _turn("inProgress")}),
+    _item_note(
+        "item/started",
+        {
+            "type": "userMessage",
+            "id": USER_ITEM,
+            "clientId": None,
+            "content": [{"type": "text", "text": "the prompt nvsh sent"}],
+        },
+    ),
+    _item_note(
+        "item/started",
+        {"type": "reasoning", "id": REASONING_ITEM, "summary": [], "content": []},
+    ),
+    _note(
+        "item/reasoning/summaryPartAdded",
+        {
+            "threadId": THREAD_ID,
+            "turnId": TURN_ID,
+            "itemId": REASONING_ITEM,
+            "summaryIndex": 0,
+        },
+    ),
+    _delta(
+        "item/reasoning/summaryTextDelta",
+        REASONING_ITEM,
+        "**Checking the read-only mount**",
+        {"summaryIndex": 0},
+    ),
+    _delta("item/reasoning/textDelta", REASONING_ITEM, " /boot is mounted ro", {"contentIndex": 0}),
+    _item_note(
+        "item/started",
+        {
+            "type": "agentMessage",
+            "id": MESSAGE_ITEM,
+            "text": "",
+            "phase": "commentary",
+            "memoryCitation": None,
+        },
+    ),
+    _delta("item/agentMessage/delta", MESSAGE_ITEM, "Remounting"),
+    _delta("item/agentMessage/delta", MESSAGE_ITEM, " /boot"),
+    _delta("item/agentMessage/delta", MESSAGE_ITEM, " read-write."),
+    _item_note(
+        "item/completed",
+        {
+            "type": "agentMessage",
+            "id": MESSAGE_ITEM,
+            "text": "Remounting /boot read-write.",
+            "phase": "commentary",
+            "memoryCitation": None,
+        },
+    ),
+]
+
+#: The approval server request, in both the current and the legacy shape.
+APPROVAL_REQUEST = {
+    "id": APPROVAL_REQUEST_ID,
+    "method": "item/commandExecution/requestApproval",
+    "params": {
+        "threadId": THREAD_ID,
+        "turnId": TURN_ID,
+        "itemId": EXEC_ITEM,
+        "startedAtMs": 1700000000000,
+        "environmentId": "local",
+        "approvalId": None,
+        "reason": FAKE_REASON,
+        "command": FAKE_COMMAND,
+        "cwd": FAKE_CWD,
+        "commandActions": [{"type": "unknown", "command": FAKE_COMMAND}],
+        "availableDecisions": ["accept", "cancel"],
+    },
+}
+
+LEGACY_APPROVAL_REQUEST = {
+    "id": APPROVAL_REQUEST_ID,
+    "method": "execCommandApproval",
+    "params": {
+        "conversationId": THREAD_ID,
+        "callId": EXEC_ITEM,
+        "approvalId": None,
+        "command": ["/bin/bash", "-lc", "mount -o remount,rw /boot"],
+        "cwd": FAKE_CWD,
+        "parsedCmd": [{"type": "unknown", "cmd": "mount -o remount,rw /boot"}],
+        "reason": FAKE_REASON,
+    },
+}
+
+
+def after_approval(approved: bool) -> list:
+    """What the server says once the client has answered the approval."""
+    status = "completed" if approved else "declined"
+    exec_item = {
+        "type": "commandExecution",
+        "id": EXEC_ITEM,
+        "command": FAKE_COMMAND,
+        "cwd": FAKE_CWD,
+        "processId": "1234" if approved else None,
+        "source": "agent",
+        "status": status,
+        "commandActions": [{"type": "unknown", "command": FAKE_COMMAND}],
+        "aggregatedOutput": "" if approved else None,
+        "exitCode": 0 if approved else None,
+        "durationMs": 4 if approved else None,
+    }
+    final_text = "Remounted /boot." if approved else "The command was declined; nothing changed."
+    return [
+        _note("serverRequest/resolved", {"threadId": THREAD_ID, "requestId": APPROVAL_REQUEST_ID}),
+        _item_note("item/started", dict(exec_item, status="inProgress")),
+        _delta("item/commandExecution/outputDelta", EXEC_ITEM, ""),
+        _item_note("item/completed", exec_item),
+        _note(
+            "thread/tokenUsage/updated",
+            {
+                "threadId": THREAD_ID,
+                "turnId": TURN_ID,
+                "tokenUsage": {"total": {"totalTokens": 1234}},
+            },
+        ),
+        _item_note(
+            "item/started",
+            {
+                "type": "agentMessage",
+                "id": FINAL_ITEM,
+                "text": "",
+                "phase": "final_answer",
+                "memoryCitation": None,
+            },
+        ),
+        _delta("item/agentMessage/delta", FINAL_ITEM, final_text),
+        _item_note(
+            "item/completed",
+            {
+                "type": "agentMessage",
+                "id": FINAL_ITEM,
+                "text": final_text,
+                "phase": "final_answer",
+                "memoryCitation": None,
+            },
+        ),
+        _note("thread/status/changed", {"threadId": THREAD_ID, "status": {"type": "idle"}}),
+        _note("turn/completed", {"threadId": THREAD_ID, "turn": _turn("completed")}),
+    ]
+
+
+INTERRUPTED = [
+    _note("thread/status/changed", {"threadId": THREAD_ID, "status": {"type": "idle"}}),
+    _note("turn/completed", {"threadId": THREAD_ID, "turn": _turn("interrupted")}),
+]
+
+
+def emit(obj: dict) -> None:
+    sys.stdout.write(json.dumps(obj) + "\n")
+    sys.stdout.flush()
+
+
+def record(line: dict) -> None:
+    path = os.environ.get("NVSH_FAKE_CODEX_COMMANDS")
+    if not path:
+        return
+    with open(path, "a", encoding="utf-8") as handle:
+        handle.write(json.dumps(line) + "\n")
+
+
+def run_exec() -> int:
+    """The ``codex exec --json`` fallback path: the legacy envelope lines."""
+    events_path = os.environ.get("NVSH_FAKE_EVENTS")
+    if events_path:
+        with open(events_path, encoding="utf-8") as handle:
+            events = json.load(handle)
+    else:
+        events = [
+            {"kind": "status", "text": "fallback"},
+            {"kind": "text_delta", "text": "from codex exec"},
+            {"kind": "done"},
+        ]
+    for event in events:
+        kind = event.get("kind")
+        if kind == "status":
+            msg = {"type": "task_started", "text": event.get("text", "")}
+        elif kind == "text_delta":
+            msg = {"type": "agent_message_delta", "delta": event.get("text", "")}
+        elif kind == "error":
+            emit({"msg": {"type": "error", "message": event.get("error", "")}})
+            return 1
+        elif kind == "done":
+            emit({"msg": {"type": "task_complete"}})
+            return 0
+        else:
+            continue
+        emit({"msg": msg})
+    return 0
+
+
+class Replay:
+    """Replays the recorded app-server transcript against one client."""
+
+    def __init__(self) -> None:
+        self.timeout = float(os.environ.get("NVSH_FAKE_CODEX_APPROVAL_TIMEOUT", "10"))
+        self.legacy = os.environ.get("NVSH_FAKE_CODEX_LEGACY_APPROVAL") == "1"
+        self.awaiting = False
+        self.finished = False
+        self.watchdog: threading.Timer | None = None
+
+    def give_up(self) -> None:
+        emit(
+            _note(
+                "error",
+                {
+                    "threadId": THREAD_ID,
+                    "turnId": TURN_ID,
+                    "willRetry": False,
+                    "error": {"message": f"no approval answer within {self.timeout:g}s"},
+                },
+            )
+        )
+        os._exit(0)
+
+    def watch(self, awaiting: bool) -> None:
+        if self.watchdog is not None:
+            self.watchdog.cancel()
+            self.watchdog = None
+        if not awaiting:
+            return
+        timer = threading.Timer(self.timeout, self.give_up)
+        timer.daemon = True
+        timer.start()
+        self.watchdog = timer
+
+    def start_turn(self) -> None:
+        for obj in BEFORE_APPROVAL:
+            emit(obj)
+        emit(LEGACY_APPROVAL_REQUEST if self.legacy else APPROVAL_REQUEST)
+        self.awaiting = True
+        self.watch(True)
+
+    def answer(self, message: dict) -> None:
+        decision = str((message.get("result") or {}).get("decision", ""))
+        approved = decision in ("accept", "acceptForSession", "approved", "approved_for_session")
+        self.awaiting = False
+        self.watch(False)
+        for obj in after_approval(approved):
+            emit(obj)
+        self.finished = True
+
+    def interrupt(self) -> None:
+        self.awaiting = False
+        self.watch(False)
+        for obj in INTERRUPTED:
+            emit(obj)
+        self.finished = True
+
+    def handle(self, message: dict) -> None:
+        record(message)
+        method = message.get("method")
+        if method is None:
+            if self.awaiting:
+                self.answer(message)
+            return
+        if method in RESPONSES:
+            emit({"id": message.get("id"), "result": RESPONSES[method]})
+        else:
+            emit(
+                {
+                    "id": message.get("id"),
+                    "error": {"code": -32601, "message": f"unknown method {method}"},
+                }
+            )
+            return
+        if method == "turn/start":
+            self.start_turn()
+        elif method == "turn/interrupt":
+            self.interrupt()
+
+    def loop(self) -> int:
+        for raw_line in sys.stdin:
+            line = raw_line.strip()
+            if not line:
+                continue
+            try:
+                message = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            self.handle(message)
+        return 0
+
+
+def main() -> int:
+    argv = sys.argv[1:]
+    if "exec" in argv:
+        return run_exec()
+    if "app-server" not in argv:
+        sys.stderr.write("fake codex: expected `exec` or `app-server`\n")
+        return 2
+    if os.environ.get("NVSH_FAKE_CODEX_NO_APP_SERVER") == "1":
+        sys.stderr.write("error: unrecognized subcommand 'app-server'\n")
+        return 2
+    return Replay().loop()
+
+
+if __name__ == "__main__":
+    sys.exit(main())
