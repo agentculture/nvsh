@@ -26,7 +26,7 @@ import socket
 import time
 from dataclasses import asdict
 from pathlib import Path
-from typing import Iterator, Mapping
+from typing import Iterator, Mapping, cast
 
 from . import __version__
 from . import daemon as _daemon
@@ -258,7 +258,7 @@ def targeted_config(cfg: Config, target: Target) -> Config:
         settings["effort"] = target.effort
     agents = dict(cfg.agents)
     agents[target.backend] = settings
-    return replace(cfg, agent_provider=target.backend, agents=agents)
+    return cast(Config, replace(cfg, agent_provider=target.backend, agents=agents))
 
 
 def one_shot(
@@ -489,9 +489,7 @@ def _retry_after_mismatch(
     running = str((event.args or {}).get("daemon_version") or "an older build")
     yield AgentEvent(
         kind=EventKind.STATUS,
-        text=(
-            f"restarted the daemon: it was running nvsh {running}, " f"this client is {__version__}"
-        ),
+        text=(f"restarted the daemon: it was running nvsh {running}, this client is {__version__}"),
     )
     stop(env=env)
     _wait_socket_gone(env, _STOP_TIMEOUT)

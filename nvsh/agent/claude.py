@@ -464,7 +464,7 @@ class ClaudeAgent(SubprocessAgent):
         try:
             proc.stdin.write(json.dumps(message) + "\n")
             proc.stdin.flush()
-        except (BrokenPipeError, OSError, ValueError):
+        except (OSError, ValueError):
             return False
         return True
 

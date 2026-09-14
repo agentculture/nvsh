@@ -274,7 +274,7 @@ class AgyAgent(NvshAgent):
             try:
                 self._proc.stdin.write(payload + "\n")
                 self._proc.stdin.flush()
-            except (BrokenPipeError, OSError) as exc:
+            except OSError as exc:
                 yield AgentEvent(kind=EventKind.ERROR, error=f"agy stdin closed: {exc}")
                 return
 
@@ -337,7 +337,6 @@ class AgyAgent(NvshAgent):
                     kind=EventKind.ERROR,
                     error=str(result.get("error") or result.get("response") or "agy error"),
                 )
-            return
         # Unrecognized event types (a newer agy) are silently ignored rather
         # than surfaced as noise -- there is no catch-all STATUS mapping
         # here the way pi.py has one, because agy's ``event`` vocabulary is

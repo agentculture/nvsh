@@ -37,7 +37,7 @@ import threading
 import time
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Callable, Iterator, Mapping, Optional
+from typing import Callable, Iterator, Mapping, Optional, cast
 
 from nvsh import __version__, runtimedir
 
@@ -710,7 +710,7 @@ class Daemon:
             settings["effort"] = target.effort
         agents = dict(self.config.agents)
         agents[target.backend] = settings
-        return replace(self.config, agent_provider=target.backend, agents=agents)
+        return cast(Config, replace(self.config, agent_provider=target.backend, agents=agents))
 
     def _make_agent(self, target: Target, *, forced: bool = False) -> tuple[NvshAgent, str, str]:
         """Build one adapter for *target*. Records nothing on the daemon.
@@ -1192,7 +1192,8 @@ class Daemon:
         assert target is not None
         try:
             agent, name, reason = self._make_agent(target, forced=True)
-        except Exception as exc:  # noqa: BLE001 - reported, never raised at a client
+        # Reported to the client as an ERROR event, never raised.
+        except Exception as exc:  # noqa: BLE001
             self._log.error("could not build %s: %s", target.backend, exc)
             yield AgentEvent(kind=EventKind.ERROR, error=f"no agent available: {exc}")
             return

@@ -208,7 +208,7 @@ def _make_tree(tmp_path: Path) -> Path:
 def test_home_path_is_caught(tmp_path: Path) -> None:
     root = _make_tree(tmp_path)
     (root / "tests" / "fixtures" / "dirty.txt").write_text(
-        "cd /home/alice/project && run\n", encoding="utf-8"
+        "cd " + "/home/" + "alice/project && run\n", encoding="utf-8"
     )
     findings = scan_pii(root)
     assert any(f.kind == "home-path" for f in findings), findings
