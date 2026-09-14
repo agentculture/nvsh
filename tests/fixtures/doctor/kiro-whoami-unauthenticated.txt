@@ -1,0 +1,5 @@
+# recorded-from: kiro-cli 2.0.0
+# Quoted verbatim from docs/specs/2026-09-14-first-class-multi-harness-with-aliases.md's
+# own 2026-09-14 probe of an unauthenticated kiro-cli install (this repo's kiro-cli is
+# logged in, so this exact text could not be re-captured live for this task).
+You are not logged in, please log in with kiro-cli login

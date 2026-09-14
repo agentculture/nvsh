@@ -1,0 +1,5 @@
+{
+  "permissions": {
+    "allow": ["command(uv)", "command(git commit)"]
+  }
+}

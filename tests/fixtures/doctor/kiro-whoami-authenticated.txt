@@ -1,0 +1,5 @@
+# recorded-from: kiro-cli 2.21.4
+# The Email line is a placeholder: the real 'kiro-cli whoami' output on this box
+# prints the operator's actual e-mail, which must never land in a committed fixture.
+Logged in with Builder ID
+Email: REDACTED
