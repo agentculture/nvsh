@@ -307,6 +307,69 @@ def test_agent_install_records_an_audit_row(monkeypatch, tmp_path, xdg_home, _fa
     assert entry["decision"] is True
 
 
+def test_agent_install_reports_env_error_when_the_tool_fails(capsys, monkeypatch):
+    """Qodo #8: a failed install (nonzero returncode) must not exit 0."""
+    monkeypatch.setattr("nvsh.installers.shutil.which", lambda tool: "/usr/bin/" + tool)
+
+    def _fake_run(argv, **kwargs):
+        import subprocess as _subprocess
+
+        return _subprocess.CompletedProcess(args=argv, returncode=1, stdout="", stderr="EACCES")
+
+    monkeypatch.setattr("nvsh.installers.subprocess.run", _fake_run)
+
+    rc = main(["agent", "install", "claude", "--yes", "--json"])
+    assert rc == 2
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert payload["ran"] is True
+    assert payload["returncode"] == 1
+    assert "claude" in captured.err
+    assert "1" in captured.err
+    assert "hint:" in captured.err
+
+
+def test_agent_install_declined_is_still_exit_0(capsys, monkeypatch, _fake_npm_run):
+    """A declined install (no --yes, no tty) is not a failure."""
+    monkeypatch.setattr("nvsh.installers.shutil.which", lambda tool: "/usr/bin/" + tool)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
+
+    rc = main(["agent", "install", "claude", "--json"])
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ran"] is False
+    assert _fake_npm_run == []
+
+
+@pytest.mark.parametrize("name", ["agy", "kiro"])
+def test_agent_install_non_executable_step_is_still_exit_0(capsys, monkeypatch, name):
+    """A deliberately non-executable step (ran=False, returncode=None) is exit 0."""
+    rc = main(["agent", "install", name, "--yes", "--json"])
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ran"] is False
+    assert payload["returncode"] is None
+
+
+def test_agent_install_closed_stdin_declines_instead_of_crashing(
+    capsys, monkeypatch, _fake_npm_run
+):
+    """Qodo #9: a closed/unavailable stdin must decline, not raise."""
+    monkeypatch.setattr("nvsh.installers.shutil.which", lambda tool: "/usr/bin/" + tool)
+
+    class _RaisingIsatty:
+        def isatty(self):
+            raise ValueError("I/O operation on closed file")
+
+    monkeypatch.setattr(sys, "stdin", _RaisingIsatty())
+
+    rc = main(["agent", "install", "claude", "--json"])
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ran"] is False
+    assert _fake_npm_run == []
+
+
 def test_agent_install_unknown_target_is_user_error(capsys):
     rc = main(["agent", "install", "not-a-backend"])
     assert rc == 1
