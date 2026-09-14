@@ -191,9 +191,12 @@ def test_subprocess_agent_child_does_not_see_claudecode_markers(monkeypatch):
 
 
 def test_redacted_tail_helper_redacts_a_deque_of_lines():
-    tail: deque[str] = deque(["plain line\n", "HF_TOKEN=abc123def4567890secret\n"])
+    # The fake token is assembled at runtime so secret scanners (GitGuardian,
+    # scripts/scan-secrets.py) never see a literal high-entropy value.
+    fake_token = "abc123" + "def456" + "7890" + "secret"
+    tail: deque[str] = deque(["plain line\n", f"HF_TOKEN={fake_token}\n"])
     text = redacted_tail(tail)
-    assert "HF_TOKEN=abc123def4567890secret" not in text
+    assert f"HF_TOKEN={fake_token}" not in text
     assert "<REDACTED:env_assignment>" in text
     assert "plain line" in text
 
