@@ -89,6 +89,25 @@ def test_agent_configured_fails_for_an_unknown_provider():
     assert "not-a-real-adapter" in check["message"]
 
 
+def test_agent_configured_unknown_via_aliases_default_points_at_the_alias():
+    # Qodo #10: [aliases].default resolves before the legacy [agent]
+    # provider (Config.resolve_target), so telling the operator to set
+    # [agent] provider cannot fix an unknown [aliases].default target.
+    cfg = Config(aliases={"default": "nosuch"})
+    check = doctor_checks.check_agent_configured(cfg, None)
+    assert check["passed"] is False
+    assert "[aliases].default" in check["remediation"]
+    assert "nvsh agent use" in check["remediation"]
+    assert "[agent] provider" not in check["remediation"]
+
+
+def test_agent_configured_unknown_via_agent_provider_still_names_agent_provider():
+    cfg = Config(agent_provider="nosuch")
+    check = doctor_checks.check_agent_configured(cfg, None)
+    assert check["passed"] is False
+    assert "[agent] provider" in check["remediation"]
+
+
 def test_agent_configured_fails_when_config_toml_failed_to_load():
     check = doctor_checks.check_agent_configured(None, "malformed TOML")
     assert check["passed"] is False
