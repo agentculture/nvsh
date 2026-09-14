@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-09-14T16:14:56Z",
-  "updated": "2026-09-14T16:31:51Z",
+  "updated": "2026-09-14T16:43:56Z",
   "claims": [
     {
       "id": "c1",
@@ -678,6 +678,28 @@
       ],
       "origin": "llm",
       "status": "approved"
+    },
+    {
+      "id": "l3",
+      "code": "assumption-for-measurement",
+      "what": "t1 verified 'the daemon answered' by reading that _backend_name is only set in Daemon._build_agent rather than by breaking the daemon and watching the assertion fail",
+      "skipped_check": "run tests/test_agent_demo.py e2e with the daemon socket absent and confirm the assertion fails",
+      "refs": [
+        "t1"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l4",
+      "code": "assumption-for-measurement",
+      "what": "t4's first determinism test assumed pty chunk counts are stable between runs; measurement showed chunk boundaries vary, so the test now compares the concatenated stream",
+      "skipped_check": "",
+      "refs": [
+        "t4"
+      ],
+      "origin": "llm",
+      "status": "proposed"
     }
   ],
   "obligations": []

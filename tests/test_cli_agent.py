@@ -190,8 +190,10 @@ def test_agent_use_writes_config(capsys, xdg_home):
     assert cfg.aliases[DEFAULT_ALIAS] == "claude"
 
 
-@pytest.mark.parametrize("name", ADAPTER_NAMES)
+@pytest.mark.parametrize("name", [n for n in ADAPTER_NAMES if n != "demo"])
 def test_agent_use_accepts_every_registered_adapter(capsys, xdg_home, name):
+    """Every adapter but ``demo`` can be the persisted default; ``demo`` is a
+    scripted fixture and is refused (covered by test_demo_default_refused.py)."""
     rc = main(["agent", "use", name, "--json"])
     assert rc == 0
     payload = json.loads(capsys.readouterr().out)
