@@ -5,7 +5,7 @@
   "schema_version": 5,
   "status": "exported",
   "created": "2026-09-14T05:12:53Z",
-  "updated": "2026-09-14T06:58:14Z",
+  "updated": "2026-09-14T08:59:43Z",
   "targets": [
     {
       "id": "c1",
@@ -1055,7 +1055,7 @@
     },
     {
       "id": "r7",
-      "text": "test hygiene: under 'pytest -n auto' tests/test_cli_setup.py::test_hook_prints_refresh_notice_once_per_session leaves one 'nvsh.daemon --foreground' (900s idle timeout) running after the suite, and tests/test_daemon_lifecycle.py::test_autostart_waits_for_a_cold_backend_instead_of_falling_back is timing-flaky under xdist load (passes alone); measured 2026-09-14 after wave 3",
+      "text": "test hygiene: under 'pytest -n auto' tests/test_cli_setup.py::test_hook_prints_refresh_notice_once_per_session leaves one 'nvsh.daemon --foreground' (900s idle timeout) running after the suite; tests/test_daemon_lifecycle.py::test_autostart_waits_for_a_cold_backend_instead_of_falling_back is timing-flaky under xdist load; tests/test_panel.py::test_ctrl_c_returns_to_a_prompt_within_one_second (pre-existing, PR #8) failed once on a CI runner with exit -2 instead of 130 (run 34825250855) and passed on the parallel Tests run of the same commit",
       "kind": "follow_up",
       "task_id": "t16",
       "resolved": false,
