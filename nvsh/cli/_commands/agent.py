@@ -11,8 +11,12 @@ Backs the harness chooser (see :mod:`nvsh.agent.registry`):
   ``[aliases].default`` via :mod:`nvsh.config` (:func:`nvsh.config.set_provider`
   does both) (and, for ``openai-compat``, says where to put the gateway key when
   no bearer resolves — deviation d10)
-* ``nvsh agent install pi`` — prints the npm install command; runs it only with ``--yes``
-                               or an interactive 'y' (never on its own)
+* ``nvsh agent install <name>`` — for any of the eight :data:`nvsh.agent.registry.ADAPTERS`
+  keys, prints the step :func:`nvsh.installers.harness_install_step` computes
+  for it and runs that step (via :func:`nvsh.installers.run_install`, which
+  also appends an audit-log row) only with ``--yes`` or an interactive 'y' --
+  never on its own, and never at all for a non-executable step (``agy``/
+  ``kiro``/``openai-compat`` have no known installer).
 
 ``build_adapter_rows`` is the shared row-builder :mod:`nvsh.slash`'s
 ``/agent`` handler imports, so the CLI and slash surfaces never drift apart.
@@ -22,18 +26,21 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
-import shlex
-import shutil
-import subprocess  # nosec B404 - fixed argv below, no shell=True
 import sys
 
 from nvsh import config as nvsh_config
+from nvsh import installers
 from nvsh.agent import registry
 from nvsh.cli._errors import EXIT_USER_ERROR, CliError
 from nvsh.cli._output import emit_result
 
 #: Help text every ``--json`` flag in this verb group shares.
 _JSON_HELP = "Emit structured JSON."
+
+#: Sorted once, shared by the 'use'/'install' help strings and the
+#: unknown-name error messages, so all three list the same eight names in
+#: the same order.
+_ADAPTER_NAMES = ", ".join(sorted(registry.ADAPTERS))
 
 #: Where a gateway key goes when nothing exports one. The placeholder
 #: spelling, never a resolved path (d10).
@@ -130,11 +137,10 @@ def cmd_agent_list(args: argparse.Namespace) -> int:
 def cmd_agent_use(args: argparse.Namespace) -> int:
     name = args.name
     if name not in registry.ADAPTERS:
-        valid = ", ".join(sorted(registry.ADAPTERS))
         raise CliError(
             code=EXIT_USER_ERROR,
             message=f"unknown agent '{name}'",
-            remediation=f"choose one of: {valid}",
+            remediation=f"choose one of: {_ADAPTER_NAMES}",
         )
     cfg = nvsh_config.set_provider(name)
     json_mode = bool(getattr(args, "json", False))
@@ -155,37 +161,48 @@ def cmd_agent_use(args: argparse.Namespace) -> int:
     return 0
 
 
+def _install_confirm(args: argparse.Namespace) -> installers.ConfirmFn:
+    """The ``confirm`` callback :func:`nvsh.installers.run_install` gets.
+
+    ``--yes`` always approves without asking. Otherwise, on a real terminal
+    we hand back ``None`` so ``run_install`` uses its own interactive
+    ``[y/N]`` prompt; off a terminal (no tty, and no ``--yes``) we decline
+    without prompting -- there is nothing to prompt *to*, and blocking on
+    ``input()`` with no operator attached would hang forever.
+    """
+    if bool(getattr(args, "yes", False)):
+        return lambda _prompt: True
+    if sys.stdin.isatty():
+        return installers._default_confirm
+    return lambda _prompt: False
+
+
 def cmd_agent_install(args: argparse.Namespace) -> int:
-    if args.name != "pi":
+    name = args.name
+    if name not in registry.ADAPTERS:
         raise CliError(
             code=EXIT_USER_ERROR,
-            message=f"unknown install target '{args.name}'",
-            remediation="the only install target today is 'pi'",
+            message=f"unknown install target '{name}'",
+            remediation=f"choose one of: {_ADAPTER_NAMES}",
         )
 
-    command = registry.PI_INSTALL_CMD
-    has_npm = shutil.which("npm") is not None
-    ran = False
+    step = installers.harness_install_step(name)
+    result = installers.run_install(step, confirm=_install_confirm(args))
 
-    if not has_npm:
-        pass  # print the command but don't offer to run it -- there's nothing to run it with
-    elif getattr(args, "yes", False):
-        subprocess.run(shlex.split(command), check=False)  # nosec B603 - fixed argv, no shell
-        ran = True
-    elif sys.stdin.isatty():
-        answer = input(f"Run '{command}'? [y/N] ")
-        if answer.strip().lower() == "y":
-            subprocess.run(shlex.split(command), check=False)  # nosec B603
-            ran = True
-
-    result = {"command": command, "ran": ran, "npm_available": has_npm}
+    payload = {
+        "command": step.shell_line,
+        "ran": result.ran,
+        "executable": step.executable,
+        "needs_sudo": step.needs_sudo,
+        "returncode": result.returncode,
+    }
     json_mode = bool(getattr(args, "json", False))
     if json_mode:
-        emit_result(result, json_mode=True)
+        emit_result(payload, json_mode=True)
     else:
-        text = f"command: {command}\nran: {ran}"
-        if not has_npm:
-            text += "\nnote: npm not found on PATH; install node first"
+        text = f"command: {step.shell_line}\nran: {result.ran}"
+        if not step.executable:
+            text += f"\nnote: {step.shell_line}"
         emit_result(text, json_mode=False)
     return 0
 
@@ -208,12 +225,12 @@ def register(sub: argparse._SubParsersAction) -> None:
     lst.set_defaults(func=cmd_agent_list)
 
     use = noun_sub.add_parser("use", help="Set the configured harness backend.")
-    use.add_argument("name", help="One of: pi, qwen, claude, codex, openai-compat.")
+    use.add_argument("name", help=f"One of: {_ADAPTER_NAMES}.")
     use.add_argument("--json", action="store_true", help=_JSON_HELP)
     use.set_defaults(func=cmd_agent_use)
 
     install = noun_sub.add_parser("install", help="Print (and optionally run) an install command.")
-    install.add_argument("name", help="Install target (only 'pi' today).")
+    install.add_argument("name", help=f"Install target, one of: {_ADAPTER_NAMES}.")
     install.add_argument(
         "--yes", action="store_true", help="Run the install command without prompting."
     )

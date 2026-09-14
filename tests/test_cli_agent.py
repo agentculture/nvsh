@@ -1,18 +1,54 @@
-"""Tests for ``nvsh agent`` — list/use/install (task t10)."""
+"""Tests for ``nvsh agent`` — list/use/install (task t10, extended by t5).
+
+t5 covers every one of the eight :data:`nvsh.agent.registry.ADAPTERS` keys
+for both ``use`` and ``install``, and routes ``install`` through
+:func:`nvsh.installers.run_install` (so the audit log gets a row) instead of
+an inline ``subprocess.run`` call.
+"""
 
 from __future__ import annotations
 
 import json
+import sys
 
 import pytest
 
+from nvsh.agent import registry
 from nvsh.cli import main
+
+ADAPTER_NAMES = sorted(registry.ADAPTERS)
+
+#: The subset of ADAPTERS that get an executable npm step (harness_install_step)
+#: when npm is on PATH -- pi (its own dedicated command) plus the four
+#: NPM_PACKAGES entries. agy/kiro/openai-compat have no known installer.
+EXECUTABLE_ADAPTER_NAMES = ["pi", "qwen", "qwen-p", "claude", "codex"]
+NO_INSTALLER_ADAPTER_NAMES = ["agy", "kiro", "openai-compat"]
 
 
 @pytest.fixture(autouse=True)
 def xdg_home(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     return tmp_path
+
+
+@pytest.fixture(autouse=True)
+def _fake_npm_run(monkeypatch):
+    """Never let a stray ``npm install -g`` actually reach the network.
+
+    ``installers.run_install``'s default ``run`` is ``subprocess.run``; every
+    test that wants to observe a real invocation replaces this fake with its
+    own tracking callable via ``monkeypatch``.
+    """
+    calls = []
+
+    def _fake_run(argv, **kwargs):
+        calls.append((list(argv), kwargs))
+        import subprocess as _subprocess
+
+        return _subprocess.CompletedProcess(args=argv, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("nvsh.installers.subprocess.run", _fake_run)
+    return calls
 
 
 def test_agent_list_json_reports_all_adapters(capsys):
@@ -143,6 +179,28 @@ def test_agent_use_writes_config(capsys, xdg_home):
     assert cfg.aliases[DEFAULT_ALIAS] == "claude"
 
 
+@pytest.mark.parametrize("name", ADAPTER_NAMES)
+def test_agent_use_accepts_every_registered_adapter(capsys, xdg_home, name):
+    rc = main(["agent", "use", name, "--json"])
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["provider"] == name
+
+    from nvsh.config import DEFAULT_ALIAS, load
+
+    cfg = load()
+    assert cfg.agent_provider == name
+    assert cfg.aliases[DEFAULT_ALIAS] == name
+
+
+def test_agent_use_help_lists_all_eight_adapters(capsys):
+    with pytest.raises(SystemExit):
+        main(["agent", "use", "--help"])
+    out = capsys.readouterr().out
+    for name in registry.ADAPTERS:
+        assert name in out, name
+
+
 def test_agent_use_unknown_name_is_user_error(capsys):
     rc = main(["agent", "use", "not-a-backend"])
     assert rc == 1
@@ -167,34 +225,94 @@ def test_agent_use_preserves_other_config(capsys, xdg_home):
     assert cfg.sessions_max == 3
 
 
-def test_agent_install_pi_prints_command_without_running(capsys, monkeypatch):
-    ran = []
-    monkeypatch.setattr("nvsh.cli._commands.agent.subprocess.run", lambda *a, **k: ran.append(a))
-    monkeypatch.setattr("nvsh.cli._commands.agent.shutil.which", lambda name: "/usr/bin/npm")
-    rc = main(["agent", "install", "pi", "--json"])
+@pytest.mark.parametrize("name", ADAPTER_NAMES)
+def test_agent_install_prints_step_from_harness_install_step(capsys, monkeypatch, name):
+    """Every adapter's 'install' step matches installers.harness_install_step."""
+    from nvsh import installers
+
+    monkeypatch.setattr("nvsh.installers.shutil.which", lambda tool: "/usr/bin/" + tool)
+    expected = installers.harness_install_step(name)
+
+    rc = main(["agent", "install", name, "--json"])
     assert rc == 0
     payload = json.loads(capsys.readouterr().out)
-    assert payload["command"] == "npm install -g @earendil-works/pi-coding-agent"
+    assert payload["command"] == expected.shell_line
+    assert payload["executable"] == expected.executable
+    assert payload["needs_sudo"] == expected.needs_sudo
+    assert payload["ran"] is False  # no --yes, no tty in the test runner
+
+
+def test_agent_install_help_lists_all_eight_adapters(capsys):
+    with pytest.raises(SystemExit):
+        main(["agent", "install", "--help"])
+    out = capsys.readouterr().out
+    for name in registry.ADAPTERS:
+        assert name in out, name
+
+
+@pytest.mark.parametrize("name", EXECUTABLE_ADAPTER_NAMES)
+def test_agent_install_runs_only_with_yes_when_executable(capsys, monkeypatch, name, _fake_npm_run):
+    monkeypatch.setattr("nvsh.installers.shutil.which", lambda tool: "/usr/bin/" + tool)
+
+    rc = main(["agent", "install", name, "--json"])
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
     assert payload["ran"] is False
-    assert ran == []
+    assert _fake_npm_run == []
 
-
-def test_agent_install_pi_runs_with_yes(capsys, monkeypatch):
-    ran = []
-    monkeypatch.setattr("nvsh.cli._commands.agent.subprocess.run", lambda *a, **k: ran.append(a))
-    monkeypatch.setattr("nvsh.cli._commands.agent.shutil.which", lambda name: "/usr/bin/npm")
-    rc = main(["agent", "install", "pi", "--yes", "--json"])
+    rc = main(["agent", "install", name, "--yes", "--json"])
     assert rc == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["ran"] is True
-    assert len(ran) == 1
+    assert len(_fake_npm_run) == 1
+
+
+@pytest.mark.parametrize("name", EXECUTABLE_ADAPTER_NAMES)
+def test_agent_install_never_runs_without_yes_on_a_non_tty(
+    capsys, monkeypatch, name, _fake_npm_run
+):
+    monkeypatch.setattr("nvsh.installers.shutil.which", lambda tool: "/usr/bin/" + tool)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
+
+    rc = main(["agent", "install", name, "--json"])
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ran"] is False
+    assert _fake_npm_run == []
+
+
+@pytest.mark.parametrize("name", ["agy", "kiro"])
+def test_agent_install_agy_and_kiro_print_no_known_installer(capsys, name):
+    rc = main(["agent", "install", name])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "no known installer" in out
+
+
+def test_agent_install_records_an_audit_row(monkeypatch, tmp_path, xdg_home, _fake_npm_run):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setattr("nvsh.installers.shutil.which", lambda tool: "/usr/bin/" + tool)
+
+    rc = main(["agent", "install", "pi", "--yes", "--json"])
+    assert rc == 0
+
+    from nvsh.agent.audit import default_audit_path
+
+    audit_path = default_audit_path()
+    assert audit_path.exists()
+    lines = audit_path.read_text(encoding="utf-8").strip().splitlines()
+    assert len(lines) == 1
+    entry = json.loads(lines[0])
+    assert entry["event"] == "install"
+    assert entry["decision"] is True
 
 
 def test_agent_install_unknown_target_is_user_error(capsys):
-    rc = main(["agent", "install", "qwen"])
+    rc = main(["agent", "install", "not-a-backend"])
     assert rc == 1
     err = capsys.readouterr().err
     assert err.startswith("error:")
+    assert "hint:" in err
 
 
 # --- where to put the gateway key (deviation d10) --------------------------
