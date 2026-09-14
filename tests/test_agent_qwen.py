@@ -78,11 +78,14 @@ def test_direct_kwargs_win_over_config_dict():
 # ---------------------------------------------------------------------------
 
 
-def test_capabilities_report_thinking_and_tool_calling_but_not_effort():
+def test_capabilities_report_thinking_but_read_only_and_no_effort():
+    # Print mode (plan approval mode) can't pause a tool call for nvsh approve,
+    # so the fallback runs read-only: tool_calling is False (spec rule).
     caps = QwenAgent({}).capabilities()
     assert caps.thinking is True
-    assert caps.tool_calling is True
+    assert caps.tool_calling is False
     assert caps.effort is False
+    assert caps.path == "stream-json"
 
 
 def test_capabilities_report_the_configured_approval_mediator():

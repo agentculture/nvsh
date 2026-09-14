@@ -135,11 +135,17 @@ class QwenAgent(SubprocessAgent):
     def capabilities(self) -> Capabilities:
         return Capabilities(
             streaming=True,
-            tool_calling=True,
+            # Print mode runs with ``--approval-mode plan`` and has no
+            # approval callback: it *reports* tool activity as TOOL_CALL /
+            # TOOL_RESULT events but can never pause a tool call for
+            # ``nvsh approve``. Per the spec, bare print-mode fallbacks run
+            # read-only and declare ``tool_calling=False``.
+            tool_calling=False,
             cancellation=True,
             persistent_session=False,
             local_model=False,
             thinking=True,
             effort=False,
+            path="stream-json",
             approval=self._approval,
         )

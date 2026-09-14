@@ -289,7 +289,10 @@ class Capabilities:
     thinking: bool = False
     #: Whether the adapter honors ``AgentRequest.target.effort``.
     effort: bool = False
-    #: Filesystem path to the adapter's binary/entrypoint, when known.
+    #: Protocol path the adapter speaks to its harness: ``"rpc"`` (pi),
+    #: ``"stream-json"`` (claude, agy, qwen print mode), ``"app-server"``
+    #: (codex), ``"acp"`` (qwen, kiro) or ``"http"`` (openai-compat); ``""``
+    #: when the adapter has not declared one.
     path: str = ""
     #: Who mediates approval of a proposed command: ``"nvsh"`` (nvsh's own
     #: propose/approve loop decides), ``"harness"`` (the backend's own

@@ -42,10 +42,7 @@ PI_INSTALL_CMD = "npm install -g @earendil-works/pi-coding-agent"
 
 #: Valid ``AdapterSpec.path`` values -- the wire/transport protocol the
 #: adapter speaks to its backend, independent of ``binary``/``hosted``.
-#: ``'text'`` is this module's own addition for ``qwen-p`` (line-oriented
-#: plain stdout, not one of the four protocols the acceptance criteria
-#: enumerate) -- see ``_make_qwen_print``.
-PATH_VALUES = {"rpc", "stream-json", "app-server", "acp", "http", "text"}
+PATH_VALUES = {"rpc", "stream-json", "app-server", "acp", "http"}
 
 
 @dataclass(frozen=True)
@@ -112,11 +109,13 @@ def _make_qwen(config: Config) -> NvshAgent:
 
 
 def _make_qwen_print(config: Config) -> NvshAgent:
-    """The pre-ACP print-mode ``qwen -p`` adapter, kept reachable as a
-    fallback under the ``qwen-p`` name (coordination note: 'qwen' itself now
-    means ACP). Settings come from ``[agents.qwen-p]``, falling back to
-    ``[agents.qwen]`` so an operator who never split the two tables still
-    gets sane defaults.
+    """The print-mode ``qwen --output-format stream-json`` adapter (t13), kept
+    reachable as the no-ACP fallback under the ``qwen-p`` name ('qwen' itself
+    means ACP). It runs read-only (``--approval-mode plan``). An operator
+    selects it explicitly -- ``[aliases] default = "qwen-p"`` or
+    ``@qwen-p/<model>`` -- when the ACP path is unwanted. Settings come from
+    ``[agents.qwen-p]``, falling back to ``[agents.qwen]`` so an operator who
+    never split the two tables still gets sane defaults.
     """
     from .qwen import QwenAgent
 
@@ -198,8 +197,8 @@ ADAPTERS: dict[str, AdapterSpec] = {
         name="qwen-p",
         binary="qwen",
         factory=_make_qwen_print,
-        description="Qwen Code CLI, pre-ACP print mode (qwen -p); fallback for 'qwen'.",
-        path="text",
+        description="Qwen Code CLI print mode (stream-json, read-only); no-ACP fallback.",
+        path="stream-json",
         hosted=False,
         needs_node=True,
     ),
