@@ -274,3 +274,34 @@ def test_a_failing_command_with_demo_as_default_streams_through_the_daemon(
     proposals = [entry for entry in entries if entry["event"] == "proposal"]
     assert len(proposals) == 1
     assert proposals[0]["proposal"]["command"] == "chmod +x ./run-model.sh"
+
+
+# --- the platform placeholder (deviation d5) --------------------------------
+
+
+@pytest.mark.parametrize(
+    ("block", "expected"),
+    [
+        ("platform: dgx-spark\n  dgx_name: DGX Spark  [file: /etc/dgx-release]", "dgx-spark"),
+        ("platform: jetson\n  l4t_release: R36", "jetson"),
+        ("", "this machine"),
+        ("platform: unknown (detection failed: boom)", "unknown"),
+    ],
+)
+def test_platform_kind_is_the_first_platform_line(block, expected):
+    from nvsh.agent.demo import platform_kind
+
+    assert platform_kind(block) == expected
+
+
+def test_the_reply_names_the_platform_from_the_context():
+    from nvsh.agent.base import AgentContext, AgentRequest, EventKind, RequestKind
+    from nvsh.agent.demo import DemoAgent
+
+    agent = DemoAgent()
+    agent.start()
+    request = AgentRequest(kind=RequestKind.FAILURE, command="./run-model.sh", exit_code=126)
+    context = AgentContext(platform="platform: jetson\n  l4t_release: R36")
+    text = "".join(e.text for e in agent.run(request, context) if e.kind == EventKind.TEXT_DELTA)
+    assert "jetson" in text
+    assert "{platform}" not in text

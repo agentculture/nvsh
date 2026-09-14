@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-09-14T16:14:56Z",
-  "updated": "2026-09-14T16:43:56Z",
+  "updated": "2026-09-14T16:58:26Z",
   "claims": [
     {
       "id": "c1",
@@ -697,6 +697,17 @@
       "skipped_check": "",
       "refs": [
         "t4"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l5",
+      "code": "assumption-for-measurement",
+      "what": "t5 asserted the scrub-rule order from its intended story (hostname, then user) instead of the rule it had written (longest token first); the test caught it on first run",
+      "skipped_check": "",
+      "refs": [
+        "t5"
       ],
       "origin": "llm",
       "status": "proposed"

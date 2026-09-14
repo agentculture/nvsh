@@ -1,10 +1,11 @@
 {
   "script_placeholder": "{script}",
+  "platform_placeholder": "{platform}",
   "default_script": "./run-model.sh",
   "events": [
     {
       "kind": "text_delta",
-      "text": "Exit 126 means the shell found {script} but was not allowed to run it.\n"
+      "text": "Exit 126 on this {platform} box means the shell found {script} but was not allowed to run it.\n"
     },
     {
       "kind": "text_delta",

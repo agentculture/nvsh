@@ -1,0 +1,66 @@
+{
+  "plan_slug": "readme-demo-recording",
+  "schema_version": 2,
+  "created": "2026-09-14T16:59:37Z",
+  "updated": "2026-09-14T17:02:39Z",
+  "deviations": [
+    {
+      "id": "d1",
+      "what": "The retry after the approved fix is a third fed line ('./run-model.sh' typed again), not something Enter triggers: handle_failure runs the proposal and ends the turn; /retry is a separate slash verb",
+      "task_ref": "t5",
+      "reason": "c22 and t5's criterion read as if approving the fix re-runs the failed command; nvsh does not, and the driver records what nvsh actually does",
+      "affects": [],
+      "origin": "llm",
+      "status": "proposed",
+      "classification": "acceptable",
+      "seq": 1
+    },
+    {
+      "id": "d2",
+      "what": "scripts/demo-render.sh passes --no-window instead of the literal --window off in t6's criterion",
+      "task_ref": "t6",
+      "reason": "svg-term-cli's yargs parser rejects '--window off' (unknown flag 'off'); --no-window is the same negation",
+      "affects": [],
+      "origin": "llm",
+      "status": "proposed",
+      "classification": "acceptable",
+      "seq": 2
+    },
+    {
+      "id": "d3",
+      "what": "demo-record.py uses the nvsh on PATH only when its --version matches the imported package, else a sandbox wrapper running this interpreter -m nvsh",
+      "task_ref": "t5",
+      "reason": "the dev box carries an older uv-tool nvsh (0.10.0, no demo adapter); preferring PATH blindly would record a broken demo",
+      "affects": [],
+      "origin": "llm",
+      "status": "proposed",
+      "classification": "acceptable",
+      "seq": 3
+    },
+    {
+      "id": "d4",
+      "what": "Every accepted line in the recording is echoed twice (nvsh$ ./run-model.shnvsh$ ./run-model.sh): readline.bash's Enter macro runs a bind -x callback before accept-line and bash redraws prompt+buffer after it",
+      "task_ref": "t8",
+      "reason": "real nvsh behaviour surfaced by the recording; cosmetically reads as a bug in a README demo; fixing it is a readline.bash change outside any planned task",
+      "affects": [],
+      "origin": "llm",
+      "status": "proposed",
+      "classification": "needs-follow-up",
+      "seq": 4
+    },
+    {
+      "id": "d5",
+      "what": "The demo reply gains a {platform} placeholder filled from the request context's platform kind (e.g. dgx-spark, jetson), so each device's recording visibly names its real platform",
+      "task_ref": "t8",
+      "reason": "c10/h8 expect the recording to show the device's platform, but the panel header only shows harness/path/warm and the platform block is never printed; without this the three recordings would be visually identical and h8 unverifiable",
+      "affects": [],
+      "origin": "llm",
+      "status": "proposed",
+      "classification": "acceptable",
+      "seq": 5
+    }
+  ],
+  "evidence": [],
+  "deltas": [],
+  "supersessions": []
+}

@@ -34,6 +34,10 @@ from .fake import FakeAgent
 
 #: What the fixture writes where the failing script path goes.
 SCRIPT_PLACEHOLDER = "{script}"
+#: What the fixture writes where the detected platform kind goes.
+PLATFORM_PLACEHOLDER = "{platform}"
+#: The platform word when the context carries no ``platform:`` line.
+DEFAULT_PLATFORM = "this machine"
 
 #: Used when the failing command line carries no path to blame, and the
 #: fixture does not name a ``default_script`` of its own.
@@ -76,19 +80,40 @@ def script_from_command(command: str, default: str = DEFAULT_SCRIPT) -> str:
     return default
 
 
-def _substituted(value: object, placeholder: str, script: str) -> object:
-    """Replace *placeholder* with *script* in every string inside *value*."""
+def platform_kind(platform_block: str, default: str = DEFAULT_PLATFORM) -> str:
+    """The ``kind`` named on the context's first ``platform: <kind>`` line.
+
+    The block :func:`nvsh.client._platform_block` builds starts with
+    ``platform: dgx-spark`` (or ``jetson``, ``rtx``, ``generic``); anything
+    else -- an empty context, a detection failure -- yields *default* so the
+    reply still reads as a sentence.
+    """
+    for line in (platform_block or "").splitlines():
+        head, sep, rest = line.strip().partition(":")
+        if sep and head == "platform" and rest.strip():
+            return rest.strip().split()[0]
+    return default
+
+
+def _substituted(value: object, replacements: Mapping[str, str]) -> object:
+    """Apply every placeholder -> text pair to every string inside *value*."""
     if isinstance(value, str):
-        return value.replace(placeholder, script)
+        for placeholder, text in replacements.items():
+            value = value.replace(placeholder, text)
+        return value
     if isinstance(value, Mapping):
-        return {key: _substituted(item, placeholder, script) for key, item in value.items()}
+        return {key: _substituted(item, replacements) for key, item in value.items()}
     if isinstance(value, list):
-        return [_substituted(item, placeholder, script) for item in value]
+        return [_substituted(item, replacements) for item in value]
     return value
 
 
-def load_events(path: Path, command: str) -> list[AgentEvent]:
+def load_events(path: Path, command: str, platform_block: str = "") -> list[AgentEvent]:
     """Decode the fixture at *path* into events for one failing *command*.
+
+    *platform_block* is the context's platform text; its kind fills the
+    fixture's ``{platform}`` placeholder so a recording names the device
+    it was made on.
 
     Raises nothing the caller has to catch beyond the usual file/JSON
     errors; :meth:`DemoAgent.run` turns those into an ERROR event so a
@@ -97,11 +122,15 @@ def load_events(path: Path, command: str) -> list[AgentEvent]:
     data = json.loads(Path(path).read_text(encoding="utf-8"))
     placeholder = str(data.get("script_placeholder") or SCRIPT_PLACEHOLDER)
     default = str(data.get("default_script") or DEFAULT_SCRIPT)
-    script = script_from_command(command, default)
+    platform_placeholder = str(data.get("platform_placeholder") or PLATFORM_PLACEHOLDER)
+    replacements = {
+        placeholder: script_from_command(command, default),
+        platform_placeholder: platform_kind(platform_block),
+    }
     events = []
     for raw in data.get("events") or []:
         if isinstance(raw, Mapping):
-            events.append(event_from_dict(_substituted(raw, placeholder, script)))
+            events.append(event_from_dict(_substituted(raw, replacements)))
     return events
 
 
@@ -122,7 +151,7 @@ class DemoAgent(FakeAgent):
 
     def run(self, request: AgentRequest, context: AgentContext) -> Iterator[AgentEvent]:
         try:
-            self._script = list(load_events(self._fixture_path, request.command))
+            self._script = list(load_events(self._fixture_path, request.command, context.platform))
         except (OSError, ValueError) as exc:
             yield AgentEvent(
                 kind=EventKind.ERROR,
