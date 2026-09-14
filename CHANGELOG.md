@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/). This project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.1] - 2026-09-14
+
+### Fixed
+
+- `tests/test_cli_setup.py::test_hook_prints_refresh_notice_once_per_session` no longer leaks one `nvsh.daemon` process per full test run: it now sets `NVSH_NO_DAEMON=1`, since the refresh notice it checks is printed by the hook itself (plan risk `r4` of the README demo recording run).
+
 ## [0.12.0] - 2026-09-14
 
 ### Added

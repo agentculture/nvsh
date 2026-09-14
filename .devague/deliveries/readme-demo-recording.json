@@ -2,7 +2,7 @@
   "plan_slug": "readme-demo-recording",
   "schema_version": 2,
   "created": "2026-09-14T16:59:37Z",
-  "updated": "2026-09-14T18:03:47Z",
+  "updated": "2026-09-14T18:22:10Z",
   "deviations": [
     {
       "id": "d1",
@@ -459,6 +459,44 @@
       "status": "proposed",
       "superseded": false,
       "seq": 26
+    },
+    {
+      "id": "e22",
+      "obligation_ref": "o14",
+      "test_ref": "manual: README on github.com main after the #14 merge, viewed in Chrome for 14 s; local page with img and object embeds of docs/demos/demo-spark.svg",
+      "behavior_text": "the svg-term SVG stays on its first (blank, cursor-only) frame inside an img tag in Chrome, and animates only inside object; GitHub renders README images via img, so the README shows an empty dark box",
+      "contract_text": "the README renders the image on github.com and on PyPI's project page",
+      "evidence_type": "observation",
+      "strength": "fidelity",
+      "strength_basis": "post-merge eye check the plan required (h10); the pre-merge check could only see the raw asset as a top-level document, which does animate",
+      "outcome": "fail",
+      "run": {
+        "timestamp": "2026-09-14T18:10:00Z",
+        "commit": "2f5cab8"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": true,
+      "seq": 27
+    },
+    {
+      "id": "e23",
+      "obligation_ref": "o14",
+      "test_ref": "manual: owner viewed README.md on github.com main after the #14 merge",
+      "behavior_text": "the embedded demo-spark.svg animates in the README on github.com",
+      "contract_text": "the README renders the image on github.com and on PyPI's project page",
+      "evidence_type": "observation",
+      "strength": "fidelity",
+      "strength_basis": "owner's own observation on 2026-09-14; the agent's Chromium-under-automation showed frame 0 only (e22), which was an artifact of that browser session",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-14T18:15:00Z",
+        "commit": "2f5cab8"
+      },
+      "origin": "user",
+      "status": "approved",
+      "superseded": false,
+      "seq": 28
     }
   ],
   "deltas": [
@@ -563,5 +601,13 @@
       "superseded": false
     }
   ],
-  "supersessions": []
+  "supersessions": [
+    {
+      "id": "s1",
+      "action": "supersede",
+      "target_ref": "e22",
+      "replacement_ref": "e23",
+      "origin": "user"
+    }
+  ]
 }
