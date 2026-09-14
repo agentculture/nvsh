@@ -744,7 +744,8 @@ def test_setup_several_harnesses_prompt_once_on_a_tty(tmp_path, monkeypatch):
     assert len(prompts) == 1, prompts
     names = [row for row in prompts[0].splitlines() if ")" in row]
     assert len(names) >= 2
-    assert "claude" in prompts[0] and "qwen" in prompts[0]
+    assert "claude" in prompts[0]
+    assert "qwen" in prompts[0]
     # qwen has no approval channel, so it is marked before the pick is made.
     qwen_line = next(line for line in prompts[0].splitlines() if "qwen" in line)
     assert setup_mod.PLAN_MODE_LABEL in qwen_line
@@ -782,7 +783,8 @@ def test_setup_without_a_tty_takes_the_first_probe_row(tmp_path, monkeypatch):
     assert code == 0, err
     payload = json.loads(out)
     rows = [row["name"] for row in payload["agent"]["probe"]]
-    assert rows[0] == "claude" and "qwen" in rows
+    assert rows[0] == "claude"
+    assert "qwen" in rows
     assert payload["agent"]["name"] == "claude"
     assert _default_alias() == "claude"
 
@@ -971,7 +973,8 @@ def test_setup_darwin_warning(tmp_path, monkeypatch):
 
     code, out, err = _run(["setup", "--rc", str(rc), "--no-install"])
     assert code == 0, err
-    assert "warning: nvsh is not tested on macOS/zsh yet (see issue #11)" in out
+    assert "warning: nvsh is not tested on macOS/zsh yet (see issue #11)" in err
+    assert "warning:" not in out
 
 
 def test_setup_zsh_warning(tmp_path, monkeypatch):
@@ -987,6 +990,11 @@ def test_setup_zsh_warning(tmp_path, monkeypatch):
     payload = json.loads(out)
     assert "nvsh is not tested on macOS/zsh yet (see issue #11)" in payload["warnings"]
     assert payload["rc"] == str(rc)  # still the bash rc
+
+    code, out, err = _run(["setup", "--rc", str(rc), "--no-install"])
+    assert code == 0, err
+    assert "warning: nvsh is not tested on macOS/zsh yet (see issue #11)" in err
+    assert "warning:" not in out
 
 
 def test_setup_no_warning_on_linux_bash(tmp_path, monkeypatch):
@@ -1040,3 +1048,142 @@ def test_setup_agent_accepts_a_bare_adapter_name(tmp_path, monkeypatch):
     payload = json.loads(out)
     assert payload["agent"]["name"] == "codex"
     assert _default_alias() == "codex"
+
+
+# --------------------------------------------------------------------------
+# PR #12 review: canonical --agent target, no discarded or repeated pick
+# --------------------------------------------------------------------------
+
+
+def _write_config(tmp_path, text):
+    cfg_dir = tmp_path / "xdg-config" / "nvsh"
+    cfg_dir.mkdir(parents=True, exist_ok=True)
+    (cfg_dir / "config.toml").write_text(text, encoding="utf-8")
+
+
+def _assert_default_round_trips():
+    """The persisted default must resolve to a registered adapter."""
+    from nvsh.agent import registry
+    from nvsh.config import DEFAULT_ALIAS, load
+
+    backend, _model, _effort, _alias = load().resolve_target(DEFAULT_ALIAS)
+    assert backend in registry.ADAPTERS, backend
+
+
+def test_setup_agent_named_alias_writes_its_target_not_the_name(tmp_path, monkeypatch):
+    rc = _rc(tmp_path)
+    rc.write_text(UBUNTU_RC)
+    _write_config(tmp_path, '[aliases]\nreviewer = "claude/opus/high"\n')
+    monkeypatch.setattr(
+        "nvsh.cli._commands.setup.shutil.which", _which_factory({"claude", "uv", "tmux"})
+    )
+    code, out, err = _run(
+        ["setup", "--rc", str(rc), "--json", "--no-install", "--agent", "reviewer"]
+    )
+    assert code == 0, err
+    assert json.loads(out)["agent"]["target"] == "claude/opus/high"
+    assert _default_alias() == "claude/opus/high"
+    _assert_default_round_trips()
+
+
+def test_setup_agent_at_bare_name_writes_the_bare_name(tmp_path, monkeypatch):
+    rc = _rc(tmp_path)
+    rc.write_text(UBUNTU_RC)
+    monkeypatch.setattr(
+        "nvsh.cli._commands.setup.shutil.which", _which_factory({"claude", "uv", "tmux"})
+    )
+    code, out, err = _run(
+        ["setup", "--rc", str(rc), "--json", "--no-install", "--agent", "@claude"]
+    )
+    assert code == 0, err
+    assert _default_alias() == "claude"
+    _assert_default_round_trips()
+
+
+def test_setup_agent_bare_name_stays_bare_despite_a_configured_model(tmp_path, monkeypatch):
+    """A model only from [agents.<backend>].model is not baked into the default."""
+    rc = _rc(tmp_path)
+    rc.write_text(UBUNTU_RC)
+    _write_config(tmp_path, '[agents.claude]\nmodel = "sonnet"\n')
+    monkeypatch.setattr(
+        "nvsh.cli._commands.setup.shutil.which", _which_factory({"claude", "uv", "tmux"})
+    )
+    code, out, err = _run(["setup", "--rc", str(rc), "--json", "--no-install", "--agent", "claude"])
+    assert code == 0, err
+    assert _default_alias() == "claude"
+    _assert_default_round_trips()
+
+
+def test_setup_agent_at_literal_target_strips_the_at(tmp_path, monkeypatch):
+    rc = _rc(tmp_path)
+    rc.write_text(UBUNTU_RC)
+    monkeypatch.setattr(
+        "nvsh.cli._commands.setup.shutil.which", _which_factory({"codex", "uv", "tmux"})
+    )
+    code, out, err = _run(
+        ["setup", "--rc", str(rc), "--json", "--no-install", "--agent", "@codex/gpt-5/high"]
+    )
+    assert code == 0, err
+    assert _default_alias() == "codex/gpt-5/high"
+    _assert_default_round_trips()
+
+
+def test_setup_agent_default_never_writes_a_self_reference(tmp_path, monkeypatch):
+    rc = _rc(tmp_path)
+    rc.write_text(UBUNTU_RC)
+    _write_config(tmp_path, '[aliases]\ndefault = "claude/sonnet"\n')
+    monkeypatch.setattr(
+        "nvsh.cli._commands.setup.shutil.which", _which_factory({"claude", "uv", "tmux"})
+    )
+    code, out, err = _run(
+        ["setup", "--rc", str(rc), "--json", "--no-install", "--agent", "default"]
+    )
+    assert code == 0, err
+    assert _default_alias() == "claude/sonnet"
+    _assert_default_round_trips()
+
+
+def test_setup_kept_default_is_never_prompted_for(tmp_path, monkeypatch):
+    """An installed existing default is kept before any pick menu is shown."""
+    rc = _rc(tmp_path)
+    rc.write_text(UBUNTU_RC)
+    _write_config(tmp_path, '[aliases]\ndefault = "claude"\n')
+    monkeypatch.setattr(
+        "nvsh.cli._commands.setup.shutil.which",
+        _which_factory({"claude", "qwen", "node", "npm", "uv", "tmux"}),
+    )
+    setup_mod = _setup_mod()
+    monkeypatch.setattr(setup_mod, "_is_interactive", lambda: True)
+    monkeypatch.setattr(
+        setup_mod, "_prompt_input", lambda text: pytest.fail("a kept default must not prompt")
+    )
+    code, out, err = _run(["setup", "--rc", str(rc), "--no-install"])
+    assert code == 0, err
+    assert "[aliases].default = 'claude' kept" in out
+    assert _default_alias() == "claude"
+
+
+def test_setup_non_harness_install_does_not_re_ask_the_pick(tmp_path, monkeypatch):
+    """Installing uv cannot add a harness, so the pick menu is shown once."""
+    from nvsh import installers
+
+    rc = _rc(tmp_path)
+    rc.write_text(UBUNTU_RC)
+    monkeypatch.setattr(
+        "nvsh.cli._commands.setup.shutil.which",
+        _which_factory({"claude", "qwen", "node", "npm", "tmux"}),
+    )
+    setup_mod = _setup_mod()
+    monkeypatch.setattr(setup_mod, "_is_interactive", lambda: True)
+    calls = []
+    monkeypatch.setattr(setup_mod, "_prompt_input", lambda text: calls.append(text) or "1")
+    monkeypatch.setattr(
+        setup_mod.installers,
+        "run_install",
+        lambda step, **kwargs: installers.InstallResult(tool=step.tool, ran=True, returncode=0),
+    )
+    code, out, err = _run(["setup", "--rc", str(rc), "--yes"])
+    assert code == 0, err
+    assert "uv (" in out
+    assert len(calls) == 1, calls
+    assert _default_alias() == "claude"

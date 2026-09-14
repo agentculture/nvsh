@@ -293,7 +293,7 @@ def _resolve_agent(args: argparse.Namespace, cfg, prompt) -> tuple[str, str, str
     forced = getattr(args, "agent", None)
     if forced:
         backend, reason = registry.choose(cfg, shutil.which, forced=forced)
-        return backend, reason, forced, [], True
+        return backend, reason, _canonical_target(cfg, forced), [], True
 
     rows = registry.probe(shutil.which, cfg)
     if not rows:
@@ -310,6 +310,68 @@ def _resolve_agent(args: argparse.Namespace, cfg, prompt) -> tuple[str, str, str
         rows, json_mode=bool(getattr(args, "json", False)), prompt=prompt
     )
     return backend, reason, backend, rows, False
+
+
+def _canonical_target(cfg, forced: str) -> str:
+    """The ``backend[/model[/effort]]`` string a forced ``--agent`` persists as.
+
+    :meth:`nvsh.config.Config.resolve_target` neither follows an alias whose
+    value is another alias nor strips a leading ``@`` from a *stored* value,
+    so writing the raw ``--agent`` text (``reviewer``, ``default``,
+    ``@claude``) into ``[aliases].default`` left a default that later
+    resolved to an unknown backend -- or to itself. The precedence mirrors
+    :func:`nvsh.agent.registry._forced_backend`: an alias spelled exactly
+    wins, then a bare adapter name, then an ``@``-prefixed alias, then a
+    literal target. A model that exists only as ``[agents.<backend>].model``
+    is never baked in: a bare name stays bare.
+    """
+    bare = forced[1:] if forced.startswith("@") else forced
+    if forced in cfg.aliases:
+        key = forced
+    elif bare in registry.ADAPTERS:
+        return bare
+    elif bare in cfg.aliases:
+        key = bare
+    else:
+        return bare  # a literal 'backend/model[/effort]', already validated by choose()
+    backend, model, effort, _alias = cfg.resolve_target(key)
+    stored = cfg.aliases[key]
+    stored = stored[1:] if stored.startswith("@") else stored
+    if "/" not in stored:
+        model = None  # only the [agents.<backend>].model fallback: keep it bare
+    return "/".join(part for part in (backend, model, effort) if part)
+
+
+def _pick_agent(
+    args: argparse.Namespace, cfg, prompt
+) -> tuple[str, str, str, list[dict], bool, bool]:
+    """Decide the harness, keeping a usable existing default *before* asking.
+
+    Returns ``(backend, reason, target, probe_rows, forced, kept)``. The
+    keep-or-replace decision on ``[aliases].default`` runs ahead of the pick
+    menu, so an operator is never asked a question whose answer would then
+    be discarded in favour of the default they already had.
+    """
+    if not getattr(args, "agent", None):
+        rows = registry.probe(shutil.which, cfg)
+        existing = cfg.aliases.get(nvsh_config.DEFAULT_ALIAS)
+        if existing and _keep_existing_default(cfg, rows):
+            backend = existing.split("/", 1)[0]
+            return backend, f"[aliases].default = {existing!r} kept", existing, rows, False, True
+    return (*_resolve_agent(args, cfg, prompt), False)
+
+
+def _harness_installed(install_rows: list[dict]) -> bool:
+    """Whether an install that ran could have put a new agent harness on PATH.
+
+    Only a successful install of a tool that is itself a registered adapter
+    (today ``pi``) can change the probe; ``uv``/``tmux``/``node`` cannot, so
+    they never re-ask the pick.
+    """
+    return any(
+        row["ran"] and row["returncode"] == 0 and row["tool"] in registry.ADAPTERS
+        for row in install_rows
+    )
 
 
 def _keep_existing_default(cfg, probe_rows: list[dict]) -> bool:
@@ -391,8 +453,6 @@ def _setup_lines(result: dict, install_rows: list[dict], offer_only: bool) -> li
         lines.append(f"{row['tool']} ({row['purpose']}): {row['command']}")
         if not offer_only:
             lines.append(f"  ran: {row['ran']} (returncode: {row['returncode']})")
-    for warning in result["warnings"]:
-        lines.append(f"warning: {warning}")
     return lines
 
 
@@ -407,7 +467,7 @@ def cmd_setup(args: argparse.Namespace, prompt=None) -> int:
 
     cfg = nvsh_config.load()
     prompt = _prompt_input if prompt is None else prompt
-    chosen, reason, target, probe_rows, forced = _resolve_agent(args, cfg, prompt)
+    chosen, reason, target, probe_rows, forced, keep_existing = _pick_agent(args, cfg, prompt)
 
     offer_only, confirm = _install_mode(args)
     # Scope the offers to the pick -- except on a bare machine, where the
@@ -415,11 +475,13 @@ def cmd_setup(args: argparse.Namespace, prompt=None) -> int:
     # the unscoped list is what lets an operator bootstrap a harness at all.
     scoped = chosen if (forced or probe_rows) else None
     missing = installers.missing_tools(shutil.which, chosen=scoped)
-    install_rows, any_ran = _process_installs(missing, offer_only=offer_only, confirm=confirm)
-    if any_ran and not forced:
+    install_rows, _any_ran = _process_installs(missing, offer_only=offer_only, confirm=confirm)
+    if not forced and _harness_installed(install_rows):
         # A harness that just got installed only shows up on the next PATH
-        # lookup, so re-probe rather than keep the pre-install pick.
-        chosen, reason, target, probe_rows, forced = _resolve_agent(args, cfg, prompt)
+        # lookup, so re-probe rather than keep the pre-install pick. Any
+        # other install (uv, tmux, node) cannot change the probe, so the
+        # operator is not asked the same question twice.
+        chosen, reason, target, probe_rows, forced, keep_existing = _pick_agent(args, cfg, prompt)
 
     # Persist the chosen backend as `[aliases].default` -- what `'default'`
     # (and a bare `--agent`) resolves to from here on -- without touching
@@ -431,10 +493,6 @@ def cmd_setup(args: argparse.Namespace, prompt=None) -> int:
     # model and effort, e.g. "claude/opus/high") is kept whenever its backend
     # is still usable; setup only fills in a missing or unusable default.
     existing = cfg.aliases.get(nvsh_config.DEFAULT_ALIAS)
-    keep_existing = bool(existing) and not forced and _keep_existing_default(cfg, probe_rows)
-    if keep_existing:
-        chosen, reason = existing.split("/", 1)[0], f"[aliases].default = {existing!r} kept"
-        target = existing
     default_alias_written = not keep_existing and existing != target
     if default_alias_written:
         cfg.aliases[nvsh_config.DEFAULT_ALIAS] = target
@@ -475,6 +533,9 @@ def cmd_setup(args: argparse.Namespace, prompt=None) -> int:
         emit_result(result, json_mode=True)
     else:
         emit_result("\n".join(_setup_lines(result, install_rows, offer_only)), json_mode=False)
+        # Warnings are diagnostics: stderr, never mixed into the stdout result.
+        for warning in result["warnings"]:
+            emit_diagnostic(f"warning: {warning}")
     return 0
 
 
