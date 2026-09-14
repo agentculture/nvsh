@@ -41,7 +41,7 @@ your approval — nvsh proposes, you accept, edit or reject.
 | `/doctor`, `/ask` | Slash commands at the prompt. |
 | `@claude ...`, `@codex ...` | Send one request to a specific harness. |
 | `nvsh doctor` | Health checks: platform, agent reachable, hook, capture, daemon. |
-| `nvsh context --show-context` | Print exactly the bytes that would be sent. |
+| `nvsh context --show` | Print exactly the bytes that would be sent. |
 
 Exit codes that aren't errors — Ctrl-C (`130`), SIGPIPE (`141`), `grep`
 finding nothing — never trigger it, and automatic calls are rate-limited.
@@ -60,7 +60,7 @@ pointed at localhost or your LAN, it does not.
 
 Redaction runs first, before anything leaves the process: `HF_TOKEN=`,
 `--api-key`, `Authorization:` headers and `.env`-style assignments are
-scrubbed from the context. `nvsh context --show-context` prints the
+scrubbed from the context. `nvsh context --show` prints the
 post-redaction bytes so you can check before you trust it. nvsh never
 edits a harness's own settings or trust files — it passes launch flags and
 protocol-level policy, and reports what it finds.

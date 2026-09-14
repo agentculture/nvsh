@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-09-14T13:42:34Z",
-  "updated": "2026-09-14T14:07:22Z",
+  "updated": "2026-09-14T14:17:10Z",
   "claims": [
     {
       "id": "c1",
@@ -793,6 +793,40 @@
       "seeds": []
     }
   ],
-  "lapses": [],
+  "lapses": [
+    {
+      "id": "l1",
+      "code": "provenance-missing",
+      "what": "t2 README agent stated the 64 KB output cap and the XDG paths from the brief without reading nvsh/capture.py or nvsh/config.py",
+      "skipped_check": "",
+      "refs": [
+        "t2 / README.md Safety first + What lands where"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l2",
+      "code": "assumption-for-measurement",
+      "what": "t2 README agent first wrote an @qwen/... target example extrapolated from the old README instead of checking docs/shell-integration.md's grammar; replaced with @codex before commit",
+      "skipped_check": "docs/shell-integration.md @target grammar",
+      "refs": [
+        "t2 / README.md Work with it"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l3",
+      "code": "provenance-missing",
+      "what": "main agent's t2 brief stated the flag as 'nvsh context --show-context' from CLAUDE.md's abstract wording; the real verb flag is --show (nvsh context --help); corrected in README after merge",
+      "skipped_check": "",
+      "refs": [
+        "t2 brief / README.md Work with it + Safety first"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    }
+  ],
   "obligations": []
 }
