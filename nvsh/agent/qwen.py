@@ -148,4 +148,7 @@ class QwenAgent(SubprocessAgent):
             effort=False,
             path="stream-json",
             approval=self._approval,
+            # Print-mode qwen reads files with its own tools (plan mode still
+            # allows read tools); nvsh never sees those reads.
+            unmediated_file_access=True,
         )

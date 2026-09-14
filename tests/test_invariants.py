@@ -412,10 +412,17 @@ def test_harness_settings_filenames_appear_only_in_prose() -> None:
     *flags*, because ``nvsh/agent/acp.py`` must name them in
     ``FORBIDDEN_ARGS`` in order to refuse them -- that refusal is asserted
     directly in ``test_acp_refuses_a_bypass_flag_at_construction``.
+
+    ``nvsh/doctor_checks.py`` is the one module allowed to *name* these
+    files: its allowlist check reads them to warn the operator (task t17)
+    and never writes them -- the AST write ban above still covers it.
     """
     banned = re.compile(r"settings(\.local)?\.json|trusted[-_]folders", re.I)
+    readers = {"nvsh/doctor_checks.py"}
     offenders = []
     for path in _nvsh_sources():
+        if path.relative_to(REPO_ROOT).as_posix() in readers:
+            continue
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for literal in _literals(tree, _docstring_ids(tree)):
             if banned.search(literal):

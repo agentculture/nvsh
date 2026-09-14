@@ -668,7 +668,7 @@ RAISE_ON_START = frozenset({"pi", "qwen", "kiro"})
 #: deviation rather than patched here (this task owns tests, not adapters).
 #: The conformance case xfails on this set, so fixing the adapter turns the
 #: xfail into a failure and the entry gets removed with it.
-UNDECLARED_FILE_ACCESS = frozenset({"qwen-p"})
+UNDECLARED_FILE_ACCESS: frozenset[str] = frozenset()
 
 #: Adapters that sometimes report a dead child as "no stderr" even though
 #: the CLI did write one. ``AcpAgent`` drains stderr on its own thread and
