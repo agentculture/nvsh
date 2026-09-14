@@ -43,6 +43,25 @@ fix without confirmation) is out of scope for v1, and machine-level undo
 beyond the approve/execute/verify loop is tracked as issue #7. When
 summarizing, don't describe those still-open items as implemented.
 
+nvsh now registers eight harness adapters (`nvsh/agent/registry.py`'s
+`ADAPTERS`): `pi`, `qwen` (ACP, plan mode by default), `qwen-p`
+(stream-json print-mode, read-only fallback), `claude`, `codex`, `agy`
+(stream-json, always read-only for commands), `kiro` (ACP) and
+`openai-compat`. `[aliases]` in `$XDG_CONFIG_HOME/nvsh/config.toml` maps a
+short name to a `backend[/model[/effort]]` target, with `default` reserved
+for a bare `nvsh --agent default`; `@target` at the prompt (`@name` or
+`@backend/model/effort`) marks one request for that harness only. Where a
+harness has no client-side approval channel it runs read-only rather than
+being auto-approved: the spec is explicit that "nvsh never edits, creates
+or overrides a harness's own settings or trust files (agy/claude
+settings.json, codex config.toml, kiro trust settings, qwen settings): it
+only passes launch flags and protocol-level policy, and reports what it
+finds," and that an operator opts a harness into its own agent-side
+approval only with `[agents.<name>] approval = "harness"`. Everything that
+leaves the process is redacted first (`nvsh/redact.py`), and a spawned
+harness's environment has `CLAUDECODE`/`CLAUDE_CODE_*` stripped
+(`nvsh/agent/_env.py`).
+
 It is an AgentCulture mesh agent, a sibling to
 [`guildmaster`](https://github.com/agentculture/guildmaster) (the skills
 supplier), [`steward`](https://github.com/agentculture/steward) (alignment),

@@ -12,6 +12,13 @@
 #
 # Unknown keys (a typo, a stale option) are rejected loudly at load time
 # rather than silently ignored.
+#
+# Redaction runs before anything reaches any of these backends: nvsh never
+# edits, creates or overrides a harness's own settings or trust files
+# (agy/claude settings.json, codex config.toml, kiro trust settings, qwen
+# settings) -- it only passes the launch flags and protocol-level policy
+# shown below, and reports what it finds. See CLAUDE.md's "Device context,
+# with redaction always on" and nvsh/redact.py.
 
 [agent]
 # Which entry under [agents.*] below is active. Default: "pi".

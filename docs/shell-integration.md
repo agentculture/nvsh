@@ -135,6 +135,15 @@ Five ways in, all landing on the same request (deviation d23):
 back by the automatic-call rate limiter and never consume its window. The
 plain-sentence route is a guess, so it stays rate-limited.
 
+Whichever route a request takes, and whichever of the eight registered
+adapters (`nvsh agent list --json`) answers a resolved target, the same
+redaction boundary applies before anything leaves the process: `nvsh/redact.py`
+runs on the prompt composer's output, `--show-context` prints exactly
+those redacted bytes, and every subprocess-backed adapter's child
+environment has `CLAUDECODE`/`CLAUDE_CODE_*` stripped
+(`nvsh/agent/_env.py`) — see `CLAUDE.md`'s "Device context, with redaction
+always on" for the full rule.
+
 A harness that is not installed or configured produces one line and nothing
 else — no panel, no fallback to the default:
 

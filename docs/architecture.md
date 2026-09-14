@@ -154,7 +154,33 @@ into a wrapper process, and no PTY-transparency problem to solve.
   kinds, streamed events, cancel, capabilities), with `PiAgent` (driving
   `pi --mode rpc`) as the default and a stdlib OpenAI-compatible adapter as
   the fallback when `pi` is not on `PATH` — as it is not on either Jetson
-  today.
+  today. Seven more adapters register alongside `pi` and `openai-compat` in
+  `nvsh/agent/registry.py`'s `ADAPTERS` table: `qwen` and `kiro` over the
+  generic ACP client (`nvsh/agent/acp.py`), `qwen-p` (a read-only
+  stream-json print-mode fallback for when ACP is unavailable), `claude`
+  and `agy` (stream-json), and `codex` (app-server, with an `exec`
+  fallback). `[aliases]` in `$XDG_CONFIG_HOME/nvsh/config.toml` names a
+  `backend[/model[/effort]]` target, with `default` reserved for a bare
+  `nvsh --agent default`; an explicit `@target` mark at the prompt
+  (`@name` or `@backend/model/effort`) answers one request from that
+  harness, one-shot unless it names the default target — see
+  [`docs/shell-integration.md`](docs/shell-integration.md) for the grammar
+  and [`docs/daemon.md`](docs/daemon.md) for how the resolved target
+  travels to the daemon. Where a harness has no client-side approval
+  channel — qwen over ACP never sends `session/request_permission`
+  (verified against qwen 0.23.3), and agy headless auto-denies any tool
+  needing the `command` permission — it runs read-only
+  (`tool_calling=False`) rather than being auto-approved; an operator can
+  opt a harness into its own agent-side approval with
+  `[agents.<name>] approval = "harness"`, recorded in capabilities and the
+  audit log. nvsh never edits, creates or overrides a harness's own
+  settings or trust files (agy/claude settings.json, codex config.toml,
+  kiro trust settings, qwen settings) — it only passes launch flags and
+  protocol-level policy, and reports what it finds. Every subprocess-backed
+  adapter's child environment has `CLAUDECODE` and the `CLAUDE_CODE_*`
+  family stripped before the process spawns (`nvsh/agent/_env.py`), so a
+  spawned harness never believes it is nested inside the Claude Code
+  session that may itself be driving nvsh's own development.
 - **One session daemon per user** owns the warm agent process, started
   lazily on the first qualifying failure, never at shell start; each shell
   session gets its own conversation, put to sleep when another shell's
