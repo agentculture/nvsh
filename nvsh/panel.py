@@ -533,8 +533,9 @@ class Panel:
         result = StreamResult()
         if self._target is not None:
             self.line(self._target_header_line())
-        saved_attrs = _save_termios(self.in_, self.isatty)
-        previous = _install_sigint(self._on_sigint(cancel))
+        cancelled = threading.Event()
+        saved_attrs = None
+        previous = None
         started_text = False
         self._thinking_open = False
         stop_waiting = threading.Event()
@@ -544,8 +545,12 @@ class Panel:
             target=self._wait_ticker, args=(stop_waiting,), daemon=True, name="nvsh-wait"
         )
         try:
-            # Started inside the try: a SIGINT that lands during start() must
-            # still end as an interrupted stream, not a traceback.
+            # All setup happens inside the try: a SIGINT that lands before
+            # the handler is in place (Python's default handler raises
+            # KeyboardInterrupt too) or during start() must still end as
+            # an interrupted stream, not a traceback.
+            saved_attrs = _save_termios(self.in_, self.isatty)
+            previous = _install_sigint(self._on_sigint(cancel, cancelled))
             ticker.start()
             self._arm_waiting()
             for event in events:
@@ -561,6 +566,11 @@ class Panel:
                 self._arm_waiting()
         except KeyboardInterrupt:
             result.interrupted = True
+            # Raised by Python's default handler, before ours was installed:
+            # the operator still pressed Ctrl+C, so the agent is still told.
+            if cancel is not None and not cancelled.is_set():
+                cancelled.set()
+                _quiet(cancel)
         finally:
             stop_waiting.set()
             if ticker.ident is not None:
@@ -670,9 +680,12 @@ class Panel:
             return started_text, True
         return started_text, False
 
-    def _on_sigint(self, cancel: Callable[[], object] | None) -> Callable[[int, object], None]:
+    def _on_sigint(
+        self, cancel: Callable[[], object] | None, cancelled: threading.Event
+    ) -> Callable[[int, object], None]:
         def handler(_signum: int, _frame: object) -> None:
-            if cancel is not None:
+            if cancel is not None and not cancelled.is_set():
+                cancelled.set()
                 _quiet(cancel)
             # KeyboardInterrupt, like the one _interrupt_handler raises: a
             # BaseException is what breaks a blocking read without any of
