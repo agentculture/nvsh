@@ -90,7 +90,8 @@ redacted first (`nvsh/redact.py`), and a spawned harness's environment has
   confirmation.
 - **Pluggable, offline-first backends** sit behind one adapter, with a
   fixture backend for tests. Nemotron ("associate", via Pi) is only the
-  initial model. Config lives under `$XDG_CONFIG_HOME/nvsh/`.
+  initial model — `nvsh setup` probes `PATH` and defaults to whichever
+  harness is already installed. Config lives under `$XDG_CONFIG_HOME/nvsh/`.
 - **Device context with redaction always on.** Record the source of each
   detected value in `docs/platforms.md`. Support `--show-context`, and give
   the redactor its own tests.

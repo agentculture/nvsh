@@ -1,0 +1,1012 @@
+{
+  "slug": "setup-works-with-any-installed-agent",
+  "title": "setup works with any installed agent",
+  "schema_version": 6,
+  "status": "exported",
+  "created": "2026-09-14T13:42:34Z",
+  "updated": "2026-09-14T14:46:58Z",
+  "claims": [
+    {
+      "id": "c1",
+      "kind": "announcement",
+      "text": "nvsh setup works with the agent you already have: it picks an installed harness (claude, codex, qwen, kiro, agy or pi) or takes `--agent <target>`, offers to install only what that pick needs, mentions an API key only when openai-compat is actually the pick, and the README says how in the devague announcement-first shape",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h11",
+          "text": "the announcement holds end to end: from a clean config on a box with claude installed, nvsh setup then a failing command reaches claude with no pi or key prompt in between",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "docs/verification.md gains this scenario run on one fleet machine",
+      "revisions": [
+        {
+          "text": "nvsh setup works with the agent you already have: it picks an installed harness (claude, codex, qwen, kiro, agy or pi) or takes --agent <target>, offers to install only what that pick needs, mentions an API key only when openai-compat is actually the pick, and the README says how in the devague announcement-first shape",
+          "kind": "announcement",
+          "reason": "MD033 lint: backtick placeholder; user-origin claim, typographic change only"
+        }
+      ]
+    },
+    {
+      "id": "c2",
+      "kind": "requirement",
+      "text": "nvsh/installers.py TOOLS hard-codes node+pi as always-missing helper tools, so setup offers to install pi even when claude/codex are on PATH; setup must offer installs only for the backend it picked (none when that backend is already installed)",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h1",
+          "text": "installers.missing_tools(chosen=...) never returns pi or node when the chosen backend is not pi and its binary is on PATH",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [
+        {
+          "id": "q2",
+          "text": "Do uv and tmux stay in the setup install offers? tmux is described as the inline panel and daemon target, uv only matters for a checkout install",
+          "resolved": true,
+          "blocking": false,
+          "resolution": "user: yes, uv and tmux stay in the offers; user reports setup never asked about them on their mac (zsh) -- installers.py only knows apt-get, so on macOS every step is non-executable and no prompt fires"
+        }
+      ],
+      "links": [],
+      "instruction": "tests/test_installers.py: which={claude} chosen=claude -> names == {uv,tmux}",
+      "revisions": []
+    },
+    {
+      "id": "c3",
+      "kind": "requirement",
+      "text": "nvsh/agent/registry.py choose() falls straight to openai-compat when the configured provider (default pi) is off PATH, even with claude/codex installed; the unforced pick must prefer any installed adapter and reach openai-compat only when no harness binary is on PATH",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h2",
+          "text": "registry.choose() with default config and which={claude,codex} returns claude or codex, never openai-compat",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [
+        {
+          "id": "q1",
+          "text": "When several harnesses are installed and no --agent is given, what order wins: keep pi first (offline-first principle in CLAUDE.md), the ADAPTERS registration order, or prompt the operator interactively?",
+          "resolved": true,
+          "blocking": false,
+          "resolution": "user: on first setup 'default' is set by probing installed harnesses and by asking; read as: probe PATH for all adapters, one hit becomes default, several hits prompt the operator with the probed list (both), --agent skips the prompt, non-tty/--json takes the first probed hit"
+        }
+      ],
+      "links": [],
+      "instruction": "tests/test_agent_registry.py table over which sets: {}, {claude}, {claude,codex}, {pi,claude}",
+      "revisions": []
+    },
+    {
+      "id": "c4",
+      "kind": "requirement",
+      "text": "nvsh/cli/_commands/setup.py cmd_setup has no --agent flag; setup must accept `--agent <target>` (alias or `backend[/model[/effort]]`), fail loudly if that binary is missing, and write it to [aliases].default in the same run",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h3",
+          "text": "nvsh setup --agent codex/gpt-5/high writes [aliases].default = 'codex/gpt-5/high' and fails with exit 2 naming the binary when codex is off PATH",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "tests/test_cli_setup.py: read config.toml after setup; assert CliError code on a which that lacks codex",
+      "revisions": [
+        {
+          "text": "nvsh/cli/_commands/setup.py cmd_setup has no --agent flag; setup must accept --agent <target> (alias or backend[/model[/effort]]), fail loudly if that binary is missing, and write it to [aliases].default in the same run",
+          "kind": "requirement",
+          "reason": "MD033 lint: backtick placeholders"
+        }
+      ]
+    },
+    {
+      "id": "c5",
+      "kind": "requirement",
+      "text": "nvsh/cli/_commands/agent.py: 'agent use' help lists five names and 'agent install' refuses everything but pi; both must cover all eight ADAPTERS, with install commands for the npm-installable harnesses (claude, codex, qwen)",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h4",
+          "text": "nvsh agent use <name> accepts every key of registry.ADAPTERS and nvsh agent install <name> prints an install command for pi, claude, codex and qwen and 'no known installer' for agy and kiro",
+          "status": "rejected",
+          "instruction": ""
+        },
+        {
+          "id": "h17",
+          "text": "nvsh agent use `<name>` accepts every key of registry.ADAPTERS and nvsh agent install `<name>` prints an install command for pi, claude, codex and qwen and 'no known installer' for agy and kiro",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "parametrize over ADAPTERS in tests/test_cli.py; assert the help string lists all eight",
+      "revisions": []
+    },
+    {
+      "id": "c6",
+      "kind": "requirement",
+      "text": "README.md is rewritten in the devague README shape: one-paragraph announcement, Install, Set up (nvsh setup --agent claude|codex|...), Work with it, Safety first (nothing leaves the machine except to the agent you trust; with claude or codex that agent is a third party; redaction runs before anything is sent), What nvsh never does, What lands where; no status/history prose",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h5",
+          "text": "README.md has exactly these H2s in order: Install, Set up, Work with it, Safety first, What nvsh never does, What lands where (plus License), and the first paragraph is the announcement",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [
+        {
+          "id": "q3",
+          "text": "Does the rewritten README keep a 'What leaves the machine' section (redaction, no network on success)? It is the one prose block a security-minded operator reads first",
+          "resolved": true,
+          "blocking": false,
+          "resolution": "user: keep the section but rephrase: a 'Safety first' header, saying nothing leaves the machine except to the agent you trust, and that with claude or codex that agent is a third party"
+        }
+      ],
+      "links": [],
+      "instruction": "a test in tests/test_docs_architecture.py reads README.md headings; markdownlint-cli2 README.md exits 0",
+      "revisions": [
+        {
+          "text": "README.md is rewritten in the devague README shape: one-paragraph announcement, Install, Set up (nvsh setup --agent claude|codex|...), Work with it, What nvsh never does, What lands where; no status/history prose, no line over the reader's patience",
+          "kind": "requirement",
+          "reason": "user decision on q3: keep the section, rephrase as Safety first / the agent you trust"
+        }
+      ]
+    },
+    {
+      "id": "c7",
+      "kind": "requirement",
+      "text": "nvsh/explain/catalog.py _SETUP, _AGENT_USE and _AGENT_INSTALL text follows the new flags and install targets, or teken cli doctor --strict and the introspection tests fail",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h6",
+          "text": "uv run teken cli doctor . --strict passes and nvsh explain setup / agent install mention --agent and the new install targets",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "run the rubric gate in CI; grep the catalog text in tests/test_cli.py",
+      "revisions": []
+    },
+    {
+      "id": "c8",
+      "kind": "requirement",
+      "text": "tests/test_cli_setup.py and tests/test_installers.py encode the current behavior (missing set == {pi,node,uv,tmux}; fallback to openai-compat with a key hint) and are rewritten with the new pick rule",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h7",
+          "text": "uv run pytest -n auto passes with no test still asserting the pi-always-offered or openai-compat-fallback behavior",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "grep tests/ for 'openai-compat', 'fallback' and '{\"pi\", \"node\"' after the rewrite",
+      "revisions": []
+    },
+    {
+      "id": "c9",
+      "kind": "assumption",
+      "text": "nvsh/doctor_checks.py check_agent_configured reads [agent] provider only; it should report the resolved default target ([aliases].default) so doctor agrees with what setup wrote",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c10",
+      "kind": "assumption",
+      "text": "CLAUDE.md, QWEN.md, AGENTS.override.md, AGENTS.colleague.md and .pi/SYSTEM.md say Nemotron/pi is the default backend; their wording changes to 'the installed harness setup picked' so scripts/harness-smoke.py and the four prompts do not drift",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c11",
+      "kind": "boundary",
+      "text": "nvsh still never edits, creates or overrides a harness's own settings or trust files (docs/specs/2026-09-14 spec, docs/config.example.toml header); a setup --agent claude pick passes launch flags only",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h8",
+          "text": "no code path under nvsh/ opens a harness settings or trust file for writing (claude/agy settings.json, codex config.toml, kiro trust, qwen settings)",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "grep -rn 'settings.json\\|config.toml\\|trust' nvsh/ shows reads or docstrings only; tests/test_agent_conformance.py boundary test stays green",
+      "revisions": []
+    },
+    {
+      "id": "c12",
+      "kind": "non_goal",
+      "text": "the adapters themselves (nvsh/agent/claude.py, codex.py, qwen.py, agy.py, acp.py, pi.py, openai_compat.py) and the rc-block/hook mechanics (nvsh/rcfile.py, nvsh/shell/hook.bash, readline.bash) are not changed; this is a setup/selection and README change only",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c13",
+      "kind": "boundary",
+      "text": "README.md stays free of ~/ paths (tests/test_docs_architecture.py OWNED_DOCS) and docs/architecture.md's historical 'README.md:10-14' citation is left as-is; the README rewrite must pass markdownlint-cli2 with the repo's .markdownlint-cli2.yaml",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h9",
+          "text": "tests/test_docs_architecture.py's no-tilde-path check passes on the new README.md and docs/architecture.md is byte-identical to main",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "git diff main -- docs/architecture.md is empty in the PR",
+      "revisions": []
+    },
+    {
+      "id": "c14",
+      "kind": "non_goal",
+      "text": "the runtime package keeps zero third-party dependencies (pyproject dependencies = []); harness install commands are plain argv strings, no package-manager library",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c15",
+      "kind": "requirement",
+      "text": "nvsh setup and uninstall work from zsh on macOS: setup detects the operator's shell ($SHELL / --shell zsh), edits .zshrc instead of .bashrc, and renders a zsh hook (precmd + $pipestatus, zle keybinding for Ctrl+G) alongside hook.bash",
+      "origin": "llm",
+      "status": "rejected",
+      "honesty_conditions": [],
+      "hard_questions": [
+        {
+          "id": "q4",
+          "text": "Is zsh/macOS part of this milestone or a second spec? It roughly doubles the shell surface (new hook file, rc editor rules, brew installers, a mac in the verification fleet)",
+          "resolved": true,
+          "blocking": false,
+          "resolution": "user: zsh/macOS is out of scope for this milestone; track it in a GitHub issue; this milestone adds a warning that nvsh is untested on macOS/zsh"
+        }
+      ],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c16",
+      "kind": "requirement",
+      "text": "nvsh/installers.py knows brew on macOS (brew install node tmux uv) and npm for the harness CLIs, so setup on a mac actually prompts instead of listing every step as 'no known installer (apt-get not found)'",
+      "origin": "llm",
+      "status": "rejected",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c17",
+      "kind": "requirement",
+      "text": "nvsh setup warns (text and --json 'warnings') when the login shell is not bash or the OS is macOS: 'nvsh is not tested on macOS/zsh yet (see issue #11)'; the hook block is still written only to the bash rc",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h10",
+          "text": "nvsh setup --json on a run where platform.system()=='Darwin' or $SHELL ends in zsh carries warnings: ['nvsh is not tested on macOS/zsh yet (see issue #11)'] and still edits only the bash rc",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "tests/test_cli_setup.py monkeypatches platform.system and SHELL; asserts warnings and the rc path",
+      "revisions": [
+        {
+          "text": "nvsh setup warns (text and --json 'warnings') when the login shell is not bash or the OS is macOS: 'nvsh is not tested on macOS/zsh yet (see issue #N)'; the hook block is still written only to the bash rc",
+          "kind": "requirement",
+          "reason": "issue filed as #11"
+        }
+      ]
+    },
+    {
+      "id": "c18",
+      "kind": "audience",
+      "text": "an operator on a Jetson or DGX Spark who already has one agent CLI installed (claude, codex, qwen, kiro, agy or pi) and wants nvsh to use it, plus the reader landing on README.md from PyPI or GitHub",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h12",
+          "text": "README.md's first paragraph names an operator who already has one agent CLI installed, and nvsh setup on a box with only claude installed picks claude with no pi or API-key mention",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "README opens by naming this operator; nvsh setup on a box with only claude installed picks claude with no pi or API-key mention",
+      "revisions": []
+    },
+    {
+      "id": "c19",
+      "kind": "before_state",
+      "text": "nvsh setup always offers to install pi, falls back to openai-compat and prints an API-key hint whenever pi is off PATH, has no --agent flag, and README.md opens with a 20-line status paragraph and a Goal essay",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h13",
+          "text": "on main today, nvsh setup --no-install --json on a box without pi reports agent.name openai-compat with a key_hint and an installs row for pi (recorded as the before-state in the spec)",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "reproduce on a box without pi: nvsh setup --no-install --json shows agent.name openai-compat with a key_hint and installs listing pi",
+      "revisions": []
+    },
+    {
+      "id": "c20",
+      "kind": "after_state",
+      "text": "nvsh setup --agent claude (or a probe-and-ask when several harnesses are installed) writes [aliases].default, offers only the installs that pick needs, mentions a key only when openai-compat is the pick, warns on macOS/zsh, and README.md reads like devague's: announcement, Install, Set up, Work with it, Safety first, What nvsh never does, What lands where",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h14",
+          "text": "nvsh setup --agent claude --no-install --json reports agent.name claude, key_hint null and no pi install row; markdownlint-cli2 README.md exits 0",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "nvsh setup --agent claude --no-install --json: agent.name == claude, key_hint null, installs has no pi row; markdownlint-cli2 README.md passes",
+      "revisions": []
+    },
+    {
+      "id": "c21",
+      "kind": "why_it_matters",
+      "text": "the multi-harness work (0.10.0) made eight adapters first-class, but the on-ramp still assumes pi, so an operator with claude or codex is steered to install a second agent and to find an API key they do not need",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h15",
+          "text": "nvsh agent list --json reports every adapter installed on the same box where nvsh setup on main still offers pi and hints at a key",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "compare nvsh agent list --json (eight installed) against nvsh setup output on the same box today",
+      "revisions": []
+    },
+    {
+      "id": "c22",
+      "kind": "success_signal",
+      "text": "on a box with 1 harness installed and no config, nvsh setup picks it with 0 install offers for other agents and 0 API-key lines; with >1 installed it asks once; README.md is under 120 lines with no paragraph over 4 lines outside Safety first",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h16",
+          "text": "tests/test_cli_setup.py covers the one-harness and several-harnesses cases with a fake which, and wc -l README.md is below 120",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "tests/test_cli_setup.py covers the 1-harness and >1-harness cases with a fake which; wc -l README.md < 120",
+      "revisions": []
+    },
+    {
+      "id": "c23",
+      "kind": "decision",
+      "text": "default resolution on first setup: probe PATH for every adapter; one hit is the default; several hits on a terminal always prompt the operator with the list, tool-calling adapters first then ADAPTERS order, each non-tool-calling entry marked with a read-only/plan-mode warning; --yes answers install prompts only and never the pick; non-tty/--json takes the first entry of that ordered list; `--agent <target>` skips the probe; openai-compat is the pick only when no harness binary exists",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [
+        {
+          "id": "q5",
+          "text": "several hits, non-tty: ADAPTERS order is pi, qwen, qwen-p, claude, codex, agy, kiro, so a box with qwen and claude auto-picks qwen (plan mode, tool_calling False). Should the probe rank tool_calling=True adapters first and skip qwen-p (a fallback) entirely?",
+          "resolved": true,
+          "blocking": false,
+          "resolution": "user: on a terminal the operator always picks from the probed list; the list is ordered with tool-calling adapters first, then ADAPTERS order; non-tool-calling entries carry a warning (read-only / plan mode); qwen-p is not skipped, just listed with the warning"
+        },
+        {
+          "id": "q6",
+          "text": "nvsh setup --yes answers install prompts today; when several harnesses are installed does --yes also take the first probed harness, or does the pick prompt still fire?",
+          "resolved": true,
+          "blocking": false,
+          "resolution": "user: --yes answers install prompts only; the harness pick prompt still fires on a terminal"
+        }
+      ],
+      "links": [],
+      "instruction": "encode as registry.probe() + a setup prompt; test all four branches",
+      "revisions": [
+        {
+          "text": "default resolution on first setup: probe PATH for every adapter; one hit is the default; several hits prompt the operator with the list (non-tty/--json takes the first in ADAPTERS order); --agent <target> skips the probe; openai-compat is the pick only when no harness binary exists",
+          "kind": "decision",
+          "reason": "MD033 lint: backtick placeholders"
+        },
+        {
+          "text": "default resolution on first setup: probe PATH for every adapter; one hit is the default; several hits prompt the operator with the list (non-tty/--json takes the first in ADAPTERS order); `--agent <target>` skips the probe; openai-compat is the pick only when no harness binary exists",
+          "kind": "decision",
+          "reason": "q5 and q6 resolved by the user"
+        }
+      ]
+    },
+    {
+      "id": "c24",
+      "kind": "requirement",
+      "text": "a fallback pick must not stick: today setup writes [aliases].default = openai-compat and keeps it on every later run because registry.installed() is always True for a binary-less adapter; the new probe re-runs whenever the kept default is openai-compat with no [agents.openai-compat] base_url, so installing claude after a bad first setup is picked up by the next setup",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h18",
+          "text": "two consecutive nvsh setup runs, the first with no harness on PATH and the second with claude, end with [aliases].default = claude",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "tests/test_cli_setup.py: first run which={} -> openai-compat; second run which={claude} -> claude; scratch probe in the challenge pass reproduced the sticky case",
+      "revisions": []
+    },
+    {
+      "id": "c25",
+      "kind": "assumption",
+      "text": "the daemon resolves 'default' from the Config it was constructed with (daemon.py default_target, no reload); after setup changes [aliases].default a warm daemon keeps the old harness, so setup must stop a running daemon (as uninstall does via nvsh daemon stop) or say so",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "grep nvsh/daemon.py for a config reload; if none, setup calls _stop_daemon after writing the alias and reports daemon_stopped",
+      "revisions": []
+    },
+    {
+      "id": "c26",
+      "kind": "requirement",
+      "text": "when the pick is a hosted harness (AdapterSpec.hosted: claude, codex, agy, kiro) setup prints one line: '`<name>` is hosted: on a failure the redacted command, output and device context leave this machine' -- the Safety first promise stated at the moment of choice, not only in the README",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h19",
+          "text": "nvsh setup --agent claude --json carries agent.hosted true and the text output contains 'is hosted'; the same for pi has hosted false and no such line",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "tests/test_cli_setup.py asserts the line for claude and its absence for pi; --json carries agent.hosted",
+      "revisions": [
+        {
+          "text": "when the pick is a hosted harness (AdapterSpec.hosted: claude, codex, agy, kiro) setup prints one line: '<name> is hosted: on a failure the redacted command, output and device context leave this machine' -- the Safety first promise stated at the moment of choice, not only in the README",
+          "kind": "requirement",
+          "reason": "MD033 lint: backtick placeholders"
+        }
+      ]
+    },
+    {
+      "id": "c27",
+      "kind": "assumption",
+      "text": "installed means the binary is on PATH, not that it is logged in; an unauthenticated claude or codex pick fails on the first real failure. setup runs doctor's agent_reachable check for the pick and reports the result without blocking",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "reuse doctor_checks.check_agent_reachable; assert setup --json carries agent.reachable for the pick",
+      "revisions": []
+    },
+    {
+      "id": "c28",
+      "kind": "requirement",
+      "text": "README.md is the PyPI long description (pyproject readme = README.md); links to docs/ and issues use absolute GitHub URLs so the PyPI page has no dead links",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h20",
+          "text": "README.md contains no '](docs/' or '](CLAUDE.md' relative link after the rewrite",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "grep README.md for '](docs/' after the rewrite: zero hits",
+      "revisions": []
+    }
+  ],
+  "open_vagueness": [
+    {
+      "id": "v1",
+      "text": "install commands for agy and kiro-cli are not known from this repo (registry.py has only PI_INSTALL_CMD); until verified, agent install for those two prints 'no known installer' rather than guessing",
+      "kind": "unknown_nonblocking",
+      "claim_id": null,
+      "resolved": false,
+      "resolution": "",
+      "resolution_claim_id": null
+    },
+    {
+      "id": "v2",
+      "text": "which zsh hook behaviors carry over unchanged (output capture via script(1), OSC 133 markers, slash-command readline interception) and which need zsh-specific work is unknown until a zsh prototype runs on the mac; docs/architecture.md measured only bash",
+      "kind": "unknown_blocking",
+      "claim_id": null,
+      "resolved": true,
+      "resolution": "user: zsh/macOS deferred to a GitHub issue; the hook behaviors question travels with it",
+      "resolution_claim_id": null
+    },
+    {
+      "id": "v3",
+      "text": "whether qwen's ACP session or kiro need a first interactive login that a headless setup probe cannot detect; only claude and codex auth state were reasoned about",
+      "kind": "unknown_nonblocking",
+      "claim_id": null,
+      "resolved": false,
+      "resolution": "",
+      "resolution_claim_id": null
+    }
+  ],
+  "scope_entries": [
+    {
+      "id": "s1",
+      "surface": "nvsh/installers.py (TOOLS tuple, lines ~140-175)",
+      "finding": "node and pi are unconditional ToolSpec entries; missing_tools() lists them whenever pi is absent, regardless of which adapter setup chose or which harness is already installed",
+      "seeds": [
+        "c2"
+      ]
+    },
+    {
+      "id": "s2",
+      "surface": "nvsh/agent/registry.py choose() (lines 276-332)",
+      "finding": "configured-provider-or-openai-compat is the whole decision; installed() is checked only for the configured provider, never for the other seven adapters",
+      "seeds": [
+        "c3"
+      ]
+    },
+    {
+      "id": "s3",
+      "surface": "nvsh/cli/_commands/setup.py (cmd_setup, register)",
+      "finding": "register() adds only --rc/--json/--yes/--no-install; the agent pick is registry.choose(cfg) with no forced target, and _agent_key_hint already scopes the API-key line to openai-compat only",
+      "seeds": [
+        "c4"
+      ]
+    },
+    {
+      "id": "s4",
+      "surface": "nvsh/cli/_commands/agent.py (cmd_agent_install, register lines 210-216)",
+      "finding": "help text 'One of: pi, qwen, claude, codex, openai-compat' and 'Install target (only pi today)'; cmd_agent_install hard-codes registry.PI_INSTALL_CMD",
+      "seeds": [
+        "c5"
+      ]
+    },
+    {
+      "id": "s5",
+      "surface": "README.md (169 lines) vs ../devague/README.md (119 lines)",
+      "finding": "current README opens with a 20-line Status paragraph and a Goal essay; devague's opens with a two-sentence announcement then Install / Set up / Work with / Why it works / What lands where, mostly commands and tables",
+      "seeds": [
+        "c6"
+      ]
+    },
+    {
+      "id": "s6",
+      "surface": "nvsh/explain/catalog.py (_SETUP lines 556-590, _AGENT_* entries 921-924)",
+      "finding": "_SETUP names pi/node/uv/tmux as the fixed helper-tool set and describes the pick as registry.choose() with no --agent; CLAUDE.md says every verb needs a catalog entry the rubric checks",
+      "seeds": [
+        "c7"
+      ]
+    },
+    {
+      "id": "s7",
+      "surface": "tests/test_cli_setup.py (lines 145-169, 200, 522-551), tests/test_installers.py",
+      "finding": "assertions pin names == {pi,node,uv,tmux} and the openai-compat fallback key hint; these are the behaviors the idea changes, so the tests change with them",
+      "seeds": [
+        "c8"
+      ]
+    },
+    {
+      "id": "s8",
+      "surface": "nvsh/doctor_checks.py check_agent_configured (lines 125-150)",
+      "finding": "uses config.agent_provider, while setup writes its pick to [aliases].default and deliberately leaves [agent] provider alone (setup.py comment), so doctor can report pi while default resolves to claude",
+      "seeds": [
+        "c9"
+      ]
+    },
+    {
+      "id": "s9",
+      "surface": "CLAUDE.md + four harness prompt files (grep 'nvsh setup', 'openai')",
+      "finding": "all five describe setup and the pi default consistently today; CLAUDE.md's repo conventions require updating the other three whenever project facts in CLAUDE.md change",
+      "seeds": [
+        "c10"
+      ]
+    },
+    {
+      "id": "s10",
+      "surface": "docs/config.example.toml header + docs/specs/2026-09-14-first-class-multi-harness-with-aliases.md",
+      "finding": "the settings-files boundary is a confirmed claim of the shipped multi-harness spec and restated in the example config; setup choosing a harness must not cross it",
+      "seeds": [
+        "c11"
+      ]
+    },
+    {
+      "id": "s11",
+      "surface": "nvsh/agent/* adapters and nvsh/rcfile.py + nvsh/shell/*.bash",
+      "finding": "nvsh agent list --json on this box shows all eight adapters installed and working; setup's rc-block writing is independent of the agent pick (_write_rc_block runs before registry.choose)",
+      "seeds": [
+        "c12"
+      ]
+    },
+    {
+      "id": "s12",
+      "surface": "tests/test_docs_architecture.py + .markdownlint-cli2.yaml",
+      "finding": "README.md is in OWNED_DOCS for the no-tilde-path check; the README.md:10-14 string is asserted on docs/architecture.md, not README, so a README rewrite does not break it as long as architecture.md is untouched",
+      "seeds": [
+        "c13"
+      ]
+    },
+    {
+      "id": "s13",
+      "surface": "pyproject.toml / CLAUDE.md 'no third-party dependencies'",
+      "finding": "installers.py already uses only shutil and subprocess; adding claude/codex/qwen npm install specs stays within that",
+      "seeds": [
+        "c14"
+      ]
+    },
+    {
+      "id": "s14",
+      "surface": "nvsh/agent/registry.py PI_INSTALL_CMD (only install command on record)",
+      "finding": "only pi has a recorded install command; claude (@anthropic-ai/claude-code), codex (@openai/codex) and qwen (@qwen-code/qwen-code) are npm packages, agy and kiro-cli have no recorded installer",
+      "seeds": []
+    },
+    {
+      "id": "s15",
+      "surface": "nvsh/shell/hook.bash header + nvsh/rcfile.py + setup.py _default_rc",
+      "finding": "hook is 'pure bash 5.1+' on PROMPT_COMMAND/PIPESTATUS/PS0 with readline bindings; _default_rc is hard-wired to .bashrc; nothing zsh exists on disk -- deferred to a GitHub issue, this milestone only warns on macOS/zsh",
+      "seeds": [
+        "c15"
+      ]
+    },
+    {
+      "id": "s16",
+      "surface": "docs/specs/2026-09-13-nvsh-bash-hook-agent-on-error.md line 113 + gh issue 1 lines 37-39,128",
+      "finding": "zsh integration was explicitly deferred out of the 0.9.x hook scope, while issue 1 asks for bash/zsh (precmd) from the start; the user is now running nvsh from zsh on a mac, so the deferral ends here",
+      "seeds": [
+        "c15"
+      ]
+    },
+    {
+      "id": "s17",
+      "surface": "nvsh/installers.py _apt_step (lines 88-101) and _uv_install_commands",
+      "finding": "the only package manager probed is apt-get (plus snap/curl for uv); on macOS which('apt-get') is None so every node/tmux step is executable=False and run_install never calls confirm -- this is why setup asked nothing on the mac",
+      "seeds": [
+        "c16"
+      ]
+    },
+    {
+      "id": "s18",
+      "surface": "challenge pass / lifecycle lens: setup.py keep_existing (cmd_setup) + registry.installed() + scratch probe with PATH={claude,node}",
+      "finding": "probe: first setup -> openai-compat with key hint and a pi offer; second setup -> '[aliases].default = openai-compat kept'; a wrong first pick is permanent until nvsh agent use",
+      "seeds": [
+        "c24"
+      ]
+    },
+    {
+      "id": "s19",
+      "surface": "challenge pass / adjacent-systems lens: nvsh/daemon.py default_target (lines 674-696), setup.py _stop_daemon",
+      "finding": "daemon reads self.config, set once; setup already has _stop_daemon but only uninstall calls it",
+      "seeds": [
+        "c25"
+      ]
+    },
+    {
+      "id": "s20",
+      "surface": "challenge pass / data-flow lens: registry.ADAPTERS hosted flag + README Safety first decision (q3)",
+      "finding": "hosted is already recorded per adapter and shown by agent list, but setup's output never says the pick sends context off-box",
+      "seeds": [
+        "c26"
+      ]
+    },
+    {
+      "id": "s21",
+      "surface": "challenge pass / failure-mode lens: registry.installed() + doctor_checks.check_agent_reachable (line 753+)",
+      "finding": "a reachability probe per harness already exists in doctor and honours [aliases].default; setup does not call it",
+      "seeds": [
+        "c27"
+      ]
+    },
+    {
+      "id": "s22",
+      "surface": "challenge pass / overlooked-actors lens: pyproject.toml readme field + README.md relative links",
+      "finding": "the PyPI reader is an audience the frame named but the relative docs/ links only work on GitHub",
+      "seeds": [
+        "c28"
+      ]
+    },
+    {
+      "id": "s23",
+      "surface": "challenge pass / security lens: installers.run_install + audit log, npm install -g for claude/codex/qwen",
+      "finding": "clean: new harness installs ride the same confirm-then-run-then-audit path as pi; a curl-pipe-sh is never run; residual: npm -g may need sudo or an nvm shim per machine, same as pi today",
+      "seeds": []
+    },
+    {
+      "id": "s24",
+      "surface": "challenge pass / reversibility lens: uninstall leaves config.toml; nvsh agent use rewrites the default",
+      "finding": "clean once c24 lands: a wrong pick is undone by nvsh agent use or a re-run; uninstall deliberately keeps config",
+      "seeds": []
+    },
+    {
+      "id": "s25",
+      "surface": "challenge pass / observability lens: setup agent.reason string + audit log",
+      "finding": "clean: every pick already carries a verbatim reason and every install an audit row; the probe list itself should appear in agent.reason (covered by c23's instruction)",
+      "seeds": []
+    }
+  ],
+  "lapses": [
+    {
+      "id": "l1",
+      "code": "provenance-missing",
+      "what": "t2 README agent stated the 64 KB output cap and the XDG paths from the brief without reading nvsh/capture.py or nvsh/config.py",
+      "skipped_check": "",
+      "refs": [
+        "t2 / README.md Safety first + What lands where"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l2",
+      "code": "assumption-for-measurement",
+      "what": "t2 README agent first wrote an @qwen/... target example extrapolated from the old README instead of checking docs/shell-integration.md's grammar; replaced with @codex before commit",
+      "skipped_check": "docs/shell-integration.md @target grammar",
+      "refs": [
+        "t2 / README.md Work with it"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l3",
+      "code": "provenance-missing",
+      "what": "main agent's t2 brief stated the flag as 'nvsh context --show-context' from CLAUDE.md's abstract wording; the real verb flag is --show (nvsh context --help); corrected in README after merge",
+      "skipped_check": "",
+      "refs": [
+        "t2 brief / README.md Work with it + Safety first"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l4",
+      "code": "assumption-for-measurement",
+      "what": "t1 registry agent first assumed only qwen (not qwen-p) shows up for which={qwen,claude}; the shared qwen binary means probe() lists both; test corrected, behaviour kept",
+      "skipped_check": "",
+      "refs": [
+        "t1 / registry.probe qwen-p shared binary"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l5",
+      "code": "assumption-for-measurement",
+      "what": "t4 setup agent wrote the empty-probe production line assuming a monkeypatched shutil.which reaches registry.choose(); choose binds the real shutil.which as a default at import time; caught by its own sticky-fallback test, fixed on the caller side",
+      "skipped_check": "",
+      "refs": [
+        "t4 / setup.py empty-probe path, registry.choose which default"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l6",
+      "code": "assumption-for-measurement",
+      "what": "t7 setup agent's first tests used --agent claude / --agent pi and failed with 'cannot resolve forced target'; it worked around it by dropping --agent instead of reporting that a bare backend name is refused",
+      "skipped_check": "",
+      "refs": [
+        "t7 / registry.choose forced path, Config.resolve_target"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l7",
+      "code": "assumption-for-measurement",
+      "what": "t6 doctor agent assumed resolve_target's by_alias flag distinguishes an explicit [aliases].default from the legacy-provider fallback; it does not (both return True); worked around by checking DEFAULT_ALIAS in config.aliases",
+      "skipped_check": "",
+      "refs": [
+        "t6 / Config.resolve_target by_alias"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    }
+  ],
+  "obligations": [
+    {
+      "id": "o1",
+      "claim_id": "c3",
+      "seam": "registry.probe/choose",
+      "behavior": "with claude and codex on PATH and default config, choose() returns claude and never openai-compat; probe orders tool-calling adapters first",
+      "source_text": "nvsh/agent/registry.py choose() falls straight to openai-compat when the configured provider (default pi) is off PATH, even with claude/codex installed; the unforced pick must prefer any installed adapter and reach openai-compat only when no harness binary is on PATH",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o2",
+      "claim_id": "c2",
+      "seam": "installers.missing_tools(chosen)",
+      "behavior": "a claude pick never offers pi or node; agy and kiro get 'no known installer'",
+      "source_text": "nvsh/installers.py TOOLS hard-codes node+pi as always-missing helper tools, so setup offers to install pi even when claude/codex are on PATH; setup must offer installs only for the backend it picked (none when that backend is already installed)",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o3",
+      "claim_id": "c4",
+      "seam": "nvsh setup --agent",
+      "behavior": "a literal target is written to [aliases].default; a missing binary is exit 2 naming it, nothing written; a bare adapter name resolves",
+      "source_text": "nvsh/cli/_commands/setup.py cmd_setup has no --agent flag; setup must accept `--agent <target>` (alias or `backend[/model[/effort]]`), fail loudly if that binary is missing, and write it to [aliases].default in the same run",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o4",
+      "claim_id": "c23",
+      "seam": "nvsh setup probe-and-ask",
+      "behavior": "one hit silent; several hits prompt once on a tty; --yes never answers the pick; non-tty takes the first row",
+      "source_text": "default resolution on first setup: probe PATH for every adapter; one hit is the default; several hits on a terminal always prompt the operator with the list, tool-calling adapters first then ADAPTERS order, each non-tool-calling entry marked with a read-only/plan-mode warning; --yes answers install prompts only and never the pick; non-tty/--json takes the first entry of that ordered list; `--agent <target>` skips the probe; openai-compat is the pick only when no harness binary exists",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o5",
+      "claim_id": "c24",
+      "seam": "nvsh setup kept-default rule",
+      "behavior": "an openai-compat default with no base_url is re-probed on the next setup once a harness is installed",
+      "source_text": "a fallback pick must not stick: today setup writes [aliases].default = openai-compat and keeps it on every later run because registry.installed() is always True for a binary-less adapter; the new probe re-runs whenever the kept default is openai-compat with no [agents.openai-compat] base_url, so installing claude after a bad first setup is picked up by the next setup",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o6",
+      "claim_id": "c26",
+      "seam": "nvsh setup hosted disclosure",
+      "behavior": "a hosted pick prints the 'is hosted' line and --json carries agent.hosted",
+      "source_text": "when the pick is a hosted harness (AdapterSpec.hosted: claude, codex, agy, kiro) setup prints one line: '`<name>` is hosted: on a failure the redacted command, output and device context leave this machine' -- the Safety first promise stated at the moment of choice, not only in the README",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o7",
+      "claim_id": "c27",
+      "seam": "nvsh setup reachability",
+      "behavior": "setup reports agent.reachable for the pick without changing its exit code",
+      "source_text": "installed means the binary is on PATH, not that it is logged in; an unauthenticated claude or codex pick fails on the first real failure. setup runs doctor's agent_reachable check for the pick and reports the result without blocking",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o8",
+      "claim_id": "c17",
+      "seam": "nvsh setup macOS/zsh warning",
+      "behavior": "Darwin or a zsh SHELL adds the issue #11 warning; the rc stays the bash rc",
+      "source_text": "nvsh setup warns (text and --json 'warnings') when the login shell is not bash or the OS is macOS: 'nvsh is not tested on macOS/zsh yet (see issue #11)'; the hook block is still written only to the bash rc",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o9",
+      "claim_id": "c25",
+      "seam": "nvsh setup daemon stop + --json purity",
+      "behavior": "setup stops the daemon after a default change and its JSON stdout stays parseable",
+      "source_text": "the daemon resolves 'default' from the Config it was constructed with (daemon.py default_target, no reload); after setup changes [aliases].default a warm daemon keeps the old harness, so setup must stop a running daemon (as uninstall does via nvsh daemon stop) or say so",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o10",
+      "claim_id": "c5",
+      "seam": "nvsh agent use/install",
+      "behavior": "use accepts every ADAPTERS key; install prints 'no known installer' for agy and kiro",
+      "source_text": "nvsh/cli/_commands/agent.py: 'agent use' help lists five names and 'agent install' refuses everything but pi; both must cover all eight ADAPTERS, with install commands for the npm-installable harnesses (claude, codex, qwen)",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o11",
+      "claim_id": "c7",
+      "seam": "nvsh explain catalog",
+      "behavior": "explain setup names --agent, probe, hosted, macOS/zsh; explain agent install lists targets",
+      "source_text": "nvsh/explain/catalog.py _SETUP, _AGENT_USE and _AGENT_INSTALL text follows the new flags and install targets, or teken cli doctor --strict and the introspection tests fail",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o12",
+      "claim_id": "c6",
+      "seam": "README.md",
+      "behavior": "H2 order Install, Set up, Work with it, Safety first, What nvsh never does, What lands where, License; no relative repo links",
+      "source_text": "README.md is rewritten in the devague README shape: one-paragraph announcement, Install, Set up (nvsh setup --agent claude|codex|...), Work with it, Safety first (nothing leaves the machine except to the agent you trust; with claude or codex that agent is a third party; redaction runs before anything is sent), What nvsh never does, What lands where; no status/history prose",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o13",
+      "claim_id": "c13",
+      "seam": "README.md portability",
+      "behavior": "no ~/ paths in owned docs",
+      "source_text": "README.md stays free of ~/ paths (tests/test_docs_architecture.py OWNED_DOCS) and docs/architecture.md's historical 'README.md:10-14' citation is left as-is; the README rewrite must pass markdownlint-cli2 with the repo's .markdownlint-cli2.yaml",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o14",
+      "claim_id": "c1",
+      "seam": "end to end on spark",
+      "behavior": "clean config, only claude on PATH: setup then a failing command reaches claude with no pi or key prompt",
+      "source_text": "nvsh setup works with the agent you already have: it picks an installed harness (claude, codex, qwen, kiro, agy or pi) or takes `--agent <target>`, offers to install only what that pick needs, mentions an API key only when openai-compat is actually the pick, and the README says how in the devague announcement-first shape",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o15",
+      "claim_id": "c9",
+      "seam": "doctor agent_configured",
+      "behavior": "reports the backend [aliases].default resolves to and names the source",
+      "source_text": "nvsh/doctor_checks.py check_agent_configured reads [agent] provider only; it should report the resolved default target ([aliases].default) so doctor agrees with what setup wrote",
+      "origin": "llm",
+      "status": "proposed"
+    }
+  ]
+}

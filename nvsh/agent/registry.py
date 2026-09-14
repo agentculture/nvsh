@@ -253,6 +253,68 @@ def available_adapters(which: WhichFn = shutil.which) -> list[dict]:
     ]
 
 
+def _tool_calling(name: str, config: Config) -> bool:
+    """Derive ``tool_calling`` for adapter ``name`` the same way
+    ``build_adapter_rows`` does (``nvsh/cli/_commands/agent.py``'s
+    ``_adapter_capabilities``): construct the adapter and read
+    ``.capabilities().tool_calling`` -- without importing the CLI module.
+    Every adapter's ``__init__`` is cheap and never spawns a subprocess, so
+    building one just to read this is safe for a probe. A factory that
+    validates its own settings and raises is treated as ``tool_calling=False``
+    rather than failing the whole probe.
+    """
+    try:
+        agent = ADAPTERS[name].factory(config)
+        return bool(agent.capabilities().tool_calling)
+    except Exception:  # noqa: BLE001 - defensive: factories may validate/raise
+        return False
+
+
+def probe(which: WhichFn = shutil.which, config: Config | None = None) -> list[dict]:
+    """Installed adapters (``openai-compat`` excluded), tool-calling first.
+
+    Each row carries ``name``, ``hosted`` and ``tool_calling``. Rows are
+    ordered tool-calling adapters first, then the rest -- within each group,
+    ``ADAPTERS`` registration order is preserved (``list.sort`` is stable).
+    ``tool_calling`` comes from :func:`_tool_calling`, the same underlying
+    source (the constructed adapter's ``.capabilities()``) that
+    ``build_adapter_rows`` reports for 'nvsh agent list'.
+
+    ``config`` defaults to a bare :class:`~nvsh.config.Config` -- enough to
+    derive ``tool_calling`` for every adapter's default settings; pass the
+    live config to reflect an operator's ``[agents.<name>]`` overrides
+    (e.g. ``[agents.qwen] approval = "harness"``).
+
+    Adapters that share one ``binary`` (``qwen`` and its ``qwen-p``
+    print-mode fallback) are de-duplicated down to a single row -- the
+    first adapter registered for that binary, in ``ADAPTERS`` order -- so a
+    single installed harness never surfaces two rows for setup to prompt
+    between (Qodo #2, PR #12 review). The dropped adapter stays fully
+    selectable via :func:`choose`'s ``forced`` argument, aliases, and
+    ``nvsh agent use``; it is only excluded from this auto-pick table.
+    """
+    if config is None:
+        config = Config()
+    seen_binaries: set[str] = set()
+    rows = []
+    for name, spec in ADAPTERS.items():
+        if name == "openai-compat" or not installed(name, which):
+            continue
+        if spec.binary is not None:
+            if spec.binary in seen_binaries:
+                continue
+            seen_binaries.add(spec.binary)
+        rows.append(
+            {
+                "name": name,
+                "hosted": spec.hosted,
+                "tool_calling": _tool_calling(name, config),
+            }
+        )
+    rows.sort(key=lambda row: 0 if row["tool_calling"] else 1)
+    return rows
+
+
 def _forced_backend(config: Config, forced: str | Target) -> str:
     """Resolve a ``forced`` argument to a bare backend name.
 
@@ -262,6 +324,14 @@ def _forced_backend(config: Config, forced: str | Target) -> str:
     """
     if isinstance(forced, Target):
         return forced.backend
+    # A bare adapter name (``claude``, ``@codex``) is a valid target even
+    # when no alias spells it: the shell's ``@target`` grammar already
+    # accepts it (nvsh/client.py ``_bare_backend_target``), and ``nvsh setup
+    # --agent claude`` is the documented on-ramp. Checked before
+    # ``resolve_target`` so an alias of the same name still wins there.
+    bare = forced[1:] if forced.startswith("@") else forced
+    if bare in ADAPTERS and forced not in config.aliases:
+        return bare
     try:
         backend, _model, _effort, _alias = config.resolve_target(forced)
     except ConfigError as exc:
@@ -273,16 +343,55 @@ def _forced_backend(config: Config, forced: str | Target) -> str:
     return backend
 
 
+def _choose_forced(config: Config, which: WhichFn, forced: str | Target) -> tuple[str, str]:
+    """The ``forced is not None`` branch of :func:`choose`, split out to keep
+    ``choose`` under the cognitive-complexity limit (SonarCloud python:S3776,
+    PR #12 review). Behavior and every message are unchanged: resolve
+    ``forced`` to a backend name, then either return it (when its binary is
+    on PATH) or raise the same :class:`~nvsh.cli._errors.CliError` as before.
+    """
+    backend = _forced_backend(config, forced)
+    if backend not in ADAPTERS:
+        raise CliError(
+            EXIT_USER_ERROR,
+            f"unknown backend {backend!r} in forced target {forced!r}",
+            remediation=f"choose one of: {', '.join(sorted(ADAPTERS))}",
+        )
+    spec = ADAPTERS[backend]
+    if not installed(backend, which):
+        raise CliError(
+            EXIT_ENV_ERROR,
+            f"{spec.binary} is not installed (forced backend {backend!r})",
+            remediation=f"install {spec.binary}, or drop --agent to let nvsh choose",
+        )
+    return backend, f"forced via --agent {forced!r}"
+
+
+def _unavailable_reason(configured: str, which: WhichFn) -> str:
+    """Explain why ``configured`` was not picked, for the unforced path of
+    :func:`choose` (split out for python:S3776, PR #12 review). Same three
+    messages as before, byte-for-byte.
+    """
+    if configured not in ADAPTERS:
+        return f"configured provider '{configured}' is unknown"
+    spec = ADAPTERS[configured]
+    node_present = which("node") is not None
+    if spec.needs_node and not node_present:
+        return f"{configured} not on PATH and node missing"
+    return f"{configured} not on PATH"
+
+
 def choose(
     config: Config,
     which: WhichFn = shutil.which,
     forced: str | Target | None = None,
 ) -> tuple[str, str]:
-    """Pick a backend: the configured provider if installed, else openai-compat.
+    """Pick a backend: the configured provider if installed, else whatever
+    :func:`probe` finds installed, else openai-compat.
 
     Returns ``(name, reason)``. ``reason`` always explains the pick, so
     ``nvsh setup`` (t21) can print it verbatim -- e.g. "pi not on PATH and
-    node missing; using openai-compat against http://host:8000/v1".
+    node missing; installed: claude, codex; picked claude".
 
     ``forced`` (task t20's ``nvsh --agent <target>``) overrides the
     configured provider entirely: an alias name, a literal
@@ -292,37 +401,30 @@ def choose(
     fails loudly with a :class:`~nvsh.cli._errors.CliError` naming the
     missing binary. A forced target never silently falls back to
     ``openai-compat``; that fallback is only for the unforced path below.
+    See :func:`_choose_forced` for this branch's logic.
+
+    When the configured provider is not installed (:func:`_unavailable_reason`
+    explains why), :func:`probe` is consulted: if anything is installed, the
+    first probe row (tool-calling adapters first) is picked and the full
+    probe list is named in the reason. Only when ``probe`` finds nothing
+    installed does the pick fall back to ``openai-compat``, exactly as
+    before.
     """
     if forced is not None:
-        backend = _forced_backend(config, forced)
-        if backend not in ADAPTERS:
-            raise CliError(
-                EXIT_USER_ERROR,
-                f"unknown backend {backend!r} in forced target {forced!r}",
-                remediation=f"choose one of: {', '.join(sorted(ADAPTERS))}",
-            )
-        spec = ADAPTERS[backend]
-        if not installed(backend, which):
-            raise CliError(
-                EXIT_ENV_ERROR,
-                f"{spec.binary} is not installed (forced backend {backend!r})",
-                remediation=f"install {spec.binary}, or drop --agent to let nvsh choose",
-            )
-        return backend, f"forced via --agent {forced!r}"
+        return _choose_forced(config, which, forced)
 
     configured = config.agent_provider
     if configured in ADAPTERS and installed(configured, which):
         return configured, f"{configured} is configured and on PATH"
 
-    if configured not in ADAPTERS:
-        why = f"configured provider '{configured}' is unknown"
-    else:
-        spec = ADAPTERS[configured]
-        node_present = which("node") is not None
-        if spec.needs_node and not node_present:
-            why = f"{configured} not on PATH and node missing"
-        else:
-            why = f"{configured} not on PATH"
+    why = _unavailable_reason(configured, which)
+
+    probed = probe(which, config)
+    if probed:
+        picked = probed[0]["name"]
+        installed_names = ", ".join(row["name"] for row in probed)
+        reason = f"{why}; installed: {installed_names}; picked {picked}"
+        return picked, reason
 
     base_url = config.agents.get("openai-compat", {}).get("base_url")
     if base_url:

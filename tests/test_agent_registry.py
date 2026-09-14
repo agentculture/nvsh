@@ -312,3 +312,152 @@ def test_no_harness_message_offers_both_options():
     assert "install pi" in message
     assert "choose another harness" in message
     assert "nvsh agent use" in message
+
+
+# -- probe() -----------------------------------------------------------------
+
+
+def test_probe_excludes_openai_compat_even_when_everything_installed():
+    which = _which_factory(set(registry.ADAPTERS) | {"kiro-cli", "node"})
+    rows = registry.probe(which)
+    assert "openai-compat" not in {row["name"] for row in rows}
+
+
+def test_probe_row_shape():
+    rows = registry.probe(_which_factory({"claude"}))
+    assert len(rows) == 1
+    row = rows[0]
+    assert set(row) == {"name", "hosted", "tool_calling"}
+    assert row["name"] == "claude"
+    assert row["hosted"] is True
+    assert row["tool_calling"] is True
+
+
+@pytest.mark.parametrize(
+    "present,expected_names,expected_first_tool_calling",
+    [
+        (set(), [], None),
+        ({"claude"}, ["claude"], True),
+        ({"claude", "codex"}, ["claude", "codex"], True),
+        # qwen and qwen-p share the 'qwen' binary: only the first adapter
+        # registered for that binary (qwen, ahead of qwen-p in ADAPTERS
+        # order) shows up -- qwen-p stays selectable, just not probed.
+        ({"qwen", "claude"}, ["claude", "qwen"], True),
+        ({"pi", "claude"}, ["pi", "claude"], True),
+    ],
+)
+def test_probe_table_over_which_sets(present, expected_names, expected_first_tool_calling):
+    rows = registry.probe(_which_factory(present))
+    assert [row["name"] for row in rows] == expected_names
+    if expected_names:
+        assert rows[0]["tool_calling"] is expected_first_tool_calling
+
+
+def test_probe_orders_tool_calling_first_then_adapters_order():
+    # qwen (acp, tool_calling False by default) and claude/codex/pi
+    # (tool_calling True) present: tool-calling adapters come first, in
+    # ADAPTERS registration order (pi, claude, codex), then qwen. qwen-p
+    # shares qwen's binary and is de-duplicated out of the probe table.
+    rows = registry.probe(_which_factory({"pi", "qwen", "claude", "codex"}))
+    assert [row["name"] for row in rows] == ["pi", "claude", "codex", "qwen"]
+
+
+def test_probe_reflects_config_overrides_like_build_adapter_rows():
+    # qwen's tool_calling flips to True when [agents.qwen] approval="harness"
+    # -- the same underlying source build_adapter_rows uses.
+    config = Config()
+    config.agents["qwen"] = {"approval": "harness"}
+    rows = registry.probe(_which_factory({"qwen"}), config=config)
+    assert rows == [
+        {"name": "qwen", "hosted": False, "tool_calling": True},
+    ]
+
+
+def test_probe_lists_one_row_per_binary():
+    # A qwen-only machine sees exactly one row -- 'qwen' -- not both 'qwen'
+    # and 'qwen-p' (Qodo #2, PR #12 review): they share one binary, and
+    # qwen-p is a fallback meant for explicit selection, not a second row
+    # setup would prompt between.
+    rows = registry.probe(_which_factory({"qwen"}))
+    assert [row["name"] for row in rows] == ["qwen"]
+
+
+# -- choose() consulting probe() ----------------------------------------------
+
+
+def test_choose_default_config_picks_installed_tool_calling_adapter():
+    # default Config() has agent_provider == 'pi'; pi is not installed here,
+    # but claude and codex are -- probe() picks the first tool-calling row.
+    name, reason = registry.choose(Config(), which=_which_factory({"claude", "codex"}))
+    assert name == "claude"
+    assert "claude" in reason
+    assert "codex" in reason
+    assert "picked claude" in reason
+
+
+def test_choose_which_empty_still_returns_openai_compat():
+    name, _reason = registry.choose(Config(), which=_which_all_missing)
+    assert name == "openai-compat"
+
+
+@pytest.mark.parametrize(
+    "present,expected",
+    [
+        (set(), "openai-compat"),
+        ({"claude"}, "claude"),
+        ({"claude", "codex"}, "claude"),
+        ({"qwen", "claude"}, "claude"),
+        ({"pi", "claude"}, "pi"),
+    ],
+)
+def test_choose_table_over_which_sets(present, expected):
+    cfg = Config()
+    name, _reason = registry.choose(cfg, which=_which_factory(present))
+    assert name == expected
+
+
+def test_choose_configured_and_installed_provider_still_wins_over_probe():
+    cfg = Config()
+    cfg.agent_provider = "codex"
+    name, reason = registry.choose(cfg, which=_which_factory({"codex", "claude"}))
+    assert name == "codex"
+    assert "configured" in reason
+
+
+# ---------------------------------------------------------------------------
+# forced target: a bare adapter name (post-plan fix, deviation d2)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("forced", ["claude", "@claude", "codex"])
+def test_choose_forced_accepts_a_bare_adapter_name(forced):
+    """``nvsh setup --agent claude`` is the documented on-ramp; a bare name
+    resolves without an alias, exactly like ``@claude`` at the prompt."""
+    cfg = Config()
+    which = lambda name: "/usr/bin/x" if name in {"claude", "codex"} else None  # noqa: E731
+    backend, reason = registry.choose(cfg, which, forced=forced)
+    assert backend == forced.lstrip("@")
+    assert "forced" in reason
+
+
+def test_choose_forced_bare_name_prefers_an_alias_of_the_same_name():
+    cfg = Config(aliases={"claude": "codex/gpt-5/high"})
+    which = lambda name: "/usr/bin/x" if name in {"claude", "codex"} else None  # noqa: E731
+    backend, _ = registry.choose(cfg, which, forced="claude")
+    assert backend == "codex"
+
+
+def test_choose_forced_bare_name_still_fails_when_not_installed():
+    cfg = Config()
+    with pytest.raises(CliError) as excinfo:
+        registry.choose(cfg, lambda _n: None, forced="claude")
+    assert "claude" in str(excinfo.value.message)
+
+
+def test_choose_forced_qwen_p_still_selectable_despite_probe_dedup():
+    # qwen-p is dropped from probe()'s table (it shares qwen's binary), but
+    # remains fully reachable through an explicit forced target.
+    cfg = Config()
+    name, reason = registry.choose(cfg, which=_which_factory({"qwen"}), forced="qwen-p")
+    assert name == "qwen-p"
+    assert "forced" in reason

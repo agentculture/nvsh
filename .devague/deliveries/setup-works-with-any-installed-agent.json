@@ -1,0 +1,339 @@
+{
+  "plan_slug": "setup-works-with-any-installed-agent",
+  "schema_version": 2,
+  "created": "2026-09-14T14:25:30Z",
+  "updated": "2026-09-14T14:47:40Z",
+  "deviations": [
+    {
+      "id": "d1",
+      "what": "t4 passes chosen=None to installers.missing_tools when the probe is empty (openai-compat fallback), so a bare machine still gets the pi and node offers; every other path scopes offers to the pick as the acceptance criterion says",
+      "task_ref": "t4",
+      "reason": "scoping offers to openai-compat would leave a machine with no harness and no way to install one from setup",
+      "affects": [
+        "t4"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "classification": "acceptable",
+      "seq": 1
+    },
+    {
+      "id": "d2",
+      "what": "post-wave-2 fixes by the main agent outside any task's file list: registry._forced_backend accepts a bare adapter name (README/spec promise 'nvsh setup --agent claude'; only '/'-targets and aliases resolved), and _stop_daemon discards the child's stdout so setup --json stays parseable",
+      "task_ref": "t7",
+      "reason": "found by the after-state probe in scratch space and by t7's reported lapse; both are spec promises (h3/h14, README Set up table) the plan's file split did not reach",
+      "affects": [
+        "t1",
+        "t4"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "classification": "acceptable",
+      "seq": 2
+    }
+  ],
+  "evidence": [
+    {
+      "id": "e1",
+      "obligation_ref": "o1",
+      "test_ref": "tests/test_agent_registry.py::test_probe_table_over_which_sets + ::test_choose_configured_and_installed_provider_still_wins_over_probe + ::test_probe_orders_tool_calling_first_then_adapters_order",
+      "behavior_text": "probe over {}, {claude}, {claude,codex}, {qwen,claude}, {pi,claude}; choose picks claude with claude+codex; configured provider still wins",
+      "contract_text": "registry.choose() with default config and which={claude,codex} returns claude or codex, never openai-compat",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "acceptance-criterion test (this repo has no behavioral marker; the workforce's TDD tests are the behavioral suite) ran green at the named commit, 41 selected tests passed",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-14T14:48:00Z",
+        "commit": "463f887"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 3
+    },
+    {
+      "id": "e2",
+      "obligation_ref": "o2",
+      "test_ref": "tests/test_installers.py::test_missing_tools_chosen_claude_never_offers_pi_or_node_when_claude_on_path + ::test_harness_install_step_no_known_installer_harnesses + ::test_harness_install_step_claude_is_executable_npm_step",
+      "behavior_text": "chosen=claude with claude on PATH yields no pi/node rows; agy/kiro/openai-compat get a non-executable no-known-installer step; claude gets npm install -g",
+      "contract_text": "installers.missing_tools(chosen=...) never returns pi or node when the chosen backend is not pi and its binary is on PATH",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "acceptance-criterion test (this repo has no behavioral marker; the workforce's TDD tests are the behavioral suite) ran green at the named commit, 41 selected tests passed",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-14T14:48:00Z",
+        "commit": "463f887"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 4
+    },
+    {
+      "id": "e3",
+      "obligation_ref": "o3",
+      "test_ref": "tests/test_cli_setup.py::test_setup_agent_flag_writes_the_literal_target + ::test_setup_agent_flag_with_the_binary_missing_is_an_env_error + tests/test_agent_registry.py::test_choose_forced_accepts_a_bare_adapter_name",
+      "behavior_text": "--agent codex/gpt-5/high lands verbatim in [aliases].default; codex off PATH raises exit 2 naming codex; bare claude/@claude/codex resolve",
+      "contract_text": "nvsh setup --agent codex/gpt-5/high writes [aliases].default = 'codex/gpt-5/high' and fails with exit 2 naming the binary when codex is off PATH",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "acceptance-criterion test (this repo has no behavioral marker; the workforce's TDD tests are the behavioral suite) ran green at the named commit, 41 selected tests passed",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-14T14:48:00Z",
+        "commit": "463f887"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 5
+    },
+    {
+      "id": "e4",
+      "obligation_ref": "o4",
+      "test_ref": "tests/test_cli_setup.py::test_setup_one_probed_harness_becomes_the_default_silently + ::test_setup_several_harnesses_prompt_once_on_a_tty + ::test_setup_yes_does_not_answer_the_harness_pick + ::test_setup_without_a_tty_takes_the_first_probe_row",
+      "behavior_text": "one hit silent; several hits prompt once with plan-mode marks; --yes leaves the pick prompt; non-tty takes row one",
+      "contract_text": "several hits on a terminal always prompt the operator with the list, tool-calling adapters first; --yes answers install prompts only; non-tty/--json takes the first entry",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "acceptance-criterion test (this repo has no behavioral marker; the workforce's TDD tests are the behavioral suite) ran green at the named commit, 41 selected tests passed",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-14T14:48:00Z",
+        "commit": "463f887"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 6
+    },
+    {
+      "id": "e5",
+      "obligation_ref": "o5",
+      "test_ref": "tests/test_cli_setup.py::test_setup_re_probes_a_sticky_openai_compat_default",
+      "behavior_text": "first run which={} writes openai-compat; second run which={claude} ends with default = claude",
+      "contract_text": "two consecutive nvsh setup runs, the first with no harness on PATH and the second with claude, end with [aliases].default = claude",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "acceptance-criterion test (this repo has no behavioral marker; the workforce's TDD tests are the behavioral suite) ran green at the named commit, 41 selected tests passed",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-14T14:48:00Z",
+        "commit": "463f887"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 7
+    },
+    {
+      "id": "e6",
+      "obligation_ref": "o6",
+      "test_ref": "tests/test_cli_setup.py::test_setup_hosted_line_present_for_hosted_pick + ::test_setup_no_hosted_line_for_non_hosted_pick + ::test_setup_json_carries_hosted_flag",
+      "behavior_text": "claude pick prints the 'is hosted' line and hosted=true; pi prints none and hosted=false",
+      "contract_text": "nvsh setup --agent claude --json carries agent.hosted true and the text output contains 'is hosted'; pi has hosted false and no such line",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "acceptance-criterion test (this repo has no behavioral marker; the workforce's TDD tests are the behavioral suite) ran green at the named commit, 41 selected tests passed",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-14T14:48:00Z",
+        "commit": "463f887"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 8
+    },
+    {
+      "id": "e7",
+      "obligation_ref": "o7",
+      "test_ref": "tests/test_cli_setup.py::test_setup_reports_agent_reachable_without_changing_exit_code + ::test_setup_reachable_call_wraps_exceptions",
+      "behavior_text": "agent.reachable {passed,message} reported; a raising probe becomes passed=False, exit code unchanged",
+      "contract_text": "setup runs doctor_checks.check_agent_reachable for the pick and reports agent.reachable without changing the exit code",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "acceptance-criterion test (this repo has no behavioral marker; the workforce's TDD tests are the behavioral suite) ran green at the named commit, 41 selected tests passed",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-14T14:48:00Z",
+        "commit": "463f887"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 9
+    },
+    {
+      "id": "e8",
+      "obligation_ref": "o8",
+      "test_ref": "tests/test_cli_setup.py::test_setup_darwin_warning + ::test_setup_zsh_warning + ::test_setup_no_warning_on_linux_bash",
+      "behavior_text": "Darwin or SHELL=*zsh adds the issue #11 warning to text and --json; Linux/bash adds none; rc stays the bash rc",
+      "contract_text": "nvsh setup --json on Darwin or a zsh SHELL carries warnings ['nvsh is not tested on macOS/zsh yet (see issue #11)'] and still edits only the bash rc",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "acceptance-criterion test (this repo has no behavioral marker; the workforce's TDD tests are the behavioral suite) ran green at the named commit, 41 selected tests passed",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-14T14:48:00Z",
+        "commit": "463f887"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 10
+    },
+    {
+      "id": "e9",
+      "obligation_ref": "o9",
+      "test_ref": "tests/test_cli_setup.py::test_setup_json_stays_parseable_when_daemon_stop_prints + ::test_setup_stops_the_daemon_after_writing_a_new_default (t4)",
+      "behavior_text": "a chatty nvsh daemon stop leaves setup's JSON parseable; daemon_stopped true after a default write",
+      "contract_text": "the daemon resolves default from its construction-time Config; setup must stop a running daemon after writing the alias",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "acceptance-criterion test (this repo has no behavioral marker; the workforce's TDD tests are the behavioral suite) ran green at the named commit, 41 selected tests passed",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-14T14:48:00Z",
+        "commit": "463f887"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 11
+    },
+    {
+      "id": "e10",
+      "obligation_ref": "o10",
+      "test_ref": "tests/test_cli_agent.py::test_agent_use_accepts_every_registered_adapter + ::test_agent_install_agy_and_kiro_print_no_known_installer",
+      "behavior_text": "agent use accepts each ADAPTERS key; agent install agy/kiro prints no known installer",
+      "contract_text": "nvsh agent use <name> accepts every key of registry.ADAPTERS and nvsh agent install <name> prints 'no known installer' for agy and kiro",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "acceptance-criterion test (this repo has no behavioral marker; the workforce's TDD tests are the behavioral suite) ran green at the named commit, 41 selected tests passed",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-14T14:48:00Z",
+        "commit": "463f887"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 12
+    },
+    {
+      "id": "e11",
+      "obligation_ref": "o11",
+      "test_ref": "tests/test_cli.py::test_explain_setup_mentions_agent_surface + ::test_explain_agent_install_lists_targets",
+      "behavior_text": "explain setup contains --agent, probe, hosted, macOS/zsh; explain agent install lists claude, codex, qwen, no known installer",
+      "contract_text": "uv run teken cli doctor . --strict passes and nvsh explain setup / agent install mention --agent and the new install targets",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "acceptance-criterion test (this repo has no behavioral marker; the workforce's TDD tests are the behavioral suite) ran green at the named commit, 41 selected tests passed",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-14T14:48:00Z",
+        "commit": "463f887"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 13
+    },
+    {
+      "id": "e12",
+      "obligation_ref": "o12",
+      "test_ref": "tests/test_docs_architecture.py::test_readme_h2_order + ::test_readme_has_no_relative_repo_links",
+      "behavior_text": "README H2s in the required order; zero '](docs/' or '](CLAUDE.md' links",
+      "contract_text": "README.md has exactly these H2s in order: Install, Set up, Work with it, Safety first, What nvsh never does, What lands where (plus License)",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "acceptance-criterion test (this repo has no behavioral marker; the workforce's TDD tests are the behavioral suite) ran green at the named commit, 41 selected tests passed",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-14T14:48:00Z",
+        "commit": "463f887"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 14
+    },
+    {
+      "id": "e13",
+      "obligation_ref": "o13",
+      "test_ref": "tests/test_docs_architecture.py::test_no_tilde_home_path_in_owned_docs",
+      "behavior_text": "no ~/ path in README.md and the other owned docs",
+      "contract_text": "tests/test_docs_architecture.py's no-tilde-path check passes on the new README.md",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "acceptance-criterion test (this repo has no behavioral marker; the workforce's TDD tests are the behavioral suite) ran green at the named commit, 41 selected tests passed",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-14T14:48:00Z",
+        "commit": "463f887"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 15
+    },
+    {
+      "id": "e14",
+      "obligation_ref": "o15",
+      "test_ref": "tests/test_doctor_checks.py::test_agent_configured_reports_the_resolved_default_via_aliases_default + ::test_agent_configured_reports_the_resolved_default_via_agent_provider",
+      "behavior_text": "agent_configured names the resolved backend and 'via [aliases].default' or 'via [agent] provider'",
+      "contract_text": "doctor's agent_configured check reports the backend [aliases].default resolves to and its message names which one it used",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "acceptance-criterion test (this repo has no behavioral marker; the workforce's TDD tests are the behavioral suite) ran green at the named commit, 41 selected tests passed",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-14T14:48:00Z",
+        "commit": "463f887"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 16
+    },
+    {
+      "id": "e15",
+      "obligation_ref": "o14",
+      "test_ref": "docs/verification.md 'Setup works with any installed agent (0.11.0)' / 'End to end'",
+      "behavior_text": "from a clean config with only claude on PATH, a real failure reached claude with no pi or key prompt; the uv install claude proposed was held at the approval gate",
+      "contract_text": "the announcement holds end to end: from a clean config on a box with claude installed, nvsh setup then a failing command reaches claude with no pi or key prompt in between",
+      "evidence_type": "observation",
+      "strength": "execution",
+      "strength_basis": "manual run on spark recorded verbatim in docs/verification.md (0.11.0 section): scratch HOME/XDG, PATH with only claude; setup --agent claude, then a failing pipeline forwarded to claude, diagnosis and a declined install proposal; no pi offer, no key hint",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-14T14:40:00Z",
+        "commit": "463f887"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 17
+    }
+  ],
+  "deltas": [
+    {
+      "id": "b1",
+      "kind": "added",
+      "behavior_text": "probe() lists both qwen and qwen-p whenever the qwen binary is on PATH (shared binary); the pick list shows qwen-p with the read-only label",
+      "caused_by": [
+        "c23"
+      ],
+      "evidence_refs": [
+        "e1"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    }
+  ],
+  "supersessions": []
+}

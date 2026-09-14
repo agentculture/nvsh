@@ -108,6 +108,26 @@ def test_explain_unknown_path_errors(capsys: pytest.CaptureFixture[str]) -> None
     assert "hint:" in captured.err
 
 
+def test_explain_setup_mentions_agent_surface(capsys: pytest.CaptureFixture[str]) -> None:
+    rc = main(["explain", "setup"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "--agent" in out
+    assert "probe" in out
+    assert "hosted" in out
+    assert "macOS/zsh" in out
+
+
+def test_explain_agent_install_lists_targets(capsys: pytest.CaptureFixture[str]) -> None:
+    rc = main(["explain", "agent", "install"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "claude" in out
+    assert "codex" in out
+    assert "qwen" in out
+    assert "no known installer" in out
+
+
 def test_every_catalog_path_resolves(capsys: pytest.CaptureFixture[str]) -> None:
     for path in known_paths():
         rc = main(["explain", *path])

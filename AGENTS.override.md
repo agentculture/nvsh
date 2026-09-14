@@ -49,7 +49,9 @@ nvsh now registers eight harness adapters (`nvsh/agent/registry.py`'s
 (stream-json, always read-only for commands), `kiro` (ACP) and
 `openai-compat`. `[aliases]` in `$XDG_CONFIG_HOME/nvsh/config.toml` maps a
 short name to a `backend[/model[/effort]]` target, with `default` reserved
-for a bare `nvsh --agent default`; `@target` at the prompt (`@name` or
+for a bare `nvsh --agent default`; `nvsh setup` probes `PATH` and picks
+whichever harness is already installed as that default, rather than
+hard-wiring `pi`. `@target` at the prompt (`@name` or
 `@backend/model/effort`) marks one request for that harness only. Where a
 harness has no client-side approval channel it runs read-only rather than
 being auto-approved: the spec is explicit that "nvsh never edits, creates

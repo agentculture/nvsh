@@ -18,19 +18,60 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import os
+import platform
 import shutil
 import subprocess  # nosec B404 - fixed argv below, no shell=True
+import sys
 import time
 from pathlib import Path
 
 from nvsh import __version__
 from nvsh import config as nvsh_config
-from nvsh import installers, rcfile, runtimedir
+from nvsh import doctor_checks, installers, rcfile, runtimedir
 from nvsh.agent import registry
 from nvsh.cli._errors import EXIT_USER_ERROR, CliError
 from nvsh.cli._output import emit_diagnostic, emit_result
 from nvsh.shell import render
 from nvsh.triggers import TriggerEvent, decide
+
+
+#: The reachability call, injected so tests can stub it and so a hung or
+#: exception-raising probe never takes ``setup`` down with it. Bound at
+#: 2 seconds: ``setup`` must not hang on a dead endpoint (``check_agent_reachable``
+#: takes a ``timeout`` -- the ``base_url``/openai-compat probe -- and a
+#: separate ``cli_timeout`` for the ``<binary> --version``/auth probes used
+#: by the CLI harnesses; both are pinned to 2.0s here).
+def _check_agent_reachable(cfg) -> dict:
+    return doctor_checks.check_agent_reachable(cfg, timeout=2.0, cli_timeout=2.0)
+
+
+#: Exact text nvsh shows when the operator's pick is a hosted backend --
+#: substituted with the picked name, no backticks in the real output.
+_HOSTED_LINE = (
+    "{name} is hosted: on a failure the redacted command, output and "
+    "device context leave this machine"
+)
+
+#: Exact warning text for an untested platform/shell combination (issue #11).
+_MACOS_ZSH_WARNING = "nvsh is not tested on macOS/zsh yet (see issue #11)"
+
+
+def _agent_reachable(cfg) -> dict:
+    """Call :func:`_check_agent_reachable` for the pick, never letting a
+    failure or exception change ``setup``'s own outcome."""
+    try:
+        check = _check_agent_reachable(cfg)
+        return {"passed": bool(check.get("passed")), "message": str(check.get("message", ""))}
+    except Exception as exc:  # noqa: BLE001 - a probe must never fail setup
+        return {"passed": False, "message": str(exc)}
+
+
+def _setup_warnings() -> list[str]:
+    """macOS/zsh is untested (issue #11); warn without changing behavior."""
+    is_darwin = platform.system() == "Darwin"
+    is_zsh = os.environ.get("SHELL", "").endswith("zsh")
+    return [_MACOS_ZSH_WARNING] if (is_darwin or is_zsh) else []
+
 
 #: Help text every ``--json`` flag in this verb group shares.
 _JSON_HELP = "Emit structured JSON."
@@ -165,6 +206,197 @@ def _agent_key_hint(chosen: str, cfg) -> str | None:
     )
 
 
+#: How a probed harness with no approval channel is labelled in the pick
+#: list, so the operator sees *before* choosing that it cannot run commands.
+PLAN_MODE_LABEL = "read-only / plan mode"
+
+
+def _prompt_input(prompt: str) -> str:
+    """The default pick prompt. Injected (like ``run_install``'s ``confirm``)
+    so tests never read stdin."""
+    return input(prompt)  # nosec B322 - plain numbered menu, no eval of input
+
+
+def _is_interactive() -> bool:
+    """Whether there is a terminal to ask the operator on."""
+    try:
+        return bool(sys.stdin.isatty())
+    except (AttributeError, ValueError, OSError):
+        return False
+
+
+def _pick_prompt(rows: list[dict]) -> str:
+    """The numbered menu shown when several harnesses are installed."""
+    lines = ["several agent harnesses are installed; which should nvsh use?"]
+    for index, row in enumerate(rows, start=1):
+        suffix = "" if row["tool_calling"] else f"  [{PLAN_MODE_LABEL}]"
+        lines.append(f"  {index}) {row['name']}{suffix}")
+    lines.append(f"choose 1-{len(rows)} [1]: ")
+    return "\n".join(lines)
+
+
+def _answer_to_name(answer: str, rows: list[dict]) -> str:
+    """Map one menu answer to a harness name, defaulting to the first row.
+
+    An empty answer takes the default (the first row, which the ordering in
+    :func:`nvsh.agent.registry.probe` already made the tool-calling one).
+    A number selects by position, a word selects by name; anything else
+    falls back to the default rather than looping -- setup must finish.
+    """
+    answer = answer.strip()
+    if not answer:
+        return rows[0]["name"]
+    if answer.isdigit():
+        index = int(answer)
+        if 1 <= index <= len(rows):
+            return rows[index - 1]["name"]
+        return rows[0]["name"]
+    for row in rows:
+        if row["name"] == answer:
+            return answer
+    return rows[0]["name"]
+
+
+def _pick_from_probe(rows: list[dict], *, json_mode: bool, prompt) -> tuple[str, str]:
+    """Turn a non-empty probe into ``(name, reason)``.
+
+    One installed harness is the default silently. Several on a terminal
+    always ask -- ``--yes`` answers *install* prompts, never this one, so a
+    machine with both claude and qwen never gets a harness chosen for the
+    operator behind their back. Without a terminal (``--json``, a pipe, a
+    provisioning script) the first row of the ordered list wins.
+    """
+    names = ", ".join(row["name"] for row in rows)
+    if len(rows) == 1:
+        return rows[0]["name"], f"{rows[0]['name']} is the only agent harness on PATH"
+    if json_mode or not _is_interactive():
+        return (
+            rows[0]["name"],
+            f"installed: {names}; no terminal to ask on, picked {rows[0]['name']}",
+        )
+    chosen = _answer_to_name(prompt(_pick_prompt(rows)), rows)
+    return chosen, f"installed: {names}; operator picked {chosen}"
+
+
+def _resolve_agent(args: argparse.Namespace, cfg, prompt) -> tuple[str, str, str, list[dict], bool]:
+    """Pick the harness ``setup`` will make the default.
+
+    Returns ``(backend, reason, target, probe_rows, forced)``. ``target`` is
+    the literal string written to ``[aliases].default`` -- for ``--agent
+    codex/gpt-5/high`` that is the whole target, model and effort included,
+    not just the backend name.
+
+    ``--agent`` skips the probe entirely and goes through
+    :func:`nvsh.agent.registry.choose`, which fails loudly (naming the
+    missing binary) instead of falling back the way the unforced path does.
+    """
+    forced = getattr(args, "agent", None)
+    if forced:
+        backend, reason = registry.choose(cfg, shutil.which, forced=forced)
+        return backend, reason, _canonical_target(cfg, forced), [], True
+
+    rows = registry.probe(shutil.which, cfg)
+    if not rows:
+        # Nothing installed: today's path -- the configured provider if it
+        # somehow resolves, else openai-compat with its key hint.
+        # `which` is passed explicitly: registry.choose's default argument
+        # was bound to the real shutil.which at import time, so a caller
+        # (or a test) that swaps shutil.which out would otherwise be
+        # ignored on exactly this fallback path.
+        backend, reason = registry.choose(cfg, shutil.which)
+        return backend, reason, backend, rows, False
+
+    backend, reason = _pick_from_probe(
+        rows, json_mode=bool(getattr(args, "json", False)), prompt=prompt
+    )
+    return backend, reason, backend, rows, False
+
+
+def _canonical_target(cfg, forced: str) -> str:
+    """The ``backend[/model[/effort]]`` string a forced ``--agent`` persists as.
+
+    :meth:`nvsh.config.Config.resolve_target` neither follows an alias whose
+    value is another alias nor strips a leading ``@`` from a *stored* value,
+    so writing the raw ``--agent`` text (``reviewer``, ``default``,
+    ``@claude``) into ``[aliases].default`` left a default that later
+    resolved to an unknown backend -- or to itself. The precedence mirrors
+    :func:`nvsh.agent.registry._forced_backend`: an alias spelled exactly
+    wins, then a bare adapter name, then an ``@``-prefixed alias, then a
+    literal target. A model that exists only as ``[agents.<backend>].model``
+    is never baked in: a bare name stays bare.
+    """
+    bare = forced[1:] if forced.startswith("@") else forced
+    if forced in cfg.aliases:
+        key = forced
+    elif bare in registry.ADAPTERS:
+        return bare
+    elif bare in cfg.aliases:
+        key = bare
+    else:
+        return bare  # a literal 'backend/model[/effort]', already validated by choose()
+    backend, model, effort, _alias = cfg.resolve_target(key)
+    stored = cfg.aliases[key]
+    stored = stored[1:] if stored.startswith("@") else stored
+    if "/" not in stored:
+        model = None  # only the [agents.<backend>].model fallback: keep it bare
+    return "/".join(part for part in (backend, model, effort) if part)
+
+
+def _pick_agent(
+    args: argparse.Namespace, cfg, prompt
+) -> tuple[str, str, str, list[dict], bool, bool]:
+    """Decide the harness, keeping a usable existing default *before* asking.
+
+    Returns ``(backend, reason, target, probe_rows, forced, kept)``. The
+    keep-or-replace decision on ``[aliases].default`` runs ahead of the pick
+    menu, so an operator is never asked a question whose answer would then
+    be discarded in favour of the default they already had.
+    """
+    if not getattr(args, "agent", None):
+        rows = registry.probe(shutil.which, cfg)
+        existing = cfg.aliases.get(nvsh_config.DEFAULT_ALIAS)
+        if existing and _keep_existing_default(cfg, rows):
+            backend = existing.split("/", 1)[0]
+            return backend, f"[aliases].default = {existing!r} kept", existing, rows, False, True
+    return (*_resolve_agent(args, cfg, prompt), False)
+
+
+def _harness_installed(install_rows: list[dict]) -> bool:
+    """Whether an install that ran could have put a new agent harness on PATH.
+
+    Only a successful install of a tool that is itself a registered adapter
+    (today ``pi``) can change the probe; ``uv``/``tmux``/``node`` cannot, so
+    they never re-ask the pick.
+    """
+    return any(
+        row["ran"] and row["returncode"] == 0 and row["tool"] in registry.ADAPTERS
+        for row in install_rows
+    )
+
+
+def _keep_existing_default(cfg, probe_rows: list[dict]) -> bool:
+    """Whether an operator's own ``[aliases].default`` survives this setup.
+
+    A default whose backend is still installed is kept -- setup only fills
+    in a missing or unusable one. The exception is the sticky fallback: a
+    previous run on a bare machine wrote ``openai-compat``, whose "binary"
+    is always "installed", so every later run kept it even once a real
+    harness appeared. When that default is openai-compat with no
+    ``base_url`` configured (i.e. nvsh chose it, the operator did not point
+    it anywhere) and the probe now finds a harness, it is re-probed.
+    """
+    try:
+        backend, _model, _effort, _alias = cfg.resolve_target(nvsh_config.DEFAULT_ALIAS)
+    except nvsh_config.ConfigError:
+        return False
+    if backend not in registry.ADAPTERS or not registry.installed(backend, shutil.which):
+        return False
+    if backend == "openai-compat" and probe_rows:
+        if not cfg.agents.get("openai-compat", {}).get("base_url"):
+            return False
+    return True
+
+
 def _write_rc_block(rc_path: rcfile.RcPath, block: str) -> tuple[bool, bool, bool, Path | None]:
     """Insert *block* into the rc file, backing the original up when it changes.
 
@@ -207,10 +439,16 @@ def _setup_lines(result: dict, install_rows: list[dict], offer_only: bool) -> li
         f"shell files: {result['shell_dir']}",
         f"nvsh bin: {result['nvsh_bin']}",
         f"agent: {result['agent']['name']} ({result['agent']['reason']})",
+        f"default target: {result['agent']['target']}",
+        f"daemon stopped: {result['daemon_stopped']}",
     ]
+    if result["agent"]["hosted"]:
+        lines.append(_HOSTED_LINE.format(name=result["agent"]["name"]))
     key_hint = result["agent"]["key_hint"]
     if key_hint:
         lines.append(f"  {key_hint}")
+    reachable = result["agent"]["reachable"]
+    lines.append(f"agent reachable: {reachable['passed']} ({reachable['message']})")
     for row in install_rows:
         lines.append(f"{row['tool']} ({row['purpose']}): {row['command']}")
         if not offer_only:
@@ -218,7 +456,7 @@ def _setup_lines(result: dict, install_rows: list[dict], offer_only: bool) -> li
     return lines
 
 
-def cmd_setup(args: argparse.Namespace) -> int:
+def cmd_setup(args: argparse.Namespace, prompt=None) -> int:
     rc_path = _rc_path(args)
 
     shell_dir = render.render_shell_files()
@@ -228,13 +466,22 @@ def cmd_setup(args: argparse.Namespace) -> int:
     changed, was_present, was_edited, backup_path = _write_rc_block(rc_path, block)
 
     cfg = nvsh_config.load()
-    chosen, reason = registry.choose(cfg)
+    prompt = _prompt_input if prompt is None else prompt
+    chosen, reason, target, probe_rows, forced, keep_existing = _pick_agent(args, cfg, prompt)
 
     offer_only, confirm = _install_mode(args)
-    missing = installers.missing_tools(which=shutil.which)
-    install_rows, any_ran = _process_installs(missing, offer_only=offer_only, confirm=confirm)
-    if any_ran:
-        chosen, reason = registry.choose(cfg)
+    # Scope the offers to the pick -- except on a bare machine, where the
+    # pick is the openai-compat fallback and nothing is installed yet: there
+    # the unscoped list is what lets an operator bootstrap a harness at all.
+    scoped = chosen if (forced or probe_rows) else None
+    missing = installers.missing_tools(shutil.which, chosen=scoped)
+    install_rows, _any_ran = _process_installs(missing, offer_only=offer_only, confirm=confirm)
+    if not forced and _harness_installed(install_rows):
+        # A harness that just got installed only shows up on the next PATH
+        # lookup, so re-probe rather than keep the pre-install pick. Any
+        # other install (uv, tmux, node) cannot change the probe, so the
+        # operator is not asked the same question twice.
+        chosen, reason, target, probe_rows, forced, keep_existing = _pick_agent(args, cfg, prompt)
 
     # Persist the chosen backend as `[aliases].default` -- what `'default'`
     # (and a bare `--agent`) resolves to from here on -- without touching
@@ -246,21 +493,16 @@ def cmd_setup(args: argparse.Namespace) -> int:
     # model and effort, e.g. "claude/opus/high") is kept whenever its backend
     # is still usable; setup only fills in a missing or unusable default.
     existing = cfg.aliases.get(nvsh_config.DEFAULT_ALIAS)
-    keep_existing = False
-    if existing:
-        try:
-            existing_backend, _m, _e, _a = cfg.resolve_target(nvsh_config.DEFAULT_ALIAS)
-            keep_existing = existing_backend in registry.ADAPTERS and registry.installed(
-                existing_backend, shutil.which
-            )
-        except nvsh_config.ConfigError:
-            keep_existing = False
-    if keep_existing:
-        chosen, reason = existing.split("/", 1)[0], f"[aliases].default = {existing!r} kept"
-    default_alias_written = not keep_existing and existing != chosen
+    default_alias_written = not keep_existing and existing != target
     if default_alias_written:
-        cfg.aliases[nvsh_config.DEFAULT_ALIAS] = chosen
+        cfg.aliases[nvsh_config.DEFAULT_ALIAS] = target
         nvsh_config.save(cfg)
+
+    # A warm daemon holds the *previous* default's session, so it has to go
+    # before the new default can take effect on the next failure.
+    daemon_stopped = False
+    if default_alias_written or forced:
+        daemon_stopped = _stop_daemon(nvsh_bin)
 
     result = {
         "rc": str(rc_path),
@@ -272,17 +514,28 @@ def cmd_setup(args: argparse.Namespace) -> int:
         "nvsh_bin": nvsh_bin,
         "agent": {
             "name": chosen,
+            "target": target,
             "reason": reason,
             "key_hint": _agent_key_hint(chosen, cfg),
             "default_alias_written": default_alias_written,
+            "probe": probe_rows,
+            "hosted": (
+                bool(registry.ADAPTERS[chosen].hosted) if chosen in registry.ADAPTERS else False
+            ),
+            "reachable": _agent_reachable(cfg),
         },
         "installs": install_rows,
+        "daemon_stopped": daemon_stopped,
+        "warnings": _setup_warnings(),
     }
 
     if bool(getattr(args, "json", False)):
         emit_result(result, json_mode=True)
     else:
         emit_result("\n".join(_setup_lines(result, install_rows, offer_only)), json_mode=False)
+        # Warnings are diagnostics: stderr, never mixed into the stdout result.
+        for warning in result["warnings"]:
+            emit_diagnostic(f"warning: {warning}")
     return 0
 
 
@@ -306,7 +559,13 @@ def _stop_daemon(nvsh_bin: str) -> bool:
         return False
     try:
         proc = subprocess.run(  # nosec B603 - fixed argv, no shell
-            [nvsh_bin, "daemon", "stop"], check=False, timeout=5
+            # Quiet: the child's "daemon: not running" line would otherwise
+            # land on *this* verb's stdout, ahead of its --json payload.
+            [nvsh_bin, "daemon", "stop"],
+            check=False,
+            timeout=5,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
         )
     except (OSError, subprocess.SubprocessError):
         return False
@@ -510,6 +769,15 @@ def register(sub: argparse._SubParsersAction) -> None:
     )
     setup_p.add_argument("--rc", default=None, help="rc file to edit (default: ~/.bashrc).")
     setup_p.add_argument("--json", action="store_true", help=_JSON_HELP)
+    setup_p.add_argument(
+        "--agent",
+        default=None,
+        metavar="TARGET",
+        help=(
+            "Harness target to make the default: an alias or "
+            "backend[/model[/effort]]; skips the probe."
+        ),
+    )
     setup_p.add_argument(
         "--yes",
         action="store_true",
