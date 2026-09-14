@@ -157,12 +157,26 @@ def check_agent_configured(config: Config | None, config_error: str | None) -> d
             f"agent provider configured: {provider} (via {source})",
             "",
         )
+
+    known = ", ".join(sorted(agent_registry.ADAPTERS))
+    if source == "[aliases].default":
+        # resolve_target() consults [aliases].default before the legacy
+        # [agent] provider (nvsh/config.py's Config.resolve_target), so
+        # telling the operator to edit [agent] provider here cannot fix
+        # this -- the remediation has to point at the alias that is
+        # actually wrong.
+        remediation = (
+            f"fix or remove [aliases].default in config.toml, or run "
+            f"`nvsh agent use <name>`, with one of: {known}"
+        )
+    else:
+        remediation = f"set [agent] provider to one of: {known}"
     return _check(
         "agent_configured",
         False,
         "error",
         f"configured provider '{provider}' (via {source}) is not a known adapter",
-        f"set [agent] provider to one of: {', '.join(sorted(agent_registry.ADAPTERS))}",
+        remediation,
     )
 
 
