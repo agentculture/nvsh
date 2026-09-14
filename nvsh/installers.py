@@ -33,7 +33,7 @@ from dataclasses import dataclass
 from typing import Callable, Optional
 
 from .agent.audit import AuditLog
-from .agent.registry import PI_INSTALL_CMD
+from .agent.registry import ADAPTERS, PI_INSTALL_CMD
 
 WhichFn = Callable[[str], Optional[str]]
 ConfirmFn = Callable[[str], bool]
@@ -42,6 +42,21 @@ RunFn = Callable[..., "subprocess.CompletedProcess[str]"]
 #: uv's official installer. Printed only -- see module docstring; never run,
 #: even with ``--yes`` (a curl-pipe-sh has no place running unattended).
 _UV_CURL_INSTALLER = "curl -LsSf https://astral.sh/uv/install.sh | sh"
+
+#: npm package names for the harnesses nvsh knows how to ``npm install -g``.
+#: Kept here (not in ``nvsh/agent/registry.py``) so this module stays
+#: file-disjoint from the registry task: the registry owns *what* backends
+#: exist, this module owns *how to install* them. ``pi`` is not in this
+#: dict -- it keeps its own install command
+#: (:data:`nvsh.agent.registry.PI_INSTALL_CMD`) via :func:`_pi_install_commands`.
+#: A harness not listed here (``agy``, ``kiro``, ``openai-compat``) has no
+#: known installer at all -- see :func:`harness_install_step`.
+NPM_PACKAGES: dict[str, str] = {
+    "claude": "@anthropic-ai/claude-code",
+    "codex": "@openai/codex",
+    "qwen": "@qwen-code/qwen-code",
+    "qwen-p": "@qwen-code/qwen-code",
+}
 
 
 @dataclass(frozen=True)
@@ -115,6 +130,46 @@ def _pi_install_commands(which: WhichFn) -> InstallStep:
     )
 
 
+def harness_install_step(name: str, which: WhichFn = shutil.which) -> InstallStep:
+    """The install step for agent backend ``name`` (an :data:`ADAPTERS` key).
+
+    ``pi`` keeps its existing dedicated command
+    (:data:`nvsh.agent.registry.PI_INSTALL_CMD`). ``claude``, ``codex`` and
+    ``qwen``/``qwen-p`` get an executable ``npm install -g <package>`` step
+    (:data:`NPM_PACKAGES`) when ``npm`` is on ``PATH``, and the same
+    'npm not found' non-executable step ``pi`` gets otherwise. A harness
+    with no known installer at all (``agy``, ``kiro``, ``openai-compat``)
+    gets a non-executable step saying so -- never a curl-pipe-sh, never
+    anything executed.
+    """
+    if name == "pi":
+        return _pi_install_commands(which)
+
+    package = NPM_PACKAGES.get(name)
+    if package is None:
+        return InstallStep(
+            tool=name,
+            argv=None,
+            shell_line=f"no known installer for {name} (install it manually)",
+            needs_sudo=False,
+            executable=False,
+        )
+
+    if which("npm") is None:
+        return InstallStep(
+            tool=name,
+            argv=None,
+            shell_line="npm not found; install node first (see the 'node' offer)",
+            needs_sudo=False,
+            executable=False,
+        )
+
+    argv = ("npm", "install", "-g", package)
+    return InstallStep(
+        tool=name, argv=argv, shell_line=" ".join(argv), needs_sudo=False, executable=True
+    )
+
+
 def _node_install_commands(which: WhichFn) -> InstallStep:
     return _apt_step("node", ("sudo", "apt-get", "install", "-y", "nodejs", "npm"), which)
 
@@ -180,9 +235,50 @@ TOOLS: tuple[ToolSpec, ...] = (
 )
 
 
-def missing_tools(which: WhichFn = shutil.which) -> list[ToolSpec]:
-    """Which of :data:`TOOLS` have no binary on ``PATH`` right now."""
-    return [tool for tool in TOOLS if which(tool.binary) is None]
+def _node_or_pi_applies(name: str, chosen: str | None, which: WhichFn) -> bool:
+    """Should the ``node``/``pi`` offer be scoped in given the picked harness?
+
+    ``chosen is None`` preserves today's behaviour (offer both regardless of
+    the pick -- callers that never pass ``chosen``, like the existing
+    ``setup`` flow, see no change). Once a harness is picked:
+
+    * ``pi`` is only offered when ``chosen == 'pi'``.
+    * ``node`` is offered when ``chosen == 'pi'`` (pi's own prerequisite), or
+      when the chosen harness both needs node and is not itself already on
+      ``PATH`` and has no ``npm`` to install it with. A harness that's
+      already installed, or that doesn't need node at all, has no use for
+      the node offer.
+    """
+    if chosen is None:
+        return True
+    if name == "pi":
+        return chosen == "pi"
+    # name == "node"
+    if chosen == "pi":
+        return True
+    spec = ADAPTERS.get(chosen)
+    if spec is None or not spec.needs_node:
+        return False
+    if spec.binary is not None and which(spec.binary) is not None:
+        return False
+    return which("npm") is None
+
+
+def missing_tools(which: WhichFn = shutil.which, chosen: str | None = None) -> list[ToolSpec]:
+    """Which of :data:`TOOLS` have no binary on ``PATH`` right now.
+
+    ``chosen`` (the harness name ``nvsh setup`` picked, if any) scopes the
+    ``node``/``pi`` offers to what that pick actually needs -- see
+    :func:`_node_or_pi_applies`. ``uv`` and ``tmux`` are offered regardless
+    of ``chosen``, since every backend needs them. ``chosen=None`` (the
+    default) behaves exactly as before this parameter existed.
+    """
+    return [
+        tool
+        for tool in TOOLS
+        if which(tool.binary) is None
+        and (tool.name not in ("pi", "node") or _node_or_pi_applies(tool.name, chosen, which))
+    ]
 
 
 def plan_installs(missing: list[ToolSpec], which: WhichFn = shutil.which) -> list[InstallStep]:

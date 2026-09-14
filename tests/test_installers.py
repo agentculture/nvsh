@@ -348,3 +348,131 @@ def test_offer_only_still_reports_the_unmet_dependency(monkeypatch):
     pi_row = next(row for row in rows if row["tool"] == "pi")
     assert pi_row["executable"] is False
     assert "npm not found" in pi_row["command"]
+
+
+# --------------------------------------------------------------------------
+# missing_tools(chosen=...) -- offers scoped to the harness pick (t3)
+# --------------------------------------------------------------------------
+
+
+def test_missing_tools_default_chosen_is_unscoped_and_backward_compatible():
+    """No ``chosen`` (the default) behaves exactly like before this param."""
+    missing = installers.missing_tools(which=ORIN_WHICH)
+    assert {tool.name for tool in missing} == {"pi", "node", "uv", "tmux"}
+    # Explicitly passing chosen=None must match the bare default.
+    assert installers.missing_tools(which=ORIN_WHICH, chosen=None) == missing
+
+
+def test_missing_tools_chosen_claude_never_offers_pi_or_node_when_claude_on_path():
+    which = _which_factory({"claude"})
+    missing = installers.missing_tools(which=which, chosen="claude")
+    names = {tool.name for tool in missing}
+    assert "pi" not in names
+    assert "node" not in names
+
+
+def test_missing_tools_chosen_claude_offers_node_when_claude_and_npm_both_missing():
+    which = _which_factory(set())
+    missing = installers.missing_tools(which=which, chosen="claude")
+    names = {tool.name for tool in missing}
+    assert "node" in names
+    # pi is still never offered for a non-pi pick.
+    assert "pi" not in names
+
+
+def test_missing_tools_chosen_claude_never_offers_node_when_npm_present():
+    which = _which_factory({"npm"})
+    missing = installers.missing_tools(which=which, chosen="claude")
+    assert "node" not in {tool.name for tool in missing}
+
+
+def test_missing_tools_chosen_agy_never_offers_node_since_agy_needs_no_node():
+    which = _which_factory(set())
+    missing = installers.missing_tools(which=which, chosen="agy")
+    assert "node" not in {tool.name for tool in missing}
+    assert "pi" not in {tool.name for tool in missing}
+
+
+def test_missing_tools_chosen_pi_keeps_todays_node_and_pi_behaviour():
+    missing = installers.missing_tools(which=ORIN_WHICH, chosen="pi")
+    assert {tool.name for tool in missing} == {"pi", "node", "uv", "tmux"}
+
+    missing_thor = installers.missing_tools(which=THOR_WHICH, chosen="pi")
+    assert {tool.name for tool in missing_thor} == {"pi"}
+
+
+def test_missing_tools_uv_and_tmux_offered_regardless_of_chosen():
+    which = _which_factory(set())
+    for chosen in (None, "claude", "pi", "agy", "codex", "qwen", "kiro", "openai-compat"):
+        missing = installers.missing_tools(which=which, chosen=chosen)
+        names = {tool.name for tool in missing}
+        assert "uv" in names
+        assert "tmux" in names
+
+
+# --------------------------------------------------------------------------
+# harness_install_step -- per-harness install specs (t3)
+# --------------------------------------------------------------------------
+
+
+def test_harness_install_step_claude_is_executable_npm_step():
+    which = _which_factory({"npm"})
+    step = installers.harness_install_step("claude", which=which)
+    assert step.argv == ("npm", "install", "-g", "@anthropic-ai/claude-code")
+    assert step.executable is True
+    assert step.needs_sudo is False
+
+
+def test_harness_install_step_codex_is_executable_npm_step():
+    which = _which_factory({"npm"})
+    step = installers.harness_install_step("codex", which=which)
+    assert step.argv == ("npm", "install", "-g", "@openai/codex")
+    assert step.executable is True
+
+
+def test_harness_install_step_qwen_is_executable_npm_step():
+    which = _which_factory({"npm"})
+    step = installers.harness_install_step("qwen", which=which)
+    assert step.argv == ("npm", "install", "-g", "@qwen-code/qwen-code")
+    assert step.executable is True
+
+
+def test_harness_install_step_pi_reuses_existing_pi_command():
+    which = _which_factory({"npm"})
+    step = installers.harness_install_step("pi", which=which)
+    assert step.argv == ("npm", "install", "-g", "@earendil-works/pi-coding-agent")
+    assert step.executable is True
+
+
+def test_harness_install_step_pi_without_npm_is_not_executable():
+    which = _which_factory(set())
+    step = installers.harness_install_step("pi", which=which)
+    assert step.argv is None
+    assert step.executable is False
+    assert "npm not found" in step.shell_line
+
+
+def test_harness_install_step_npm_harness_without_npm_is_not_executable():
+    which = _which_factory(set())
+    step = installers.harness_install_step("claude", which=which)
+    assert step.argv is None
+    assert step.executable is False
+    assert "npm not found" in step.shell_line
+
+
+@pytest.mark.parametrize("name", ["agy", "kiro", "openai-compat"])
+def test_harness_install_step_no_known_installer_harnesses(name):
+    which = _which_factory({"npm"})
+    step = installers.harness_install_step(name, which=which)
+    assert step.argv is None
+    assert step.executable is False
+    assert "no known installer" in step.shell_line
+
+
+def test_harness_install_step_never_executable_without_argv():
+    """A non-executable step must never carry an argv a caller could run."""
+    which = _which_factory({"npm"})
+    for name in ["agy", "kiro", "openai-compat"]:
+        step = installers.harness_install_step(name, which=which)
+        assert step.executable is False
+        assert step.argv is None
