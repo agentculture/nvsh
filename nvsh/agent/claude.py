@@ -342,21 +342,26 @@ class ClaudeAgent(SubprocessAgent):
         for part in message.get("content") or []:
             if not isinstance(part, dict):
                 continue
-            ptype = part.get("type")
-            if ptype == "tool_use":
-                events.append(self._tool_call_event(part))
-            elif streamed:
-                # Already delivered delta by delta; do not say it twice.
-                continue
-            elif ptype == "thinking":
-                text = str(part.get("thinking", ""))
-                if text:
-                    events.append(AgentEvent(kind=EventKind.THINKING, text=text))
-            elif ptype == "text":
-                text = str(part.get("text", ""))
-                if text:
-                    events.append(AgentEvent(kind=EventKind.TEXT_DELTA, text=text))
+            event = self._assistant_part_event(part, streamed)
+            if event is not None:
+                events.append(event)
         return events
+
+    def _assistant_part_event(self, part: dict, streamed: bool) -> AgentEvent | None:
+        """Map one aggregate ``assistant`` content part, or ``None`` for nothing."""
+        ptype = part.get("type")
+        if ptype == "tool_use":
+            return self._tool_call_event(part)
+        if streamed:
+            # Already delivered delta by delta; do not say it twice.
+            return None
+        if ptype == "thinking":
+            text = str(part.get("thinking", ""))
+            return AgentEvent(kind=EventKind.THINKING, text=text) if text else None
+        if ptype == "text":
+            text = str(part.get("text", ""))
+            return AgentEvent(kind=EventKind.TEXT_DELTA, text=text) if text else None
+        return None
 
     def _tool_call_event(self, part: dict) -> AgentEvent:
         tool = str(part.get("name", ""))
