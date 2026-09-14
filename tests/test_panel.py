@@ -22,7 +22,7 @@ from pathlib import Path
 import pytest
 
 from nvsh import panel as panel_mod
-from nvsh.agent.base import AgentEvent, EventKind, Proposal, ProposalKind
+from nvsh.agent.base import AgentEvent, EventKind, Proposal, ProposalKind, Target
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -945,6 +945,138 @@ def test_header_ask_form_without_a_label_still_reads_as_a_sentence():
     p = _panel(out=out)
     p.header("", 0, ask="why is memory high?")
     assert out.getvalue() == "nvsh: asking: why is memory high?\n"
+
+
+# --- t18: THINKING rendering ----------------------------------------------
+
+
+def test_thinking_is_a_dimmed_run_closed_before_the_first_text_delta():
+    out = io.StringIO()
+    p = _panel(out=out, env={"TERM": "xterm-256color"}, isatty=True)
+    p.stream(
+        iter(
+            [
+                AgentEvent(kind=EventKind.THINKING, text="considering "),
+                AgentEvent(kind=EventKind.THINKING, text="the failure"),
+                AgentEvent(kind=EventKind.TEXT_DELTA, text="here is the answer"),
+                AgentEvent(EventKind.DONE),
+            ]
+        )
+    )
+    text = out.getvalue()
+    dim_run = "\x1b[2mconsidering the failure\x1b[0m\n"
+    assert dim_run in text
+    assert text.index(dim_run) < text.index("here is the answer")
+
+
+def test_thinking_run_is_closed_before_a_tool_call_and_before_a_proposal_and_done():
+    out = io.StringIO()
+    p = _panel(out=out, env={"TERM": "xterm-256color"}, isatty=True)
+    p.stream(
+        iter(
+            [
+                AgentEvent(kind=EventKind.THINKING, text="let me check"),
+                AgentEvent(kind=EventKind.TOOL_CALL, tool="bash", args={"command": "df -h"}),
+                AgentEvent(EventKind.DONE),
+            ]
+        )
+    )
+    text = out.getvalue()
+    assert "\x1b[2mlet me check\x1b[0m\n" in text
+    assert text.index("\x1b[0m\n") < text.index("... running: df -h")
+
+
+def test_thinking_with_nothing_after_it_is_still_closed_at_stream_end():
+    out = io.StringIO()
+    p = _panel(out=out, env={"TERM": "xterm-256color"}, isatty=True)
+    p.stream(iter([AgentEvent(kind=EventKind.THINKING, text="hm"), AgentEvent(EventKind.DONE)]))
+    assert "\x1b[2mhm\x1b[0m\n" in out.getvalue()
+
+
+@pytest.mark.parametrize(
+    "env,isatty",
+    [
+        ({"TERM": "dumb"}, True),
+        ({"TERM": "xterm", "NO_COLOR": "1"}, True),
+        ({"TERM": "xterm-256color"}, False),
+    ],
+)
+def test_thinking_prints_plain_prefixed_lines_with_no_sgr(env, isatty):
+    out = io.StringIO()
+    p = _panel(out=out, env=env, isatty=isatty)
+    p.stream(
+        iter(
+            [
+                AgentEvent(kind=EventKind.THINKING, text="considering the failure"),
+                AgentEvent(kind=EventKind.TEXT_DELTA, text="here is the answer"),
+                AgentEvent(EventKind.DONE),
+            ]
+        )
+    )
+    text = out.getvalue()
+    assert "\x1b[" not in text
+    assert "thinking: considering the failure" in text
+    assert "here is the answer" in text
+
+
+def test_thinking_deltas_arrive_as_they_are_written_not_buffered():
+    out = io.StringIO()
+    p = _panel(out=out, env={"TERM": "xterm-256color"}, isatty=True)
+    seen: list[str] = []
+
+    def events():
+        yield AgentEvent(kind=EventKind.THINKING, text="first")
+        seen.append(out.getvalue())
+        yield AgentEvent(kind=EventKind.THINKING, text=" second")
+        yield AgentEvent(EventKind.DONE)
+
+    p.stream(events())
+    assert seen
+    assert "first" in seen[0]
+    assert "second" not in seen[0]
+
+
+# --- t18: target header line -----------------------------------------------
+
+
+def test_no_target_header_line_when_no_target_is_given():
+    """Backward compatible: a panel built with no target renders nothing new."""
+    out = io.StringIO()
+    p = _panel(out=out)
+    p.stream(iter([AgentEvent(kind=EventKind.TEXT_DELTA, text="hi"), AgentEvent(EventKind.DONE)]))
+    assert "·" not in out.getvalue()
+
+
+def test_target_header_line_names_harness_model_effort_path_and_warmth():
+    out = io.StringIO()
+    p = panel_mod.Panel(
+        out=out,
+        in_=io.StringIO(""),
+        env={},
+        isatty=False,
+        target=Target(backend="pi", model="associate", effort="high"),
+        path="/usr/bin/pi",
+        warm=True,
+    )
+    p.stream(iter([AgentEvent(EventKind.DONE)]))
+    first_line = out.getvalue().splitlines()[0]
+    assert first_line == "pi/associate/high · /usr/bin/pi · warm"
+
+
+def test_target_header_line_says_one_shot_when_not_warm():
+    out = io.StringIO()
+    p = _panel(out=out)
+    p.set_target(Target(backend="fake"), path="/bin/fake", warm=False)
+    p.stream(iter([AgentEvent(EventKind.DONE)]))
+    assert out.getvalue().splitlines()[0] == "fake · /bin/fake · one-shot"
+
+
+def test_target_header_line_omits_missing_model_and_effort():
+    out = io.StringIO()
+    p = _panel(out=out)
+    p.set_target(Target(backend="claude"), path="/bin/claude", warm=True)
+    p.stream(iter([AgentEvent(EventKind.DONE)]))
+    assert out.getvalue().splitlines()[0] == "claude · /bin/claude · warm"
 
 
 # --- d26: numbered stages, and picking which of them an approval covers ---
