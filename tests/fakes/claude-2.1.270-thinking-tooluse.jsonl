@@ -1,0 +1,47 @@
+# recorded-from: claude 2.1.270
+# How this was recorded: a probe host spawned
+#   claude -p --output-format stream-json --input-format stream-json --verbose
+#          --include-partial-messages --permission-prompts host
+#          --permission-prompt-tool stdio --model sonnet --effort high
+#          --thinking adaptive
+# wrote one stream-json user message on stdin, and answered the can_use_tool
+# control_request below with a control_response (both an allow and a deny run
+# were recorded; the deny run's shapes are the ones kept here).
+#
+# Redacted/normalized for check-in, per tests/fixtures/README.md: the real
+# cwd, session id, message ids, tool_use id and control request_id are
+# replaced with fixed fakes, the thinking block's base64 `signature` is
+# emptied, and the long text/tool-input delta runs are shortened. The tool
+# call was retargeted at `cat /proc/driver/nvidia/version` so the fixture
+# reads like an nvsh diagnosis instead of the probe's throwaway curl.
+#
+# One deliberate addition: in the real recording every `thinking_delta`
+# carried an EMPTY `thinking` string (2.1.270 streams thinking token counts,
+# not thinking text, for this account/model), so two of the thinking_delta
+# lines below carry synthesized prose. Everything else is shaped exactly as
+# recorded, the empty first thinking_delta included.
+{"type": "system", "subtype": "init", "cwd": "/workdir", "session_id": "00000000-0000-4000-8000-000000000001", "tools": ["Bash"], "model": "claude-sonnet-5", "permissionMode": "default"}
+{"type": "system", "subtype": "status", "status": "requesting", "session_id": "00000000-0000-4000-8000-000000000001"}
+{"type": "stream_event", "event": {"type": "message_start", "message": {"id": "msg_fixture_0001", "type": "message", "role": "assistant", "model": "claude-sonnet-5", "content": []}}, "session_id": "00000000-0000-4000-8000-000000000001"}
+{"type": "stream_event", "event": {"type": "content_block_start", "index": 0, "content_block": {"type": "thinking", "thinking": "", "signature": ""}}, "session_id": "00000000-0000-4000-8000-000000000001"}
+{"type": "system", "subtype": "thinking_tokens", "estimated_tokens": 50, "estimated_tokens_delta": 50, "session_id": "00000000-0000-4000-8000-000000000001"}
+{"type": "stream_event", "event": {"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": "", "estimated_tokens": 50}}, "session_id": "00000000-0000-4000-8000-000000000001"}
+{"type": "stream_event", "event": {"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": "nvidia-smi failing usually means no GPU device node. "}}, "session_id": "00000000-0000-4000-8000-000000000001"}
+{"type": "stream_event", "event": {"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": "Check the driver first."}}, "session_id": "00000000-0000-4000-8000-000000000001"}
+{"type": "stream_event", "event": {"type": "content_block_delta", "index": 0, "delta": {"type": "signature_delta", "signature": ""}}, "session_id": "00000000-0000-4000-8000-000000000001"}
+{"type": "assistant", "session_id": "00000000-0000-4000-8000-000000000001", "message": {"id": "msg_fixture_0001", "type": "message", "role": "assistant", "model": "claude-sonnet-5", "content": [{"type": "thinking", "thinking": "", "signature": ""}]}}
+{"type": "stream_event", "event": {"type": "content_block_start", "index": 1, "content_block": {"type": "text", "text": ""}}, "session_id": "00000000-0000-4000-8000-000000000001"}
+{"type": "stream_event", "event": {"type": "content_block_delta", "index": 1, "delta": {"type": "text_delta", "text": "nvidia-smi typ"}}, "session_id": "00000000-0000-4000-8000-000000000001"}
+{"type": "stream_event", "event": {"type": "content_block_delta", "index": 1, "delta": {"type": "text_delta", "text": "ically fails when no GPU device is exposed."}}, "session_id": "00000000-0000-4000-8000-000000000001"}
+{"type": "assistant", "session_id": "00000000-0000-4000-8000-000000000001", "message": {"id": "msg_fixture_0001", "type": "message", "role": "assistant", "model": "claude-sonnet-5", "content": [{"type": "text", "text": "nvidia-smi typically fails when no GPU device is exposed."}]}}
+{"type": "stream_event", "event": {"type": "content_block_start", "index": 2, "content_block": {"type": "tool_use", "id": "toolu_fixture_0001", "name": "Bash", "input": {}}}, "session_id": "00000000-0000-4000-8000-000000000001"}
+{"type": "stream_event", "event": {"type": "content_block_delta", "index": 2, "delta": {"type": "input_json_delta", "partial_json": "{\"command\": \"cat /proc/dr"}}, "session_id": "00000000-0000-4000-8000-000000000001"}
+{"type": "stream_event", "event": {"type": "content_block_delta", "index": 2, "delta": {"type": "input_json_delta", "partial_json": "iver/nvidia/version\"}"}}, "session_id": "00000000-0000-4000-8000-000000000001"}
+{"type": "assistant", "session_id": "00000000-0000-4000-8000-000000000001", "message": {"id": "msg_fixture_0001", "type": "message", "role": "assistant", "model": "claude-sonnet-5", "content": [{"type": "tool_use", "id": "toolu_fixture_0001", "name": "Bash", "input": {"command": "cat /proc/driver/nvidia/version", "description": "Read the NVIDIA driver version"}}]}}
+{"type": "control_request", "request_id": "11111111-2222-4333-8444-555555555555", "request": {"subtype": "can_use_tool", "tool_name": "Bash", "display_name": "Bash", "input": {"command": "cat /proc/driver/nvidia/version", "description": "Read the NVIDIA driver version"}, "description": "Read the NVIDIA driver version", "decision_reason": "This command requires approval", "decision_reason_type": "other", "tool_use_id": "toolu_fixture_0001"}}
+{"type": "user", "session_id": "00000000-0000-4000-8000-000000000001", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_fixture_0001", "content": "NVRM version: 580.95.05", "is_error": false}]}}
+{"type": "stream_event", "event": {"type": "message_start", "message": {"id": "msg_fixture_0002", "type": "message", "role": "assistant", "model": "claude-sonnet-5", "content": []}}, "session_id": "00000000-0000-4000-8000-000000000001"}
+{"type": "stream_event", "event": {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}}, "session_id": "00000000-0000-4000-8000-000000000001"}
+{"type": "stream_event", "event": {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "The driver is loaded. Done."}}, "session_id": "00000000-0000-4000-8000-000000000001"}
+{"type": "assistant", "session_id": "00000000-0000-4000-8000-000000000001", "message": {"id": "msg_fixture_0002", "type": "message", "role": "assistant", "model": "claude-sonnet-5", "content": [{"type": "text", "text": "The driver is loaded. Done."}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 2, "session_id": "00000000-0000-4000-8000-000000000001", "result": "The driver is loaded. Done."}
