@@ -1,169 +1,103 @@
 # nvsh
 
-**An agent-first shell for NVIDIA Jetson AGX Orin/Thor and DGX Spark**,
-usable locally in [Ghostty](https://ghostty.org) or over `ssh`. It hooks
-into your existing interactive `bash`: your commands run exactly as they do
-today, and when one fails, nvsh hands the error and device context to an
-agent (shell → agent), which diagnoses the problem and proposes a fix.
+You already have an agent CLI — `claude`, `codex`, `qwen`, `kiro`, `agy`
+or a local Nemotron. nvsh puts it behind your bash prompt on NVIDIA
+hardware: commands run exactly as they do today, and when one fails, the
+agent you already trust diagnoses it and proposes a fix.
 
 > Works like a shell. Helps when things break. Fixes when you let it.
 
-**Status: hook implemented.** The bash hook (`nvsh setup`/`uninstall`/`on`/`off`),
-the per-user session daemon, the trigger table, redaction, platform
-detection, output capture, the pluggable `NvshAgent` backends (fake, Pi,
-OpenAI-compatible, Claude, Codex, Qwen over ACP with a `qwen-p` read-only
-print-mode fallback, Agy, and Kiro over ACP — eight adapters total, see
-`nvsh agent list --json`), the failure panel, slash commands
-and the approve/execute/verify loop are all on disk and covered by tests —
-see [`docs/architecture.md`](docs/architecture.md) for the design and
-[`docs/verification.md`](docs/verification.md) for what has been checked on
-real hardware. Still open: the default-login-shell (`chsh`) mode stays
-parked (see "Parked: login-shell mode" in `docs/architecture.md`), an
-auto-apply mode (running a fix without confirmation) is out of scope for
-v1, and machine-level undo beyond the current approve/execute/verify loop
-is tracked as a follow-up
-([#7](https://github.com/agentculture/nvsh/issues/7)). The design is
-tracked in [#1](https://github.com/agentculture/nvsh/issues/1) (build
-brief) and [#2](https://github.com/agentculture/nvsh/issues/2) (interactive
-self-healing shell).
-
-## Goal
-
-nvsh **hooks into your existing bash** rather than replacing or wrapping it:
-
-- **A shell first.** `nvsh setup` inserts one marked block into your rc file
-  that adds a function to bash's `PROMPT_COMMAND` array. Bash itself keeps
-  parsing, doing job control, completion, aliases and rc files exactly as
-  it always has. A command that succeeds gets no added latency and no model
-  call — see [`docs/architecture.md`](docs/architecture.md) for the decision
-  and why a hook was chosen over a PTY wrapper.
-- **An agent second.** The agent is called only on a real failure (non-zero
-  exit, traceback, CUDA OOM, container or service failure, missing binary)
-  or when you ask for it (`nvsh ask`, `Ctrl+G`, slash commands like
-  `/doctor`). Exit codes that aren't errors, such as Ctrl-C, SIGPIPE, or
-  `grep` finding nothing, don't trigger it, and automatic calls are
-  rate-limited.
-- **Propose, don't run.** You get a diagnosis and a proposed fix, then
-  accept, edit or reject it. Nothing the agent suggests runs without your
-  confirmation. After an approved fix, nvsh can retry the command and check
-  that it worked.
-- **NVIDIA-aware.** Platform detection (JetPack/L4T, DGX OS/GB10, RTX),
-  CUDA / TensorRT / driver versions, unified memory, `nvpmodel` and the
-  container runtime are attached to each diagnosis; see
-  [`docs/platforms.md`](docs/platforms.md) for sources.
-- **Offline by default, pluggable.** The agent backend sits behind an
-  adapter: a local/LAN model first (Nemotron's "associate", via Pi, is the
-  initial default), with the Culture mesh or a hosted API as options.
-- **Aliases and `@target` marks.** `[aliases]` in
-  `$XDG_CONFIG_HOME/nvsh/config.toml` maps a short name to a
-  `backend[/model[/effort]]` target, with `default` reserved for a bare
-  `nvsh --agent default` (or no `--agent` at all). `@target` at the prompt
-  (`@reviewer explain the last failure`, `@claude/sonnet/medium ...`) asks
-  one specific harness for that request only, one-shot unless it names the
-  default target; see [`docs/shell-integration.md`](docs/shell-integration.md).
-  Where a harness has no client-side approval channel (qwen's ACP session
-  never sends a permission request today; agy headless auto-denies command
-  execution) it runs read-only rather than being auto-approved, and an
-  operator opts it into its own agent-side approval only explicitly, with
-  `[agents.<name>] approval = "harness"`.
-- **Reversible.** `nvsh uninstall` removes the marked block from your rc
-  file (restoring it from a backup), the hook file, and any runtime state
-  it created. `NVSH_DISABLE=1` and `nvsh off`/`nvsh on` are kill switches
-  for the current shell.
-
-nvsh is not a new POSIX shell. It is not an autonomous agent that runs
-commands by itself, and it doesn't replace `jetson-cli` / `dgx-spark-cli`
-(it calls them when they are installed). It is not built as a login shell
-or PTY wrapper in this scope — that mode is a parked possible follow-up,
-not a current goal (see `docs/architecture.md`).
-
-## What leaves the machine
-
-- **Nothing, by default.** nvsh's own hook makes no network call on a
-  successful command. On a qualifying failure, only a bounded context
-  slice — the command line, exit status, a capped (<=64 KB) slice of the
-  command's own output, and the detected platform block — is sent to the
-  configured agent backend, which defaults to a LAN-local model, not a
-  public API.
-- **Redaction runs before anything leaves the process.** Tokens shaped like
-  `HF_TOKEN=`, `--api-key`, `Authorization:` headers, and `.env`-style
-  assignments are scrubbed from the context before it is handed to the
-  agent. `--show-context` prints exactly the bytes that would be sent, so
-  you can check before you trust it.
-- **Subprocess-backed harnesses never see nvsh's own dev-session markers.**
-  Every adapter that spawns a CLI (`claude`, `codex`, `qwen`, `agy`,
-  `kiro`) builds its child environment through `nvsh/agent/_env.py`, which
-  strips `CLAUDECODE` and the whole `CLAUDE_CODE_*` family so a spawned
-  harness never believes it is nested inside the Claude Code session that
-  may itself be running nvsh's own development.
-- **nvsh never edits a harness's own settings or trust files.** It only
-  passes launch flags and protocol-level policy (`--effort`, `-c
-  model_reasoning_effort=`, ACP `set_config_option`, and so on) and reports
-  what it finds — it does not write to `claude`/`agy` `settings.json`,
-  `codex`'s `config.toml`, kiro's trust settings, or qwen's settings.
-
-## Quickstart (development)
+## Install
 
 ```bash
-uv sync
-uv run pytest -n auto                 # run the test suite
-uv run nvsh whoami                    # identity from culture.yaml
-uv run nvsh doctor                    # health checks
-uv run nvsh learn                     # self-teaching prompt (add --json)
-uv run teken cli doctor . --strict    # the agent-first rubric gate CI runs
+uv tool install nvsh        # or: pipx install nvsh
+nvsh setup
 ```
 
-## CLI
+`nvsh setup` inserts one marked block into your `.bashrc` (with a
+timestamped backup) that appends a function to bash's `PROMPT_COMMAND`.
+It never wraps bash and never becomes your login shell.
 
-| Verb | What it does |
-|------|--------------|
-| `whoami` | Report this agent's nick, version, backend, and model from `culture.yaml`. |
-| `learn` | Print a structured self-teaching prompt. |
-| `explain <path>` | Markdown docs for any noun/verb path. |
-| `overview` | Read-only descriptive snapshot of the agent. |
-| `doctor` | Health checks: agent-identity invariants, platform detection, agent backend configured/reachable, and (from a hooked shell) hook sourced, bindings, capture and daemon status. |
-| `cli overview` | Describe the CLI surface itself. |
-| `setup` | Render the bash hook files and insert the rc block. |
-| `uninstall` | Remove the rc block, rendered files, sockets, logs and daemon. |
-| `on` / `off` | Print the bash that rebinds / unbinds the hook in the current shell. |
-| `agent` | List, choose, or install `NvshAgent` harness backends. |
-| `approve` | Check or manage the approved-command pattern store. |
-| `capture` | Show the last captured command output. |
-| `context` | Show exactly the context that would be sent to the agent. |
-| `daemon` | Run, inspect or stop the per-user session daemon. |
-| `slash` | Dispatch one `/verb ...` line. |
-| `complete` | Tab-completion candidates. |
+## Set up
 
-Every command supports `--json`. Results go to stdout, and errors and
-diagnostics go to stderr; the two are never mixed. Exit codes: `0` success,
-`1` user error, `2` environment error, `3+` reserved.
+| Command | What it does |
+|---------|--------------|
+| `nvsh setup` | Probes `PATH` for installed harnesses. One hit becomes the default; several hits prompt you once. |
+| `nvsh setup --agent claude` | Picks Claude Code explicitly, no prompt. |
+| `nvsh setup --agent codex` | Picks Codex explicitly, no prompt. |
+| `nvsh agent list` | All eight adapters: `pi`, `qwen`, `qwen-p`, `claude`, `codex`, `agy`, `kiro`, `openai-compat`. |
+| `nvsh agent use <name>` | Change the default afterwards. |
+| `nvsh uninstall` | Remove the rc block, hook files, sockets, logs and daemon. |
+| `NVSH_DISABLE=1`, `nvsh off` / `nvsh on` | Kill switches for the current shell. |
 
-**Verified on:** see [`docs/verification.md`](docs/verification.md) for the
-devices and scenarios this has actually been exercised against.
+## Work with it
 
-## Repository layout
+A failing command opens an inline diagnosis panel. Nothing runs without
+your approval — nvsh proposes, you accept, edit or reject.
 
-nvsh is an [AgentCulture](https://github.com/agentculture) mesh agent built
-from the culture-agent-template:
+| Command | What it does |
+|---------|--------------|
+| `nvsh ask`, `Ctrl+G` | Call the agent on demand. |
+| `/doctor`, `/ask` | Slash commands at the prompt. |
+| `@claude ...`, `@codex ...` | Send one request to a specific harness. |
+| `nvsh doctor` | Health checks: platform, agent reachable, hook, capture, daemon. |
+| `nvsh context --show-context` | Print exactly the bytes that would be sent. |
 
-- `culture.yaml` holds the mesh identity (`suffix: nvsh`, `backend: claude`).
-- One prompt file per agent harness, with no shared base:
-  `CLAUDE.md` for Claude Code, `AGENTS.override.md` + `.pi/SYSTEM.md` for
-  Pi/associate, `AGENTS.colleague.md` for colleague, and `QWEN.md` for Qwen
-  Code. There is deliberately no `AGENTS.md`. See
-  [`docs/harness-selection.md`](docs/harness-selection.md) and
-  [`docs/automation-contract.md`](docs/automation-contract.md).
-- `.claude/skills/` holds the guildmaster skill kit, vendored
-  cite-don't-import. See [`docs/skill-sources.md`](docs/skill-sources.md).
-- [`docs/architecture.md`](docs/architecture.md) records the hook-vs-wrap
-  decision, and [`docs/platforms.md`](docs/platforms.md) records where each
-  detected device value comes from.
-- CI covers pytest, lint, secret scanning, the agent-first rubric gate, a
-  per-harness smoke check, and PyPI Trusted Publishing.
+Exit codes that aren't errors — Ctrl-C (`130`), SIGPIPE (`141`), `grep`
+finding nothing — never trigger it, and automatic calls are rate-limited.
 
-Every PR bumps the version. See [`CLAUDE.md`](CLAUDE.md) for the full
-contributor conventions.
+## Safety first
+
+Nothing leaves the machine except to the agent you trust. On a successful
+command nvsh makes no network call at all. On a qualifying failure a
+redacted, bounded context slice — the command line, its exit status, at
+most 64 KB of its output, and the detected platform block — goes only to
+the agent you chose, and nowhere else.
+
+With `claude` or `codex`, that agent is a third-party hosted service: your
+failure context leaves your network. With `pi`/Nemotron or `openai-compat`
+pointed at localhost or your LAN, it does not.
+
+Redaction runs first, before anything leaves the process: `HF_TOKEN=`,
+`--api-key`, `Authorization:` headers and `.env`-style assignments are
+scrubbed from the context. `nvsh context --show-context` prints the
+post-redaction bytes so you can check before you trust it. nvsh never
+edits a harness's own settings or trust files — it passes launch flags and
+protocol-level policy, and reports what it finds.
+
+## What nvsh never does
+
+- Run an agent-suggested command without your confirmation.
+- Add latency or a network call to a successful command.
+- Wrap or replace bash — it hooks into the bash you already run.
+- Replace `jetson-cli` / `dgx-spark-cli`; it calls them when installed.
+
+Not yet: macOS and zsh are untested —
+[#11](https://github.com/agentculture/nvsh/issues/11).
+
+## What lands where
+
+| Path | What |
+|------|------|
+| `$HOME/.bashrc` | One marked rc block, with a timestamped backup. |
+| `$XDG_DATA_HOME/nvsh/shell/` | Rendered hook files. |
+| `$XDG_CONFIG_HOME/nvsh/config.toml` | Backend, aliases, default target. |
+| `$XDG_RUNTIME_DIR/nvsh` | Daemon socket and logs. |
+| Audit log | Every proposal and every decision you made on it. |
+
+More:
+
+- [architecture](https://github.com/agentculture/nvsh/blob/main/docs/architecture.md)
+  — hook over wrapper, and the parked login-shell mode.
+- [platforms](https://github.com/agentculture/nvsh/blob/main/docs/platforms.md)
+  — where each detected device value comes from.
+- [shell integration](https://github.com/agentculture/nvsh/blob/main/docs/shell-integration.md)
+  and [daemon](https://github.com/agentculture/nvsh/blob/main/docs/daemon.md)
+  — the `@target` grammar and the warm session.
+- [CLAUDE.md](https://github.com/agentculture/nvsh/blob/main/CLAUDE.md)
+  — contributor conventions.
 
 ## License
 
-Apache 2.0 — see [`LICENSE`](LICENSE).
+Apache 2.0 — see
+[LICENSE](https://github.com/agentculture/nvsh/blob/main/LICENSE).

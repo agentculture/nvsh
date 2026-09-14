@@ -22,6 +22,21 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 ARCHITECTURE = REPO_ROOT / "docs" / "architecture.md"
 PLATFORMS = REPO_ROOT / "docs" / "platforms.md"
+README = REPO_ROOT / "README.md"
+
+# t2: the announcement-first README shape. README.md is the PyPI long
+# description, so every link has to be an absolute GitHub URL — a relative
+# ``](docs/...)`` or ``](CLAUDE.md)`` link is dead on PyPI.
+README_H2_ORDER = (
+    "Install",
+    "Set up",
+    "Work with it",
+    "Safety first",
+    "What nvsh never does",
+    "What lands where",
+    "License",
+)
+RELATIVE_LINK_PREFIXES = ("](docs/", "](CLAUDE.md")
 
 TILDE_PATH_RE = re.compile(r"~/[\w./-]")
 
@@ -72,6 +87,27 @@ def test_platforms_doc_skeleton_exists() -> None:
     text = PLATFORMS.read_text(encoding="utf-8")
     for heading in ("DGX Spark", "Jetson AGX Thor", "Jetson AGX Orin"):
         assert heading in text, f"docs/platforms.md must have a {heading} heading"
+
+
+def test_readme_h2_order() -> None:
+    """t2: the README's H2 sections appear in the announcement-first order."""
+    headings = [
+        line[3:].strip()
+        for line in README.read_text(encoding="utf-8").splitlines()
+        if line.startswith("## ")
+    ]
+    assert tuple(headings) == README_H2_ORDER, f"README H2s out of order: {headings}"
+
+
+def test_readme_has_no_relative_repo_links() -> None:
+    """t2: README.md is the PyPI long description — links must be absolute."""
+    offenders: list[str] = []
+    for lineno, line in enumerate(README.read_text(encoding="utf-8").splitlines(), start=1):
+        for prefix in RELATIVE_LINK_PREFIXES:
+            if prefix in line:
+                offenders.append(f"{lineno}: {line.strip()}")
+                break
+    assert not offenders, f"relative repo links in README.md: {offenders}"
 
 
 def test_no_tilde_home_path_in_owned_docs() -> None:
