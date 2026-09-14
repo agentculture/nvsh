@@ -110,7 +110,7 @@ capped anyway rather than defaulting to high.
 | two recorder runs are diffable (identical output stream, pinned size and timestamp) | medium | test `tests/test_record_cast.py::test_two_feed_runs_are_identical_except_stamps` · evidence `e10`, delta `b2` — capped: lapse `l4`, chunk boundaries vary |
 | the committed casts contain no hostname, user name or LAN address | high | test `tests/test_demo_casts.py::test_cast_is_scrubbed_of_hosts_and_lan_addresses` · evidence `e8` |
 | one command renders a cast to the committed SVG | medium | file `scripts/demo-render.sh` · evidence `e13` (manual, needs npx and network) |
-| the image renders on github.com and on the PyPI project page | low | evidence `e17`: the raw asset renders and animates; the README embed resolves only after merge (`e15` stays unchecked until then); TestPyPI page not yet viewed |
+| the image renders on github.com and on the PyPI project page | high | evidence `e23` (owner, post-merge): the README embed animates on github.com; PyPI 0.12.0 carries the README with the image (`e17` pre-merge, `e22` was an automation-browser artifact and is superseded) |
 | a maintainer with no prior context reproduces a device recording from `docs/demos/README.md` | unverified | evidence `e16` filed unmet — the loop was executed only by the agent that wrote it |
 | animated SVG plays in the GitHub mobile app | unverified | park `v2` / risk `r2` — no observation |
 
