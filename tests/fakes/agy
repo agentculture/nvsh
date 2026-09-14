@@ -1,0 +1,84 @@
+#!/usr/bin/env python3
+"""Fake ``agy --output-format stream-json`` for ``nvsh.agent.agy.AgyAgent``.
+
+Reads a transcript spec from ``$NVSH_FAKE_EVENTS`` (a JSON file) and replays
+it verbatim, the same "record real CLI output, replay it in tests" pattern
+as ``tests/fakes/codex``/``tests/fakes/claude``/``tests/fakes/qwen`` -- the
+difference is the spec here carries whole recorded NDJSON *lines* (agy's
+own wire shapes), not an abstract event-kind list, since
+``tests/test_agent_agy.py`` needs to prove ``AgyAgent`` parses agy's actual
+wire format.
+
+Spec shape, one of:
+
+* Cold (no ``--input-format`` on argv): a single turn --
+  ``{"stdout": [<ndjson line>, ...], "stderr": [<line>, ...], "exit_code": N}``.
+* Warm (``--input-format stream-json`` on argv): one turn per line read
+  from stdin -- ``{"turns": [{"stdout": [...], "stderr": [...],
+  "exit_code": N}, ...]}``. Each stdin line consumed plays back the next
+  turn's stdout/stderr; the process exits once ``turns`` is exhausted (or
+  immediately, with the last turn's ``exit_code``, if stdin closes first).
+
+``$NVSH_FAKE_ARGV_LOG``, when set, gets one JSON line appended per process
+invocation (``argv[1:]``) -- how ``tests/test_agent_agy.py`` proves the
+exact argv shape (criterion 1) and counts how many processes a "warm"
+session actually spawned (should be one, across many turns) without
+inspecting ``AgyAgent`` internals.
+
+Nothing here imports ``nvsh`` -- it is spawned as a real subprocess, exactly
+like the real ``agy`` binary would be.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+
+
+def _load_spec() -> dict:
+    events_path = os.environ.get("NVSH_FAKE_EVENTS")
+    if not events_path:
+        return {}
+    with open(events_path, encoding="utf-8") as fh:
+        return json.load(fh)
+
+
+def _log_argv(argv: list[str]) -> None:
+    log_path = os.environ.get("NVSH_FAKE_ARGV_LOG")
+    if not log_path:
+        return
+    with open(log_path, "a", encoding="utf-8") as fh:
+        fh.write(json.dumps(argv) + "\n")
+
+
+def _play_turn(turn: dict) -> int:
+    for line in turn.get("stdout", []):
+        sys.stdout.write(line.rstrip("\n") + "\n")
+    sys.stdout.flush()
+    for line in turn.get("stderr", []):
+        sys.stderr.write(line.rstrip("\n") + "\n")
+    sys.stderr.flush()
+    return int(turn.get("exit_code", 0))
+
+
+def main(argv: list[str]) -> int:
+    _log_argv(argv)
+    spec = _load_spec()
+    warm = "--input-format" in argv
+
+    if not warm:
+        return _play_turn(spec)
+
+    turns = list(spec.get("turns", []))
+    exit_code = 0
+    for turn in turns:
+        line = sys.stdin.readline()
+        if not line:
+            break
+        exit_code = _play_turn(turn)
+    return exit_code
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
