@@ -17,6 +17,7 @@ _NEW_CHECK_IDS = {
     "platform_detected",
     "agent_configured",
     "agent_reachable",
+    "default_target_not_demo",
     "hook_sourced",
     "hook_first_in_prompt_command",
     "bindings_present",
