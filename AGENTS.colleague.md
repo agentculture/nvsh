@@ -50,9 +50,12 @@ mode is parked, auto-apply (running a fix without confirmation) is out of
 scope for v1, and machine-level undo beyond the approve/execute/verify loop
 is tracked as issue #7 — don't describe those as implemented.
 
-nvsh now registers eight harness adapters (pi, qwen over ACP, qwen-p as a
+nvsh now registers nine harness adapters (pi, qwen over ACP, qwen-p as a
 read-only stream-json fallback, claude, codex, agy — always read-only for
-commands, kiro over ACP, and openai-compat; `nvsh/agent/registry.py`).
+commands, kiro over ACP, openai-compat, and demo — a scripted fixture
+replayed through the real daemon and panel, used for the README recording,
+excluded from setup's probe, and refused as a persisted default;
+`nvsh/agent/registry.py`).
 `[aliases]` in `$XDG_CONFIG_HOME/nvsh/config.toml` maps a short name to a
 `backend[/model[/effort]]` target, `default` reserved for a bare
 `nvsh --agent default`; `nvsh setup` probes `PATH` and picks whichever
