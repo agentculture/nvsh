@@ -306,3 +306,78 @@ def test_the_reply_names_the_platform_from_the_context():
     text = "".join(e.text for e in agent.run(request, context) if e.kind == EventKind.TEXT_DELTA)
     assert "jetson" in text
     assert "{platform}" not in text
+
+
+# --- review fixes (PR #14, Qodo 1, 4, 6, 7, 10) --------------------------------
+
+
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        ("./model.sh;id", "./run-model.sh"),  # metacharacters: refused, default used
+        ("./a.sh && rm -rf /", "./a.sh"),  # the operator only ever sees chmod +x ./a.sh
+        ("'./evil$(id).sh'", "./run-model.sh"),
+        ("python tool.py --output report.sh", "./run-model.sh"),  # argument, not command
+        ("bash scripts/run-model.sh", "scripts/run-model.sh"),
+        ("sh ./x.sh --flag", "./x.sh"),
+        ("./ok-1.sh arg", "./ok-1.sh"),
+        ("../up.sh", "./run-model.sh"),
+        ("", "./run-model.sh"),
+    ],
+)
+def test_script_token_is_command_position_only_and_shell_safe(command, expected):
+    from nvsh.agent.demo import script_from_command
+
+    assert script_from_command(command) == expected
+
+
+def test_proposal_never_carries_shell_metacharacters():
+    from nvsh.agent.base import EventKind
+    from nvsh.agent.demo import FIXTURE_PATH, load_events
+
+    events = load_events(FIXTURE_PATH, "./model.sh;id")
+    proposal = next(e.proposal for e in events if e.kind == EventKind.PROPOSAL)
+    assert proposal.command == "chmod +x ./run-model.sh"
+    assert ";" not in proposal.command
+
+
+@pytest.mark.parametrize(
+    "body", ["[]", "42", '{"events": {}}', '{"events": []}', '{"events": [1]}']
+)
+def test_wrongly_shaped_fixture_is_an_error_event_not_a_crash(tmp_path, body):
+    from nvsh.agent.base import AgentContext, AgentRequest, EventKind, RequestKind
+    from nvsh.agent.demo import DemoAgent
+
+    fixture = tmp_path / "bad.json"
+    fixture.write_text(body, encoding="utf-8")
+    agent = DemoAgent({"fixture": str(fixture)})
+    agent.start()
+    events = list(
+        agent.run(AgentRequest(kind=RequestKind.FAILURE, command="./x.sh"), AgentContext())
+    )
+    assert [e.kind for e in events] == [EventKind.ERROR]
+    assert "unusable" in events[0].error
+
+
+def test_config_accepts_the_fixture_key(tmp_path, monkeypatch):
+    from nvsh import config as nvsh_config
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    (tmp_path / "nvsh").mkdir()
+    (tmp_path / "nvsh" / "config.toml").write_text(
+        '[agents.demo]\nfixture = "/tmp/x.json"\n', encoding="utf-8"
+    )
+    cfg = nvsh_config.load()
+    assert cfg.agents["demo"]["fixture"] == "/tmp/x.json"
+
+
+def test_doctor_rejects_a_malformed_fixture(tmp_path):
+    from nvsh import config as nvsh_config
+    from nvsh.doctor_checks import _check_demo_reachable
+
+    fixture = tmp_path / "bad.json"
+    fixture.write_text("[]", encoding="utf-8")
+    cfg = nvsh_config.Config(agents={"demo": {"fixture": str(fixture)}})
+    check = _check_demo_reachable(cfg)
+    assert check["passed"] is False
+    assert "unusable" in check["message"]

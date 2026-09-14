@@ -252,3 +252,34 @@ def test_agent_list_json_still_reports_demo_as_selectable():
     payload = json.loads(out)
     names = {row["name"] for row in payload["adapters"]}
     assert "demo" in names
+
+
+# --- review fix (PR #14, Qodo 2): aliases and stored defaults ------------------
+
+
+def test_setup_refuses_an_alias_whose_target_is_demo(tmp_path, monkeypatch, capsys):
+    import json
+
+    from nvsh.cli import main
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "run"))
+    (tmp_path / "cfg" / "nvsh").mkdir(parents=True)
+    (tmp_path / "cfg" / "nvsh" / "config.toml").write_text(
+        '[aliases]\ndemo-run = "demo"\n', encoding="utf-8"
+    )
+    rc = main(["setup", "--agent", "demo-run", "--json"])
+    assert rc == 1
+    payload = json.loads(capsys.readouterr().err)
+    assert "scripted fixture" in payload["message"]
+    assert not (tmp_path / ".bashrc").exists()
+
+
+def test_keep_existing_default_never_keeps_demo(tmp_path, monkeypatch):
+    from nvsh import config as nvsh_config
+    from nvsh.cli._commands.setup import _keep_existing_default
+
+    cfg = nvsh_config.Config(aliases={nvsh_config.DEFAULT_ALIAS: "demo"})
+    assert _keep_existing_default(cfg, probe_rows=[]) is False

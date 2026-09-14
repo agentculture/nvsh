@@ -54,6 +54,7 @@ _VALID_AGENT_BACKEND_KEYS = {
     "effort",
     "extra_args",
     "approval",
+    "fixture",
 }
 
 #: Valid values for ``[agents.<name>].approval``.

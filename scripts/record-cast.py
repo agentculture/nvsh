@@ -41,9 +41,11 @@ from pathlib import Path
 
 #: Env vars (or, with a trailing ``*``, prefixes) a ``--clean-env`` child
 #: inherits from the recording operator's environment. Everything else is
-#: dropped, so two runs on different machines/shells produce the same
-#: starting env, apart from whatever ``--env`` overrides on top of it.
-_CLEAN_ENV_ALLOW = ("PATH", "TERM", "HOME", "LANG", "XDG_*", "NVSH_*", "COLUMNS", "LINES")
+#: dropped -- including every ``NVSH_*`` behaviour knob and every ``XDG_*``
+#: directory, which a caller that wants them passes explicitly with
+#: ``--env`` -- so two runs on different machines/shells start from the
+#: same env.
+_CLEAN_ENV_ALLOW = ("PATH", "TERM", "HOME", "LANG", "LC_*", "COLUMNS", "LINES")
 
 #: What ``--feed`` accepts as key escapes.
 _KEY_ESCAPES = (
@@ -82,6 +84,43 @@ def _scrub(data: bytes, pairs: list[tuple[bytes, bytes]]) -> bytes:
     for old, new in pairs:
         data = data.replace(old, new)
     return data
+
+
+def _holdback(data: bytes, pairs: list[tuple[bytes, bytes]]) -> int:
+    """How many trailing bytes of *data* could be the start of a token.
+
+    A pty read can split a hostname or an address across two chunks, and a
+    per-chunk replace would then miss it. Any suffix of *data* that is a
+    proper prefix of some token is held back and re-scanned together with
+    the next chunk (see :class:`_Scrubber`).
+    """
+    longest = 0
+    for old, _new in pairs:
+        for size in range(min(len(old) - 1, len(data)), 0, -1):
+            if data.endswith(old[:size]):
+                longest = max(longest, size)
+                break
+    return longest
+
+
+class _Scrubber:
+    """Streaming ``OLD=NEW`` replacement that survives chunk boundaries."""
+
+    def __init__(self, pairs: list[tuple[bytes, bytes]]) -> None:
+        self._pairs = pairs
+        self._pending = b""
+
+    def feed(self, chunk: bytes) -> bytes:
+        if not self._pairs:
+            return chunk
+        data = _scrub(self._pending + chunk, self._pairs)
+        keep = _holdback(data, self._pairs)
+        self._pending = data[len(data) - keep :] if keep else b""
+        return data[: len(data) - keep] if keep else data
+
+    def flush(self) -> bytes:
+        data, self._pending = _scrub(self._pending, self._pairs), b""
+        return data
 
 
 def _window_size(default_cols: int, default_rows: int) -> tuple[int, int]:
@@ -167,8 +206,12 @@ def record(args: argparse.Namespace) -> int:
         saved = termios.tcgetattr(sys.stdin.fileno())
         tty.setraw(sys.stdin.fileno())
 
-    def emit(data: bytes) -> None:
-        data = _scrub(data, replacements)
+    scrubber = _Scrubber(replacements)
+
+    def emit(data: bytes, *, final: bool = False) -> None:
+        data = scrubber.feed(data) + (scrubber.flush() if final else b"")
+        if not data:
+            return
         stamp = round(time.monotonic() - started, 6)
         out.write(json.dumps([stamp, "o", data.decode("utf-8", "replace")]) + "\n")
         out.flush()
@@ -216,6 +259,7 @@ def record(args: argparse.Namespace) -> int:
             os.waitpid(pid, 0)
         except OSError:
             pass
+        emit(b"", final=True)  # the scrubber's held-back tail
         out.close()
     return 0
 

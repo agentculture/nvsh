@@ -80,13 +80,46 @@ def test_record_sets_window_size_via_tiocswinsz(tmp_path):
     assert "24 80" in combined
 
 
-def test_record_timestamp_and_clean_env(tmp_path):
+def test_record_timestamp_and_clean_env(tmp_path, monkeypatch):
+    # Qodo 5/8 (PR #14): the clean env must actually drop what is not on
+    # the allowlist -- an NVSH_* behaviour knob and an XDG_* directory both
+    # vanish, while an explicit --env override survives.
+    monkeypatch.setenv("NVSH_NO_DAEMON", "leak")
+    monkeypatch.setenv("XDG_CACHE_HOME", "/leaked/cache")
     out = tmp_path / "env.cast"
-    _record(out)
-    header, _ = _load_events(out)
+    _record(
+        out,
+        "--env",
+        "DEMO_KEEP=kept",
+        "--feed",
+        r"echo A${NVSH_NO_DAEMON}B${XDG_CACHE_HOME}C $DEMO_KEEP\r|1",
+    )
+    header, events = _load_events(out)
     assert header["timestamp"] == 0
     assert header["width"] == 80
     assert header["height"] == 24
+    combined = "".join(data for _stamp, _kind, data in events)
+    assert "ABC kept" in combined
+    assert "leak" not in combined
+
+
+def test_scrub_survives_a_token_split_across_pty_reads(tmp_path):
+    # Qodo 3 (PR #14): a token straddling two pty reads must still be
+    # replaced. The child prints the halves with a pause between them.
+    rules = tmp_path / "rules"
+    rules.write_text("SECRETHOST=[host]\n", encoding="utf-8")
+    out = tmp_path / "split.cast"
+    _record(
+        out,
+        "--replace-from",
+        str(rules),
+        "--feed",
+        r"printf SECRE; sleep 0.4; printf THOST; echo\r|2",
+    )
+    _, events = _load_events(out)
+    combined = "".join(data for _stamp, _kind, data in events)
+    assert "[host]" in combined
+    assert "SECRETHOST" not in combined.replace("printf SECRE; sleep 0.4; printf THOST", "")
 
 
 def test_two_feed_runs_are_identical_except_stamps(tmp_path):

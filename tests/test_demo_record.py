@@ -290,3 +290,23 @@ def test_protected_words_is_the_detected_platform_kind():
     words = demo_record.protected_words()
     assert len(words) == 1
     assert words[0]
+
+
+def test_missing_markers_names_what_an_incomplete_cast_lacks(tmp_path):
+    # Qodo 9 (PR #14): an incomplete recording is not published.
+    cast = tmp_path / "partial.cast"
+    cast.write_text(
+        '{"version": 2}\n[0.1, "o", "bash: ./run-model.sh: Permission denied\\r\\n"]\n',
+        encoding="utf-8",
+    )
+    missing = demo_record.missing_markers(cast)
+    assert "Permission denied" not in missing
+    assert demo_record.SUCCESS_LINE in missing
+    assert "[Enter] run" in missing
+
+
+def test_sandbox_env_pins_cache_dir_and_daemon_knob():
+    sandbox = demo_record.build_sandbox(Path("/tmp/x"))
+    env = demo_record.sandbox_env(sandbox)
+    assert env["XDG_CACHE_HOME"].startswith("/tmp/x")
+    assert env["NVSH_NO_DAEMON"] == ""

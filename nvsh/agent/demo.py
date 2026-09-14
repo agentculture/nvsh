@@ -26,6 +26,8 @@ shows nvsh's mechanism, and must not be mistaken for a model's diagnosis.
 from __future__ import annotations
 
 import json
+import re
+import shlex
 from pathlib import Path
 from typing import Iterator, Mapping
 
@@ -60,23 +62,41 @@ DEMO_CAPABILITIES = Capabilities(
 )
 
 
+#: The only characters a script token may carry into the ``chmod +x``
+#: proposal. Anything else (``;``, ``$``, quotes, spaces, ``|``, ``&``...)
+#: would ride into the approved command line, so such a token is refused
+#: and the fixture's default is used instead.
+_SAFE_TOKEN = re.compile(r"^[A-Za-z0-9._/@%+=:,-]+$")
+#: Interpreters whose *operand* is the script that failed.
+_SCRIPT_RUNNERS = frozenset({"bash", "sh", "dash", "zsh", "source", "."})
+
+
+def _looks_like_script(token: str) -> bool:
+    return token.startswith("./") or token.endswith(".sh")
+
+
 def script_from_command(command: str, default: str = DEFAULT_SCRIPT) -> str:
     """The script the failing command line was trying to run.
 
-    A ``./path`` token wins outright (that is how the demo's planted script
-    is invoked). Failing that, any token ending in ``.sh`` is taken, so
-    ``bash scripts/run-model.sh`` still blames the script rather than
-    ``bash``. A line naming neither -- an ordinary failure that happened to
-    reach this adapter -- gets *default*, never a guess at some other
-    argument on the line.
+    Only the *command position* counts: the first token when it is a
+    ``./path`` or ``*.sh`` (that is how the demo's planted script is
+    invoked), or the operand right after ``bash``/``sh``/``source``. An
+    argument elsewhere on the line (``python tool.py --output report.sh``)
+    is never taken, and a token carrying shell metacharacters is refused
+    outright, because the token is interpolated into the ``chmod +x``
+    proposal the operator approves. Anything else gets *default*.
     """
-    tokens = (command or "").split()
-    for token in tokens:
-        if token.startswith("./"):
-            return token
-    for token in tokens:
-        if token.endswith(".sh"):
-            return token
+    try:
+        tokens = shlex.split(command or "")
+    except ValueError:
+        tokens = (command or "").split()
+    candidate = ""
+    if tokens and _looks_like_script(tokens[0]):
+        candidate = tokens[0]
+    elif len(tokens) >= 2 and tokens[0] in _SCRIPT_RUNNERS and _looks_like_script(tokens[1]):
+        candidate = tokens[1]
+    if candidate and _SAFE_TOKEN.match(candidate) and ".." not in candidate.split("/"):
+        return candidate
     return default
 
 
@@ -119,19 +139,34 @@ def load_events(path: Path, command: str, platform_block: str = "") -> list[Agen
     errors; :meth:`DemoAgent.run` turns those into an ERROR event so a
     mistyped ``fixture`` path degrades the panel instead of the shell.
     """
-    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    data = load_fixture(path)
     placeholder = str(data.get("script_placeholder") or SCRIPT_PLACEHOLDER)
     default = str(data.get("default_script") or DEFAULT_SCRIPT)
     platform_placeholder = str(data.get("platform_placeholder") or PLATFORM_PLACEHOLDER)
+    # The token is already restricted to a safe charset, so quoting is a
+    # no-op today; it stays so a future relaxation cannot reopen the hole.
     replacements = {
-        placeholder: script_from_command(command, default),
+        placeholder: shlex.quote(script_from_command(command, default)),
         platform_placeholder: platform_kind(platform_block),
     }
-    events = []
-    for raw in data.get("events") or []:
-        if isinstance(raw, Mapping):
-            events.append(event_from_dict(_substituted(raw, replacements)))
-    return events
+    return [event_from_dict(_substituted(raw, replacements)) for raw in data["events"]]
+
+
+def load_fixture(path: Path) -> dict:
+    """Read and shape-check a fixture: a JSON object whose ``events`` is a
+    non-empty list of objects. Raises ``OSError`` (unreadable) or
+    ``ValueError`` (not JSON, or the wrong shape) -- the two errors
+    :meth:`DemoAgent.run` and doctor's reachability check both report."""
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    if not isinstance(data, Mapping):
+        raise ValueError(f"fixture root must be a JSON object, not {type(data).__name__}")
+    events = data.get("events")
+    if not isinstance(events, list) or not events:
+        raise ValueError("fixture 'events' must be a non-empty list")
+    for index, raw in enumerate(events):
+        if not isinstance(raw, Mapping) or "kind" not in raw:
+            raise ValueError(f"fixture events[{index}] must be an object with a 'kind'")
+    return dict(data)
 
 
 class DemoAgent(FakeAgent):
@@ -152,10 +187,10 @@ class DemoAgent(FakeAgent):
     def run(self, request: AgentRequest, context: AgentContext) -> Iterator[AgentEvent]:
         try:
             self._script = list(load_events(self._fixture_path, request.command, context.platform))
-        except (OSError, ValueError) as exc:
+        except (OSError, ValueError, TypeError, KeyError) as exc:
             yield AgentEvent(
                 kind=EventKind.ERROR,
-                error=f"demo fixture unreadable ({self._fixture_path}): {exc}",
+                error=f"demo fixture unusable ({self._fixture_path}): {exc}",
             )
             return
         yield from super().run(request, context)

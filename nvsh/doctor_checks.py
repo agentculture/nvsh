@@ -467,13 +467,15 @@ def _check_demo_reachable(config: Config) -> dict:
     fixture = settings.get("fixture")
     path = Path(str(fixture)) if fixture else DEMO_FIXTURE_PATH
     try:
-        path.read_text(encoding="utf-8")
-    except OSError as exc:
+        from .agent.demo import load_fixture
+
+        load_fixture(path)
+    except (OSError, ValueError, TypeError, KeyError) as exc:
         return _check(
             "agent_reachable",
             False,
             "error",
-            f"demo fixture unreadable ({path}): {exc}",
+            f"demo fixture unusable ({path}): {exc}",
             "point [agents.demo] fixture at a readable JSON file, or remove the "
             "override to use the committed fixture",
         )

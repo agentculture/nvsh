@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import argparse
 import getpass
+import json
 import os
 import re
 import shutil
@@ -334,6 +335,7 @@ def sandbox_env(sandbox: Sandbox) -> dict[str, str]:
         "XDG_DATA_HOME": str(sandbox.data),
         "XDG_STATE_HOME": str(sandbox.state),
         "XDG_RUNTIME_DIR": str(sandbox.runtime),
+        "XDG_CACHE_HOME": str(sandbox.home / ".cache"),
         "TERM": "xterm-256color",
         "NVSH_BIN": sandbox.nvsh_bin,
         "NVSH_DISABLE": "0",
@@ -343,6 +345,7 @@ def sandbox_env(sandbox: Sandbox) -> dict[str, str]:
         "NVSH_LOG": "",
         "NVSH_DEBUG": "",
         "NVSH_HOOK_DEBUG_FILE": "",
+        "NVSH_NO_DAEMON": "",  # the recording must go through the real daemon
     }
 
 
@@ -466,10 +469,45 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+#: What a complete recording must show, in order of appearance: the
+#: failure, the panel with its proposal, the approved fix having run, and
+#: the retry succeeding. A cast missing any of them is not published.
+REQUIRED_MARKERS = (
+    "Permission denied",
+    "chmod +x",
+    "[Enter] run",
+    "-> exit 0",
+    SUCCESS_LINE,
+)
+
+
+def missing_markers(cast: Path) -> list[str]:
+    """The :data:`REQUIRED_MARKERS` absent from *cast*'s output events."""
+    text = []
+    for line in cast.read_text(encoding="utf-8").splitlines()[1:]:
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(event, list) and len(event) == 3 and event[1] == "o":
+            text.append(str(event[2]))
+    plain = "".join(text)
+    return [marker for marker in REQUIRED_MARKERS if marker not in plain]
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     waits = (args.wait_panel, args.wait_approve, args.wait_retry)
     out = record(Path(args.out), waits, keep=args.keep_sandbox)
+    missing = missing_markers(out)
+    if missing:
+        out.unlink(missing_ok=True)
+        print(
+            f"demo-record: incomplete recording, not written: missing {missing} "
+            "(raise --wait-panel/--wait-approve/--wait-retry on a slow device)",
+            file=sys.stderr,
+        )
+        return 1
     print(f"demo-record: wrote {out}", file=sys.stderr)
     return 0
 
