@@ -118,13 +118,32 @@ def local_ipv4s(output: str | None = None) -> list[str]:
     return found
 
 
-def scrub_rules(host: str, user: str, ips: list[str]) -> list[str]:
+def protected_words() -> tuple[str, ...]:
+    """Words the scrub must leave alone: the detected platform kind.
+
+    The demo reply names the platform (``dgx-spark``, ``jetson``); a user or
+    host name that is a substring of it must not be rewritten there.
+    """
+    try:
+        from nvsh.platform import detect
+
+        return (str(detect().kind),)
+    except Exception:  # noqa: BLE001 - detection failing must not stop a recording
+        return ()
+
+
+def scrub_rules(host: str, user: str, ips: list[str], protect: tuple[str, ...] = ()) -> list[str]:
     """``OLD=NEW`` lines for ``record-cast.py --replace-from``.
 
     Longest first: the hostname often *contains* the user name
     (``spark-f8a9`` / ``spark``), and a shorter rule applied first would
     leave a half-replaced hostname behind. Tokens shorter than
-    :data:`MIN_SCRUB_LEN` are dropped rather than applied blindly.
+    :data:`MIN_SCRUB_LEN` are dropped rather than applied blindly, and so
+    is any token that occurs inside a *protect* string: the operator on a
+    DGX Spark is often called ``spark``, and blindly scrubbing that turns
+    the platform kind ``dgx-spark`` in the demo's own reply into
+    ``dgx-operator``. The protected words are the platform kind and the
+    fixture's placeholders' hosts -- text the recording must keep.
     """
     pairs = [(host, HOST_PLACEHOLDER), (user, USER_PLACEHOLDER)]
     pairs += [(ip, IPV4_PLACEHOLDER) for ip in ips]
@@ -133,6 +152,12 @@ def scrub_rules(host: str, user: str, ips: list[str]) -> list[str]:
     for old, new in sorted(pairs, key=lambda pair: len(pair[0]), reverse=True):
         old = (old or "").strip()
         if len(old) < MIN_SCRUB_LEN or old in seen or "=" in old or "\n" in old:
+            continue
+        if any(old in word for word in protect):
+            print(
+                f"demo-record: not scrubbing {old!r}: part of {[w for w in protect if old in w]}",
+                file=sys.stderr,
+            )
             continue
         seen.add(old)
         rules.append(f"{old}={new}")
@@ -401,7 +426,9 @@ def record(out: Path, waits: tuple[float, float, float], keep: bool = False) -> 
     out.parent.mkdir(parents=True, exist_ok=True)
     root = Path(tempfile.mkdtemp(prefix="nvsh-demo-"))
     sandbox = build_sandbox(root)
-    rules = scrub_rules(socket.gethostname(), getpass.getuser(), local_ipv4s())
+    rules = scrub_rules(
+        socket.gethostname(), getpass.getuser(), local_ipv4s(), protect=protected_words()
+    )
     rules_file = root / "scrub.rules"
     rules_file.write_text("\n".join(rules) + "\n", encoding="utf-8")
 

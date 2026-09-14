@@ -267,3 +267,16 @@ def test_demo_record_end_to_end(tmp_path):
 def _kept_sandbox(stderr: str) -> Path | None:
     match = re.search(r"sandbox kept at (\S+)", stderr)
     return Path(match.group(1)) if match else None
+
+
+def test_scrub_rules_leave_a_token_inside_a_protected_word_alone(capsys):
+    # The operator on a DGX Spark is often called "spark"; the demo reply
+    # names the platform "dgx-spark", which the scrub must not rewrite.
+    rules = demo_record.scrub_rules("spark-f8a9", "spark", [], protect=("dgx-spark",))
+    assert rules == [f"spark-f8a9={demo_record.HOST_PLACEHOLDER}"]
+    assert "not scrubbing 'spark'" in capsys.readouterr().err
+
+
+def test_protected_words_is_the_detected_platform_kind():
+    words = demo_record.protected_words()
+    assert len(words) == 1 and words[0]
