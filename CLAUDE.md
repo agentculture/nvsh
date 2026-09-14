@@ -72,14 +72,17 @@ and the verb still runs (`uv run --frozen nvsh --help`,
 `uv run --frozen nvsh doctor --json`) rather than assuming this paragraph
 stays accurate forever.
 
-nvsh registers eight harness adapters in `nvsh/agent/registry.py`'s
+nvsh registers nine harness adapters in `nvsh/agent/registry.py`'s
 `ADAPTERS` table: `pi` (rpc), `qwen` (acp, `qwen --acp`, plan mode by
 default), `qwen-p` (stream-json print-mode, read-only fallback for when
 ACP is unavailable), `claude` (stream-json, `claude -p --output-format
 stream-json --input-format stream-json --permission-prompt-tool stdio`),
 `codex` (app-server, falling back to `exec`), `agy` (stream-json, always
-read-only — see below), `kiro` (acp, `kiro-cli acp`) and `openai-compat`
-(http). `[aliases]` in `$XDG_CONFIG_HOME/nvsh/config.toml` is a flat TOML
+read-only — see below), `kiro` (acp, `kiro-cli acp`), `openai-compat`
+(http), and `demo` (a scripted fixture replayed through the real daemon
+and panel, used for the README recording, excluded from `setup`'s probe,
+and refused as a persisted default). `[aliases]` in
+`$XDG_CONFIG_HOME/nvsh/config.toml` is a flat TOML
 table mapping a short name to a `backend[/model[/effort]]` target, with
 `default` reserved for the bare `nvsh --agent default` (or no `--agent` at
 all) case (`Config.resolve_target`, `nvsh/config.py`); `nvsh agent use

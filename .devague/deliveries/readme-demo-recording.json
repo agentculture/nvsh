@@ -1,0 +1,567 @@
+{
+  "plan_slug": "readme-demo-recording",
+  "schema_version": 2,
+  "created": "2026-09-14T16:59:37Z",
+  "updated": "2026-09-14T18:03:47Z",
+  "deviations": [
+    {
+      "id": "d1",
+      "what": "The retry after the approved fix is a third fed line ('./run-model.sh' typed again), not something Enter triggers: handle_failure runs the proposal and ends the turn; /retry is a separate slash verb",
+      "task_ref": "t5",
+      "reason": "c22 and t5's criterion read as if approving the fix re-runs the failed command; nvsh does not, and the driver records what nvsh actually does",
+      "affects": [],
+      "origin": "llm",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 1
+    },
+    {
+      "id": "d2",
+      "what": "scripts/demo-render.sh passes --no-window instead of the literal --window off in t6's criterion",
+      "task_ref": "t6",
+      "reason": "svg-term-cli's yargs parser rejects '--window off' (unknown flag 'off'); --no-window is the same negation",
+      "affects": [],
+      "origin": "llm",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 2
+    },
+    {
+      "id": "d3",
+      "what": "demo-record.py uses the nvsh on PATH only when its --version matches the imported package, else a sandbox wrapper running this interpreter -m nvsh",
+      "task_ref": "t5",
+      "reason": "the dev box carries an older uv-tool nvsh (0.10.0, no demo adapter); preferring PATH blindly would record a broken demo",
+      "affects": [],
+      "origin": "llm",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 3
+    },
+    {
+      "id": "d4",
+      "what": "Every accepted line in the recording is echoed twice (nvsh$ ./run-model.shnvsh$ ./run-model.sh): readline.bash's Enter macro runs a bind -x callback before accept-line and bash redraws prompt+buffer after it",
+      "task_ref": "t8",
+      "reason": "real nvsh behaviour surfaced by the recording; cosmetically reads as a bug in a README demo; fixing it is a readline.bash change outside any planned task",
+      "affects": [],
+      "origin": "llm",
+      "status": "approved",
+      "classification": "needs-follow-up",
+      "seq": 4
+    },
+    {
+      "id": "d5",
+      "what": "The demo reply gains a {platform} placeholder filled from the request context's platform kind (e.g. dgx-spark, jetson), so each device's recording visibly names its real platform",
+      "task_ref": "t8",
+      "reason": "c10/h8 expect the recording to show the device's platform, but the panel header only shows harness/path/warm and the platform block is never printed; without this the three recordings would be visually identical and h8 unverifiable",
+      "affects": [],
+      "origin": "llm",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 5
+    }
+  ],
+  "evidence": [
+    {
+      "id": "e1",
+      "obligation_ref": "o1",
+      "test_ref": "tests/test_agent_demo.py::test_a_failing_command_with_demo_as_default_streams_through_the_daemon",
+      "behavior_text": "asserts the panel shows the diagnosis and chmod proposal, that Daemon._build_agent set backend demo, and every audit entry has target.backend demo",
+      "contract_text": "nvsh --agent demo on a failing command opens the panel through the daemon and the audit log records target demo",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "test ran green at the named commit; the daemon-path assertion relies on _backend_name being set only in Daemon._build_agent (lapse l3)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-14T17:15:39Z",
+        "commit": "9fbebba"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 6
+    },
+    {
+      "id": "e2",
+      "obligation_ref": "o2",
+      "test_ref": "tests/test_agent_demo.py::test_probe_never_returns_demo_even_with_everything_on_path tests/test_agent_demo.py::test_choose_never_auto_picks_demo tests/test_agent_demo.py::test_installed_demo_is_true_without_ever_calling_which",
+      "behavior_text": "probe() with which=lambda _: '/bin/true' omits demo; choose() never picks demo; installed('demo') is True with a which that raises",
+      "contract_text": "demo excluded from probe and setup auto-pick; installed() special-cases binary=None",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "three tests green at the named commit",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-14T17:15:39Z",
+        "commit": "9fbebba"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 7
+    },
+    {
+      "id": "e3",
+      "obligation_ref": "o3",
+      "test_ref": "tests/test_demo_default_refused.py (19 tests)",
+      "behavior_text": "agent use demo and setup --agent demo exit 1 with the fixture hint in text and --json; doctor --json fails default_target_not_demo when config.toml default is demo; forced demo, @demo and an alias still resolve",
+      "contract_text": "nvsh agent use demo and nvsh setup --agent demo raise CliError(1); doctor reports a failed check for a hand-set demo default; demo remains selectable per request",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "19 tests green at the named commit",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-14T17:15:39Z",
+        "commit": "9fbebba"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 8
+    },
+    {
+      "id": "e4",
+      "obligation_ref": "o4",
+      "test_ref": "tests/test_demo_casts.py::test_cast_shows_the_scenario_end_to_end[spark|thor|orin]",
+      "behavior_text": "asserts 'Permission denied', 'chmod +x ./run-model.sh', 'model loaded, 42 tokens/s' and '(scripted demo reply)' in each committed cast",
+      "contract_text": "the committed casts show permission denied, a chmod +x proposal, Enter, and a successful retry, on all three devices",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "3 parametrized tests green at the named commit against casts recorded on the real devices on 2026-09-14",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-14T17:15:39Z",
+        "commit": "9fbebba"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 9
+    },
+    {
+      "id": "e5",
+      "obligation_ref": "o5",
+      "test_ref": "tests/test_demo_casts.py::test_cast_names_the_device_platform[spark|thor|orin]",
+      "behavior_text": "asserts 'Exit 126 on this dgx-spark box' (spark) and 'jetson' (thor, orin) in the cast text",
+      "contract_text": "each cast's panel shows the platform kind nvsh doctor --json reports on that device",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "tests green; doctor --json on thor and orin reported 'detected platform: jetson' and locally 'dgx-spark' during t8",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-14T17:15:39Z",
+        "commit": "9fbebba"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 10
+    },
+    {
+      "id": "e6",
+      "obligation_ref": "o5",
+      "test_ref": "manual: ssh thor/orin 'python3 -m nvsh doctor --json' during t8",
+      "behavior_text": "the platform_detected check message on each device matched the word in its recording",
+      "contract_text": "h8: platform in the cast matches nvsh doctor --json on that device",
+      "evidence_type": "manual",
+      "strength": "fidelity",
+      "strength_basis": "observed by the main agent on 2026-09-14; not a repeatable test",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-14T17:15:39Z",
+        "commit": "9fbebba"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 11
+    },
+    {
+      "id": "e7",
+      "obligation_ref": "o6",
+      "test_ref": "tests/test_demo_casts.py::test_cast_carries_the_current_panel_legend tests/test_demo_casts.py::test_cast_carries_the_current_fixture_wording",
+      "behavior_text": "asserts panel.LEGEND and every fixture text line (placeholders substituted) appear in each committed cast",
+      "contract_text": "a test compares the committed casts against the current panel rendering so drift is detected",
+      "evidence_type": "automated",
+      "strength": "sensitivity",
+      "strength_basis": "the assertions are derived from the live panel.LEGEND and demo_fixture.json, so a change to either fails the tests without editing them",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-14T17:15:39Z",
+        "commit": "9fbebba"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 12
+    },
+    {
+      "id": "e8",
+      "obligation_ref": "o7",
+      "test_ref": "tests/test_demo_record.py::test_demo_record_end_to_end tests/test_demo_record.py::test_sandbox_env_redirects_every_xdg_variable_into_the_sandbox",
+      "behavior_text": "runs the driver twice for real, hashes the operator dirs before/after, asserts the sandbox is removed and no daemon remains",
+      "contract_text": "running the driver leaves HOME's .bashrc, XDG config, data and runtime dirs untouched",
+      "evidence_type": "integration",
+      "strength": "execution",
+      "strength_basis": "end-to-end test green at the named commit on the dev box",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-14T17:15:39Z",
+        "commit": "9fbebba"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 13
+    },
+    {
+      "id": "e9",
+      "obligation_ref": "o8",
+      "test_ref": "tests/test_demo_record.py::test_demo_record_end_to_end tests/test_demo_record.py::test_scrub_rules_leave_a_token_inside_a_protected_word_alone tests/test_demo_casts.py::test_cast_is_scrubbed_of_hosts_and_lan_addresses",
+      "behavior_text": "asserts every applied scrub token is absent from both casts, that a token inside the platform kind is kept, and that no IPv4 or user@host survives in the committed casts",
+      "contract_text": "grep of the committed casts for the recording hosts' hostnames, usernames and LAN IPs returns nothing",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "tests green; the first Spark recording was rewritten to dgx-operator by the user-name rule and re-recorded after the fix",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-14T17:15:39Z",
+        "commit": "9fbebba"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 14
+    },
+    {
+      "id": "e10",
+      "obligation_ref": "o9",
+      "test_ref": "tests/test_demo_record.py::test_demo_record_end_to_end",
+      "behavior_text": "runs the driver twice back to back and asserts both casts contain the panel legend",
+      "contract_text": "two driver runs 10 seconds apart on the same device both record a panel",
+      "evidence_type": "integration",
+      "strength": "execution",
+      "strength_basis": "green at the named commit",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-14T17:15:39Z",
+        "commit": "9fbebba"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 15
+    },
+    {
+      "id": "e11",
+      "obligation_ref": "o10",
+      "test_ref": "tests/test_record_cast.py::test_two_feed_runs_are_identical_except_stamps tests/test_record_cast.py::test_record_sets_window_size_via_tiocswinsz tests/test_record_cast.py::test_record_timestamp_and_clean_env",
+      "behavior_text": "asserts the concatenated output streams of two runs are equal, the child sees the requested stty size, and --timestamp/--clean-env are honoured",
+      "contract_text": "two consecutive driver runs on the same device differ only in the per-line time stamps and the header timestamp field",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "green; pty chunk boundaries vary between runs so equality is on the concatenated stream, not per line (delta filed)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-14T17:15:39Z",
+        "commit": "9fbebba"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 16
+    },
+    {
+      "id": "e12",
+      "obligation_ref": "o11",
+      "test_ref": "tests/test_agent_registry.py::test_adapters_registry_has_all_nine_names tests/test_cli_agent.py::test_agent_list_json_reports_all_adapters scripts/harness-smoke.py --stage config",
+      "behavior_text": "asserts nine adapter names including demo; harness-smoke config stage passes with 9 prompt paths",
+      "contract_text": "grep finds no adapter count of eight; tests assert nine names including demo and pass; harness-smoke passes",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "green at the named commit",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-14T17:15:39Z",
+        "commit": "9fbebba"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 17
+    },
+    {
+      "id": "e13",
+      "obligation_ref": "o12",
+      "test_ref": "tests/test_docs_architecture.py (8 tests) + markdownlint-cli2 README.md",
+      "behavior_text": "H2 order unchanged, no ](docs/ links, no ~/ paths; markdownlint 0 errors",
+      "contract_text": "tests/test_docs_architecture.py passes unchanged and markdownlint reports no MD033 on README.md",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "green at the named commit",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-14T17:15:39Z",
+        "commit": "9fbebba"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 18
+    },
+    {
+      "id": "e14",
+      "obligation_ref": "o13",
+      "test_ref": "tests/test_demo_render.py (5 tests) + manual: scripts/demo-render.sh on all three casts",
+      "behavior_text": "script exists, is executable, pins svg-term-cli@2.1.1, documents the agg fallback, exits non-zero without args; the three SVGs in docs/demos were produced by it and viewed in Chrome",
+      "contract_text": "the render command turns the committed .cast into the committed image with no manual step in between",
+      "evidence_type": "integration",
+      "strength": "fidelity",
+      "strength_basis": "the render itself needs npx and network so it is a manual step observed on 2026-09-14, not a CI test",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-14T17:15:39Z",
+        "commit": "9fbebba"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 19
+    },
+    {
+      "id": "e15",
+      "obligation_ref": "o14",
+      "test_ref": "manual: view the PR on github.com and the TestPyPI build",
+      "behavior_text": "not yet observed: the PR is not open at filing time",
+      "contract_text": "the README renders the image on github.com and on PyPI's project page",
+      "evidence_type": "manual",
+      "strength": "coverage",
+      "strength_basis": "unchecked: nothing has run; to be observed once the PR and TestPyPI build exist",
+      "outcome": "fail",
+      "run": {
+        "timestamp": "2026-09-14T17:15:39Z",
+        "commit": "9fbebba"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 20
+    },
+    {
+      "id": "e16",
+      "obligation_ref": "o15",
+      "test_ref": "manual: t8 performed the loop from this box for thor and orin (git archive + ssh run, scp, demo-render.sh)",
+      "behavior_text": "the documented loop was executed once per device by the main agent before the doc was written; not re-executed from the doc by an uninvolved maintainer",
+      "contract_text": "a maintainer following docs/demos/README.md on the Spark with no prior context reproduces the committed cast",
+      "evidence_type": "manual",
+      "strength": "fidelity",
+      "strength_basis": "observed by the same agent that wrote the loop; the 'no prior context' condition is unmet",
+      "outcome": "fail",
+      "run": {
+        "timestamp": "2026-09-14T17:15:39Z",
+        "commit": "9fbebba"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 21
+    },
+    {
+      "id": "e17",
+      "obligation_ref": "o14",
+      "test_ref": "manual: raw.githubusercontent.com/agentculture/nvsh/feat/readme-demo-recording/docs/demos/demo-spark.svg viewed in Chrome; curl -sI shows content-type image/svg+xml",
+      "behavior_text": "GitHub's raw host serves the committed SVG as an image and it animates in the browser; the README embed on the PR branch shows only alt text because its URL targets main, so the in-README rendering is checkable only after merge",
+      "contract_text": "the README renders the image on github.com and on PyPI's project page",
+      "evidence_type": "observation",
+      "strength": "fidelity",
+      "strength_basis": "observed by the main agent on PR #14 before merge; the asset renders, the embed does not yet resolve",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-14T17:25:00Z",
+        "commit": "66ebbfe"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 22
+    },
+    {
+      "id": "e18",
+      "obligation_ref": "o1",
+      "test_ref": "tests/test_agent_demo.py::test_script_token_is_command_position_only_and_shell_safe tests/test_agent_demo.py::test_proposal_never_carries_shell_metacharacters tests/test_agent_demo.py::test_wrongly_shaped_fixture_is_an_error_event_not_a_crash",
+      "behavior_text": "the chmod proposal only ever names a shell-safe command-position token; malformed fixtures become one ERROR event",
+      "contract_text": "demo replays a committed fixture through the real daemon and client path (c4)",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "PR #14 review (Qodo 1, 6, 10) fixed in b627bb1; tests green in the full suite (1858 passed)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-14T17:40:00Z",
+        "commit": "b627bb1"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 23
+    },
+    {
+      "id": "e19",
+      "obligation_ref": "o3",
+      "test_ref": "tests/test_demo_default_refused.py::test_setup_refuses_an_alias_whose_target_is_demo tests/test_demo_default_refused.py::test_keep_existing_default_never_keeps_demo",
+      "behavior_text": "setup refuses a --agent resolving to demo via alias/@/model form before any side effect, and never keeps a stored demo default",
+      "contract_text": "demo is refused as a persisted default (c23)",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "PR #14 review (Qodo 2) fixed in b627bb1; tests green",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-14T17:40:00Z",
+        "commit": "b627bb1"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 24
+    },
+    {
+      "id": "e20",
+      "obligation_ref": "o8",
+      "test_ref": "tests/test_record_cast.py::test_scrub_survives_a_token_split_across_pty_reads tests/test_record_cast.py::test_record_timestamp_and_clean_env",
+      "behavior_text": "a scrub token split across two pty reads is still replaced; --clean-env drops NVSH_*/XDG_* unless passed with --env",
+      "contract_text": "hostname, user and LAN IPs never reach the cast (c7)",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "PR #14 review (Qodo 3, 5, 8) fixed in b627bb1; tests green",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-14T17:40:00Z",
+        "commit": "b627bb1"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 25
+    },
+    {
+      "id": "e21",
+      "obligation_ref": "o1",
+      "test_ref": "tests/test_agent_demo.py::test_an_option_looking_token_or_fixture_default_is_refused tests/test_demo_casts.py::test_cast_shows_the_scenario_end_to_end",
+      "behavior_text": "an option-looking token or fixture default is refused; the proposal is 'chmod +x -- <script>' and the re-recorded casts on all three devices show it running",
+      "contract_text": "demo replays a committed fixture through the real daemon and client path (c4); the recorded scenario proposes chmod +x (c22)",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "SonarCloud S6350 on PR #14 fixed in 3eb21ee; devices re-recorded in 9ad7ee9; full suite 1859 passed",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-14T18:05:00Z",
+        "commit": "9ad7ee9"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 26
+    }
+  ],
+  "deltas": [
+    {
+      "id": "b1",
+      "kind": "amended",
+      "behavior_text": "Approving the fix does not re-run the failed command; the retry is a third typed line (or /retry). c22's 'Enter ... and the retried command succeeds' holds only with that extra keystroke, which the driver and the recordings include",
+      "caused_by": [
+        "c22"
+      ],
+      "evidence_refs": [
+        "e4"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    },
+    {
+      "id": "b2",
+      "kind": "amended",
+      "behavior_text": "Two recordings are identical as a byte stream, not line by line: pty read boundaries vary between runs, so the determinism test compares the concatenated output",
+      "caused_by": [
+        "c11"
+      ],
+      "evidence_refs": [
+        "e11"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    },
+    {
+      "id": "b3",
+      "kind": "added",
+      "behavior_text": "The demo reply names the detected platform kind via a {platform} placeholder (dgx-spark on the Spark, jetson on Thor and Orin) so each device's recording is visibly its own",
+      "caused_by": [
+        "c10"
+      ],
+      "evidence_refs": [
+        "e5"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    },
+    {
+      "id": "b4",
+      "kind": "added",
+      "behavior_text": "The recorder's scrub keeps a user or host token that sits inside the detected platform kind (spark inside dgx-spark) and says so on stderr",
+      "caused_by": [
+        "c7"
+      ],
+      "evidence_refs": [
+        "e9"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    },
+    {
+      "id": "b5",
+      "kind": "amended",
+      "behavior_text": "scripts/demo-render.sh passes --no-window (svg-term-cli rejects '--window off')",
+      "caused_by": [
+        "c5"
+      ],
+      "evidence_refs": [
+        "e14"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    },
+    {
+      "id": "b6",
+      "kind": "amended",
+      "behavior_text": "Review hardening (PR #14, Qodo 1-10): the demo's script token is command-position only and shell-safe; fixtures are shape-checked and [agents.demo] fixture is a valid key; setup refuses demo through aliases and never keeps a demo default; the recorder scrubs across pty read boundaries and --clean-env drops NVSH_*/XDG_*; the driver pins XDG_CACHE_HOME and NVSH_NO_DAEMON and refuses to write an incomplete cast",
+      "caused_by": [
+        "c4"
+      ],
+      "evidence_refs": [
+        "e18",
+        "e19",
+        "e20"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    },
+    {
+      "id": "b7",
+      "kind": "amended",
+      "behavior_text": "The demo proposal is 'chmod +x -- <script>' (option parsing ended) and both the command-line token and the fixture's default_script pass an allowlist that refuses a leading '-'; no shell quoting is applied. All three recordings were re-recorded on the devices with this command",
+      "caused_by": [
+        "c22"
+      ],
+      "evidence_refs": [
+        "e21"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    }
+  ],
+  "supersessions": []
+}

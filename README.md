@@ -7,6 +7,15 @@ agent you already trust diagnoses it and proposes a fix.
 
 > Works like a shell. Helps when things break. Fixes when you let it.
 
+![nvsh diagnosing a failed command on a DGX Spark](https://raw.githubusercontent.com/agentculture/nvsh/main/docs/demos/demo-spark.svg)
+
+Recorded on a DGX Spark with the scripted `demo` adapter — the diagnosis
+text is a committed fixture, the hook, daemon, panel and approval are
+real; the same session on a
+[Jetson AGX Thor](https://raw.githubusercontent.com/agentculture/nvsh/main/docs/demos/demo-thor.svg)
+and an
+[AGX Orin](https://raw.githubusercontent.com/agentculture/nvsh/main/docs/demos/demo-orin.svg).
+
 ## Install
 
 ```bash
@@ -25,7 +34,7 @@ It never wraps bash and never becomes your login shell.
 | `nvsh setup` | Probes `PATH` for installed harnesses. One hit becomes the default; several hits prompt you once. |
 | `nvsh setup --agent claude` | Picks Claude Code explicitly, no prompt. |
 | `nvsh setup --agent codex` | Picks Codex explicitly, no prompt. |
-| `nvsh agent list` | All eight adapters: `pi`, `qwen`, `qwen-p`, `claude`, `codex`, `agy`, `kiro`, `openai-compat`. |
+| `nvsh agent list` | All nine adapters: `pi`, `qwen`, `qwen-p`, `claude`, `codex`, `agy`, `kiro`, `openai-compat`, `demo`. |
 | `nvsh agent use <name>` | Change the default afterwards. |
 | `nvsh uninstall` | Remove the rc block, hook files, sockets, logs and daemon. |
 | `NVSH_DISABLE=1`, `nvsh off` / `nvsh on` | Kill switches for the current shell. |
@@ -96,6 +105,8 @@ More:
   — the `@target` grammar and the warm session.
 - [CLAUDE.md](https://github.com/agentculture/nvsh/blob/main/CLAUDE.md)
   — contributor conventions.
+- [demos](https://github.com/agentculture/nvsh/blob/main/docs/demos/README.md)
+  — how the recordings above were made, and the re-record loop.
 
 ## License
 

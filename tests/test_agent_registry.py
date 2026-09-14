@@ -2,7 +2,7 @@
 
 Acceptance criteria covered:
 - 'nvsh agent list' reports pi, qwen, qwen-p, claude, codex, agy, kiro,
-  openai-compat with installed status derived from PATH.
+  openai-compat, demo with installed status derived from PATH.
 - Every AdapterSpec carries a 'path' (transport protocol) and 'hosted' flag.
 - choose() picks the configured provider when installed, else falls back to
   openai-compat (always "available", no binary needed) with a reason string
@@ -27,7 +27,17 @@ from nvsh.agent.base import Target
 from nvsh.cli._errors import CliError
 from nvsh.config import Config
 
-_ALL_ADAPTER_NAMES = {"pi", "qwen", "qwen-p", "claude", "codex", "agy", "kiro", "openai-compat"}
+_ALL_ADAPTER_NAMES = {
+    "pi",
+    "qwen",
+    "qwen-p",
+    "claude",
+    "codex",
+    "agy",
+    "kiro",
+    "openai-compat",
+    "demo",
+}
 
 
 def _which_all_missing(_name: str) -> str | None:
@@ -41,7 +51,7 @@ def _which_factory(present: set[str]):
     return _which
 
 
-def test_adapters_registry_has_all_eight_names():
+def test_adapters_registry_has_all_nine_names():
     assert set(registry.ADAPTERS) == _ALL_ADAPTER_NAMES
 
 
@@ -160,7 +170,7 @@ def test_installed_openai_compat_always_true():
     assert registry.installed("openai-compat", which=_which_all_missing) is True
 
 
-def test_available_adapters_reports_all_eight_with_installed_status():
+def test_available_adapters_reports_all_nine_with_installed_status():
     which = _which_factory({"pi", "claude"})
     rows = registry.available_adapters(which=which)
     by_name = {row["name"]: row for row in rows}

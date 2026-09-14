@@ -1,6 +1,6 @@
 """Tests for ``nvsh agent`` — list/use/install (task t10, extended by t5).
 
-t5 covers every one of the eight :data:`nvsh.agent.registry.ADAPTERS` keys
+t5 covers every one of the nine :data:`nvsh.agent.registry.ADAPTERS` keys
 for both ``use`` and ``install``, and routes ``install`` through
 :func:`nvsh.installers.run_install` (so the audit log gets a row) instead of
 an inline ``subprocess.run`` call.
@@ -9,6 +9,7 @@ an inline ``subprocess.run`` call.
 from __future__ import annotations
 
 import json
+import re
 import sys
 
 import pytest
@@ -20,9 +21,9 @@ ADAPTER_NAMES = sorted(registry.ADAPTERS)
 
 #: The subset of ADAPTERS that get an executable npm step (harness_install_step)
 #: when npm is on PATH -- pi (its own dedicated command) plus the four
-#: NPM_PACKAGES entries. agy/kiro/openai-compat have no known installer.
+#: NPM_PACKAGES entries. agy/kiro/openai-compat/demo have no known installer.
 EXECUTABLE_ADAPTER_NAMES = ["pi", "qwen", "qwen-p", "claude", "codex"]
-NO_INSTALLER_ADAPTER_NAMES = ["agy", "kiro", "openai-compat"]
+NO_INSTALLER_ADAPTER_NAMES = ["agy", "kiro", "openai-compat", "demo"]
 
 
 @pytest.fixture(autouse=True)
@@ -56,7 +57,17 @@ def test_agent_list_json_reports_all_adapters(capsys):
     assert rc == 0
     payload = json.loads(capsys.readouterr().out)
     names = {row["name"] for row in payload["adapters"]}
-    assert names == {"pi", "qwen", "qwen-p", "claude", "codex", "agy", "kiro", "openai-compat"}
+    assert names == {
+        "pi",
+        "qwen",
+        "qwen-p",
+        "claude",
+        "codex",
+        "agy",
+        "kiro",
+        "openai-compat",
+        "demo",
+    }
     for row in payload["adapters"]:
         assert "installed" in row
         assert "binary" in row
@@ -179,8 +190,10 @@ def test_agent_use_writes_config(capsys, xdg_home):
     assert cfg.aliases[DEFAULT_ALIAS] == "claude"
 
 
-@pytest.mark.parametrize("name", ADAPTER_NAMES)
+@pytest.mark.parametrize("name", [n for n in ADAPTER_NAMES if n != "demo"])
 def test_agent_use_accepts_every_registered_adapter(capsys, xdg_home, name):
+    """Every adapter but ``demo`` can be the persisted default; ``demo`` is a
+    scripted fixture and is refused (covered by test_demo_default_refused.py)."""
     rc = main(["agent", "use", name, "--json"])
     assert rc == 0
     payload = json.loads(capsys.readouterr().out)
@@ -193,10 +206,23 @@ def test_agent_use_accepts_every_registered_adapter(capsys, xdg_home, name):
     assert cfg.aliases[DEFAULT_ALIAS] == name
 
 
-def test_agent_use_help_lists_all_eight_adapters(capsys):
+def _normalize_wrapped_help(text: str) -> str:
+    """Undo argparse's textwrap line-wrapping (including mid-hyphen breaks).
+
+    argparse's textwrap can break a hyphenated adapter name like
+    ``openai-compat`` across a line (``openai-\\n              compat``), so
+    a naive substring check on the raw help text can miss a name that is
+    plainly listed. Join hyphen line-wraps back together first, then
+    collapse the remaining whitespace to single spaces.
+    """
+    joined = re.sub(r"-\n\s*", "-", text)
+    return " ".join(joined.split())
+
+
+def test_agent_use_help_lists_all_nine_adapters(capsys):
     with pytest.raises(SystemExit):
         main(["agent", "use", "--help"])
-    out = capsys.readouterr().out
+    out = _normalize_wrapped_help(capsys.readouterr().out)
     for name in registry.ADAPTERS:
         assert name in out, name
 
@@ -242,10 +268,10 @@ def test_agent_install_prints_step_from_harness_install_step(capsys, monkeypatch
     assert payload["ran"] is False  # no --yes, no tty in the test runner
 
 
-def test_agent_install_help_lists_all_eight_adapters(capsys):
+def test_agent_install_help_lists_all_nine_adapters(capsys):
     with pytest.raises(SystemExit):
         main(["agent", "install", "--help"])
-    out = capsys.readouterr().out
+    out = _normalize_wrapped_help(capsys.readouterr().out)
     for name in registry.ADAPTERS:
         assert name in out, name
 

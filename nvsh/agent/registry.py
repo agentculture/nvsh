@@ -42,7 +42,37 @@ PI_INSTALL_CMD = "npm install -g @earendil-works/pi-coding-agent"
 
 #: Valid ``AdapterSpec.path`` values -- the wire/transport protocol the
 #: adapter speaks to its backend, independent of ``binary``/``hosted``.
-PATH_VALUES = {"rpc", "stream-json", "app-server", "acp", "http"}
+#: ``fixture`` is the demo adapter's: its "protocol" is a committed JSON
+#: file in the package.
+PATH_VALUES = {"rpc", "stream-json", "app-server", "acp", "http", "fixture"}
+
+#: Adapters :func:`probe` never offers. ``openai-compat`` is excluded
+#: because it is always "installed" and would win every auto-pick; ``demo``
+#: for the same reason and a stronger one -- it answers from a fixture, so
+#: auto-picking it would silently replace the operator's harness with a
+#: canned reply. ``demo`` stays selectable *per request* (``--agent demo``,
+#: ``@demo``, an alias whose target is ``demo``), but ``nvsh agent use
+#: demo`` and ``nvsh setup --agent demo`` refuse to persist it as the
+#: default -- see :data:`DEMO_DEFAULT_MESSAGE` -- because a demo default
+#: would make every ordinary failure replay a canned fixture instead of
+#: calling a real backend.
+PROBE_EXCLUDED = frozenset({"openai-compat", "demo"})
+
+#: Shared by every place that refuses to persist ``demo`` as the default
+#: backend (``nvsh agent use demo``, ``nvsh setup --agent demo``, and
+#: doctor's ``default_target_not_demo`` check): ``demo`` is a scripted
+#: fixture replay (see ``nvsh/agent/demo.py``'s module docstring), not a
+#: real backend, so it must never become what a bare ``--agent`` or the
+#: daemon's warm session resolves to. Per-request use (``--agent demo``,
+#: ``@demo``, an alias pointing at demo) is unaffected -- only persisting
+#: it as the default is refused.
+DEMO_DEFAULT_MESSAGE = (
+    "demo is a scripted fixture (no model, no network); it cannot be the persisted default agent"
+)
+DEMO_DEFAULT_HINT = (
+    "choose a real backend with 'nvsh agent use <name>' (see 'nvsh agent list'); "
+    "run the demo for one request with --agent demo or @demo instead"
+)
 
 
 @dataclass(frozen=True)
@@ -149,6 +179,13 @@ def _make_kiro(config: Config) -> NvshAgent:
     return build("kiro", config.agents.get("kiro", {}))
 
 
+def _make_demo(config: Config) -> NvshAgent:
+    """The fixture-replaying demo adapter (lazy import, see ``_make_qwen``)."""
+    from .demo import DemoAgent
+
+    return DemoAgent(config.agents.get("demo", {}))
+
+
 def _make_openai_compat(config: Config) -> NvshAgent:
     from .openai_compat import OpenAICompatAgent
 
@@ -229,11 +266,23 @@ ADAPTERS: dict[str, AdapterSpec] = {
         hosted=False,
         needs_node=False,
     ),
+    "demo": AdapterSpec(
+        name="demo",
+        binary=None,
+        factory=_make_demo,
+        description="Scripted demo backend; replays a committed fixture (no model, no network).",
+        path="fixture",
+        hosted=False,
+        needs_node=False,
+    ),
 }
 
 
 def installed(name: str, which: WhichFn = shutil.which) -> bool:
-    """Is adapter ``name`` usable right now? ``openai-compat`` always is."""
+    """Is adapter ``name`` usable right now? ``openai-compat`` and ``demo``
+    always are: neither has a binary, so ``which`` is not consulted at all
+    (never with ``None``, which would raise).
+    """
     spec = ADAPTERS[name]
     if spec.binary is None:
         return True
@@ -271,7 +320,7 @@ def _tool_calling(name: str, config: Config) -> bool:
 
 
 def probe(which: WhichFn = shutil.which, config: Config | None = None) -> list[dict]:
-    """Installed adapters (``openai-compat`` excluded), tool-calling first.
+    """Installed adapters (:data:`PROBE_EXCLUDED` left out), tool-calling first.
 
     Each row carries ``name``, ``hosted`` and ``tool_calling``. Rows are
     ordered tool-calling adapters first, then the rest -- within each group,
@@ -298,7 +347,7 @@ def probe(which: WhichFn = shutil.which, config: Config | None = None) -> list[d
     seen_binaries: set[str] = set()
     rows = []
     for name, spec in ADAPTERS.items():
-        if name == "openai-compat" or not installed(name, which):
+        if name in PROBE_EXCLUDED or not installed(name, which):
             continue
         if spec.binary is not None:
             if spec.binary in seen_binaries:

@@ -1,6 +1,6 @@
 [project]
 name = "nvsh"
-version = "0.11.1"
+version = "0.12.0"
 description = "nvsh: an agent-first shell for NVIDIA Jetson, DGX Spark and RTX Spark. Runs your commands like a normal shell; when a command fails, it hands the error and context to an agent (shell -> agent) to diagnose and propose a fix."
 readme = "README.md"
 license = "Apache-2.0"
@@ -28,10 +28,11 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["nvsh"]
-include = ["nvsh/shell/*.bash", "nvsh/agent/pi_ext/*.ts"]
-# The bash integration and the pi approval extension are data, not Python:
-# name them explicitly or hatchling leaves them out of the wheel.
-artifacts = ["nvsh/shell/*.bash", "nvsh/agent/pi_ext/*.ts"]
+include = ["nvsh/shell/*.bash", "nvsh/agent/pi_ext/*.ts", "nvsh/agent/*.json"]
+# The bash integration, the pi approval extension and the demo adapter's
+# fixture are data, not Python: name them explicitly or hatchling leaves
+# them out of the wheel.
+artifacts = ["nvsh/shell/*.bash", "nvsh/agent/pi_ext/*.ts", "nvsh/agent/*.json"]
 
 [dependency-groups]
 dev = [

@@ -1,0 +1,110 @@
+# Build Plan — README demo recording
+
+slug: `readme-demo-recording` · status: `exported` · from frame: `readme-demo-recording`
+
+> nvsh's README opens with a recording of the failure panel in action, re-recorded from one committed script whenever nvsh changes
+
+## Tasks
+
+### t1 — Register a demo adapter that replays a committed fixture through the real daemon and client path
+
+- instruction: Read nvsh/agent/fake.py, registry.py (ADAPTERS, installed, probe, `_tool_calling`) and how `test_timing.py` drives `handle_failure`. Keep dependencies = \[\]. The fixture is JSON so a later scenario edit needs no Python change. Do not touch nvsh/cli or README in this task.
+- covers: c4, h4, c18, h16, c21
+- acceptance:
+  - nvsh/agent/demo.py defines DemoAgent on top of FakeAgent, loading nvsh/agent/`demo_fixture.json` (text deltas + one PROPOSAL chmod +x on the planted script where the script path comes from the request's failing command line)
+  - ADAPTERS\['demo'\] exists with binary=None, hosted=False, `tool_calling`=True; registry.installed('demo') returns True without calling shutil.which(None); nvsh agent list --json shows demo installed=true
+  - registry.probe() never returns demo (same exclusion as openai-compat), covered by a test with which=lambda `_`: '/bin/true'
+  - nvsh --agent demo on a failing command opens the panel through the daemon and the audit log records target demo (tests/`test_agent_demo.py`)
+
+### t2 — Refuse demo as a persisted default in agent use, setup --agent and doctor
+
+- instruction: Files: nvsh/cli/`_commands`/agent.py, nvsh/cli/`_commands`/setup.py, nvsh/`doctor_checks.py`, nvsh/explain/catalog.py if help text changes, tests. Raise CliError(1, ..., remediation) per nvsh/cli/`_errors.py`; never sys.exit.
+- depends on: t1
+- covers: c23, h21
+- acceptance:
+  - nvsh agent use demo exits 1 with a hint naming demo a scripted fixture; nvsh setup --agent demo exits 1 with the same hint; both in --json too
+  - nvsh doctor --json includes a check '`default_target_not_demo`' that fails when config.toml has \[aliases\].default = "demo"
+  - --agent demo, @demo and an alias pointing at demo still work per request (test)
+
+### t3 — Replace every hard-coded 'eight adapters' with nine across README, the four harness prompt files, harness-selection doc and tests
+
+- instruction: Only the README table row at README.md:28 changes in README in this task; the demo embed is a later task. Keep the four prompt files saying the same thing (no-drift rule in CLAUDE.md).
+- depends on: t1
+- covers: c19, h17
+- acceptance:
+  - grep -rn 'eight' README.md CLAUDE.md QWEN.md AGENTS.override.md AGENTS.colleague.md .pi/SYSTEM.md docs/harness-selection.md tests/ finds no adapter count
+  - tests/`test_agent_registry.py` and tests/`test_cli_agent.py` assert nine names including demo and pass; uv run python scripts/harness-smoke.py --stage config --require config passes
+
+### t4 — Make scripts/record-cast.py deterministic enough to diff two runs
+
+- instruction: Stdlib only. Add scripts to the black/isort/flake8 paths in .github/workflows/tests.yml and fix whatever that flags in scripts/\*.py. Do not touch docs/demos in this task.
+- covers: c11, h9
+- acceptance:
+  - record sets the pty window size with TIOCSWINSZ to --cols/--rows before exec (tests read it back with stty size inside the child)
+  - --timestamp N pins the header timestamp; --clean-env starts the child from an allowlist (PATH, TERM, HOME, LANG, `XDG_`\*, `NVSH_`\*, COLUMNS, LINES) plus --env overrides
+  - tests/`test_record_cast.py`: two --feed runs of 'printf hi\r|1' with --timestamp 0 produce casts identical except the per-line stamps; black/isort/flake8 pass on scripts/record-cast.py and tests.yml lints scripts/ too
+
+### t5 — Sandboxed re-record driver that produces one scrubbed .cast per device
+
+- instruction: Reuse nvsh.shell.render to render hook files into the sandbox `XDG_DATA_HOME`. Read tests/`test_setup_timing.py`:60 for the --rcfile pattern and tests/`test_timing.py` for the env set. The daemon must start inside the sandbox `XDG_RUNTIME_DIR` and be stopped on exit. The failing command is './run-model.sh' (exit 126, permission denied). Run end-to-end on the dev box as the test.
+- depends on: t1, t4
+- covers: c3, h3, c7, h7, c20, h18
+- acceptance:
+  - scripts/demo-record.py <out.cast> builds a temp HOME with `XDG_CONFIG_HOME`/`XDG_DATA_HOME`/`XDG_STATE_HOME`/`XDG_RUNTIME_DIR` under it, writes config.toml with \[aliases\].default pointing at demo, renders the hook files there, writes an rcfile that sources hook.bash and readline.bash with PS1='nvsh$ ', plants ./run-model.sh without +x, and drives record-cast.py --feed: run it, wait for the panel, Enter, wait for the retry
+  - the driver passes --replace-from with the host's hostname, user and every non-loopback IPv4 from 'hostname -I'; grep of the cast for those returns nothing (test on this box)
+  - the operator's real .bashrc, config, data and runtime dirs are byte-identical before and after (test computes a hash)
+  - two runs 10 s apart both contain the panel (fresh `XDG_STATE_HOME` defeats rate.json)
+
+### t6 — Render a committed .cast into the README image
+
+- instruction: npx is on PATH here (node 24). Pin the svg-term-cli version. If svg-term cannot be installed offline, say so in the task result rather than vendoring node modules.
+- covers: c5, h5, c6, h6
+- acceptance:
+  - scripts/demo-render.sh <in.cast> <out.svg> runs npx --yes svg-term-cli with pinned version, --window off, fixed width/height, and writes docs/demos/NAME.svg; documented agg fallback line producing .gif
+  - pyproject.toml dependencies stays \[\] and nothing under nvsh/ imports a renderer; scripts/scan-secrets.py still passes with the svg tracked
+  - rendering docs/demos/spark-cuda-oom.cast on this box produces an svg that opens in a browser (manual check recorded in the PR)
+
+### t7 — Document the three-command re-record loop in docs/demos/README.md
+
+- instruction: Keep the existing sections about the two verification casts unchanged. Use $HOME or relative paths, never ~/.
+- depends on: t5, t6
+- covers: c13, h11, c15, h13
+- acceptance:
+  - docs/demos/README.md gains a 'Re-record' section: one command per device (ssh to the device, then scripts/demo-record.py), one scp, one render command; the committed outputs are listed by name
+  - the section says re-recording is a manual maintainer step with no CI regeneration, and names the demo adapter as a scripted fixture
+  - markdownlint-cli2 passes; no ~/ path in the file
+
+### t8 — Record the scenario on Spark, Thor and Orin, render, and commit casts plus images
+
+- instruction: Run from this box: ssh thor and ssh orin are set up (see docs/verification.md for the machines). Install the branch on each device with uv tool install from the checkout or pipx; run scripts/demo-record.py there; scp the cast back; render here. This task is run by the main agent, not a worktree subagent, because it needs the devices.
+- depends on: t5, t6, t2
+- covers: c10, h8, c22, h20, c16, h14
+- acceptance:
+  - docs/demos/demo-spark.cast, demo-thor.cast, demo-orin.cast exist, each showing 'permission denied', the chmod +x proposal, Enter, and a successful retry, with the panel header platform matching nvsh doctor --json on that device
+  - docs/demos/demo-spark.svg (and thor/orin) rendered from those casts by scripts/demo-render.sh
+  - tests/`test_demo_casts.py` asserts every committed demo-\*.cast contains the scenario markers and the current panel LEGEND string, so a panel change fails the test until re-recorded
+  - spark-cuda-oom.cast and orin-missing-package.cast are byte-identical to main
+
+### t9 — Embed the Spark recording in README with a scripted-demo caption and links to Thor and Orin
+
+- instruction: README is the PyPI long description: absolute URLs only, no new H2. Keep the announcement-first voice.
+- depends on: t8, t3
+- covers: c1, h1, c2, h2, c12, h10, c14, h12, c17, h15, h19
+- acceptance:
+  - README.md line after the tagline blockquote is an image link to <https://raw.githubusercontent.com/agentculture/nvsh/main/docs/demos/demo-spark.svg> with alt text, followed by one sentence: recorded on a DGX Spark with the scripted demo adapter; Jetson AGX Thor and Orin recordings linked by absolute URL
+  - tests/`test_docs_architecture.py` passes unchanged; markdownlint-cli2 README.md passes (no MD033)
+  - the image renders on the PR's GitHub page and on the TestPyPI project page (checked by eye, noted in the PR description)
+
+### t10 — Version bump, CHANGELOG entry, and PR
+
+- instruction: Minor bump: a new adapter is a feature. Use the version-bump skill.
+- depends on: t9, t7
+- acceptance:
+  - pyproject.toml bumped to 0.12.0 with a CHANGELOG entry naming the demo adapter, the driver, the renderer, the three recordings and the README embed
+  - uv run pytest -n auto, black/isort/flake8/bandit, markdownlint, scan-secrets, harness-smoke all green locally; PR opened via the cicd skill
+
+## Risks
+
+- [unknown_nonblocking] Rendered SVG/GIF size per re-record of three devices is unbounded; no size budget or external hosting decision
+- [unknown_nonblocking] Animated SVG playback in the GitHub mobile app and on PyPI is unverified until the PR and TestPyPI page are viewed (task t9)
+- [unknown_nonblocking] t8 needs ssh access to thor and orin and a network path to install the branch there; an air-gapped device needs the wheel copied by hand (task t8)

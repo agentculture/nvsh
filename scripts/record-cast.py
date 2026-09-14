@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Record and replay a terminal session as an asciicast v2 file.
 
-A ~200-line stdlib stand-in for ``asciinema``, which is not installed on any
+A stdlib stand-in for ``asciinema``, which is not installed on any
 of the three verification machines (Jetson AGX Orin, Jetson Thor, DGX Spark)
 and cannot be installed on an air-gapped box. The output is the real
 asciicast v2 format, so ``asciinema play`` reads these files too; ``play``
@@ -25,17 +25,27 @@ this script's argv.
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import os
 import pty
 import select
 import shlex
 import signal
+import struct
 import sys
 import termios
 import time
 import tty
 from pathlib import Path
+
+#: Env vars (or, with a trailing ``*``, prefixes) a ``--clean-env`` child
+#: inherits from the recording operator's environment. Everything else is
+#: dropped -- including every ``NVSH_*`` behaviour knob and every ``XDG_*``
+#: directory, which a caller that wants them passes explicitly with
+#: ``--env`` -- so two runs on different machines/shells start from the
+#: same env.
+_CLEAN_ENV_ALLOW = ("PATH", "TERM", "HOME", "LANG", "LC_*", "COLUMNS", "LINES")
 
 #: What ``--feed`` accepts as key escapes.
 _KEY_ESCAPES = (
@@ -76,12 +86,78 @@ def _scrub(data: bytes, pairs: list[tuple[bytes, bytes]]) -> bytes:
     return data
 
 
+def _holdback(data: bytes, pairs: list[tuple[bytes, bytes]]) -> int:
+    """How many trailing bytes of *data* could be the start of a token.
+
+    A pty read can split a hostname or an address across two chunks, and a
+    per-chunk replace would then miss it. Any suffix of *data* that is a
+    proper prefix of some token is held back and re-scanned together with
+    the next chunk (see :class:`_Scrubber`).
+    """
+    longest = 0
+    for old, _new in pairs:
+        for size in range(min(len(old) - 1, len(data)), 0, -1):
+            if data.endswith(old[:size]):
+                longest = max(longest, size)
+                break
+    return longest
+
+
+class _Scrubber:
+    """Streaming ``OLD=NEW`` replacement that survives chunk boundaries."""
+
+    def __init__(self, pairs: list[tuple[bytes, bytes]]) -> None:
+        self._pairs = pairs
+        self._pending = b""
+
+    def feed(self, chunk: bytes) -> bytes:
+        if not self._pairs:
+            return chunk
+        data = _scrub(self._pending + chunk, self._pairs)
+        keep = _holdback(data, self._pairs)
+        self._pending = data[len(data) - keep :] if keep else b""
+        return data[: len(data) - keep] if keep else data
+
+    def flush(self) -> bytes:
+        data, self._pending = _scrub(self._pending, self._pairs), b""
+        return data
+
+
 def _window_size(default_cols: int, default_rows: int) -> tuple[int, int]:
     try:
         size = os.get_terminal_size(sys.stdin.fileno())
     except (OSError, ValueError):
         return default_cols, default_rows
     return size.columns or default_cols, size.lines or default_rows
+
+
+def _set_window_size(fd: int, cols: int, rows: int) -> None:
+    """Set the pty's window size via ``TIOCSWINSZ`` (``struct winsize``)."""
+    packed = struct.pack("HHHH", rows, cols, 0, 0)
+    fcntl.ioctl(fd, termios.TIOCSWINSZ, packed)
+
+
+def _build_env(base: dict[str, str], clean: bool, overrides: list[str] | None) -> dict[str, str]:
+    """The child's environment: ``base`` (or an allowlisted subset of it if
+    ``clean`` is set) plus ``NAME=VALUE`` items from ``overrides``."""
+    if clean:
+        env = {}
+        for key, value in base.items():
+            for allowed in _CLEAN_ENV_ALLOW:
+                if allowed.endswith("*"):
+                    if key.startswith(allowed[:-1]):
+                        env[key] = value
+                        break
+                elif key == allowed:
+                    env[key] = value
+                    break
+    else:
+        env = dict(base)
+    for item in overrides or []:
+        key, _, value = item.partition("=")
+        if key:
+            env[key] = value
+    return env
 
 
 def record(args: argparse.Namespace) -> int:
@@ -91,20 +167,17 @@ def record(args: argparse.Namespace) -> int:
         cols, rows = _window_size(cols, rows)
     replacements = _load_replacements(Path(args.replace_from) if args.replace_from else None)
 
-    env = dict(os.environ)
+    env = _build_env(dict(os.environ), args.clean_env, args.env)
     env["COLUMNS"] = str(cols)
     env["LINES"] = str(rows)
-    for item in args.env or []:
-        key, _, value = item.partition("=")
-        if key:
-            env[key] = value
 
     out = Path(args.out).open("w", encoding="utf-8")
+    header_timestamp = int(time.time()) if args.timestamp is None else args.timestamp
     header = {
         "version": 2,
         "width": cols,
         "height": rows,
-        "timestamp": int(time.time()),
+        "timestamp": header_timestamp,
         "env": {"SHELL": env.get("SHELL", ""), "TERM": env.get("TERM", "")},
     }
     if args.title:
@@ -115,6 +188,12 @@ def record(args: argparse.Namespace) -> int:
     pid, fd = pty.fork()
     if pid == 0:  # child
         try:
+            # The pty's controlling tty is already fd 0/1/2 in the child
+            # (that's what pty.fork() sets up); set its window size before
+            # exec so the child's first read of it (``stty size``, a shell
+            # prompt redraw, curses init) sees --cols/--rows rather than
+            # whatever size the pty was allocated with.
+            _set_window_size(0, cols, rows)
             os.execvpe(args.command[0], list(args.command), env)
         except OSError:
             pass
@@ -127,8 +206,12 @@ def record(args: argparse.Namespace) -> int:
         saved = termios.tcgetattr(sys.stdin.fileno())
         tty.setraw(sys.stdin.fileno())
 
-    def emit(data: bytes) -> None:
-        data = _scrub(data, replacements)
+    scrubber = _Scrubber(replacements)
+
+    def emit(data: bytes, *, final: bool = False) -> None:
+        data = scrubber.feed(data) + (scrubber.flush() if final else b"")
+        if not data:
+            return
         stamp = round(time.monotonic() - started, 6)
         out.write(json.dumps([stamp, "o", data.decode("utf-8", "replace")]) + "\n")
         out.flush()
@@ -176,6 +259,7 @@ def record(args: argparse.Namespace) -> int:
             os.waitpid(pid, 0)
         except OSError:
             pass
+        emit(b"", final=True)  # the scrubber's held-back tail
         out.close()
     return 0
 
@@ -215,10 +299,22 @@ def build_parser() -> argparse.ArgumentParser:
     rec.add_argument("out", help="output .cast path")
     rec.add_argument("--feed", action="append", help="scripted step: 'keys|seconds'")
     rec.add_argument("--env", action="append", help="extra child env: NAME=VALUE")
+    rec.add_argument(
+        "--clean-env",
+        action="store_true",
+        help="start the child from an allowlist (PATH, TERM, HOME, LANG, "
+        "XDG_*, NVSH_*, COLUMNS, LINES) instead of the full parent env",
+    )
     rec.add_argument("--replace-from", help="file of OLD=NEW scrub rules")
     rec.add_argument("--title", help="asciicast title")
     rec.add_argument("--cols", type=int, default=100)
     rec.add_argument("--rows", type=int, default=34)
+    rec.add_argument(
+        "--timestamp",
+        type=int,
+        default=None,
+        help="pin the header's unix timestamp (default: current time)",
+    )
     rec.add_argument("--settle", type=float, default=1.5, help="seconds to pump before/after")
     rec.add_argument("--key-delay", type=float, default=0.03, help="seconds between keystrokes")
     rec.add_argument("command", nargs="*", help="command to run (after --)")
