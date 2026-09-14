@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import os
+import platform
 import shutil
 import subprocess  # nosec B404 - fixed argv below, no shell=True
 import sys
@@ -26,12 +27,51 @@ from pathlib import Path
 
 from nvsh import __version__
 from nvsh import config as nvsh_config
-from nvsh import installers, rcfile, runtimedir
+from nvsh import doctor_checks, installers, rcfile, runtimedir
 from nvsh.agent import registry
 from nvsh.cli._errors import EXIT_USER_ERROR, CliError
 from nvsh.cli._output import emit_diagnostic, emit_result
 from nvsh.shell import render
 from nvsh.triggers import TriggerEvent, decide
+
+
+#: The reachability call, injected so tests can stub it and so a hung or
+#: exception-raising probe never takes ``setup`` down with it. Bound at
+#: 2 seconds: ``setup`` must not hang on a dead endpoint (``check_agent_reachable``
+#: takes a ``timeout`` -- the ``base_url``/openai-compat probe -- and a
+#: separate ``cli_timeout`` for the ``<binary> --version``/auth probes used
+#: by the CLI harnesses; both are pinned to 2.0s here).
+def _check_agent_reachable(cfg) -> dict:
+    return doctor_checks.check_agent_reachable(cfg, timeout=2.0, cli_timeout=2.0)
+
+
+#: Exact text nvsh shows when the operator's pick is a hosted backend --
+#: substituted with the picked name, no backticks in the real output.
+_HOSTED_LINE = (
+    "{name} is hosted: on a failure the redacted command, output and "
+    "device context leave this machine"
+)
+
+#: Exact warning text for an untested platform/shell combination (issue #11).
+_MACOS_ZSH_WARNING = "nvsh is not tested on macOS/zsh yet (see issue #11)"
+
+
+def _agent_reachable(cfg) -> dict:
+    """Call :func:`_check_agent_reachable` for the pick, never letting a
+    failure or exception change ``setup``'s own outcome."""
+    try:
+        check = _check_agent_reachable(cfg)
+        return {"passed": bool(check.get("passed")), "message": str(check.get("message", ""))}
+    except Exception as exc:  # noqa: BLE001 - a probe must never fail setup
+        return {"passed": False, "message": str(exc)}
+
+
+def _setup_warnings() -> list[str]:
+    """macOS/zsh is untested (issue #11); warn without changing behavior."""
+    is_darwin = platform.system() == "Darwin"
+    is_zsh = os.environ.get("SHELL", "").endswith("zsh")
+    return [_MACOS_ZSH_WARNING] if (is_darwin or is_zsh) else []
+
 
 #: Help text every ``--json`` flag in this verb group shares.
 _JSON_HELP = "Emit structured JSON."
@@ -340,13 +380,19 @@ def _setup_lines(result: dict, install_rows: list[dict], offer_only: bool) -> li
         f"default target: {result['agent']['target']}",
         f"daemon stopped: {result['daemon_stopped']}",
     ]
+    if result["agent"]["hosted"]:
+        lines.append(_HOSTED_LINE.format(name=result["agent"]["name"]))
     key_hint = result["agent"]["key_hint"]
     if key_hint:
         lines.append(f"  {key_hint}")
+    reachable = result["agent"]["reachable"]
+    lines.append(f"agent reachable: {reachable['passed']} ({reachable['message']})")
     for row in install_rows:
         lines.append(f"{row['tool']} ({row['purpose']}): {row['command']}")
         if not offer_only:
             lines.append(f"  ran: {row['ran']} (returncode: {row['returncode']})")
+    for warning in result["warnings"]:
+        lines.append(f"warning: {warning}")
     return lines
 
 
@@ -415,9 +461,14 @@ def cmd_setup(args: argparse.Namespace, prompt=None) -> int:
             "key_hint": _agent_key_hint(chosen, cfg),
             "default_alias_written": default_alias_written,
             "probe": probe_rows,
+            "hosted": (
+                bool(registry.ADAPTERS[chosen].hosted) if chosen in registry.ADAPTERS else False
+            ),
+            "reachable": _agent_reachable(cfg),
         },
         "installs": install_rows,
         "daemon_stopped": daemon_stopped,
+        "warnings": _setup_warnings(),
     }
 
     if bool(getattr(args, "json", False)):

@@ -50,6 +50,13 @@ def _isolated_env(tmp_path, monkeypatch):
         "_prompt_input",
         lambda prompt: pytest.fail("setup must not read stdin"),
     )
+    # Reachability is a real subprocess/network probe; default it to a
+    # passing stub so tests that don't care about it stay fast and hermetic.
+    monkeypatch.setattr(
+        setup_mod,
+        "_check_agent_reachable",
+        lambda cfg: {"passed": True, "message": "stub: reachable"},
+    )
 
 
 def _run(argv):
@@ -858,3 +865,143 @@ def test_setup_stops_the_daemon_after_writing_the_default(tmp_path, monkeypatch)
     assert code == 0, err
     assert json.loads(out)["daemon_stopped"] is False
     assert len(stopped) == 1
+
+
+# --------------------------------------------------------------------------
+# setup: hosted line, reachability report, macOS/zsh warning (task t7)
+# --------------------------------------------------------------------------
+
+
+def test_setup_hosted_line_present_for_hosted_pick(tmp_path, monkeypatch):
+    """A hosted pick (claude) gets the data-egress disclosure line in text mode."""
+    rc = _rc(tmp_path)
+    rc.write_text(UBUNTU_RC)
+    monkeypatch.setattr(
+        "nvsh.cli._commands.setup.shutil.which", _which_factory({"claude", "uv", "tmux"})
+    )
+    code, out, err = _run(["setup", "--rc", str(rc), "--no-install"])
+    assert code == 0, err
+    assert (
+        "claude is hosted: on a failure the redacted command, output and "
+        "device context leave this machine"
+    ) in out
+
+
+def test_setup_no_hosted_line_for_non_hosted_pick(tmp_path, monkeypatch):
+    """pi is not hosted: no data-egress line for it."""
+    rc = _rc(tmp_path)
+    rc.write_text(UBUNTU_RC)
+    monkeypatch.setattr("nvsh.cli._commands.setup.shutil.which", _which_factory({"pi"}))
+    code, out, err = _run(["setup", "--rc", str(rc), "--no-install"])
+    assert code == 0, err
+    assert "is hosted" not in out
+
+
+def test_setup_json_carries_hosted_flag(tmp_path, monkeypatch):
+    rc = _rc(tmp_path)
+    rc.write_text(UBUNTU_RC)
+    monkeypatch.setattr(
+        "nvsh.cli._commands.setup.shutil.which", _which_factory({"claude", "uv", "tmux"})
+    )
+    code, out, err = _run(["setup", "--rc", str(rc), "--json", "--no-install"])
+    assert code == 0, err
+    payload = json.loads(out)
+    assert payload["agent"]["hosted"] is True
+
+    monkeypatch.setattr("nvsh.cli._commands.setup.shutil.which", _which_factory({"pi"}))
+    code, out, err = _run(["setup", "--rc", str(rc), "--json", "--no-install"])
+    assert code == 0, err
+    payload = json.loads(out)
+    assert payload["agent"]["hosted"] is False
+
+
+def test_setup_reports_agent_reachable_without_changing_exit_code(tmp_path, monkeypatch):
+    rc = _rc(tmp_path)
+    rc.write_text(UBUNTU_RC)
+    monkeypatch.setattr(
+        "nvsh.cli._commands.setup.shutil.which", _which_factory({"claude", "uv", "tmux"})
+    )
+    setup_mod = _setup_mod()
+    monkeypatch.setattr(
+        setup_mod,
+        "_check_agent_reachable",
+        lambda cfg: {"passed": False, "message": "'claude' is not on PATH (claude-missing)"},
+    )
+    code, out, err = _run(["setup", "--rc", str(rc), "--json", "--no-install"])
+    assert code == 0, err
+    payload = json.loads(out)
+    assert payload["agent"]["reachable"] == {
+        "passed": False,
+        "message": "'claude' is not on PATH (claude-missing)",
+    }
+
+
+def test_setup_reachable_call_wraps_exceptions(tmp_path, monkeypatch):
+    """A reachability probe that raises never fails or hangs setup."""
+    rc = _rc(tmp_path)
+    rc.write_text(UBUNTU_RC)
+    monkeypatch.setattr(
+        "nvsh.cli._commands.setup.shutil.which", _which_factory({"claude", "uv", "tmux"})
+    )
+    setup_mod = _setup_mod()
+
+    def _boom(cfg):
+        raise RuntimeError("probe exploded")
+
+    monkeypatch.setattr(setup_mod, "_check_agent_reachable", _boom)
+    code, out, err = _run(["setup", "--rc", str(rc), "--json", "--no-install"])
+    assert code == 0, err
+    payload = json.loads(out)
+    assert payload["agent"]["reachable"] == {"passed": False, "message": "probe exploded"}
+
+
+def test_setup_darwin_warning(tmp_path, monkeypatch):
+    rc = _rc(tmp_path)
+    rc.write_text(UBUNTU_RC)
+    monkeypatch.setattr(
+        "nvsh.cli._commands.setup.shutil.which", _which_factory({"claude", "uv", "tmux"})
+    )
+    monkeypatch.setenv("SHELL", "/bin/bash")
+    monkeypatch.setattr("nvsh.cli._commands.setup.platform.system", lambda: "Darwin")
+    code, out, err = _run(["setup", "--rc", str(rc), "--json", "--no-install"])
+    assert code == 0, err
+    payload = json.loads(out)
+    assert "nvsh is not tested on macOS/zsh yet (see issue #11)" in payload["warnings"]
+    assert payload["rc"] == str(rc)  # still the bash rc
+
+    code, out, err = _run(["setup", "--rc", str(rc), "--no-install"])
+    assert code == 0, err
+    assert "warning: nvsh is not tested on macOS/zsh yet (see issue #11)" in out
+
+
+def test_setup_zsh_warning(tmp_path, monkeypatch):
+    rc = _rc(tmp_path)
+    rc.write_text(UBUNTU_RC)
+    monkeypatch.setattr(
+        "nvsh.cli._commands.setup.shutil.which", _which_factory({"claude", "uv", "tmux"})
+    )
+    monkeypatch.setenv("SHELL", "/usr/bin/zsh")
+    monkeypatch.setattr("nvsh.cli._commands.setup.platform.system", lambda: "Linux")
+    code, out, err = _run(["setup", "--rc", str(rc), "--json", "--no-install"])
+    assert code == 0, err
+    payload = json.loads(out)
+    assert "nvsh is not tested on macOS/zsh yet (see issue #11)" in payload["warnings"]
+    assert payload["rc"] == str(rc)  # still the bash rc
+
+
+def test_setup_no_warning_on_linux_bash(tmp_path, monkeypatch):
+    rc = _rc(tmp_path)
+    rc.write_text(UBUNTU_RC)
+    monkeypatch.setattr(
+        "nvsh.cli._commands.setup.shutil.which", _which_factory({"claude", "uv", "tmux"})
+    )
+    monkeypatch.setenv("SHELL", "/bin/bash")
+    monkeypatch.setattr("nvsh.cli._commands.setup.platform.system", lambda: "Linux")
+    code, out, err = _run(["setup", "--rc", str(rc), "--json", "--no-install"])
+    assert code == 0, err
+    payload = json.loads(out)
+    assert payload["warnings"] == []
+
+    code, out, err = _run(["setup", "--rc", str(rc), "--no-install"])
+    assert code == 0, err
+    assert "warning:" not in out
