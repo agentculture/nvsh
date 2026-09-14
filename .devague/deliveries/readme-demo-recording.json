@@ -2,7 +2,7 @@
   "plan_slug": "readme-demo-recording",
   "schema_version": 2,
   "created": "2026-09-14T16:59:37Z",
-  "updated": "2026-09-14T17:22:19Z",
+  "updated": "2026-09-14T17:36:49Z",
   "deviations": [
     {
       "id": "d1",
@@ -383,6 +383,63 @@
       "status": "proposed",
       "superseded": false,
       "seq": 22
+    },
+    {
+      "id": "e18",
+      "obligation_ref": "o1",
+      "test_ref": "tests/test_agent_demo.py::test_script_token_is_command_position_only_and_shell_safe tests/test_agent_demo.py::test_proposal_never_carries_shell_metacharacters tests/test_agent_demo.py::test_wrongly_shaped_fixture_is_an_error_event_not_a_crash",
+      "behavior_text": "the chmod proposal only ever names a shell-safe command-position token; malformed fixtures become one ERROR event",
+      "contract_text": "demo replays a committed fixture through the real daemon and client path (c4)",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "PR #14 review (Qodo 1, 6, 10) fixed in b627bb1; tests green in the full suite (1858 passed)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-14T17:40:00Z",
+        "commit": "b627bb1"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 23
+    },
+    {
+      "id": "e19",
+      "obligation_ref": "o3",
+      "test_ref": "tests/test_demo_default_refused.py::test_setup_refuses_an_alias_whose_target_is_demo tests/test_demo_default_refused.py::test_keep_existing_default_never_keeps_demo",
+      "behavior_text": "setup refuses a --agent resolving to demo via alias/@/model form before any side effect, and never keeps a stored demo default",
+      "contract_text": "demo is refused as a persisted default (c23)",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "PR #14 review (Qodo 2) fixed in b627bb1; tests green",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-14T17:40:00Z",
+        "commit": "b627bb1"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 24
+    },
+    {
+      "id": "e20",
+      "obligation_ref": "o8",
+      "test_ref": "tests/test_record_cast.py::test_scrub_survives_a_token_split_across_pty_reads tests/test_record_cast.py::test_record_timestamp_and_clean_env",
+      "behavior_text": "a scrub token split across two pty reads is still replaced; --clean-env drops NVSH_*/XDG_* unless passed with --env",
+      "contract_text": "hostname, user and LAN IPs never reach the cast (c7)",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "PR #14 review (Qodo 3, 5, 8) fixed in b627bb1; tests green",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-14T17:40:00Z",
+        "commit": "b627bb1"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 25
     }
   ],
   "deltas": [
@@ -451,6 +508,22 @@
       ],
       "evidence_refs": [
         "e14"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    },
+    {
+      "id": "b6",
+      "kind": "amended",
+      "behavior_text": "Review hardening (PR #14, Qodo 1-10): the demo's script token is command-position only and shell-safe; fixtures are shape-checked and [agents.demo] fixture is a valid key; setup refuses demo through aliases and never keeps a demo default; the recorder scrubs across pty read boundaries and --clean-env drops NVSH_*/XDG_*; the driver pins XDG_CACHE_HOME and NVSH_NO_DAEMON and refuses to write an incomplete cast",
+      "caused_by": [
+        "c4"
+      ],
+      "evidence_refs": [
+        "e18",
+        "e19",
+        "e20"
       ],
       "origin": "llm",
       "status": "proposed",

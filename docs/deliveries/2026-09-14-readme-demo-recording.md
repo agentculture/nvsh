@@ -63,6 +63,7 @@ approved ground truth.
 - `d5` — the demo reply gains a `{platform}` placeholder filled from the context's platform kind, so each device's recording names its real platform (`dgx-spark`, `jetson`). Without it the three recordings were visually identical and `h8` unverifiable.
 - The first Spark recording read "dgx-operator": the user-name scrub rewrote `spark` inside `dgx-spark`. `scrub_rules` now keeps a token that sits inside the detected platform kind; the Spark cast was re-recorded. No deviation record; captured here and as delta `b4`.
 - `t2`'s literal contract broke `tests/test_cli_agent.py::test_agent_use_accepts_every_registered_adapter[demo]` (a file t2 was told not to edit); the main agent excluded `demo` from that parametrization at merge, since refusing demo is the confirmed claim `c23`.
+- PR #14 review (Qodo, ten inline findings, all FIX): fixed in `b627bb1` and recorded as delta `b6` with evidence `e18`–`e20`. The demo's script token is command-position only and shell-safe (a `./model.sh;id` token can no longer ride into the approved `chmod`), fixtures are shape-checked and `[agents.demo] fixture` is a valid config key, setup refuses demo through an alias or `@`/model form and never keeps a stored demo default, the recorder scrubs across pty read boundaries and `--clean-env` drops `NVSH_*`/`XDG_*`, and the driver pins `XDG_CACHE_HOME`/`NVSH_NO_DAEMON` and refuses to write an incomplete cast. Six SonarCloud code smells fixed in `11b4c92`/`9ef269f` (the first of those was pushed ungated: lapse `l6`).
 - `tests/test_cli_setup.py::test_hook_prints_refresh_notice_once_per_session` leaks one `nvsh.daemon` per full test run (pre-existing); five leaked daemons were stopped and the leak filed as plan risk `r4` (follow_up).
 
 ## Drift From Plan
@@ -82,12 +83,12 @@ the task contract; the `dN` in parentheses is the proposed record that covers it
 
 ## Evidence
 
-- tests: `uv run pytest -n auto -q` at `13b2edf` — 1836 passed, 5 skipped (pre-existing live-harness skips)
+- tests: `uv run pytest -n auto -q` at `13b2edf` — 1836 passed, 5 skipped; at `b627bb1` (after review fixes) — 1858 passed, 5 skipped (pre-existing live-harness skips)
 - tests: `tests/test_agent_demo.py` (25), `tests/test_demo_default_refused.py` (19), `tests/test_demo_casts.py` (18), `tests/test_demo_record.py` (11, incl. the two-run end-to-end), `tests/test_record_cast.py` (3), `tests/test_demo_render.py` (5), `tests/test_docs_architecture.py` (8) — all pass at `9fbebba`
 - lint: `black --check`, `isort --check-only`, `flake8` on `nvsh tests scripts`; `bandit -c pyproject.toml -r nvsh`; `markdownlint-cli2 "**/*.md"` (repo excludes); `scripts/scan-secrets.py` (320 files clean); `teken cli doctor . --strict` (pass); `scripts/harness-smoke.py --stage config --require config` (6 passed) — all green at `123a9ce`
 - devices: `python3 -m nvsh doctor --json` on thor and orin reported `detected platform: jetson`; local `nvsh doctor --json` reported `dgx-spark`; no daemon or sandbox left on either device after recording
 - render: `docs/demos/demo-spark.svg` viewed in Chrome from a local server — one line per command, animation plays
-- commits: `ff52eda..13b2edf` (24 commits on `feat/readme-demo-recording`)
+- commits: `ff52eda..b627bb1` (30 commits on `feat/readme-demo-recording`)
 - devague: obligations `o1`–`o15`, evidence `e1`–`e16`, deltas `b1`–`b5`, deviations `d1`–`d5`, lapses `l1`–`l5`, risks `r1`–`r4`
 - PRs / issues: [#14](https://github.com/agentculture/nvsh/pull/14) — lint, harness-smoke, version-check and GitGuardian green at open; `raw.githubusercontent.com` serves the branch SVG as `image/svg+xml` and it animates in Chrome (evidence `e17`); the README embed targets `main`, so on the PR branch it shows alt text until merge; TestPyPI `0.12.0.dev49` renders the README, caption and Thor/Orin links (viewed in Chrome), with the image likewise resolving only after merge
 
