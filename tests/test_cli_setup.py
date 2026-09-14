@@ -517,6 +517,9 @@ def test_hook_prints_refresh_notice_once_per_session(tmp_path, monkeypatch):
     from nvsh import __version__
 
     monkeypatch.setenv("NVSH_HOOK_VERSION", "0.0.1")
+    # The notice is printed by the hook itself; keep the daemon out of it,
+    # or every run auto-starts one in tmp_path that nothing ever stops.
+    monkeypatch.setenv("NVSH_NO_DAEMON", "1")
     argv = [
         "hook",
         "--exit",
