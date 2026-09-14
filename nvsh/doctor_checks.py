@@ -464,7 +464,10 @@ def _default_cli_run(argv: list[str], timeout: float) -> tuple[int, str, str]:
 #: ``--version`` output) so the pattern is anchored at both ends and cannot
 #: backtrack across the input the way a bare ``search()`` over the full text
 #: could.
-_VERSION_TOKEN_RE = re.compile(r"v?(\d+)\.(\d+)\.(\d+)[^\s]*")
+#: The optional suffix must start with a non-digit (``-rc1``, ``+build``,
+#: ``)``), so the third group and the suffix can never compete for the same
+#: characters and the match is linear.
+_VERSION_TOKEN_RE = re.compile(r"v?(\d+)\.(\d+)\.(\d+)(?:[^\d\s]\S*)?")
 
 
 def _parse_cli_version(text: str) -> tuple[int, int, int] | None:
