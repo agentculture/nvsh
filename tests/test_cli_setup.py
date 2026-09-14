@@ -1187,3 +1187,22 @@ def test_setup_non_harness_install_does_not_re_ask_the_pick(tmp_path, monkeypatc
     assert "uv (" in out
     assert len(calls) == 1, calls
     assert _default_alias() == "claude"
+
+
+def test_setup_qwen_only_path_is_a_single_harness_and_never_prompts(tmp_path, monkeypatch):
+    """PR #12 review: ``qwen`` and ``qwen-p`` share one binary, so a Qwen-only
+    ``PATH`` is one harness -- setup must pick ``qwen`` silently, even on a tty,
+    and never save the read-only ``qwen-p`` fallback as the default."""
+    rc = _rc(tmp_path)
+    rc.write_text(UBUNTU_RC)
+    monkeypatch.setattr(
+        "nvsh.cli._commands.setup.shutil.which", _which_factory({"qwen", "node", "uv", "tmux"})
+    )
+    # A terminal is available; the autouse fixture's _prompt_input fails the test if called.
+    monkeypatch.setattr(_setup_mod(), "_is_interactive", lambda: True)
+    code, out, err = _run(["setup", "--rc", str(rc), "--json", "--no-install"])
+    assert code == 0, err
+    payload = json.loads(out)
+    assert [row["name"] for row in payload["agent"]["probe"]] == ["qwen"]
+    assert payload["agent"]["name"] == "qwen"
+    assert _default_alias() == "qwen"
