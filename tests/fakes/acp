@@ -1,0 +1,377 @@
+#!/usr/bin/env python3
+"""A scripted fake ACP agent: JSON-RPC 2.0 over stdio, one object per line.
+
+# recorded-from: qwen 0.23.3
+
+Drives ``nvsh.agent.acp.AcpAgent`` without a real harness installed. The
+default script is the frame sequence recorded from a live ``qwen --acp``
+session on 2026-09-14 (thought chunks, a shell tool call, its result, the
+answer text, and the usage/commands chatter around them), with the recorded
+session id replaced by a fixed fake one and the recorded cwd dropped. The
+``session/request_permission`` request in that script is shaped exactly as
+qwen 0.23.3 sends it -- four options, ``allow_always`` first -- which is
+also, option names aside, how kiro-cli 2.21.4 sends it.
+
+Environment knobs (all optional):
+
+* ``NVSH_TEST_ACP_SCRIPT`` -- JSON array of directives replacing the
+  recorded script. Each directive is one of ``{"update": {...}}`` (a
+  ``session/update`` notification), ``{"permission": {...}}`` (a
+  ``session/request_permission`` request; the fake pauses until the client
+  answers), ``{"error": "text"}`` (fail the prompt and stop) or
+  ``{"raw": {...}}`` (any other frame, verbatim).
+* ``NVSH_TEST_ACP_NO_INIT=1`` -- never answer ``initialize``, so a client's
+  bounded initialize timeout can be exercised.
+* ``NVSH_TEST_ACP_COMMANDS=<path>`` -- append every frame received from the
+  client, one JSON object per line, for a test to assert on.
+* ``NVSH_TEST_ACP_UI_TIMEOUT`` -- seconds to wait for a permission answer
+  before failing the prompt (default 10), so a broken client fails the test
+  quickly instead of hanging the suite.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+import threading
+
+SESSION_ID = "acp-fake-session-0001"
+
+#: What ``session/new`` reports: modes and config options as qwen 0.23.3
+#: advertises them (a client must be able to pick 'plan' and reject the
+#: bypass modes), plus the two config options an operator's model/effort
+#: setting is applied through.
+SESSION_RESULT = {
+    "sessionId": SESSION_ID,
+    "modes": {
+        "currentModeId": "auto",
+        "availableModes": [
+            {"id": "plan", "name": "Plan", "description": "Analyze only"},
+            {"id": "default", "name": "Default", "description": "Require approval"},
+            {"id": "auto-edit", "name": "Auto Edit", "description": "Auto-approve edits"},
+            {"id": "auto", "name": "Auto", "description": "Auto-approve safe actions"},
+            {"id": "yolo", "name": "YOLO", "description": "Auto-approve everything"},
+        ],
+    },
+    "models": {
+        "currentModelId": "worker(openai)",
+        "availableModels": [{"modelId": "worker(openai)", "name": "worker"}],
+    },
+    "configOptions": [
+        {
+            "id": "model",
+            "name": "Model",
+            "type": "select",
+            "currentValue": "worker(openai)",
+            "options": [
+                {"value": "worker(openai)", "name": "worker"},
+                {"value": "associate(openai)", "name": "associate"},
+            ],
+        },
+        {
+            "id": "reasoning_effort",
+            "name": "Reasoning effort",
+            "type": "select",
+            "currentValue": "default",
+            "options": [
+                {"value": "default", "name": "Default"},
+                {"value": "high", "name": "High"},
+            ],
+        },
+    ],
+}
+
+TOOL_CALL_ID = "chatcmpl-tool-9c9469454de8"
+
+#: The recorded turn, directive by directive.
+RECORDED_SCRIPT = [
+    {
+        "update": {
+            "sessionUpdate": "available_commands_update",
+            "availableCommands": [{"name": "status", "description": "show version info"}],
+        }
+    },
+    {"update": {"sessionUpdate": "agent_thought_chunk", "content": {"type": "text", "text": "The"}}},
+    {
+        "update": {
+            "sessionUpdate": "agent_thought_chunk",
+            "content": {"type": "text", "text": " user wants to know how many CPU cores"},
+        }
+    },
+    {
+        "update": {
+            "sessionUpdate": "agent_thought_chunk",
+            "content": {"type": "text", "text": " the machine has. I'll use a shell command.\n"},
+        }
+    },
+    {
+        "update": {
+            "sessionUpdate": "tool_call",
+            "toolCallId": TOOL_CALL_ID,
+            "status": "pending",
+            "title": "Shell",
+            "content": [],
+            "locations": [],
+            "kind": "execute",
+            "rawInput": {},
+            "_meta": {"toolName": "run_shell_command", "provenance": "builtin"},
+        }
+    },
+    {"update": {"sessionUpdate": "usage_update", "used": 24928, "size": 262144}},
+    {
+        "permission": {
+            "toolCall": {
+                "toolCallId": TOOL_CALL_ID,
+                "status": "pending",
+                "title": "nproc (Count CPU cores with nproc)",
+                "kind": "execute",
+                "rawInput": {"command": "nproc", "description": "Count CPU cores with nproc"},
+                "_meta": {"toolName": "run_shell_command"},
+            },
+            "options": [
+                {
+                    "optionId": "proceed_always_project",
+                    "name": "Always Allow in project: nproc",
+                    "kind": "allow_always",
+                },
+                {
+                    "optionId": "proceed_always_user",
+                    "name": "Always Allow for user: nproc",
+                    "kind": "allow_always",
+                },
+                {"optionId": "proceed_once", "name": "Allow", "kind": "allow_once"},
+                {"optionId": "cancel", "name": "Reject", "kind": "reject_once"},
+            ],
+        }
+    },
+    {
+        "update": {
+            "sessionUpdate": "tool_call_update",
+            "toolCallId": TOOL_CALL_ID,
+            "status": "completed",
+            "content": [
+                {
+                    "type": "content",
+                    "content": {"type": "text", "text": "Command: nproc\nOutput: 20\nExit Code: 0"},
+                }
+            ],
+        }
+    },
+    {
+        "raw": {
+            "jsonrpc": "2.0",
+            "id": 4242,
+            "method": "craft/drainMidTurnQueue",
+            "params": {"sessionId": SESSION_ID},
+        }
+    },
+    {
+        "update": {
+            "sessionUpdate": "agent_thought_chunk",
+            "content": {"type": "text", "text": "The machine has 20 CPU cores.\n"},
+        }
+    },
+    {
+        "update": {
+            "sessionUpdate": "agent_message_chunk",
+            "content": {"type": "text", "text": "This machine has **"},
+        }
+    },
+    {
+        "update": {
+            "sessionUpdate": "agent_message_chunk",
+            "content": {"type": "text", "text": "20 CPU cores**."},
+        }
+    },
+    {"update": {"sessionUpdate": "usage_update", "used": 25058, "size": 262144}},
+]
+
+
+def emit(obj):
+    sys.stdout.write(json.dumps(obj) + "\n")
+    sys.stdout.flush()
+
+
+def record(frame):
+    path = os.environ.get("NVSH_TEST_ACP_COMMANDS")
+    if not path:
+        return
+    with open(path, "a", encoding="utf-8") as handle:
+        handle.write(json.dumps(frame) + "\n")
+
+
+def result(request_id, payload):
+    emit({"jsonrpc": "2.0", "id": request_id, "result": payload})
+
+
+class Fake:
+    """One scripted session: state machine over the client's frames."""
+
+    def __init__(self, script):
+        self.script = list(script)
+        self.prompt_id = None
+        self.permission_id = 0
+        self.pending_permission = None
+        self.watchdog = None
+        self.ui_timeout = float(os.environ.get("NVSH_TEST_ACP_UI_TIMEOUT", "10"))
+
+    # -- script ---------------------------------------------------------
+
+    def play(self):
+        """Emit directives until the script ends or a permission pauses it."""
+        while self.script:
+            directive = self.script.pop(0)
+            if "update" in directive:
+                emit(
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "session/update",
+                        "params": {"sessionId": SESSION_ID, "update": directive["update"]},
+                    }
+                )
+                continue
+            if "raw" in directive:
+                emit(directive["raw"])
+                continue
+            if "error" in directive:
+                emit(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": self.prompt_id,
+                        "error": {"code": -32603, "message": directive["error"]},
+                    }
+                )
+                self.prompt_id = None
+                return
+            if "permission" in directive:
+                self.ask_permission(directive["permission"])
+                return
+        self.finish()
+
+    def finish(self):
+        if self.prompt_id is not None:
+            result(self.prompt_id, {"stopReason": "end_turn"})
+            self.prompt_id = None
+
+    def ask_permission(self, params):
+        self.permission_id += 1
+        self.pending_permission = self.permission_id
+        payload = dict(params)
+        payload["sessionId"] = SESSION_ID
+        emit(
+            {
+                "jsonrpc": "2.0",
+                "id": self.pending_permission,
+                "method": "session/request_permission",
+                "params": payload,
+            }
+        )
+        self.arm_watchdog()
+
+    def arm_watchdog(self):
+        """Fail the prompt if nobody answers -- a hung client must not hang CI."""
+        if self.watchdog is not None:
+            self.watchdog.cancel()
+        timer = threading.Timer(self.ui_timeout, self.give_up)
+        timer.daemon = True
+        timer.start()
+        self.watchdog = timer
+
+    def give_up(self):
+        emit(
+            {
+                "jsonrpc": "2.0",
+                "id": self.prompt_id,
+                "error": {
+                    "code": -32000,
+                    "message": f"no permission answer within {self.ui_timeout:g}s",
+                },
+            }
+        )
+        os._exit(0)
+
+    # -- frames ---------------------------------------------------------
+
+    def handle(self, frame):
+        record(frame)
+        method = frame.get("method")
+        request_id = frame.get("id")
+
+        if method is None:
+            self.handle_response(frame)
+            return
+        if method == "initialize":
+            if os.environ.get("NVSH_TEST_ACP_NO_INIT") == "1":
+                return
+            result(
+                request_id,
+                {
+                    "protocolVersion": 1,
+                    "agentInfo": {"name": "fake-acp", "version": "0.23.3"},
+                    "agentCapabilities": {"loadSession": True},
+                },
+            )
+            return
+        if method == "session/new":
+            result(request_id, SESSION_RESULT)
+            return
+        if method == "session/resume":
+            result(request_id, {"modes": SESSION_RESULT["modes"]})
+            return
+        if method == "session/set_mode":
+            result(request_id, {})
+            return
+        if method == "session/set_config_option":
+            result(request_id, {"configOptions": SESSION_RESULT["configOptions"]})
+            return
+        if method == "session/prompt":
+            self.prompt_id = request_id
+            self.play()
+            return
+        if method == "session/cancel":
+            if self.prompt_id is not None:
+                result(self.prompt_id, {"stopReason": "cancelled"})
+                self.prompt_id = None
+            return
+        if request_id is not None:
+            emit(
+                {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "error": {"code": -32601, "message": "method not found"},
+                }
+            )
+
+    def handle_response(self, frame):
+        """The client answered something -- only permissions resume a script."""
+        if self.pending_permission is None or frame.get("id") != self.pending_permission:
+            return
+        self.pending_permission = None
+        if self.watchdog is not None:
+            self.watchdog.cancel()
+            self.watchdog = None
+        self.play()
+
+
+def main():
+    raw_script = os.environ.get("NVSH_TEST_ACP_SCRIPT")
+    script = json.loads(raw_script) if raw_script else RECORDED_SCRIPT
+    fake = Fake(script)
+    while True:
+        line = sys.stdin.readline()
+        if not line:
+            return
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            frame = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(frame, dict):
+            fake.handle(frame)
+
+
+if __name__ == "__main__":
+    main()
