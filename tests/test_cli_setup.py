@@ -36,6 +36,21 @@ def _isolated_env(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "run"))
     monkeypatch.delenv("NVSH_HOOK_VERSION", raising=False)
 
+    from nvsh.cli._commands import setup as setup_mod
+
+    # `setup` now stops the daemon after writing a new default, and
+    # `uninstall` always does: point the resolved entrypoint at /bin/true so
+    # no test spawns a real `nvsh daemon stop` (or, once `shutil.which` is
+    # faked, whatever sys.argv[0] happens to be under pytest).
+    monkeypatch.setattr(setup_mod.render, "resolve_nvsh_bin", lambda: "/bin/true")
+    # No test reads stdin: a tty is opted into explicitly, per test.
+    monkeypatch.setattr(setup_mod, "_is_interactive", lambda: False)
+    monkeypatch.setattr(
+        setup_mod,
+        "_prompt_input",
+        lambda prompt: pytest.fail("setup must not read stdin"),
+    )
+
 
 def _run(argv):
     out, err = io.StringIO(), io.StringIO()
@@ -155,7 +170,7 @@ def test_setup_never_overwrites_agent_provider_when_falling_back(tmp_path, monke
 
     which = _which_factory(set())  # nothing on PATH -- pi falls back to openai-compat
     monkeypatch.setattr("nvsh.cli._commands.setup.shutil.which", which)
-    monkeypatch.setattr(registry, "choose", lambda cfg: ("openai-compat", "fallback"))
+    monkeypatch.setattr(registry, "choose", lambda cfg, *a, **k: ("openai-compat", "fallback"))
 
     code, out, err = _run(["setup", "--rc", str(rc), "--json", "--no-install"])
     assert code == 0, err
@@ -196,6 +211,10 @@ def test_setup_json_lists_install_offers_and_runs_nothing(tmp_path, monkeypatch)
     assert code == 0, err
     payload = json.loads(out)
     assert "installs" in payload
+    # Nothing is on PATH, so the probe is empty and the pick is the
+    # openai-compat fallback: the offers stay unscoped, which is the only
+    # way an operator can bootstrap a harness on a bare machine.
+    assert payload["agent"]["probe"] == []
     names = {item["tool"] for item in payload["installs"]}
     assert names == {"pi", "node", "uv", "tmux"}
     for item in payload["installs"]:
@@ -519,7 +538,8 @@ def test_hook_prints_refresh_notice_once_per_session(tmp_path, monkeypatch):
 def test_setup_agent_choice_documents_the_key_file_for_openai_compat(tmp_path, monkeypatch):
     from nvsh.agent import registry
 
-    monkeypatch.setattr(registry, "choose", lambda cfg: ("openai-compat", "fallback"))
+    monkeypatch.setattr(registry, "probe", lambda *a, **k: [])
+    monkeypatch.setattr(registry, "choose", lambda cfg, *a, **k: ("openai-compat", "fallback"))
     rc = _rc(tmp_path)
     rc.write_text(UBUNTU_RC)
     code, out, err = _run(["setup", "--rc", str(rc), "--no-install"])
@@ -530,7 +550,8 @@ def test_setup_agent_choice_documents_the_key_file_for_openai_compat(tmp_path, m
 def test_setup_agent_choice_json_carries_the_key_hint(tmp_path, monkeypatch):
     from nvsh.agent import registry
 
-    monkeypatch.setattr(registry, "choose", lambda cfg: ("openai-compat", "fallback"))
+    monkeypatch.setattr(registry, "probe", lambda *a, **k: [])
+    monkeypatch.setattr(registry, "choose", lambda cfg, *a, **k: ("openai-compat", "fallback"))
     rc = _rc(tmp_path)
     rc.write_text(UBUNTU_RC)
     code, out, err = _run(["setup", "--rc", str(rc), "--no-install", "--json"])
@@ -542,7 +563,8 @@ def test_setup_agent_choice_json_carries_the_key_hint(tmp_path, monkeypatch):
 def test_setup_agent_choice_has_no_key_hint_for_other_backends(tmp_path, monkeypatch):
     from nvsh.agent import registry
 
-    monkeypatch.setattr(registry, "choose", lambda cfg: ("pi", "on PATH"))
+    monkeypatch.setattr(registry, "probe", lambda *a, **k: [])
+    monkeypatch.setattr(registry, "choose", lambda cfg, *a, **k: ("pi", "on PATH"))
     rc = _rc(tmp_path)
     rc.write_text(UBUNTU_RC)
     code, out, err = _run(["setup", "--rc", str(rc), "--no-install", "--json"])
@@ -625,3 +647,214 @@ def test_uninstall_reports_a_daemon_that_did_not_stop(tmp_path, monkeypatch):
     code, out, err = _run(["uninstall", "--rc", str(rc), "--json"])
     assert code == 0, err
     assert json.loads(out)["daemon_stopped"] is False
+
+
+# --------------------------------------------------------------------------
+# setup: --agent, the harness probe and the pick (task t4)
+# --------------------------------------------------------------------------
+
+
+def _setup_mod():
+    from nvsh.cli._commands import setup as setup_mod
+
+    return setup_mod
+
+
+def _default_alias():
+    from nvsh.config import DEFAULT_ALIAS, load
+
+    return load().aliases.get(DEFAULT_ALIAS)
+
+
+def test_setup_agent_flag_writes_the_literal_target(tmp_path, monkeypatch):
+    """--agent keeps model and effort: the whole target is the default alias."""
+    rc = _rc(tmp_path)
+    rc.write_text(UBUNTU_RC)
+    monkeypatch.setattr(
+        "nvsh.cli._commands.setup.shutil.which", _which_factory({"codex", "uv", "tmux"})
+    )
+    code, out, err = _run(
+        ["setup", "--rc", str(rc), "--json", "--no-install", "--agent", "codex/gpt-5/high"]
+    )
+    assert code == 0, err
+    payload = json.loads(out)
+    assert payload["agent"]["name"] == "codex"
+    assert payload["agent"]["target"] == "codex/gpt-5/high"
+    assert payload["agent"]["probe"] == []  # --agent skips the probe entirely
+    assert _default_alias() == "codex/gpt-5/high"
+
+
+def test_setup_agent_flag_with_the_binary_missing_is_an_env_error(tmp_path, monkeypatch):
+    """A forced target that isn't installed fails loudly and writes no config."""
+    rc = _rc(tmp_path)
+    rc.write_text(UBUNTU_RC)
+    monkeypatch.setattr("nvsh.cli._commands.setup.shutil.which", _which_factory(set()))
+    code, out, err = _run(
+        ["setup", "--rc", str(rc), "--json", "--no-install", "--agent", "codex/gpt-5/high"]
+    )
+    assert code == 2, (code, out, err)
+    assert "codex" in (out + err)
+    assert _default_alias() is None
+    assert not (tmp_path / "xdg-config" / "nvsh" / "config.toml").exists()
+
+
+def test_setup_one_probed_harness_becomes_the_default_silently(tmp_path, monkeypatch):
+    rc = _rc(tmp_path)
+    rc.write_text(UBUNTU_RC)
+    monkeypatch.setattr(
+        "nvsh.cli._commands.setup.shutil.which", _which_factory({"claude", "uv", "tmux"})
+    )
+    # A terminal is available -- one hit must still not prompt.
+    monkeypatch.setattr(_setup_mod(), "_is_interactive", lambda: True)
+    code, out, err = _run(["setup", "--rc", str(rc), "--json", "--no-install"])
+    assert code == 0, err
+    payload = json.loads(out)
+    assert payload["agent"]["name"] == "claude"
+    assert [row["name"] for row in payload["agent"]["probe"]] == ["claude"]
+    assert _default_alias() == "claude"
+
+
+def test_setup_several_harnesses_prompt_once_on_a_tty(tmp_path, monkeypatch):
+    """The operator picks from the ordered list; plan-mode rows say so."""
+    rc = _rc(tmp_path)
+    rc.write_text(UBUNTU_RC)
+    monkeypatch.setattr(
+        "nvsh.cli._commands.setup.shutil.which",
+        _which_factory({"claude", "qwen", "node", "npm", "uv", "tmux"}),
+    )
+    setup_mod = _setup_mod()
+    monkeypatch.setattr(setup_mod, "_is_interactive", lambda: True)
+    prompts = []
+
+    def fake_prompt(text):
+        prompts.append(text)
+        return "2"
+
+    monkeypatch.setattr(setup_mod, "_prompt_input", fake_prompt)
+
+    code, out, err = _run(["setup", "--rc", str(rc), "--no-install"])
+    assert code == 0, err
+    assert len(prompts) == 1, prompts
+    names = [row for row in prompts[0].splitlines() if ")" in row]
+    assert len(names) >= 2
+    assert "claude" in prompts[0] and "qwen" in prompts[0]
+    # qwen has no approval channel, so it is marked before the pick is made.
+    qwen_line = next(line for line in prompts[0].splitlines() if "qwen" in line)
+    assert setup_mod.PLAN_MODE_LABEL in qwen_line
+    assert _default_alias() == "qwen"
+
+
+def test_setup_yes_does_not_answer_the_harness_pick(tmp_path, monkeypatch):
+    """--yes approves installs only; the operator still chooses the harness."""
+    rc = _rc(tmp_path)
+    rc.write_text(UBUNTU_RC)
+    monkeypatch.setattr(
+        "nvsh.cli._commands.setup.shutil.which",
+        _which_factory({"claude", "qwen", "node", "npm", "uv", "tmux"}),
+    )
+    setup_mod = _setup_mod()
+    monkeypatch.setattr(setup_mod, "_is_interactive", lambda: True)
+    prompts = []
+    monkeypatch.setattr(setup_mod, "_prompt_input", lambda text: prompts.append(text) or "")
+    code, out, err = _run(["setup", "--rc", str(rc), "--yes"])
+    assert code == 0, err
+    assert len(prompts) == 1, "the pick is asked even with --yes"
+    # An empty answer takes the first (tool-calling) row.
+    assert _default_alias() == "claude"
+
+
+def test_setup_without_a_tty_takes_the_first_probe_row(tmp_path, monkeypatch):
+    rc = _rc(tmp_path)
+    rc.write_text(UBUNTU_RC)
+    monkeypatch.setattr(
+        "nvsh.cli._commands.setup.shutil.which",
+        _which_factory({"claude", "qwen", "node", "npm", "uv", "tmux"}),
+    )
+    # _prompt_input is the autouse fixture's pytest.fail, so any prompt fails.
+    code, out, err = _run(["setup", "--rc", str(rc), "--json", "--no-install"])
+    assert code == 0, err
+    payload = json.loads(out)
+    rows = [row["name"] for row in payload["agent"]["probe"]]
+    assert rows[0] == "claude" and "qwen" in rows
+    assert payload["agent"]["name"] == "claude"
+    assert _default_alias() == "claude"
+
+
+def test_setup_re_probes_a_sticky_openai_compat_default(tmp_path, monkeypatch):
+    """The bare-machine fallback must not outlive the machine being bare."""
+    rc = _rc(tmp_path)
+    rc.write_text(UBUNTU_RC)
+    monkeypatch.setattr("nvsh.cli._commands.setup.shutil.which", _which_factory(set()))
+    code, out, err = _run(["setup", "--rc", str(rc), "--json", "--no-install"])
+    assert code == 0, err
+    assert _default_alias() == "openai-compat"
+
+    monkeypatch.setattr(
+        "nvsh.cli._commands.setup.shutil.which", _which_factory({"claude", "uv", "tmux"})
+    )
+    code, out, err = _run(["setup", "--rc", str(rc), "--json", "--no-install"])
+    assert code == 0, err
+    payload = json.loads(out)
+    assert payload["agent"]["name"] == "claude"
+    assert payload["agent"]["default_alias_written"] is True
+    assert _default_alias() == "claude"
+
+
+def test_setup_keeps_an_openai_compat_default_that_has_a_base_url(tmp_path, monkeypatch):
+    """An operator who pointed openai-compat somewhere meant it: keep it."""
+    rc = _rc(tmp_path)
+    rc.write_text(UBUNTU_RC)
+    cfg_dir = tmp_path / "xdg-config" / "nvsh"
+    cfg_dir.mkdir(parents=True)
+    (cfg_dir / "config.toml").write_text(
+        '[aliases]\ndefault = "openai-compat"\n\n'
+        '[agents.openai-compat]\nbase_url = "http://localhost:8000/v1"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "nvsh.cli._commands.setup.shutil.which", _which_factory({"claude", "uv", "tmux"})
+    )
+    code, out, err = _run(["setup", "--rc", str(rc), "--json", "--no-install"])
+    assert code == 0, err
+    payload = json.loads(out)
+    assert payload["agent"]["default_alias_written"] is False
+    assert _default_alias() == "openai-compat"
+
+
+def test_setup_install_offers_are_scoped_to_the_pick(tmp_path, monkeypatch):
+    """With only claude on PATH there is no pi row and no key hint."""
+    rc = _rc(tmp_path)
+    rc.write_text(UBUNTU_RC)
+    monkeypatch.setattr(
+        "nvsh.cli._commands.setup.shutil.which", _which_factory({"claude", "apt-get", "snap"})
+    )
+    code, out, err = _run(["setup", "--rc", str(rc), "--json", "--no-install"])
+    assert code == 0, err
+    payload = json.loads(out)
+    names = {item["tool"] for item in payload["installs"]}
+    assert "pi" not in names
+    assert names == {"uv", "tmux"}
+    assert payload["agent"]["key_hint"] is None
+
+
+def test_setup_stops_the_daemon_after_writing_the_default(tmp_path, monkeypatch):
+    """A warm daemon holds the previous default's session, so it has to go."""
+    rc = _rc(tmp_path)
+    rc.write_text(UBUNTU_RC)
+    monkeypatch.setattr(
+        "nvsh.cli._commands.setup.shutil.which", _which_factory({"claude", "uv", "tmux"})
+    )
+    stopped = []
+    monkeypatch.setattr(
+        _setup_mod(), "_stop_daemon", lambda nvsh_bin: stopped.append(nvsh_bin) or True
+    )
+    code, out, err = _run(["setup", "--rc", str(rc), "--json", "--no-install"])
+    assert code == 0, err
+    assert json.loads(out)["daemon_stopped"] is True
+    assert len(stopped) == 1
+
+    # A second, no-op setup changes no default, so it leaves the daemon alone.
+    code, out, err = _run(["setup", "--rc", str(rc), "--json", "--no-install"])
+    assert code == 0, err
+    assert json.loads(out)["daemon_stopped"] is False
+    assert len(stopped) == 1
