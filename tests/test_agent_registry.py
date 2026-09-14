@@ -67,7 +67,8 @@ def test_qwen_switched_to_acp_path():
 
 def test_every_adapter_spec_carries_path_and_hosted():
     for name, spec in registry.ADAPTERS.items():
-        assert isinstance(spec.path, str) and spec.path, name
+        assert isinstance(spec.path, str), name
+        assert spec.path, name
         assert spec.path in registry.PATH_VALUES, (name, spec.path)
         assert isinstance(spec.hosted, bool), name
 
