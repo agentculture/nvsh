@@ -1,0 +1,1497 @@
+{
+  "slug": "first-class-multi-harness-with-aliases",
+  "title": "first-class multi-harness with aliases",
+  "schema_version": 6,
+  "status": "exported",
+  "created": "2026-09-14T03:50:29Z",
+  "updated": "2026-09-14T05:08:03Z",
+  "claims": [
+    {
+      "id": "c1",
+      "kind": "announcement",
+      "text": "nvsh treats agy, claude, codex and qwen as first-class harnesses at Pi's quality bar (thinking, tool calls, approvals, streaming), with a configurable default backend/model/effort, an @backend/model/effort ad-hoc target, and operator-defined model and invocation aliases such as @reviewer and @local",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h1",
+          "text": "A failure on a Jetson with only the default alias configured is answered by the default harness with visible thinking, and '@reviewer' answers from the aliased harness/model/effort, both verified in a hooked shell.",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "Manual check on orin or thor after install; record the panel output in docs/verification.md.",
+      "revisions": []
+    },
+    {
+      "id": "c2",
+      "kind": "assumption",
+      "text": "The Pi quality bar is concrete: the AgentEvent kinds TEXT_DELTA, TOOL_CALL, TOOL_RESULT, PROPOSAL, STATUS, DONE, ERROR (nvsh/agent/base.py:24-33) plus cancel and persistent session as declared by Capabilities (pi.py:853-860); today PiAgent maps pi rpc events to those kinds (pi.py:679-722) and the approval extension pi_ext/approval.ts routes every bash tool_call through nvsh approve.",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c3",
+      "kind": "requirement",
+      "text": "The Pi adapter itself is raised to the bar before others are measured against it: pi rpc 'thinking_*' assistantMessageEvent sub-types are currently ignored (docs/pi-rpc.md:92-95) and no effort flag is passed, although pi 0.85.1 --help exposes '--thinking <off|minimal|low|medium|high|xhigh|max>' and 'provider/id:<thinking>' model patterns; build_argv (pi.py:355-374) gains both.",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h2",
+          "text": "PiAgent.build_argv passes --thinking <effort> when [agents.pi] effort is set and maps thinking_* deltas to THINKING events.",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "tests/test_pi_agent.py: argv contains --thinking; a scripted thinking_delta yields EventKind.THINKING.",
+      "revisions": []
+    },
+    {
+      "id": "c4",
+      "kind": "requirement",
+      "text": "The NvshAgent contract grows to carry the new signals: EventKind (base.py:24-33) gains a THINKING kind rendered distinctly from TEXT_DELTA; AgentRequest (base.py:60-74) gains a target (backend, model, effort) so a request can name its harness; Capabilities (base.py:173-181) gains 'thinking' and 'effort' booleans so unsupported features degrade explicitly as issue #6 requires.",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h3",
+          "text": "EventKind.THINKING, AgentRequest.target and Capabilities.thinking/effort round-trip through event_to_dict/event_from_dict and request_from_dict without breaking older wire lines.",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "tests for base.py codec: old dict without target still parses; THINKING survives the round trip.",
+      "revisions": []
+    },
+    {
+      "id": "c5",
+      "kind": "requirement",
+      "text": "ClaudeAgent (official 'claude -p --output-format stream-json') is the only Claude path: it passes --model and --effort from [agents.claude] (claude 2.1.270 --help: '--effort <low|medium|high|xhigh|max>'), uses --include-partial-messages for token streaming, --resume/--session-id for the warm-session and cold-resume paths, --permission-prompts host with a permission prompt tool nvsh hosts so tool calls become PROPOSALs, and maps thinking, tool_use and tool_result content parts to THINKING/TOOL_CALL/TOOL_RESULT instead of only type=assistant text parts (claude.py:38-56 today).",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h4",
+          "text": "ClaudeAgent argv includes --model, --effort and --include-partial-messages from [agents.claude], and thinking/tool_use/tool_result content parts map to THINKING/TOOL_CALL/TOOL_RESULT.",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "tests/fakes/claude replays a stream-json transcript with thinking and tool_use blocks; conformance suite asserts the kinds.",
+      "revisions": [
+        {
+          "text": "ClaudeAgent parses the full stream-json stream instead of only type=assistant text parts (claude.py:38-56): thinking blocks, tool_use/tool_result, and result usage; it passes --model and --effort (claude 2.1.270 --help: '--effort <low|medium|high|xhigh|max>', '--model', '--include-partial-messages', '--resume') and uses --include-partial-messages for true token streaming instead of one TEXT_DELTA per message.",
+          "kind": "requirement",
+          "reason": "ACP-first decision c36"
+        },
+        {
+          "text": "Claude is driven primarily through ACP (@zed-industries/claude-code-acp, npm) by the generic AcpAgent, which yields thinking, tool calls, request_permission approvals and sessions; the native ClaudeAgent (claude -p --output-format stream-json) is kept as the fallback when the ACP adapter is not installed, and in that mode it still passes --model and --effort (claude 2.1.270) and maps thinking/tool_use/tool_result content parts to THINKING/TOOL_CALL/TOOL_RESULT instead of dropping them (claude.py:38-56 today).",
+          "kind": "requirement",
+          "reason": "official-only decision c54"
+        }
+      ]
+    },
+    {
+      "id": "c6",
+      "kind": "requirement",
+      "text": "CodexAgent drives 'codex app-server' (JSON-RPC over stdio, codex-cli 0.147.0, schema from 'codex app-server generate-json-schema') instead of 'codex exec --json': initialize, thread/start, turn/start, turn/steer, turn/interrupt, thread/resume give a warm, steerable, cancellable session; item/reasoning/textDelta maps to THINKING, item/agentMessage/delta to TEXT_DELTA, item/commandExecution/* to TOOL_CALL/TOOL_RESULT, and item/commandExecution/requestApproval (execCommandApproval/applyPatchApproval responses) is the approval channel that becomes a PROPOSAL gated by nvsh approve; model and effort are passed as '-c model=' and '-c model_reasoning_effort='. 'codex exec' remains only as the degraded fallback.",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h5",
+          "text": "CodexAgent argv includes -m and -c model_reasoning_effort=<effort>, and codex reasoning and tool msg types map to THINKING/TOOL_CALL/TOOL_RESULT.",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "tests/fakes/codex replays reasoning + tool events; conformance suite asserts the kinds.",
+      "revisions": [
+        {
+          "text": "CodexAgent maps the reasoning and tool events of 'codex exec --json' (today only task_started/agent_message_delta/error/task_complete, codex.py:32-49) and passes '-m <model>' and '-c model_reasoning_effort=<level>' (codex-cli 0.147.0 exec --help; model_reasoning_effort is the key already used in ~/.codex/config.toml) as the model/effort knobs.",
+          "kind": "requirement",
+          "reason": "operator pointed at codex app-server (2026-09-14); protocol verified from generated schema"
+        }
+      ]
+    },
+    {
+      "id": "c7",
+      "kind": "requirement",
+      "text": "Qwen is driven through its native 'qwen --acp' by the generic AcpAgent (thinking, tool calls, sessions verified live 2026-09-14) in 'plan' mode by default, with [agents.qwen] approval = \"harness\" switching to qwen's own 'default' mode as an explicit, audited opt-out of nvsh-mediated approval; the plain-text '-p' QwenAgent (qwen.py:21-36) is removed or reduced to a no-ACP fallback at plan time; auto/auto-edit/yolo are never set by nvsh.",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h6",
+          "text": "QwenAgent runs with --output-format stream-json and --model, and its thinking/tool events map to THINKING/TOOL_CALL/TOOL_RESULT; the '[status] ' heuristic is deleted.",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "tests/fakes/qwen switched to stream-json lines; grep for '[status] ' in qwen.py returns nothing.",
+      "revisions": [
+        {
+          "text": "QwenAgent switches from plain-text '-p' (qwen.py:21-29, '[status] ' prefix heuristic at qwen.py:31-36) to '--output-format stream-json' (qwen 0.23.3 --help offers text|json|stream-json) so thinking, tool calls and results arrive structured, and passes '--model' and, where qwen exposes one, an effort knob; '--approval-mode' and '--resume/--continue/--session-id' become the approval and session hooks.",
+          "kind": "requirement",
+          "reason": "ACP-first decision c36"
+        },
+        {
+          "text": "Qwen is driven primarily through its native 'qwen --acp' by the generic AcpAgent (thinking, tool calls, request_permission approvals, sessions); the plain-text '-p' QwenAgent (qwen.py:21-36, '[status] ' heuristic) is either upgraded to '--output-format stream-json' with --model as the no-ACP fallback or removed, decided at plan time; --approval-mode is never set to auto/yolo.",
+          "kind": "requirement",
+          "reason": "decision c53"
+        }
+      ]
+    },
+    {
+      "id": "c8",
+      "kind": "requirement",
+      "text": "A new AgyAgent adapter (Google Antigravity CLI, binary 'agy', 1.0.1 installed here as an aarch64 Go binary; never mentioned in this repo) is added as a SubprocessAgent: 'agy -p <prompt> --output-format stream-json' emits NDJSON events init/step_update(text_delta, usage.thinking_tokens)/result (probed 2026-09-14); it accepts --model and --effort, and --continue/--conversation <id> for resume; it has NO --append-system-prompt or --system-prompt flag ('flags provided but not defined'), so the brief is embedded in the prompt as codex does.",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h7",
+          "text": "AgyAgent runs 'agy -p <brief+prompt> --output-format stream-json --model <m> --effort <e>', maps step_update text_delta to TEXT_DELTA and result to DONE/ERROR, and warms a session with --input-format stream-json using {\"event\":\"user\",\"message\":{\"role\":\"user\",\"content\":...}} lines.",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "tests/fakes/agy replays the probed event stream; conformance suite green; a live 'agy' smoke on spark answers 'say OK'.",
+      "revisions": []
+    },
+    {
+      "id": "c9",
+      "kind": "assumption",
+      "text": "agy's stream-json shapes are now verified for text, thinking-token usage and tool turns (step_update step_type 'tool' with tool_name, tool_info.parameters and tool_info.output); its permission behaviour in print mode is auto-deny for command tools with no runtime prompt (see the agy requirement seeded by the challenge pass), so no PROPOSAL can be derived from agy today.",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": [
+        {
+          "text": "agy's stream-json shapes for tool calls and permission requests are unverified: only a text-only turn was probed; its init event lists 'ask_permission'/'ask_custom_permission' tools and permission_mode 'request-review', and it has '--dangerously-skip-permissions'; the adapter design assumes a step_update carrying tool name/args exists and must be confirmed against a real tool-using turn before mapping TOOL_CALL/PROPOSAL.",
+          "kind": "assumption",
+          "reason": "challenge probe verified agy tool/permission behaviour"
+        }
+      ]
+    },
+    {
+      "id": "c10",
+      "kind": "requirement",
+      "text": "Config gains: 'effort' in _VALID_AGENT_BACKEND_KEYS (nvsh/config.py:43); a default target on [agent] (provider + model + effort, spelled either as three keys or one 'default = \"pi/associate/medium\"' string); a [models] table of model aliases (alias -> per-backend model id, needed because the same model is 'opus' to claude, 'Claude Opus 4.6 (Thinking)' to agy) and a [targets] table of invocation aliases (alias -> backend/model/effort, e.g. reviewer = \"claude/opus-5/medium\", local = \"qwen/worker\"); unknown keys stay loudly rejected (_reject_unknown config.py:183-188) and docs/config.example.toml + default_toml() (config.py:72-102) document them.",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h8",
+          "text": "config.py accepts 'effort' in [agents.<name>], a flat [aliases] table whose values are 'backend/model/effort' strings, and rejects unknown keys as before; default_toml() documents both.",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "tests/test_config.py: round-trip save/load with [aliases]; unknown alias sub-key rejected; docs/config.example.toml shows default and reviewer.",
+      "revisions": []
+    },
+    {
+      "id": "c11",
+      "kind": "requirement",
+      "text": "registry.ADAPTERS (nvsh/agent/registry.py:87-123) registers 'agy' with binary 'agy' so 'nvsh agent list', doctor's agent_configured, the @-mark palette (slash.agent_mark_items, slash.py:363-374) and the conformance suite all see it; registry.choose (registry.py:147-173) accepts a forced target instead of only configured-or-openai-compat fallback.",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h9",
+          "text": "registry.ADAPTERS contains agy; registry.choose(config, forced=<target>) returns the forced adapter when installed and an explicit error (not the openai-compat fallback) when it is not.",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "tests/test_agent_registry.py: forced target present -> that adapter; absent -> error naming the binary.",
+      "revisions": []
+    },
+    {
+      "id": "c12",
+      "kind": "non_goal",
+      "text": "No new install paths: installers.TOOLS stays {pi, node, uv, tmux} (nvsh/installers.py:151-180, pinned by tests/test_installers.py:44) and 'nvsh agent install' keeps pi as its only target; agy, claude, codex and qwen remain detect-only (PATH presence via registry.installed, registry.py:126-131), with doctor telling the operator what is missing.",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c13",
+      "kind": "requirement",
+      "text": "The @-mark grammar (deviation d23) is extended in BOTH parsers that must stay in lockstep \u2014 bash __nvsh_mark_line (nvsh/shell/readline.bash:140-159) and Python triggers._parse_agent_mark (nvsh/triggers.py:368-376) \u2014 from a bare adapter name to '@<target>' where target is 'backend[/model[/effort]]' or a [targets] alias; '/' joins the allowed charset, alias names join the palette returned by 'nvsh complete --json' so @reviewer and @local resolve exactly like @qwen, and the rewrite target '/ask --agent <name>' (readline.bash:153, slash.split_agent_flag slash.py:109-127) carries the full target.",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h10",
+          "text": "Both parsers accept '@backend[/model[/effort]] text' and '@<alias> text', rewrite to '/ask --agent <target> text', and reject unknown names; the bash/python sync test passes.",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "Table-driven rows in tests/test_readline_bash.py and tests/test_slash.py for the new grammar.",
+      "revisions": []
+    },
+    {
+      "id": "c14",
+      "kind": "boundary",
+      "text": "Tab completion of @-targets stays unavailable: bash's hostname completion claims any first word starting with '@' before programmable completion runs (readline.bash:217-220, docs/shell-integration.md:201-204), so @reviewer is Enter-only like @qwen today; '/ask --agent <target>' remains the completable spelling.",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h11",
+          "text": "No new Tab completion is attempted for '@' words; docs/shell-integration.md states the limitation for the extended grammar.",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "Doc check plus an existing readline test that '@' words are not offered by __nvsh_complete_initial.",
+      "revisions": []
+    },
+    {
+      "id": "c15",
+      "kind": "requirement",
+      "text": "The configured default target (backend/model/effort) is what the daemon builds its warm agent from (Daemon._build_agent nvsh/daemon.py:651-667 via registry.choose) and what client one-shot runs use, so the default's effort and model are honored on every automatic failure call, not only on ad-hoc marks.",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h12",
+          "text": "Daemon._build_agent resolves the 'default' alias to (backend, model, effort) and builds the warm agent from it; one-shot runs resolve the same way.",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "tests/test_daemon.py: a config with default = \"claude/sonnet/medium\" builds ClaudeAgent with those argv values.",
+      "revisions": []
+    },
+    {
+      "id": "c16",
+      "kind": "requirement",
+      "text": "The panel (nvsh/panel.py:542-588 _render_event) renders THINKING as a dimmed, clearly separated run that ends before the first TEXT_DELTA, under the same NO_COLOR/TERM=dumb/non-tty guards and hard-coded SGR rules as the rest of the panel, and TOOL_CALL/TOOL_RESULT rendering (panel.py:376-388, exitCode key sniffing) is checked against each harness's result shape rather than pi's alone.",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h13",
+          "text": "Panel renders THINKING dimmed and closes the run before the first TEXT_DELTA; with NO_COLOR or TERM=dumb it renders plain text with a 'thinking:' prefix and no SGR.",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "tests/test_panel.py: snapshot for both modes.",
+      "revisions": []
+    },
+    {
+      "id": "c17",
+      "kind": "requirement",
+      "text": "doctor's agent_reachable (nvsh/doctor_checks.py:402-443) gains a probe per harness instead of the pi/openai-compat-only dispatcher that warns 'has no reachability probe' for everything else (doctor_checks.py:415-422): binary present + version + authenticated state (agy prints 'Print mode: not authenticated'; claude/codex/qwen have equivalents), never a paid model call.",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h14",
+          "text": "doctor agent_reachable returns a real check for agy, claude, codex and qwen (binary, version, auth state) and never calls a model.",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "tests/test_doctor_checks.py per harness with fake binaries; no network access in the test.",
+      "revisions": []
+    },
+    {
+      "id": "c18",
+      "kind": "requirement",
+      "text": "Test and catalog contracts are extended together: scripted fakes 'tests/fakes/agy' and 'tests/fakes/acp' (the latter standing in for kiro, qwen --acp, claude-code-acp and pi-acp) plus ViaFake adapters registered in tests/test_agent_conformance.py ADAPTERS (lines 80-86); tests/test_cli_agent.py 'reports_all_five' grows to the new adapter count; new verbs get nvsh/explain/catalog.py ENTRIES (catalog.py:887-936) and a line in tests/test_invariants.py _VERBS (invariants.py:152-168) so they are proven traceback-free with pi/tmux/fzf/spark absent from PATH.",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h15",
+          "text": "tests/fakes/agy exists, AgyAgentViaFake is in the conformance ADAPTERS list, test_cli_agent reports six adapters, and every new verb appears in catalog ENTRIES and test_invariants._VERBS.",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "uv run pytest -n auto green; uv run teken cli doctor . --strict green.",
+      "revisions": [
+        {
+          "text": "Test and catalog contracts are extended together: a scripted fake 'tests/fakes/agy' plus a ViaFake adapter registered in tests/test_agent_conformance.py ADAPTERS (lines 80-86); tests/test_cli_agent.py 'reports_all_five' becomes six; new verbs (e.g. 'nvsh agent target|alias', or /agent extensions) get nvsh/explain/catalog.py ENTRIES (catalog.py:887-936) and a line in tests/test_invariants.py _VERBS (invariants.py:152-168) so they are proven traceback-free with pi/tmux/fzf/spark absent from PATH.",
+          "kind": "requirement",
+          "reason": "Kiro added"
+        }
+      ]
+    },
+    {
+      "id": "c19",
+      "kind": "boundary",
+      "text": "The mesh identity axis is untouched: culture.yaml 'backend: claude' and the four harness prompt files select the resident/interactive harness (docs/harness-selection.md:37-101) and tests/test_invariants.py:49-71 freezes culture.yaml, .claude/skills and .pi/skills against main; the default/alias/target mechanism lives only on the NvshAgent runtime axis (nvsh/agent/*, config.toml).",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h16",
+          "text": "culture.yaml, .claude/skills and .pi/skills are byte-identical to main after the change.",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "tests/test_invariants.py::test_mesh_identity_files_match_main passes.",
+      "revisions": []
+    },
+    {
+      "id": "c20",
+      "kind": "requirement",
+      "text": "Docs move together under the harness-smoke drift rule: CLAUDE.md, AGENTS.override.md, .pi/SYSTEM.md, QWEN.md (CLAUDE.md:246-250; AGENTS.colleague.md repeats the same Pi/Nemotron prose at lines 42-51), plus docs/architecture.md:153-157, README.md:52-54, docs/config.example.toml, docs/shell-integration.md (mark grammar) and CHANGELOG.md; the committed spec docs/specs/2026-09-13-...md records 'PiAgent as the default' at lines 31,35,49, so this frame's export is a new decision record, not an edit of that one.",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h17",
+          "text": "CLAUDE.md, AGENTS.override.md, .pi/SYSTEM.md, QWEN.md, AGENTS.colleague.md, docs/architecture.md and README.md describe the alias/target mechanism consistently and scripts/harness-smoke.py passes.",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "uv run python scripts/harness-smoke.py --stage config --require config; grep each file for 'aliases'.",
+      "revisions": []
+    },
+    {
+      "id": "c21",
+      "kind": "boundary",
+      "text": "Pi stays the shipped default when nothing is configured (issue #6 acceptance: 'Pi.dev is the default agent when no adapter is explicitly configured'; _DEFAULT_AGENTS pi/nemotron/associate at config.py:51-53); 'choose a default agent, mode and effort' therefore means a configurable default triple whose shipped value is pi/associate plus a chosen effort, and any cloud harness (agy, claude, codex) is opt-in because Jetsons are often air-gapped (CLAUDE.md 'Headless over SSH').",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h18",
+          "text": "With no config.toml present, nvsh agent list --json shows pi as configured and the daemon builds PiAgent.",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "tests/test_agent_registry.py existing default test still passes unchanged.",
+      "revisions": []
+    },
+    {
+      "id": "c22",
+      "kind": "requirement",
+      "text": "'Propose, don't run' holds for every harness through a real approval channel where one exists: codex app-server item/commandExecution/requestApproval (policy on-request), claude --permission-prompts host with nvsh's permission prompt tool, pi rpc via pi_ext/approval.ts, and ACP session/request_permission for agents that send it (kiro to be verified). Where no channel exists (qwen --acp 0.23.3 never sends request_permission; agy headless auto-denies commands) the harness runs read-only with tool_calling=False, and an operator may opt a harness into its own agent-side approval with [agents.<name>] approval = \"harness\", which is recorded in capabilities and the audit log. The harnesses' auto-approve switches (--dangerously-skip-permissions, yolo, danger-full-access, --full-auto, --trust-all-tools) are never passed.",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h19",
+          "text": "For each harness the adapter either emits PROPOSAL for a command the model wants to run (gated by nvsh approve) or declares tool_calling=False and is launched in its read-only/plan mode; no auto-approve flag is ever in any argv.",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [
+        {
+          "id": "q1",
+          "text": "contradiction with Live probe 2026-09-14 (scratchpad/qwenacp): qwen 0.23.3 'qwen --acp' ran run_shell_command ('echo nvsh-probe-3') to completion in BOTH its default ACP mode 'auto' and after session/set_mode 'default', and never sent session/request_permission; only 'plan' mode refuses. So ACP does not give qwen a propose-don't-run channel today.?",
+          "resolved": true,
+          "blocking": true,
+          "resolution": "Resolved by operator decision c53: qwen runs read-only (plan) by default; agent-side approval is an explicit per-harness config opt-in."
+        },
+        {
+          "id": "q2",
+          "text": "qwen has no client-side approval channel over ACP (0.23.3): does qwen ship read-only in 'plan' mode (tool_calling=False), or is its own 'default' mode (agent-side approval that never reaches nvsh) acceptable for this harness, breaking 'propose, don't run'?",
+          "resolved": true,
+          "blocking": true,
+          "resolution": "qwen: plan-mode read-only by default; agent-side approval opt-in via [agents.qwen] approval = \"harness\". -> c53"
+        }
+      ],
+      "links": [],
+      "instruction": "grep the adapters for dangerously-skip-permissions, yolo, full-auto: zero hits; conformance case per harness.",
+      "revisions": [
+        {
+          "text": "'Propose, don't run' holds for every harness: an agent-suggested command must surface as a PROPOSAL gated by nvsh approve, as pi's extension does today; for claude the hook is '--permission-prompts'/'--permission-prompt-tool' (claude 2.1.270 --help), for qwen '--approval-mode plan|default', for codex 'exec --sandbox' and for agy permission_mode 'request-review' \u2014 the harness's own auto-approve switches (claude --dangerously-skip-permissions, qwen yolo, agy --dangerously-skip-permissions) are never passed.",
+          "kind": "requirement",
+          "reason": "ACP-first decision c36 and codex app-server"
+        },
+        {
+          "text": "'Propose, don't run' holds for every harness through a real approval channel: ACP session/request_permission (qwen, claude, pi via ACP), codex app-server item/commandExecution/requestApproval + execCommandApproval/applyPatchApproval, pi rpc via pi_ext/approval.ts; each becomes a PROPOSAL answered from nvsh approve. A harness with no channel (agy until its permission events are probed; any bare print-mode fallback) declares tool_calling=False and is launched read-only (codex exec --sandbox read-only, qwen --approval-mode plan, claude --permission-prompts none). The harnesses' auto-approve switches (--dangerously-skip-permissions, yolo, danger-full-access, --full-auto) are never passed.",
+          "kind": "requirement",
+          "reason": "challenge findings + decisions c53 c54"
+        }
+      ]
+    },
+    {
+      "id": "c23",
+      "kind": "decision",
+      "text": "Per-harness configuration, not a shared enum: each [agents.<name>] table lists the flags nvsh passes to that harness (model, effort, and any extra argv), and each adapter provides what its CLI can and declares the rest unsupported through Capabilities; nvsh does not invent a cross-harness 'mode'. (Operator decision 2026-09-14, resolving q1.)",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h20",
+          "text": "Each [agents.<name>] table accepts model, effort and extra_args, and the adapter passes exactly those; unsupported ones are reported in capabilities, never silently dropped.",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "tests/test_config.py + per-adapter argv tests.",
+      "revisions": []
+    },
+    {
+      "id": "c24",
+      "kind": "decision",
+      "text": "Effort and model values are passed through verbatim to the harness (pi --thinking, claude --effort, codex -c model_reasoning_effort=, agy --effort); nvsh validates nothing beyond non-empty strings. Aliases exist to spare configuration, not to normalize values. (Operator decision 2026-09-14, resolving q2.)",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h21",
+          "text": "Effort strings reach the harness argv unchanged (e.g. 'xhigh' for claude, 'medium' for codex), and a harness-rejected value surfaces as an ERROR event with the CLI's stderr tail.",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "Adapter argv tests plus one scripted fake exiting non-zero on a bad effort.",
+      "revisions": []
+    },
+    {
+      "id": "c25",
+      "kind": "decision",
+      "text": "Ad-hoc @targets always run one-shot (the current d23 rule stays). The default target warms a daemon session when its harness supports one: claude 2.1.270 (--input-format stream-json keeps one print-mode process open across turns; --resume/--session-id), qwen 0.23.3 (--input-format stream-json, --session-id/--resume/--continue), agy 1.0.1 (--input-format stream-json verified: each stdin line is {\"event\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"...\"}} and yields step_update/result events; --continue/--conversation <id> for cold resume), codex 0.147.0 (app-server thread/start + turn/start over one stdio process, thread/resume across restarts). Any ACP-served agent warms through session/new + session/prompt + session/resume. Harnesses without a warm path fall back to cold per-turn processes with resume where available. (Operator decision 2026-09-14, resolving q3; amended for codex app-server and ACP.)",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h22",
+          "text": "An '@target' call never touches the warm daemon session, and the default target's session survives across two consecutive failures for claude, qwen and agy, and resumes by id for codex.",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "tests/test_daemon.py + tests/test_client.py: override -> one_shot=True; two requests -> one process for stream-json harnesses.",
+      "revisions": [
+        {
+          "text": "Ad-hoc @targets always run one-shot (the current d23 rule stays). The default target warms a daemon session when its harness supports one: claude 2.1.270 (--input-format stream-json keeps one print-mode process open across turns; --resume/--session-id), qwen 0.23.3 (--input-format stream-json, --session-id/--resume/--continue), agy 1.0.1 (accepts --input-format stream-json on stdin and --continue/--conversation <id>; its input message schema still needs an 'event' field whose name is unprobed), codex 0.147.0 ('exec' is per-turn; warm conversation only via 'exec resume <id>' per turn or the experimental app-server). Harnesses without a warm path fall back to cold per-turn processes with resume where available. (Operator decision 2026-09-14, resolving q3.)",
+          "kind": "decision",
+          "reason": "agy stream-json input schema verified live on 2026-09-14"
+        },
+        {
+          "text": "Ad-hoc @targets always run one-shot (the current d23 rule stays). The default target warms a daemon session when its harness supports one: claude 2.1.270 (--input-format stream-json keeps one print-mode process open across turns; --resume/--session-id), qwen 0.23.3 (--input-format stream-json, --session-id/--resume/--continue), agy 1.0.1 (--input-format stream-json verified: each stdin line is {\"event\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"...\"}} and yields step_update/result events; --continue/--conversation <id> for cold resume), codex 0.147.0 ('exec' is per-turn; warm conversation only via 'exec resume <id>' per turn or the experimental app-server). Harnesses without a warm path fall back to cold per-turn processes with resume where available. (Operator decision 2026-09-14, resolving q3.)",
+          "kind": "decision",
+          "reason": "codex warm session exists via app-server threads"
+        }
+      ]
+    },
+    {
+      "id": "c26",
+      "kind": "decision",
+      "text": "Aliases are one flat table: each alias maps a name to a 'backend/model/effort' string (reviewer = \"claude/opus-5/medium\", local = \"qwen/worker\"), and a reserved alias 'default' is the single definition of the default harness, model and effort used when nothing else is specified, so the default is defined once and not duplicated across [agent]/[agents.*]. '@default <text>' is a valid mark like any other alias (one-shot, per the d23 rule). 'default' is listed first wherever aliases appear, and 'nvsh agent list', '/agent' and the completion palette show it resolved to its backend/model/effort so the operator always sees what a plain failure will be answered by. (Operator decision 2026-09-14, resolving q4; amended for @default and visibility.)",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h23",
+          "text": "[aliases] is flat: alias = \"backend/model/effort\" with model and effort optional; 'default' is reserved and required when [agent] provider is absent.",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "tests/test_config.py: parse 'reviewer = \"claude/opus-5/medium\"' and 'local = \"qwen/worker\"'; missing default falls back to pi.",
+      "revisions": [
+        {
+          "text": "Aliases are one flat table: each alias maps a name to a 'backend/model/effort' string (reviewer = \"claude/opus-5/medium\", local = \"qwen/worker\"), and a reserved alias 'default' names the target used when nothing else is specified, so the default is defined once and not duplicated across [agent]/[agents.*]. (Operator decision 2026-09-14, resolving q4.)",
+          "kind": "decision",
+          "reason": "operator clarified @default and visibility 2026-09-14"
+        }
+      ]
+    },
+    {
+      "id": "c27",
+      "kind": "decision",
+      "text": "Aliases live in the existing $XDG_CONFIG_HOME/nvsh/config.toml (a flat alias table with a reserved 'default' entry): the runtime package has no third-party dependencies (pyproject dependencies = []) and parses config with stdlib tomllib (nvsh/config.py:27,241); no YAML file and no YAML dependency. (Operator decision 2026-09-14.)",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h24",
+          "text": "No YAML import or dependency appears in nvsh/ or pyproject.toml.",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "grep -r yaml nvsh pyproject.toml returns nothing; dependencies stays [].",
+      "revisions": [
+        {
+          "text": "The alias table lives in the existing $XDG_CONFIG_HOME/nvsh/config.toml, not a YAML file: the runtime package has no third-party dependencies (pyproject dependencies = []) and parses config with stdlib tomllib (nvsh/config.py:27,241); Python's stdlib has no YAML parser, so 'aliases in yaml' is read as 'aliases in the config file' unless the operator accepts a new dependency.",
+          "kind": "assumption",
+          "reason": "operator confirmed TOML 2026-09-14"
+        }
+      ]
+    },
+    {
+      "id": "c28",
+      "kind": "audience",
+      "text": "Operators at an interactive bash prompt on Jetson, DGX Spark or RTX Spark who already have one or more of pi, agy, claude, codex, qwen or kiro installed and want nvsh to use the harness, model and effort they choose, per call or by default, without losing thinking, tool calls or approvals.",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h25",
+          "text": "The audience can express any of: default alias, per-harness flags, @target, @alias, without reading source.",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "docs/config.example.toml + README section reviewed by the operator.",
+      "revisions": [
+        {
+          "text": "Operators at an interactive bash prompt on Jetson, DGX Spark or RTX Spark who already have one or more of pi, agy, claude, codex or qwen installed and want nvsh to use the harness, model and effort they choose, per call or by default, without losing thinking, tool calls or approvals.",
+          "kind": "audience",
+          "reason": "Kiro added"
+        }
+      ]
+    },
+    {
+      "id": "c29",
+      "kind": "before_state",
+      "text": "Today only pi is a real NvshAgent: claude/codex/qwen adapters return plain text with no thinking, tool calls, proposals, model or effort (nvsh/agent/claude.py, codex.py, qwen.py), agy does not exist, effort has no config key (nvsh/config.py:43), the daemon builds one backend from [agent] provider only, and @marks accept a bare adapter name (nvsh/triggers.py:368-376).",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h29",
+          "text": "main today has no THINKING kind, no effort key and no agy adapter.",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "grep -rn 'THINKING\\|effort\\|agy' nvsh/ on main returns nothing.",
+      "revisions": []
+    },
+    {
+      "id": "c30",
+      "kind": "after_state",
+      "text": "An operator sets one 'default' alias (backend/model/effort) in config.toml and every automatic failure call uses it with a warm session where the harness supports one; typing '@claude/sonnet/medium why did this fail?' or '@reviewer ...' or '@local ...' runs that target one-shot; whichever of pi, agy, claude, codex or qwen answers, the panel shows its thinking, tool calls and results, and any command it wants to run arrives as a proposal gated by nvsh approve, or the harness runs read-only and says so.",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h26",
+          "text": "The after-state holds end to end on one hooked shell with two harnesses installed.",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "Manual verification on spark (pi + claude + agy present) recorded in docs/verification.md.",
+      "revisions": []
+    },
+    {
+      "id": "c31",
+      "kind": "why_it_matters",
+      "text": "Operators on these machines already pay for or run several harnesses; nvsh must not make Pi the only good citizen (issue #6: 'Pi.dev is the default harness, not the architecture'), and a per-call target lets a cheap local model handle routine failures while a strong hosted model is one '@reviewer' away.",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h32",
+          "text": "A routine failure answered by the local default and a hard one escalated with '@reviewer' to a hosted model both work from the same hooked shell, so the operator never has to leave the prompt to change harness.",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "Manual check on spark: default alias = pi/associate, reviewer alias = claude/opus/medium; cause a failure, then '@reviewer explain the last failure'; record both panels in docs/verification.md.",
+      "revisions": []
+    },
+    {
+      "id": "c32",
+      "kind": "success_signal",
+      "text": "Every registered harness passes the same conformance suite (tests/test_agent_conformance.py) extended with thinking, tool-call, proposal and effort cases: 6 of 6 harnesses (pi, agy, claude, codex, qwen, kiro) emit THINKING and TOOL_CALL from their scripted fakes (the ACP-driven ones through one scripted fake ACP agent), and 'nvsh agent list --json' reports capabilities with 0 harnesses claiming tool_calling=True that cannot route a tool call through nvsh approve.",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h27",
+          "text": "The conformance suite is parametrised over five adapters and the thinking/tool-call/proposal/effort cases are present for each.",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "pytest -k conformance --collect-only lists them.",
+      "revisions": [
+        {
+          "text": "Every registered harness passes the same conformance suite (tests/test_agent_conformance.py) extended with thinking, tool-call, proposal and effort cases: 5 of 5 adapters (pi, agy, claude, codex, qwen) emit THINKING and TOOL_CALL from their scripted fakes, and 'nvsh agent list --json' reports capabilities with 0 harnesses claiming tool_calling=True that cannot route a tool call through nvsh approve.",
+          "kind": "success_signal",
+          "reason": "Kiro added; harness count is six"
+        }
+      ]
+    },
+    {
+      "id": "c33",
+      "kind": "success_signal",
+      "text": "A one-line '@<target>' or alias mark resolves to the intended backend/model/effort 100% of the time in the table-driven tests for both parsers (tests/test_readline_bash.py and tests/test_slash.py), including '@claude/sonnet/medium', '@reviewer', '@local' and the negative cases (unknown alias, email-like '@' in argument position).",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h28",
+          "text": "The parser tables contain the positive and negative target rows named in the claim.",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "grep the two test files for '@claude/sonnet/medium' and '@reviewer'.",
+      "revisions": []
+    },
+    {
+      "id": "c34",
+      "kind": "decision",
+      "text": "ACP (Agent Client Protocol) support is in scope: nvsh gains a generic ACP adapter so any ACP-speaking agent can be a harness, not only the five named CLIs. (Operator decision 2026-09-14.)",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c35",
+      "kind": "requirement",
+      "text": "A generic AcpAgent adapter (nvsh/agent/acp.py) speaks ACP JSON-RPC over stdio to a configured command: initialize (with a bounded reply timeout), session/new, session/prompt, session/resume, session/set_mode; session/update chunks map agent_thought_chunk to THINKING, agent_message_chunk to TEXT_DELTA, tool_call/tool_call_update to TOOL_CALL/TOOL_RESULT; an agent's session/request_permission request becomes a PROPOSAL answered from nvsh approve, and an agent that never sends one (qwen 0.23.3, probed) is run in its read-only mode unless the operator opts in per [agents.<name>] approval = \"harness\". It registers as 'acp' with [agents.acp] command = [\"<argv>\"] plus model/effort forwarded as ACP config options where exposed, and ships two named entries: kiro (command = [\"kiro-cli\",\"acp\"]) and qwen (command = [\"qwen\",\"--acp\"]).",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h30",
+          "text": "AcpAgent passes the conformance suite against a scripted fake ACP agent (tests/fakes/acp) and against qwen --acp live on spark, with THINKING, TOOL_CALL and PROPOSAL events observed.",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "tests/fakes/acp replays session/update chunks and one session/request_permission; run the conformance suite; then 'nvsh agent use acp' with [agents.acp] command = [\"qwen\",\"--acp\"] and cause a failure in a hooked shell.",
+      "revisions": [
+        {
+          "text": "A generic AcpAgent adapter (nvsh/agent/acp.py) speaks ACP JSON-RPC over stdio to a configured command: initialize, session/new, session/prompt, session/resume, session/set_mode; session/update chunks map agent_thought_chunk to THINKING, agent_message_chunk to TEXT_DELTA, tool_call/tool_call_update to TOOL_CALL/TOOL_RESULT; the agent's session/request_permission request becomes a PROPOSAL answered from nvsh approve. It registers in ADAPTERS as 'acp' with [agents.acp] command = [\"<argv>\"] plus model/effort forwarded as ACP config options where the agent exposes them, and the same adapter is reused under named entries (e.g. [agents.claude-acp] command = [\"claude-code-acp\"]).",
+          "kind": "requirement",
+          "reason": "Kiro added"
+        },
+        {
+          "text": "A generic AcpAgent adapter (nvsh/agent/acp.py) speaks ACP JSON-RPC over stdio to a configured command: initialize, session/new, session/prompt, session/resume, session/set_mode; session/update chunks map agent_thought_chunk to THINKING, agent_message_chunk to TEXT_DELTA, tool_call/tool_call_update to TOOL_CALL/TOOL_RESULT; the agent's session/request_permission request becomes a PROPOSAL answered from nvsh approve. It registers in ADAPTERS as 'acp' with [agents.acp] command = [\"<argv>\"] plus model/effort forwarded as ACP config options where the agent exposes them, and the same adapter is reused under named entries shipped as defaults: kiro (command = [\"kiro-cli\",\"acp\"], --model), qwen-acp ([\"qwen\",\"--acp\"]), claude-acp ([\"claude-code-acp\"]), pi-acp ([\"pi-acp\"]).",
+          "kind": "requirement",
+          "reason": "official-only decision c54"
+        }
+      ]
+    },
+    {
+      "id": "c36",
+      "kind": "decision",
+      "text": "Official protocols first, ACP where the vendor ships it: qwen via 'qwen --acp' and Kiro via 'kiro-cli acp' (kiro-cli 2.0.0, --model, --agent, never --trust-all-tools) are driven by nvsh's generic ACP client; codex via its app-server; claude via its official 'claude -p' stream-json print mode; agy via its stream-json print mode; pi via its rpc mode (the existing reference adapter). Third-party ACP wrappers (claude-code-acp, codex-acp, pi-acp) are not used. (Operator decision 2026-09-14, resolving q5; amended after the challenge pass.)",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h31",
+          "text": "nvsh agent list --json shows, per harness, which path is active (acp | app-server | stream-json | rpc) and why the fallback was taken when the ACP adapter binary is absent.",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "Run 'nvsh agent list --json' with claude-code-acp absent then present; the path column flips and the reason names the missing binary.",
+      "revisions": [
+        {
+          "text": "ACP first: where an ACP adapter exists the harness is driven through nvsh's generic ACP client (qwen --acp, pi-acp, claude-code-acp), and native protocols are used when they are missing or easier \u2014 codex uses its app-server (easier and richer than codex-acp), agy uses its stream-json print mode (no ACP adapter), and the existing pi rpc adapter stays as the reference. (Operator decision 2026-09-14, resolving q5.)",
+          "kind": "decision",
+          "reason": "operator added Kiro 2026-09-14"
+        },
+        {
+          "text": "ACP first: where an ACP adapter exists the harness is driven through nvsh's generic ACP client (qwen --acp, pi-acp, claude-code-acp, and Kiro via 'kiro-cli acp' \u2014 kiro-cli 2.0.0 installed here, with --model and --agent, never --trust-all-tools), and native protocols are used when they are missing or easier \u2014 codex uses its app-server (easier and richer than codex-acp), agy uses its stream-json print mode (no ACP adapter), and the existing pi rpc adapter stays as the reference. (Operator decision 2026-09-14, resolving q5; Kiro added on operator request.)",
+          "kind": "decision",
+          "reason": "operator decisions c53 c54: official protocols first, ACP only where vendor-native"
+        }
+      ]
+    },
+    {
+      "id": "c37",
+      "kind": "requirement",
+      "text": "AgyAgent: agy 1.0.1 headless auto-denies any tool needing the 'command' permission ('a tool required the \"command\" permission that headless mode cannot prompt for, so it was auto-denied. Add an allow-rule under permissions.allow in settings.json', probe 2026-09-14) while read tools such as list_dir run unprompted; its step_update 'tool' events carry tool_name and tool_info.parameters/output, which map to TOOL_CALL/TOOL_RESULT. Therefore agy is registered with tool_calling=False for commands (read-only), and nvsh never writes allow-rules into agy's settings.json.",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h33",
+          "text": "AgyAgent reports tool_calling=False for command execution, maps 'tool' step_updates to TOOL_CALL/TOOL_RESULT, and never writes to agy's settings.json.",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "tests/fakes/agy replays the probed tool turn; grep the adapter for settings.json: zero writes.",
+      "revisions": []
+    },
+    {
+      "id": "c38",
+      "kind": "requirement",
+      "text": "Harness-side persistent auto-approval must not silently bypass nvsh approve: on this box agy's settings.json already carries 18 permissions.allow command rules (e.g. command(uv), command(git commit)) that make agy run those commands without any prompt, and claude (settings.json permissions.allow), codex (config.toml approval_policy/sandbox_mode) and qwen/kiro (--trust-tools, trustedWorkspaces) have equivalents. Each adapter launches with the strictest per-turn policy its protocol offers (codex app-server AskForApproval 'untrusted' or 'on-request' plus sandbox read-only; claude --permission-mode default and --permission-prompts host; qwen ACP set_mode; kiro without --trust-all-tools), and doctor reports any harness-side allowlist it can read as a warning naming the file, so the operator knows which commands would run unmediated.",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h34",
+          "text": "Each adapter's argv/protocol policy is the strictest its harness offers, and doctor emits a warning naming any harness-side allowlist file it finds.",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "tests per adapter assert the policy flags; tests/test_doctor_checks.py with a fixture settings.json containing permissions.allow.",
+      "revisions": []
+    },
+    {
+      "id": "c39",
+      "kind": "boundary",
+      "text": "nvsh never edits, creates or overrides a harness's own settings or trust files (agy/claude settings.json, codex config.toml, kiro trust settings, qwen settings): it only passes launch flags and protocol-level policy, and reports what it finds.",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h35",
+          "text": "No code path in nvsh/ opens a harness settings or trust file for writing.",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "grep -rn 'settings.json\\|config.toml\\|trust' nvsh/ shows reads only; a test asserts the files are unchanged after a full run.",
+      "revisions": []
+    },
+    {
+      "id": "c40",
+      "kind": "requirement",
+      "text": "CodexAgent starts every app-server thread with approvalPolicy 'on-request' (schema AskForApproval enum: untrusted | on-request | never | granular, from 'codex app-server generate-json-schema') and sandbox read-only, so item/commandExecution/requestApproval fires for commands and nvsh approve answers execCommandApproval; 'never' and danger-full-access are never sent.",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h36",
+          "text": "Every codex app-server thread is started with approvalPolicy on-request and sandbox read-only, and a requestApproval round-trips into a PROPOSAL.",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "tests/fakes/codex-app-server replays item/commandExecution/requestApproval; argv/initialize params asserted.",
+      "revisions": []
+    },
+    {
+      "id": "c41",
+      "kind": "boundary",
+      "text": "Redaction covers only what nvsh sends (capture.py redact_report is the single choke point for captured output, plus the device context); a harness with its own file-reading tools (agy list_dir/view_file ran unprompted in the probe; ACP agents fall back to their own fs when nvsh advertises fs.readTextFile=false) can read .env, tokens and keys from disk directly, outside nvsh's redaction. The spec states this as an accepted, documented boundary per harness, and capabilities/doctor mark such harnesses 'unmediated file access'.",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h37",
+          "text": "Harnesses with their own file tools are marked 'unmediated file access' in capabilities and the README states the redaction boundary.",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "nvsh agent list --json shows the flag for agy, kiro, claude-acp; README section reviewed.",
+      "revisions": []
+    },
+    {
+      "id": "c42",
+      "kind": "requirement",
+      "text": "The stderr tail surfaced on a non-zero exit is redacted for every adapter, not only pi: nvsh/agent/_subprocess.py keeps a raw tail (lines 37, 97-106) while pi.py:466-470 redacts; SubprocessAgent, AcpAgent and the app-server client all pass their tails and any error payloads through nvsh.redact before an ERROR event or log line carries them.",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h38",
+          "text": "A scripted fake that prints an HF_TOKEN on stderr and exits 1 yields an ERROR event whose text carries the redacted form for every adapter.",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "Parametrised conformance case over all adapters.",
+      "revisions": []
+    },
+    {
+      "id": "c43",
+      "kind": "decision",
+      "text": "claude-code-acp is out of scope: it is a third-party (Zed) wrapper bundling its own Claude Code SDK build (2.1.44 in the 2026-09-14 probe, rejected by the API with a 400) separate from the operator's official claude CLI 2.1.270, and it only started with CLAUDECODE/CLAUDE_CODE_* scrubbed. Claude uses its official CLI (decision c54).",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [
+        {
+          "id": "q3",
+          "text": "ACP-first for claude depends on an npm package that is not installed, not offered by nvsh (non-goal: install paths stay pi-only) and pins its own SDK: keep ACP-first for claude and add claude-code-acp to the install offers, or make the native 'claude -p --output-format stream-json --permission-prompts host' path primary for claude and ACP optional?",
+          "resolved": true,
+          "blocking": true,
+          "resolution": "Claude native only; no claude-code-acp; ACP only where vendor-native. -> c54"
+        }
+      ],
+      "links": [],
+      "instruction": "",
+      "revisions": [
+        {
+          "text": "claude-code-acp is a second, independent Claude install: @zed-industries/claude-code-acp 0.16.2 bundles its own Claude Code SDK build (2.1.44 in the 2026-09-14 probe, which the API rejected with a 400 on session/prompt) separate from the operator's claude CLI 2.1.270, and session/new only succeeded once CLAUDECODE/CLAUDE_CODE_* env vars were scrubbed from the environment. Its thought chunks and request_permission behaviour therefore remain unverified.",
+          "kind": "assumption",
+          "reason": "resolved by c54"
+        }
+      ]
+    },
+    {
+      "id": "c44",
+      "kind": "requirement",
+      "text": "Every adapter launches its harness with CLAUDECODE and CLAUDE_CODE_* scrubbed from the child environment (and the equivalent nesting markers of other harnesses when known), because a shell opened from inside a Claude Code session inherits them and the claude harness then refuses to start (probe 2026-09-14: session/new failed 'Query closed before response received' until the vars were unset).",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h39",
+          "text": "Child environments passed to every harness lack CLAUDECODE and CLAUDE_CODE_* keys.",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "Unit test on the env builder shared by SubprocessAgent, AcpAgent and the app-server client.",
+      "revisions": []
+    },
+    {
+      "id": "c45",
+      "kind": "requirement",
+      "text": "The daemon wire gains a version handshake: the client sends its nvsh version with each request and the daemon answers with its own (grep for version/protocol in nvsh/daemon.py and nvsh/client_transport.py finds none today); on mismatch after an upgrade the client stops the stale daemon and starts a new one instead of sending a 'target' the old daemon ignores; request_from_dict keeps accepting the old shape.",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h40",
+          "text": "A client whose version differs from the running daemon's restarts the daemon and the request succeeds; an old-shape request dict still parses.",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "tests/test_daemon.py mismatch case; codec test for the old shape.",
+      "revisions": []
+    },
+    {
+      "id": "c46",
+      "kind": "requirement",
+      "text": "Harness CLI versions are negotiated and recorded, not assumed: ACP initialize (protocolVersion, agentInfo.version) and codex app-server initialize results are logged and checked against the adapter's supported range; agy/claude/qwen/kiro versions are read at doctor time and written into the audit log; each tests/fakes transcript is stamped with the CLI version it was recorded from (agy 1.0.1, codex 0.147.0, qwen 0.23.3, claude 2.1.270, kiro-cli 2.0.0), so a drifted CLI fails loudly in doctor instead of silently mis-parsing.",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h41",
+          "text": "doctor prints each harness's version and the adapter's supported range; every fixture file header names the CLI version it was recorded from.",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "tests/test_doctor_checks.py; a fixture-lint test reads the headers.",
+      "revisions": []
+    },
+    {
+      "id": "c47",
+      "kind": "requirement",
+      "text": "Process containment: ACP agents and codex app-server run as direct children of the nvsh daemon or one-shot client (never via 'codex app-server daemon', which is a user-level daemon outside nvsh's lifetime); close() applies pi's wait/terminate/kill escalation (pi.py:815-830) to all of them, and 'nvsh uninstall' and daemon idle-exit leave no harness process behind (verified with pgrep in the tests).",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h42",
+          "text": "After 'nvsh uninstall' and after daemon idle-exit, pgrep finds no qwen/agy/codex/kiro/claude-code-acp child started by nvsh.",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "tests with fake long-running binaries assert the process table.",
+      "revisions": []
+    },
+    {
+      "id": "c48",
+      "kind": "requirement",
+      "text": "Observability: every request's resolved target (harness, model, effort, path acp|app-server|stream-json|rpc, warm|one-shot) is written to the audit log (nvsh/agent/audit.py) and shown in the panel header line, and 'nvsh context --show-context' prints it, so an operator can tell after the fact which model answered and what it was allowed to do.",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h43",
+          "text": "The audit log line and the panel header for a request name harness, model, effort, path and warm|one-shot.",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "tests/test_panel.py header snapshot; tests on nvsh/agent/audit.py.",
+      "revisions": []
+    },
+    {
+      "id": "c49",
+      "kind": "requirement",
+      "text": "'nvsh setup' and 'nvsh agent use <name>' (nvsh/cli/_commands/setup.py, agent.py:56-81, and the /agent use slash command) write the 'default' alias instead of [agent] provider, and an existing config with only [agent] provider is read as default = \"<provider>\" with the backend's configured model and no effort, so upgraded installs keep working without editing config.toml.",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h44",
+          "text": "After upgrade, a config.toml containing only [agent] provider = 'pi' resolves default = pi with the pi model and no effort; 'nvsh agent use claude' writes [aliases] default.",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "tests/test_config.py migration case; tests/test_cli_agent.py use-writes-alias case.",
+      "revisions": []
+    },
+    {
+      "id": "c50",
+      "kind": "requirement",
+      "text": "Recorded fixtures under tests/fakes and tests/fixtures are scrubbed before commit: no absolute home paths (steward portability check fails on ~/ and /home/<user>/), no conversation/session ids, no account e-mails or tokens (agy's init event and codex thread ids carry them), enforced by scripts/scan-secrets.py and a fixture-lint test.",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h45",
+          "text": "The fixture-lint test fails on any /home/<user>, ~/, e-mail or 32-hex id inside tests/fakes and tests/fixtures.",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "Run the test against a deliberately dirty fixture in a temp dir.",
+      "revisions": []
+    },
+    {
+      "id": "c51",
+      "kind": "requirement",
+      "text": "doctor's per-harness reachability check reports auth state without a model call: kiro-cli 2.0.0 on this box answers 'You are not logged in, please log in with kiro-cli login' and 'kiro-cli acp' then prints nothing on stdout (probe 2026-09-14), agy prints 'Print mode: not authenticated', so an unauthenticated harness is a doctor failure with the login command as remediation, never a hung panel.",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h46",
+          "text": "An unauthenticated harness makes doctor agent_reachable fail with the login command as remediation, and an ACP initialize that gets no reply within the timeout surfaces as ERROR, not a hang.",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "tests/test_doctor_checks.py with a fake that prints the not-logged-in text; AcpAgent timeout test.",
+      "revisions": []
+    },
+    {
+      "id": "c52",
+      "kind": "assumption",
+      "text": "Automatic failure calls can now hit a hosted, paid harness whenever the 'default' alias names one; the existing trigger rate limit (nvsh/triggers.py) is the only cost bound. Operators on air-gapped Jetsons keep pi/local by default (boundary c21), and 'nvsh agent list' marks each harness local|hosted so a hosted default is a visible choice, not a surprise.",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c53",
+      "kind": "decision",
+      "text": "qwen ships read-only by default: AcpAgent sets session/set_mode 'plan' for qwen and reports tool_calling=False; an operator may opt into qwen's own agent-side approval with one config line ([agents.qwen] approval = \"harness\", which sets mode 'default' and marks the harness 'unmediated' in capabilities and the audit log). Principle: nvsh is not opinionated where the operator can decide by config. (Operator decision 2026-09-14, resolving q2.)",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c54",
+      "kind": "decision",
+      "text": "Claude uses its official CLI only: the native 'claude -p --output-format stream-json' path (with --model, --effort, --include-partial-messages, --permission-prompts host, --resume) is primary and claude-code-acp is not used, because it is not an official Anthropic release and adds a second SDK to the risk surface. General rule: prefer the harness vendor's official protocol; use ACP only where the vendor ships it natively (qwen --acp, kiro-cli acp); third-party ACP wrappers (claude-code-acp, codex-acp, pi-acp) are out of scope. (Operator decision 2026-09-14, resolving q3.)",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    }
+  ],
+  "open_vagueness": [
+    {
+      "id": "v1",
+      "text": "Whether each of claude, codex, qwen and agy can, in headless print mode, pause on a tool call and route the approve/deny decision through 'nvsh approve' the way pi_ext/approval.ts does (claude: --permission-prompt-tool needs an MCP server nvsh would have to host; codex exec: no approval callback seen in --help; qwen: --approval-mode plan only refuses; agy: ask_permission tool event shape unprobed). If a harness cannot, its 'tool_calling' capability must be declared False and it runs read-only.",
+      "kind": "unknown_blocking",
+      "claim_id": "c22",
+      "resolved": true,
+      "resolution": "Operator decision 2026-09-14: ACP request_permission for qwen/claude/pi/kiro via ACP, codex app-server requestApproval, pi rpc extension; agy read-only until its permission events are probed; bare print-mode fallbacks run read-only",
+      "resolution_claim_id": "c22"
+    },
+    {
+      "id": "v2",
+      "text": "agy 1.0.1 accepts '--input-format stream-json' (one process, many turns) and requires each stdin line to carry an 'event' field with an object payload, but the accepted event name/payload for a user turn was not found by probing (user_message/user_input/prompt variants all 'ignoring unsupported stream input message event'); the AgyAgent warm path needs the schema from agy's docs or a newer release (1.2.2 is current), with cold '-p' plus '--conversation <id>' as the fallback.",
+      "kind": "unknown_nonblocking",
+      "claim_id": "c25",
+      "resolved": true,
+      "resolution": "Verified live 2026-09-14 on agy 1.0.1: with --input-format stream-json each stdin line is {\"event\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"<text>\"}} (Claude Code's shape); other event names are ignored with a warning and a 'user' event without 'message' errors. The AgyAgent warm path is therefore buildable; recorded on c25.",
+      "resolution_claim_id": null
+    },
+    {
+      "id": "v3",
+      "text": "kiro-cli acp's initialize handshake, thought chunks and request_permission behaviour are unverified: the installed kiro-cli 2.0.0 is not logged in, so the probe could not run; verify during the build after 'kiro-cli login'.",
+      "kind": "unknown_nonblocking",
+      "claim_id": "c51",
+      "resolved": false,
+      "resolution": "",
+      "resolution_claim_id": null
+    }
+  ],
+  "scope_entries": [
+    {
+      "id": "s1",
+      "surface": "nvsh/agent/pi.py + nvsh/agent/pi_ext/approval.ts + docs/pi-rpc.md",
+      "finding": "Pi is the reference: text deltas, tool_execution_start/end, extension_ui_request proposals, cancel, new_session/switch_session all mapped (pi.py:679-722, 777-813); the approval extension forwards every bash tool_call to 'nvsh approve check' (approval.ts:38-56).",
+      "seeds": [
+        "c2"
+      ]
+    },
+    {
+      "id": "s2",
+      "surface": "pi 0.85.1 --help (--thinking, --model provider/id:<thinking>) vs pi.py build_argv",
+      "finding": "Pi has a native effort knob nvsh never passes, and drops thinking deltas on the floor; 'same quality as pi' must first mean Pi shows thinking and honors effort.",
+      "seeds": [
+        "c3"
+      ]
+    },
+    {
+      "id": "s3",
+      "surface": "nvsh/agent/base.py (EventKind, AgentRequest, Capabilities) + nvsh/daemon.py request_from_dict:237-253",
+      "finding": "No thinking event kind exists, AgentRequest carries only kind/prompt/command/exit_code/failure_id/ask, and Capabilities has five booleans; every new signal must be added here first because all adapters, the daemon wire codec (event_to_dict base.py:106-170) and the panel key off these types.",
+      "seeds": [
+        "c4"
+      ]
+    },
+    {
+      "id": "s4",
+      "surface": "nvsh/agent/claude.py + claude 2.1.270 --help",
+      "finding": "Adapter hard-codes 'claude -p <prompt> --append-system-prompt <brief> --output-format stream-json' (claude.py:26-36) and drops every non-text content part; the installed CLI already offers model, effort, partial-message streaming, resume and permission-prompt routing.",
+      "seeds": [
+        "c5"
+      ]
+    },
+    {
+      "id": "s5",
+      "surface": "nvsh/agent/codex.py + codex-cli 0.147.0 exec --help",
+      "finding": "Adapter runs 'codex exec --json <prompt>' with the brief embedded in the prompt (no system-prompt flag, codex.py:26-31) and ignores every msg.type except four; -m and -c model_reasoning_effort=... exist on the installed CLI.",
+      "seeds": [
+        "c6"
+      ]
+    },
+    {
+      "id": "s6",
+      "surface": "nvsh/agent/qwen.py + qwen 0.23.3 --help",
+      "finding": "Qwen is the most degraded adapter (no structured protocol at all) although the installed CLI has stream-json output, --model, --approval-mode {plan,default,auto-edit,auto,yolo} and session resume.",
+      "seeds": [
+        "c7"
+      ]
+    },
+    {
+      "id": "s7",
+      "surface": "agy 1.0.1 binary ($HOME/.local/bin/agy): --help, 'agy -p --output-format stream-json' probe, --model/--effort error text",
+      "finding": "agy's --help hides --output-format/--model/--effort but all three work; model names are display strings with the effort baked in ('Gemini 3.8 Flash (High)', 'Claude Opus 4.6 (Thinking)', 'GPT-OSS 120B (Medium)'); it needs Google sign-in ('Print mode: not authenticated'), so local_model=False and it is never an offline default.",
+      "seeds": [
+        "c8"
+      ]
+    },
+    {
+      "id": "s8",
+      "surface": "agy stream-json init event (tools list, permission_mode) from the 2026-09-14 probe",
+      "finding": "Tool-call and approval event shapes are unknown for agy; the text turn proves streaming and thinking-token accounting only.",
+      "seeds": [
+        "c9"
+      ]
+    },
+    {
+      "id": "s9",
+      "surface": "nvsh/config.py + docs/config.example.toml + tests/test_config.py",
+      "finding": "Only [agent] provider, [agents.<name>] provider/model/base_url/api_key_env/api_key_file, [sessions] max and [triggers] exist; no effort, alias, profile or mode concept anywhere; unknown top-level keys are rejected, so new tables must be added to _VALID_TOP_KEYS (config.py:33).",
+      "seeds": [
+        "c10"
+      ]
+    },
+    {
+      "id": "s10",
+      "surface": "nvsh/agent/registry.py (ADAPTERS, choose, install_offer)",
+      "finding": "Registration is the single source of the harness palette; choose() has no forced-target path; install_offer returns None for anything but pi.",
+      "seeds": [
+        "c11"
+      ]
+    },
+    {
+      "id": "s11",
+      "surface": "nvsh/installers.py + tests/test_installers.py:44",
+      "finding": "Install offers are pi-only by design and test-pinned; parity of runtime quality does not require parity of installation.",
+      "seeds": [
+        "c12"
+      ]
+    },
+    {
+      "id": "s12",
+      "surface": "nvsh/shell/readline.bash:126-163 + nvsh/triggers.py:300-376 + nvsh/slash.py:103-141,363-374 + docs/shell-integration.md:105-149",
+      "finding": "'@name question' already rewrites to '/ask --agent name' at readline time; the grammar allows [A-Za-z][A-Za-z0-9_-]* only and requires a registered adapter name, so '@claude/sonnet/medium' and '@reviewer' currently fall through as ordinary lines; the rules are implemented twice and tested for sync (tests/test_readline_bash.py, tests/test_slash.py).",
+      "seeds": [
+        "c13"
+      ]
+    },
+    {
+      "id": "s13",
+      "surface": "nvsh/shell/readline.bash:217-238 + docs/shell-integration.md:201-204",
+      "finding": "A documented bash limitation, not an nvsh bug; the new syntax inherits it unless a different sigil is chosen.",
+      "seeds": [
+        "c14"
+      ]
+    },
+    {
+      "id": "s14",
+      "surface": "nvsh/daemon.py:651-765 (_build_agent, _acquire, _activate) + nvsh/client.py:423-449,595-617 + nvsh/client_transport.py:232-278",
+      "finding": "One agent process per daemon lifetime bound to the daemon's Config; a per-request '@name' override deliberately forces one-shot because the warm daemon would answer from the default backend (client.py:603-608); AgentRequest carries no target on the wire.",
+      "seeds": [
+        "c15"
+      ]
+    },
+    {
+      "id": "s15",
+      "surface": "nvsh/panel.py:195-217,376-388,542-588",
+      "finding": "Seven kinds rendered, no thinking path; tool result exit-code sniffing scans exitCode/exit_code/exit/returncode (pi spells it exitCode).",
+      "seeds": [
+        "c16"
+      ]
+    },
+    {
+      "id": "s16",
+      "surface": "nvsh/doctor_checks.py:102-127,255-443",
+      "finding": "agent_configured is generic; agent_reachable is pi- and openai-compat-specific with a warning stub for claude/codex/qwen.",
+      "seeds": [
+        "c17"
+      ]
+    },
+    {
+      "id": "s17",
+      "surface": "tests/test_agent_conformance.py + tests/fakes/* + tests/test_cli_agent.py + nvsh/explain/catalog.py + tests/test_invariants.py",
+      "finding": "Every adapter must pass streaming-order, cancel-mid-stream, error-propagation, capability-report and teardown via a scripted fake binary; _VERBS and ENTRIES are hand-maintained lists a new verb must be added to.",
+      "seeds": [
+        "c18"
+      ]
+    },
+    {
+      "id": "s18",
+      "surface": "docs/harness-selection.md + culture.yaml + tests/test_invariants.py:49-71",
+      "finding": "Two different 'backend' notions exist; only the NvshAgent runtime one is in play here.",
+      "seeds": [
+        "c19"
+      ]
+    },
+    {
+      "id": "s19",
+      "surface": "CLAUDE.md, AGENTS.override.md, .pi/SYSTEM.md, QWEN.md, AGENTS.colleague.md, docs/architecture.md, README.md, docs/specs/2026-09-13-nvsh-bash-hook-agent-on-error.md",
+      "finding": "Default-backend prose is duplicated in at least eight committed files, four of them CI-gated for drift.",
+      "seeds": [
+        "c20"
+      ]
+    },
+    {
+      "id": "s20",
+      "surface": "gh issue 6 (acceptance criteria) + nvsh/config.py:51-53 + CLAUDE.md hook constraints",
+      "finding": "Issue #6 is still OPEN and its acceptance list pins Pi as the zero-config default and demands discoverable capabilities with explicit degradation.",
+      "seeds": [
+        "c21"
+      ]
+    },
+    {
+      "id": "s21",
+      "surface": "claude/qwen/codex/agy headless permission flags (from --help and the agy init event) vs nvsh/agent/loop.py:50-68 + nvsh/agent/audit.py",
+      "finding": "Today claude/codex/qwen never emit PROPOSAL, so loop.run_loop's approval gate and the audit trail are dead paths for them; each CLI has a headless permission mechanism but whether it can block a tool call and hand the decision to nvsh (as approval.ts does) is unproven.",
+      "seeds": [
+        "c22"
+      ]
+    },
+    {
+      "id": "s22",
+      "surface": "pyproject.toml dependencies = [] + nvsh/config.py tomllib",
+      "finding": "No YAML parser is available without adding a dependency; the operator said 'yaml' for aliases and this needs an explicit yes/no on TOML.",
+      "seeds": [
+        "c27"
+      ]
+    },
+    {
+      "id": "s23",
+      "surface": "claude/qwen --input-format stream-json, agy --input-format stream-json probe (2026-09-14), codex exec resume / app-server",
+      "finding": "Warm-session support verified per harness from --help and a live agy probe: claude, qwen and agy can hold one process across turns; codex cannot in exec mode.",
+      "seeds": [
+        "c25"
+      ]
+    },
+    {
+      "id": "s24",
+      "surface": "codex app-server protocol (codex-cli 0.147.0; 'codex app-server generate-json-schema' -> scratchpad/codex-schema, 20k-line v2 schema)",
+      "finding": "app-server is a full Pi-equivalent surface: thread/start|resume|fork, turn/start|steer|interrupt, item/reasoning/textDelta + summaryTextDelta, item/agentMessage/delta, item/commandExecution/outputDelta + requestApproval, item/fileChange/*, execCommandApproval and applyPatchApproval request/response, thread/tokenUsage/updated; marked [experimental] in --help, and 'codex app-server daemon' can host it once per user.",
+      "seeds": [
+        "c6"
+      ]
+    },
+    {
+      "id": "s25",
+      "surface": "ACP availability: qwen 0.23.3 --acp (native), pi-acp 0.0.33 (installed globally, wraps pi), @zed-industries/claude-code-acp 0.16.2 and @zed-industries/codex-acp 0.16.0 on npm, @agentclientprotocol/sdk 1.4.0; pi-acp dist uses session/new|prompt|resume|update|set_mode|request_permission and agent_thought_chunk/agent_message_chunk/tool_call/tool_call_update",
+      "finding": "One ACP client covers four of the five harnesses today (qwen natively; pi, claude, codex through Zed's adapters) with thinking, tool calls, permission requests and sessions in one protocol; agy has no ACP adapter found. The sibling culture repo's culture_core/clients/acp/ is only 36 lines of config and constants (the client proper lives in its cultureagent dependency), so nvsh writes its own stdlib ACP client rather than citing.",
+      "seeds": [
+        "c34",
+        "c35"
+      ]
+    },
+    {
+      "id": "s26",
+      "surface": "kiro-cli 2.0.0 ($HOME/.local/bin/kiro-cli): 'kiro-cli acp --help'; culture docs/reference/harnesses/acp.md:27,67",
+      "finding": "Kiro ships a native ACP server ('kiro-cli acp' with --agent, --model, --trust-tools; --trust-all-tools is the auto-approve switch nvsh must never pass); no effort flag is exposed, so effort is unsupported and declared so. The culture repo already registers Kiro as an ACP harness, confirming the command shape.",
+      "seeds": [
+        "c36",
+        "c35"
+      ]
+    },
+    {
+      "id": "s27",
+      "surface": "challenge pass / security lens: agy stream-json probe with a run_command turn (scratchpad/agyprobe, 2026-09-14)",
+      "finding": "agy has no runtime approval channel in print mode; command tools are auto-denied and only a persistent settings.json allowlist unlocks them; read tools run without any prompt; tool event shape now known.",
+      "seeds": [
+        "c37"
+      ]
+    },
+    {
+      "id": "s28",
+      "surface": "challenge pass / security lens: harness-side allowlists ($HOME/.gemini/antigravity-cli/settings.json permissions.allow x18; $HOME/.claude/settings.json allow=0; $HOME/.codex/config.toml no approval_policy; kiro-cli acp --trust-tools)",
+      "finding": "Persistent per-harness allowlists execute commands with no nvsh gate; the spec had no claim about them.",
+      "seeds": [
+        "c38",
+        "c39"
+      ]
+    },
+    {
+      "id": "s29",
+      "surface": "challenge pass / security lens: codex app-server AskForApproval schema (scratchpad/codex-schema)",
+      "finding": "The approval channel exists but only under 'untrusted'/'on-request'; the policy value is part of the contract, not a default to trust.",
+      "seeds": [
+        "c40"
+      ]
+    },
+    {
+      "id": "s30",
+      "surface": "challenge pass / security lens: redaction reach (nvsh/capture.py:30-51,390; nvsh/agent/pi.py:466-470; nvsh/agent/_subprocess.py:37,97-106)",
+      "finding": "Redaction is applied to captured output and to pi's stderr only; other adapters' stderr tails and harness-side file reads are outside it.",
+      "seeds": [
+        "c41",
+        "c42"
+      ]
+    },
+    {
+      "id": "s31",
+      "surface": "challenge pass / adjacent-systems lens: claude-code-acp 0.16.2 probe (scratchpad/acp) inside and outside a Claude Code environment",
+      "finding": "A nested-session guard and a bundled second SDK are hidden dependencies of the claude ACP path.",
+      "seeds": [
+        "c43",
+        "c44"
+      ]
+    },
+    {
+      "id": "s32",
+      "surface": "challenge pass / lifecycle lens: daemon upgrade path (nvsh/daemon.py, nvsh/client_transport.py; 'uv tool install --force' is the documented reinstall)",
+      "finding": "An upgraded client talking to a pre-upgrade warm daemon would silently lose the target field; no version check exists.",
+      "seeds": [
+        "c45"
+      ]
+    },
+    {
+      "id": "s33",
+      "surface": "challenge pass / lifecycle lens: CLI version drift (agy 1.0.1 installed vs 1.2.2 current with different flags; codex app-server marked [experimental])",
+      "finding": "Every parser is version-coupled; nothing records or checks versions today.",
+      "seeds": [
+        "c46"
+      ]
+    },
+    {
+      "id": "s34",
+      "surface": "challenge pass / operations lens: child-process lifetime (nvsh/agent/pi.py:815-830 close escalation; codex app-server daemon subcommand)",
+      "finding": "Only PiAgent has a teardown escalation; ACP and app-server children need the same, and app-server's own daemon mode must stay out of scope.",
+      "seeds": [
+        "c47"
+      ]
+    },
+    {
+      "id": "s35",
+      "surface": "challenge pass / observability lens: nvsh/agent/audit.py + nvsh/panel.py header + nvsh context",
+      "finding": "The audit log records proposals/decisions/outcomes but not which harness/model/effort produced them.",
+      "seeds": [
+        "c48"
+      ]
+    },
+    {
+      "id": "s36",
+      "surface": "challenge pass / hidden-dependency lens: config writers (nvsh/cli/_commands/setup.py, nvsh/cli/_commands/agent.py:56-81, nvsh/slash.py /agent use, nvsh/config.py set_provider)",
+      "finding": "Three writers of [agent] provider exist and must move to the alias table together; migration of existing configs was unstated.",
+      "seeds": [
+        "c49"
+      ]
+    },
+    {
+      "id": "s37",
+      "surface": "challenge pass / data-flow lens: recorded transcripts (agy init event cwd=/home/spark/..., conversation_id; qwen ACP sessionId; codex thread ids)",
+      "finding": "Live transcripts leak home paths and ids into fixtures unless scrubbed.",
+      "seeds": [
+        "c50"
+      ]
+    },
+    {
+      "id": "s38",
+      "surface": "challenge pass / failure-mode lens: unauthenticated harnesses (kiro-cli whoami; agy 'Print mode: not authenticated'; kiro acp stdout silent)",
+      "finding": "An unauthenticated ACP agent blocks silently on stdin; nvsh needs a bounded initialize timeout and a doctor auth check.",
+      "seeds": [
+        "c51"
+      ]
+    },
+    {
+      "id": "s39",
+      "surface": "challenge pass / overlooked-actors lens: cost and air-gap (nvsh/triggers.py rate window; registry local_model capability)",
+      "finding": "A hosted default turns every qualifying failure into a paid call; nothing in the frame said so.",
+      "seeds": [
+        "c52"
+      ]
+    },
+    {
+      "id": "s40",
+      "surface": "challenge pass / concurrency lens: nvsh/daemon.py _acquire/_activate (sessions.max=1 pool), nvsh/client.py:282-317 stale-state handling, one ACP/app-server stdio pair per slot",
+      "finding": "Clean pass: one warm process per slot with switch/new session, @targets always one-shot in-process, so no two writers share a harness stdin; residual risk only if sessions.max>1 pools processes of different harnesses under one target key.",
+      "seeds": []
+    },
+    {
+      "id": "s41",
+      "surface": "challenge pass / reversibility lens: config.toml alias table + rc block",
+      "finding": "Clean pass: the alias table is additive, [agent] provider stays readable, and nothing touches the rc block or the hook; rollback is 'nvsh agent use pi' or deleting the [aliases] table.",
+      "seeds": []
+    },
+    {
+      "id": "s42",
+      "surface": "challenge pass / cheap-probe lens: what was and was not probed on 2026-09-14",
+      "finding": "Probed live: agy print+stream-json (text, tool, command auto-deny, input schema), qwen --acp (auto/default/plan modes, thought chunks), claude-code-acp (session/new inside and outside a Claude Code env; prompt rejected by API 400), codex app-server schema (offline), kiro-cli (auth only). Not probed: pi-acp, codex app-server live turn, claude native --permission-prompts host round-trip, agy --input-format multi-turn with tools.",
+      "seeds": []
+    }
+  ],
+  "lapses": [
+    {
+      "id": "l1",
+      "code": "assumption-for-measurement",
+      "what": "The /think leg captured c22 stating that ACP session/request_permission gives qwen an approval channel on the strength of pi-acp's method list, without probing qwen --acp; the challenge probe showed qwen never sends it.",
+      "skipped_check": "",
+      "refs": [
+        "challenge pass / security lens: qwen --acp probe"
+      ],
+      "origin": "llm",
+      "status": "approved"
+    }
+  ],
+  "obligations": []
+}
