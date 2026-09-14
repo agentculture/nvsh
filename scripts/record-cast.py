@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Record and replay a terminal session as an asciicast v2 file.
 
-A ~200-line stdlib stand-in for ``asciinema``, which is not installed on any
+A stdlib stand-in for ``asciinema``, which is not installed on any
 of the three verification machines (Jetson AGX Orin, Jetson Thor, DGX Spark)
 and cannot be installed on an air-gapped box. The output is the real
 asciicast v2 format, so ``asciinema play`` reads these files too; ``play``
@@ -25,17 +25,25 @@ this script's argv.
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import os
 import pty
 import select
 import shlex
 import signal
+import struct
 import sys
 import termios
 import time
 import tty
 from pathlib import Path
+
+#: Env vars (or, with a trailing ``*``, prefixes) a ``--clean-env`` child
+#: inherits from the recording operator's environment. Everything else is
+#: dropped, so two runs on different machines/shells produce the same
+#: starting env, apart from whatever ``--env`` overrides on top of it.
+_CLEAN_ENV_ALLOW = ("PATH", "TERM", "HOME", "LANG", "XDG_*", "NVSH_*", "COLUMNS", "LINES")
 
 #: What ``--feed`` accepts as key escapes.
 _KEY_ESCAPES = (
@@ -84,6 +92,35 @@ def _window_size(default_cols: int, default_rows: int) -> tuple[int, int]:
     return size.columns or default_cols, size.lines or default_rows
 
 
+def _set_window_size(fd: int, cols: int, rows: int) -> None:
+    """Set the pty's window size via ``TIOCSWINSZ`` (``struct winsize``)."""
+    packed = struct.pack("HHHH", rows, cols, 0, 0)
+    fcntl.ioctl(fd, termios.TIOCSWINSZ, packed)
+
+
+def _build_env(base: dict[str, str], clean: bool, overrides: list[str] | None) -> dict[str, str]:
+    """The child's environment: ``base`` (or an allowlisted subset of it if
+    ``clean`` is set) plus ``NAME=VALUE`` items from ``overrides``."""
+    if clean:
+        env = {}
+        for key, value in base.items():
+            for allowed in _CLEAN_ENV_ALLOW:
+                if allowed.endswith("*"):
+                    if key.startswith(allowed[:-1]):
+                        env[key] = value
+                        break
+                elif key == allowed:
+                    env[key] = value
+                    break
+    else:
+        env = dict(base)
+    for item in overrides or []:
+        key, _, value = item.partition("=")
+        if key:
+            env[key] = value
+    return env
+
+
 def record(args: argparse.Namespace) -> int:
     """Run ``args.command`` on a pty, writing an asciicast v2 file."""
     cols, rows = args.cols, args.rows
@@ -91,20 +128,17 @@ def record(args: argparse.Namespace) -> int:
         cols, rows = _window_size(cols, rows)
     replacements = _load_replacements(Path(args.replace_from) if args.replace_from else None)
 
-    env = dict(os.environ)
+    env = _build_env(dict(os.environ), args.clean_env, args.env)
     env["COLUMNS"] = str(cols)
     env["LINES"] = str(rows)
-    for item in args.env or []:
-        key, _, value = item.partition("=")
-        if key:
-            env[key] = value
 
     out = Path(args.out).open("w", encoding="utf-8")
+    header_timestamp = int(time.time()) if args.timestamp is None else args.timestamp
     header = {
         "version": 2,
         "width": cols,
         "height": rows,
-        "timestamp": int(time.time()),
+        "timestamp": header_timestamp,
         "env": {"SHELL": env.get("SHELL", ""), "TERM": env.get("TERM", "")},
     }
     if args.title:
@@ -115,6 +149,12 @@ def record(args: argparse.Namespace) -> int:
     pid, fd = pty.fork()
     if pid == 0:  # child
         try:
+            # The pty's controlling tty is already fd 0/1/2 in the child
+            # (that's what pty.fork() sets up); set its window size before
+            # exec so the child's first read of it (``stty size``, a shell
+            # prompt redraw, curses init) sees --cols/--rows rather than
+            # whatever size the pty was allocated with.
+            _set_window_size(0, cols, rows)
             os.execvpe(args.command[0], list(args.command), env)
         except OSError:
             pass
@@ -215,10 +255,22 @@ def build_parser() -> argparse.ArgumentParser:
     rec.add_argument("out", help="output .cast path")
     rec.add_argument("--feed", action="append", help="scripted step: 'keys|seconds'")
     rec.add_argument("--env", action="append", help="extra child env: NAME=VALUE")
+    rec.add_argument(
+        "--clean-env",
+        action="store_true",
+        help="start the child from an allowlist (PATH, TERM, HOME, LANG, "
+        "XDG_*, NVSH_*, COLUMNS, LINES) instead of the full parent env",
+    )
     rec.add_argument("--replace-from", help="file of OLD=NEW scrub rules")
     rec.add_argument("--title", help="asciicast title")
     rec.add_argument("--cols", type=int, default=100)
     rec.add_argument("--rows", type=int, default=34)
+    rec.add_argument(
+        "--timestamp",
+        type=int,
+        default=None,
+        help="pin the header's unix timestamp (default: current time)",
+    )
     rec.add_argument("--settle", type=float, default=1.5, help="seconds to pump before/after")
     rec.add_argument("--key-delay", type=float, default=0.03, help="seconds between keystrokes")
     rec.add_argument("command", nargs="*", help="command to run (after --)")

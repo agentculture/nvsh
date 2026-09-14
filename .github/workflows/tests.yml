@@ -58,13 +58,13 @@ jobs:
       - run: uv sync
 
       - name: black --check
-        run: uv run black --check nvsh tests
+        run: uv run black --check nvsh tests scripts
 
       - name: isort --check
-        run: uv run isort --check-only nvsh tests
+        run: uv run isort --check-only nvsh tests scripts
 
       - name: flake8
-        run: uv run flake8 nvsh tests
+        run: uv run flake8 nvsh tests scripts
 
       - name: bandit
         run: uv run bandit -c pyproject.toml -r nvsh
