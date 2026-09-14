@@ -5,7 +5,7 @@
   "schema_version": 5,
   "status": "exported",
   "created": "2026-09-14T05:12:53Z",
-  "updated": "2026-09-14T05:34:50Z",
+  "updated": "2026-09-14T05:48:32Z",
   "targets": [
     {
       "id": "c1",
@@ -985,7 +985,8 @@
       "status": "confirmed",
       "acceptance_criteria": [
         "docs/verification.md records: on main, grep shows no THINKING/effort/agy; after install, a failure in a hooked shell with default = pi/associate shows a thinking run; '@reviewer explain the last failure' answers from the aliased harness; '@claude/sonnet/medium' runs one-shot; 'nvsh agent list --json' shows six adapters with paths",
-        "at least two harnesses verified live on spark and the default verified on one Jetson"
+        "at least two harnesses verified live on spark and the default verified on one Jetson",
+        "Live verification covers every added harness on every machine (spark, thor, orin): pi, agy, claude, codex, qwen and kiro are each exercised where installed, and kiro's configured default model for these tests is one of minimax-m2.5, glm-5 or qwen3-coder-next (operator decision 2026-09-14); a harness that could not be exercised is recorded as such."
       ],
       "deps": [
         "t20"
@@ -1041,6 +1042,14 @@
       "text": "tests/_fake_adapters.py is shared across the adapter wave; the conformance task owns it and adapter tasks add ViaFake classes in their own test modules to keep the wave file-disjoint.",
       "kind": "follow_up",
       "task_id": "t15",
+      "resolved": false,
+      "resolution": ""
+    },
+    {
+      "id": "r6",
+      "text": "kiro-cli 2.0.0 'chat --model <id>' is silently ignored ('[warn] failed to set model: Method not found', probe 2026-09-14) while an agent config file with a 'model' field pins it; 'kiro-cli acp --model' may behave the same, so the kiro entry must verify the active model and fall back to a generated agent config under XDG state if the flag is ignored.",
+      "kind": "unknown_nonblocking",
+      "task_id": "t12",
       "resolved": false,
       "resolution": ""
     }

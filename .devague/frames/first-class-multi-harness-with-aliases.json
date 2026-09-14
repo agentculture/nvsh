@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-09-14T03:50:29Z",
-  "updated": "2026-09-14T05:08:03Z",
+  "updated": "2026-09-14T05:45:09Z",
   "claims": [
     {
       "id": "c1",
@@ -1348,7 +1348,7 @@
     {
       "id": "s26",
       "surface": "kiro-cli 2.0.0 ($HOME/.local/bin/kiro-cli): 'kiro-cli acp --help'; culture docs/reference/harnesses/acp.md:27,67",
-      "finding": "Kiro ships a native ACP server ('kiro-cli acp' with --agent, --model, --trust-tools; --trust-all-tools is the auto-approve switch nvsh must never pass); no effort flag is exposed, so effort is unsupported and declared so. The culture repo already registers Kiro as an ACP harness, confirming the command shape.",
+      "finding": "Kiro ships a native ACP server ('kiro-cli acp' with --agent, --model, --trust-tools; --trust-all-tools is the auto-approve switch nvsh must never pass). 'kiro-cli chat --help' exposes --effort <EFFORT> and --model, and its model list (2026-09-14, logged in) is auto, claude-sonnet-4.5, claude-sonnet-4, claude-haiku-4.5, deepseek-3.2, minimax-m2.5, minimax-m2.1, glm-5, qwen3-coder-next; whether 'kiro-cli acp' accepts --effort is unverified. The culture repo already registers Kiro as an ACP harness, confirming the command shape. kiro-cli is installed on spark, thor and orin (operator, 2026-09-14).",
       "seeds": [
         "c36",
         "c35"
