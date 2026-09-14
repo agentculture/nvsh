@@ -10,6 +10,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Fixed
 
 - `Panel.stream` now does all its setup (termios save, SIGINT handler install, ticker start) inside its try block, so a Ctrl+C that lands before the handler is installed still ends as an interrupted stream with `cancel` called once instead of an uncaught KeyboardInterrupt.
+- `Panel.stream` (and the line readers) capture the previous SIGINT handler before installing their own, and teardown restores it first, so a second Ctrl+C during teardown never leaves the panel handler installed.
 - The flaky CI test `test_ctrl_c_returns_to_a_prompt_within_one_second` now announces READY from inside the event generator, closing the race that made the Publish workflow's test job fail on main (run 34837468240, `assert -2 == 130`). Two regression tests added.
 
 ## [0.10.0] - 2026-09-14

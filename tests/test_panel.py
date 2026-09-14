@@ -367,6 +367,7 @@ def test_ctrl_c_that_lands_before_the_handler_is_installed_still_cancels(monkeyp
     is installed arrives through Python's default handler as a
     KeyboardInterrupt. It must still end as an interrupted stream with
     ``cancel`` called once, not escape as an uncaught exception."""
+    before = signal.getsignal(signal.SIGINT)
     cancelled = []
 
     def raise_interrupt(*_args):
@@ -381,24 +382,31 @@ def test_ctrl_c_that_lands_before_the_handler_is_installed_still_cancels(monkeyp
     assert result.interrupted is True
     assert cancelled == [1]
     assert "nvsh: interrupted" in out.getvalue()
-    assert signal.getsignal(signal.SIGINT) is signal.default_int_handler
+    assert signal.getsignal(signal.SIGINT) is before
 
 
-def test_cancel_runs_once_when_sigint_arrives_through_the_handler():
-    """The installed handler and the late-interrupt path share one guard:
-    ``cancel`` is never called twice for one Ctrl+C."""
+def test_cancel_runs_once_across_the_handler_and_the_late_interrupt_paths(monkeypatch):
+    """The installed handler and the ``except KeyboardInterrupt`` path share
+    one guard: a Ctrl+C through the handler followed by one through Python's
+    default handler still calls ``cancel`` exactly once."""
+    before = signal.getsignal(signal.SIGINT)
     cancelled = []
+    real_install = panel_mod._install_sigint
+
+    def install_then_interrupt_twice(handler):
+        real_install(handler)
+        try:
+            handler(signal.SIGINT, None)  # Ctrl+C via the panel's handler
+        except KeyboardInterrupt:
+            pass
+        raise KeyboardInterrupt()  # ...and the default handler firing next
+
+    monkeypatch.setattr(panel_mod, "_install_sigint", install_then_interrupt_twice)
     p = _panel(env={"NO_COLOR": "1"})
-
-    def events():
-        yield AgentEvent(kind=EventKind.TEXT_DELTA, text="working")
-        os.kill(os.getpid(), signal.SIGINT)
-        time.sleep(0.5)  # the handler fires here and raises out of the loop
-        yield AgentEvent(kind=EventKind.DONE)  # pragma: no cover
-
-    result = p.stream(events(), cancel=lambda: cancelled.append(1))
+    result = p.stream(iter([]), cancel=lambda: cancelled.append(1))
     assert result.interrupted is True
     assert cancelled == [1]
+    assert signal.getsignal(signal.SIGINT) is before
 
 
 # --- waiting indicator (d13) --------------------------------------------
