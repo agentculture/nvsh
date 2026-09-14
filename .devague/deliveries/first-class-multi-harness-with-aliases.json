@@ -2,7 +2,7 @@
   "plan_slug": "first-class-multi-harness-with-aliases",
   "schema_version": 2,
   "created": "2026-09-14T06:16:12Z",
-  "updated": "2026-09-14T07:59:50Z",
+  "updated": "2026-09-14T08:17:05Z",
   "deviations": [
     {
       "id": "d1",
@@ -747,6 +747,48 @@
       ],
       "evidence_refs": [
         "e16"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    },
+    {
+      "id": "b8",
+      "kind": "added",
+      "behavior_text": "claude, codex and agy refuse [agents.<name>] extra_args that would bypass approval (--dangerously-skip-permissions, --full-auto, --yolo, --trust-all-tools, bypassPermissions, approval_policy=never) at construction, matching acp.py's FORBIDDEN_ARGS (PR #9 review threads 9-11)",
+      "caused_by": [
+        "c38"
+      ],
+      "evidence_refs": [
+        "e14"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    },
+    {
+      "id": "b9",
+      "kind": "amended",
+      "behavior_text": "CodexAgent exposes respond_ui() so the shared responder can answer app-server approvals, and answers unknown server requests with JSON-RPC -32601 instead of leaving them pending (PR #9 threads 7, 17)",
+      "caused_by": [
+        "c40"
+      ],
+      "evidence_refs": [
+        "e3"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    },
+    {
+      "id": "b10",
+      "kind": "amended",
+      "behavior_text": "doctor's agent_reachable probes the backend the default alias resolves to and fails on a non-zero --version exit; @default routes to the warm daemon; setup keeps an explicit usable default alias; the pi factory forwards effort/extra_args/approval; agy and ACP children run in the requesting shell's cwd (PR #9 threads 2, 3, 4, 8, 14, 15, 19)",
+      "caused_by": [
+        "c30"
+      ],
+      "evidence_refs": [
+        "e26"
       ],
       "origin": "llm",
       "status": "proposed",
