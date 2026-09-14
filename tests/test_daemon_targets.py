@@ -561,7 +561,8 @@ def test_an_old_shape_request_line_still_parses(tmp_path: Path) -> None:
     finally:
         daemon.shutdown()
 
-    assert "text_delta" in kinds and kinds[-1] == "done"
+    assert "text_delta" in kinds
+    assert kinds[-1] == "done"
     assert built[0].runs[0].command == "ls /nope"
     assert built[0].runs[0].target is None
 

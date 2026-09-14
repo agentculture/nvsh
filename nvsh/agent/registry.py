@@ -67,9 +67,9 @@ def _str_or_none(value: object) -> str | None:
 
 
 def _list_or_none(value: object) -> list[str] | None:
-    if value is None:
+    if not isinstance(value, (list, tuple)):
         return None
-    return [str(item) for item in value]  # type: ignore[union-attr]
+    return [str(item) for item in value]
 
 
 def _make_pi(config: Config) -> NvshAgent:

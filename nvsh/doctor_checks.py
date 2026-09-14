@@ -460,14 +460,19 @@ def _default_cli_run(argv: list[str], timeout: float) -> tuple[int, str, str]:
     return proc.returncode, proc.stdout, proc.stderr
 
 
-_VERSION_RE = re.compile(r"(\d+)\.(\d+)\.(\d+)")
+#: Matched per whitespace-separated token (never against the whole
+#: ``--version`` output) so the pattern is anchored at both ends and cannot
+#: backtrack across the input the way a bare ``search()`` over the full text
+#: could.
+_VERSION_TOKEN_RE = re.compile(r"v?(\d+)\.(\d+)\.(\d+)[^\s]*")
 
 
 def _parse_cli_version(text: str) -> tuple[int, int, int] | None:
-    match = _VERSION_RE.search(text)
-    if not match:
-        return None
-    return (int(match.group(1)), int(match.group(2)), int(match.group(3)))
+    for token in text.split():
+        match = _VERSION_TOKEN_RE.fullmatch(token)
+        if match:
+            return (int(match.group(1)), int(match.group(2)), int(match.group(3)))
+    return None
 
 
 def _format_version(version: tuple[int, int, int]) -> str:

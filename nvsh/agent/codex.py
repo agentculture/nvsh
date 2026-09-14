@@ -701,7 +701,11 @@ class CodexAgent(SubprocessAgent):
         safe default: nvsh never runs a command the operator did not
         approve.
         """
-        for request_id in list(self._pending_approvals):
+        # respond_approval() always pops the id it is given, so draining the
+        # dict by repeatedly answering its first key terminates without a
+        # snapshot copy.
+        while self._pending_approvals:
+            request_id = next(iter(self._pending_approvals))
             self.respond_approval(request_id, False)
 
     def steer(self, text: str) -> bool:

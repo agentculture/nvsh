@@ -62,6 +62,10 @@ from .prompt import build_full_prompt, build_prompt
 #: with ``protocolVersion: 1``.
 PROTOCOL_VERSION = 1
 
+#: The one server-to-client request nvsh answers: the agent asking
+#: permission to run a tool call.
+REQUEST_PERMISSION_METHOD = "session/request_permission"
+
 #: How long a single queue get() waits before re-checking process liveness
 #: and the cancel flag. Same bound, and same reason, as ``PiAgent``'s.
 _POLL_INTERVAL_SECONDS = 0.2
@@ -612,7 +616,7 @@ class AcpAgent(NvshAgent):
                     result = obj.get("result")
                     return dict(result) if isinstance(result, Mapping) else {}
                 if isinstance(obj, Mapping) and obj.get("method") and obj.get("id") is not None:
-                    if obj.get("method") != "session/request_permission":
+                    if obj.get("method") != REQUEST_PERMISSION_METHOD:
                         self._answer_unknown_request(obj)
                         continue
                 carried.append(obj)
@@ -712,7 +716,7 @@ class AcpAgent(NvshAgent):
             params = obj.get("params")
             update = params.get("update") if isinstance(params, Mapping) else None
             return self._update_event(update) if isinstance(update, Mapping) else None
-        if method == "session/request_permission":
+        if method == REQUEST_PERMISSION_METHOD:
             return self._permission_event(obj)
         if method:
             if obj.get("id") is not None:
@@ -787,7 +791,7 @@ class AcpAgent(NvshAgent):
                 rationale=rationale or self._rationale_text() or str(tool_call.get("title") or ""),
                 kind=ProposalKind.FIX,
             ),
-            args={"request_id": request_id, "method": "session/request_permission"},
+            args={"request_id": request_id, "method": REQUEST_PERMISSION_METHOD},
         )
 
     def _rationale_text(self) -> str:
@@ -834,7 +838,11 @@ class AcpAgent(NvshAgent):
         if self._proc is None or self._proc.poll() is not None:
             self._pending.clear()
             return
-        for request_id in list(self._pending):
+        # respond_ui() always pops the id it is given, so draining the dict
+        # by repeatedly answering its first key terminates without a
+        # snapshot copy.
+        while self._pending:
+            request_id = next(iter(self._pending))
             self.respond_ui(request_id, cancelled=True)
         if self._session_id:
             self._send(

@@ -92,7 +92,8 @@ def test_codex_answers_an_unknown_server_request_instead_of_leaving_it_pending()
     sent = _Sent()
     agent._send = sent  # type: ignore[method-assign]
     event = agent._map({"id": 42, "method": "thread/somethingNew", "params": {}})
-    assert event is not None and event.text == "thread/somethingNew"
+    assert event is not None
+    assert event.text == "thread/somethingNew"
     assert sent.messages[-1]["id"] == 42
     assert sent.messages[-1]["error"]["code"] == -32601
 
@@ -185,5 +186,6 @@ def test_doctor_probes_the_default_alias_backend_not_the_legacy_provider() -> No
         return 0, "codex-cli 0.147.0\n", ""
 
     check = doctor_checks.check_agent_reachable(cfg, which=lambda name: "/usr/bin/codex", run=run)
-    assert calls and calls[0][0] == "codex"
+    assert calls
+    assert calls[0][0] == "codex"
     assert check["passed"] is True, json.dumps(check)
