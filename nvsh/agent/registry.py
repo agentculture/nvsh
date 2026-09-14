@@ -87,25 +87,16 @@ def _make_pi(config: Config) -> NvshAgent:
 
 
 def _make_qwen(config: Config) -> NvshAgent:
-    """ACP-mode qwen (task t8/c21): ``qwen --acp`` over :class:`AcpAgent`.
+    """ACP-mode qwen (task t8/c21): ``qwen --acp`` over :class:`~.acp.AcpAgent`.
 
-    ``nvsh.agent.acp`` does not exist in this worktree yet (another task
-    builds it in parallel) -- imported lazily so this module keeps importing
-    cleanly until it lands.
+    ``nvsh.agent.acp`` is imported lazily so this module never drags the
+    ACP machinery in for a caller that only wants ``ADAPTERS`` metadata.
+    ``acp.build`` owns the mode/approval logic (decision c53): ``plan`` and
+    read-only unless ``[agents.qwen] approval = "harness"``.
     """
-    try:
-        from .acp import AcpAgent
-    except ImportError as exc:  # pragma: no cover - covered once acp.py merges
-        raise RuntimeError("acp adapter not available yet: nvsh.agent.acp is not present") from exc
-    settings = config.agents.get("qwen", {})
-    return AcpAgent(
-        command=["qwen", "--acp"],
-        name="qwen",
-        model=_str_or_none(settings.get("model")),
-        effort=_str_or_none(settings.get("effort")),
-        extra_args=_list_or_none(settings.get("extra_args")),
-        approval=str(settings.get("approval", "nvsh")),
-    )
+    from .acp import build
+
+    return build("qwen", config.agents.get("qwen", {}))
 
 
 def _make_qwen_print(config: Config) -> NvshAgent:
@@ -136,11 +127,9 @@ def _make_codex(config: Config) -> NvshAgent:
 
 
 def _make_agy(config: Config) -> NvshAgent:
-    """``nvsh.agent.agy`` does not exist in this worktree yet -- lazy import."""
-    try:
-        from .agy import AgyAgent
-    except ImportError as exc:  # pragma: no cover - covered once agy.py merges
-        raise RuntimeError("agy adapter not available yet: nvsh.agent.agy is not present") from exc
+    """``agy -p --output-format stream-json`` (lazy import, see ``_make_qwen``)."""
+    from .agy import AgyAgent
+
     settings = config.agents.get("agy", {})
     return AgyAgent(
         model=_str_or_none(settings.get("model")),
@@ -151,20 +140,10 @@ def _make_agy(config: Config) -> NvshAgent:
 
 
 def _make_kiro(config: Config) -> NvshAgent:
-    """``nvsh.agent.acp`` does not exist in this worktree yet -- lazy import."""
-    try:
-        from .acp import AcpAgent
-    except ImportError as exc:  # pragma: no cover - covered once acp.py merges
-        raise RuntimeError("acp adapter not available yet: nvsh.agent.acp is not present") from exc
-    settings = config.agents.get("kiro", {})
-    return AcpAgent(
-        command=["kiro-cli", "acp"],
-        name="kiro",
-        model=_str_or_none(settings.get("model")),
-        effort=_str_or_none(settings.get("effort")),
-        extra_args=_list_or_none(settings.get("extra_args")),
-        approval=str(settings.get("approval", "nvsh")),
-    )
+    """``kiro-cli acp`` over :class:`~.acp.AcpAgent` (lazy import, see ``_make_qwen``)."""
+    from .acp import build
+
+    return build("kiro", config.agents.get("kiro", {}))
 
 
 def _make_openai_compat(config: Config) -> NvshAgent:

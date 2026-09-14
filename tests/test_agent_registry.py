@@ -95,20 +95,39 @@ def test_path_values_match_acceptance_criteria():
         assert registry.ADAPTERS[name].path == path, name
 
 
-def test_agy_and_kiro_factories_are_lazy_and_module_still_imports():
-    # nvsh.agent.agy and nvsh.agent.acp do not exist in this worktree yet
-    # (built by other tasks in parallel); this module must still import
-    # cleanly, and the factories must only fail once actually called.
-    import importlib
+def test_agy_and_acp_modules_are_imported_lazily():
+    # Importing the registry must not import the agy/acp adapter modules:
+    # they are only pulled in by the factory that actually needs them.
+    import subprocess
+    import sys
 
-    importlib.reload(registry)  # re-import registry.py itself: must not raise
+    code = (
+        "import sys, nvsh.agent.registry; "
+        "print(sorted(m for m in sys.modules if m in "
+        "('nvsh.agent.agy', 'nvsh.agent.acp')))"
+    )
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
+    assert out.stdout.strip() == "[]"
 
-    with pytest.raises(RuntimeError, match="agy"):
-        registry.ADAPTERS["agy"].factory(Config())
-    with pytest.raises(RuntimeError, match="acp"):
-        registry.ADAPTERS["kiro"].factory(Config())
-    with pytest.raises(RuntimeError, match="acp"):
-        registry.ADAPTERS["qwen"].factory(Config())
+
+def test_agy_and_acp_factories_build_the_right_adapters():
+    from nvsh.agent.acp import AcpAgent
+    from nvsh.agent.agy import AgyAgent
+
+    assert isinstance(registry.ADAPTERS["agy"].factory(Config()), AgyAgent)
+    kiro = registry.ADAPTERS["kiro"].factory(Config())
+    assert isinstance(kiro, AcpAgent)
+    assert kiro.capabilities().path == "acp"
+    qwen = registry.ADAPTERS["qwen"].factory(Config())
+    assert isinstance(qwen, AcpAgent)
+    # decision c53: qwen is read-only (plan mode) unless approval = "harness"
+    assert qwen.capabilities().tool_calling is False
+    assert qwen.capabilities().approval == "nvsh"
+    config = Config()
+    config.agents["qwen"] = {"approval": "harness"}
+    opted_in = registry.ADAPTERS["qwen"].factory(config)
+    assert opted_in.capabilities().tool_calling is True
+    assert opted_in.capabilities().approval == "harness"
 
 
 def test_adapter_spec_shape():
