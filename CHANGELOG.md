@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/). This project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.0] - 2026-09-14
+
+### Added
+
+- README opens with a recording of the failure panel in action: `docs/demos/demo-spark.svg` embedded after the tagline, with the same session on Jetson AGX Thor and AGX Orin linked beside it. The three `.cast` sources and renders are committed under `docs/demos/`.
+- A `demo` harness adapter (`nvsh/agent/demo.py`, ninth in `ADAPTERS`) that replays a committed fixture (`nvsh/agent/demo_fixture.json`) through the real daemon, panel, approval loop and audit log. The reply names the detected platform kind and the script from the failing command line, and says it is scripted. `demo` is excluded from `nvsh setup`'s probe and refused as a persisted default by `nvsh agent use demo` and `nvsh setup --agent demo`; `nvsh doctor` fails `default_target_not_demo` when a hand-edited config points the default at it.
+- `scripts/demo-record.py`: a sandboxed, scrubbed, re-runnable recorder (throwaway HOME and XDG dirs, pinned PS1, planted `./run-model.sh` that fails with exit 126, `chmod +x` approved with Enter, retry succeeds) that runs unchanged on every device; `scripts/demo-render.sh`: `.cast` to animated SVG through a pinned `svg-term-cli`, with the `agg` GIF fallback documented. `docs/demos/README.md` documents the three-command re-record loop; re-recording is a manual maintainer step with no CI regeneration.
+- `tests/test_demo_casts.py` fails when the panel legend or the fixture wording no longer matches the committed recordings, so a panel change forces a re-record.
+
+### Changed
+
+- `scripts/record-cast.py` sets the pty window size with `TIOCSWINSZ`, pins the header timestamp with `--timestamp`, and starts the child from an env allowlist with `--clean-env`, so two scripted runs are diffable. `scripts/` is now linted by black, isort and flake8 in CI.
+- Every "eight adapters" mention (README, the four harness prompt files, tests) now says nine.
+
+### Fixed
+
+- Nothing user-facing. (The recorder's scrub no longer rewrites a user or host name that sits inside the detected platform kind, e.g. `spark` inside `dgx-spark`.)
+
 ## [0.11.1] - 2026-09-14
 
 ### Changed

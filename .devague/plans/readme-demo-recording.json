@@ -5,7 +5,7 @@
   "schema_version": 5,
   "status": "exported",
   "created": "2026-09-14T16:30:01Z",
-  "updated": "2026-09-14T16:33:05Z",
+  "updated": "2026-09-14T17:11:49Z",
   "targets": [
     {
       "id": "c1",
@@ -538,6 +538,14 @@
       "text": "t8 needs ssh access to thor and orin and a network path to install the branch there; an air-gapped device needs the wheel copied by hand",
       "kind": "unknown_nonblocking",
       "task_id": "t8",
+      "resolved": false,
+      "resolution": ""
+    },
+    {
+      "id": "r4",
+      "text": "tests/test_cli_setup.py::test_hook_prints_refresh_notice_once_per_session leaks one nvsh.daemon process per full test run (pre-existing; five found after five runs); it should stop the daemon it starts",
+      "kind": "follow_up",
+      "task_id": null,
       "resolved": false,
       "resolution": ""
     }
