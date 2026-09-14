@@ -173,10 +173,16 @@ def _handle_context(inv: SlashInvocation) -> int:
 
 
 def _agent_lines(rows: list[dict]) -> str:
+    """Mirrors ``nvsh agent list``'s text rendering (see ``build_adapter_rows``)."""
     lines = []
     for row in rows:
         status = "installed" if row["installed"] else "not installed"
-        marker = " (configured)" if row.get("configured") else ""
+        tags = []
+        if row.get("default"):
+            tags.append("default")
+        if row.get("hosted"):
+            tags.append("hosted")
+        marker = f" ({', '.join(tags)})" if tags else ""
         lines.append(f"{row['name']}: {status}{marker} — {row['description']}")
     return "\n".join(lines)
 
@@ -184,15 +190,14 @@ def _agent_lines(rows: list[dict]) -> str:
 def _handle_agent(inv: SlashInvocation) -> int:
     from . import config as nvsh_config
     from .agent import registry
+    from .cli._commands.agent import build_adapter_rows
 
     panel = inv.panel_or()
     sub = inv.args[0] if inv.args else "list"
 
     if sub == "list":
         cfg = nvsh_config.load()
-        rows = registry.available_adapters()
-        for row in rows:
-            row["configured"] = row["name"] == cfg.agent_provider
+        rows = build_adapter_rows(cfg)
         panel.line(_agent_lines(rows))
         return 0
 

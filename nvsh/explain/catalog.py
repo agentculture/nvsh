@@ -389,10 +389,12 @@ _AGENT = """\
 # nvsh agent
 
 Lists, chooses, and installs `NvshAgent` harness backends (`nvsh.agent.registry`):
-`pi`, `qwen`, `claude`, `codex`, and the stdlib `openai-compat` fallback that
-needs no binary on PATH. `nvsh setup` calls the same `choose()` logic to pick
-a backend automatically — the configured provider if it is on PATH, else
-`openai-compat`, with a reason.
+`pi`, `qwen`, `qwen-p`, `claude`, `codex`, `agy`, `kiro`, and the stdlib
+`openai-compat` fallback that needs no binary on PATH. `claude`, `codex`,
+`agy` and `kiro` talk to a hosted (non-local) service. `nvsh setup` calls the
+same `choose()` logic to pick a backend automatically — the configured
+provider if it is on PATH, else `openai-compat`, with a reason — and writes
+its pick to `[aliases].default`.
 
 ## Usage
 
@@ -405,9 +407,17 @@ a backend automatically — the configured provider if it is on PATH, else
 _AGENT_LIST = """\
 # nvsh agent list
 
-Reports every registered backend with its installed status (from PATH) and
-whether it is the currently configured provider:
-`{adapters: [{name, installed, binary, description, configured}]}`.
+Reports every registered backend: installed status (from PATH), its wire
+`path` (`rpc`, `stream-json`, `app-server`, `acp`, or `http`), whether it is
+`hosted` (a non-local service — `claude`, `codex`, `agy`, `kiro`), its
+self-reported `capabilities` (`null` when constructing the adapter raised),
+and two markers — `default` (this is what the resolved `[aliases].default`
+alias, or the legacy `[agent] provider` when no alias table is set, currently
+names) and `configured` (the legacy `[agent] provider` match, kept for
+backward compatibility). The row matching `default` sorts first:
+`{adapters: [{name, installed, binary, path, hosted, capabilities, default,
+configured, description}]}`. Text mode tags each hosted and/or default row
+inline.
 
 ## Usage
 
@@ -418,9 +428,10 @@ whether it is the currently configured provider:
 _AGENT_USE = """\
 # nvsh agent use <name>
 
-Sets `[agent] provider` in `config.toml` to `<name>` (one of `pi`, `qwen`,
-`claude`, `codex`, `openai-compat`), preserving every other table already on
-disk. Refuses an unknown name with a user error.
+Sets `[agent] provider` AND `[aliases].default` in `config.toml` to `<name>`
+(one of `pi`, `qwen`, `qwen-p`, `claude`, `codex`, `agy`, `kiro`,
+`openai-compat`), preserving every other table already on disk. Refuses an
+unknown name with a user error.
 
 ## Usage
 
@@ -554,7 +565,10 @@ immediately after the distro's interactive guard (`nvsh.rcfile`). A
 timestamped backup of the rc is written before any change, and a second run
 is idempotent: an unchanged rc after the first run makes `setup` write
 nothing at all. Also picks and reports the agent backend (`nvsh.agent.registry.choose()`),
-and detects any of nvsh's helper tools that are missing (`pi`, `node` as
+writing its pick to `[aliases].default` in `config.toml` (without touching
+`[agent] provider`, so a fallback pick never silently overwrites the
+operator's own configured provider), and detects any of nvsh's helper tools
+that are missing (`pi`, `node` as
 pi's prerequisite, `uv`, `tmux` — see `nvsh.installers`), printing each
 one's purpose and exact install command. Nothing installs without explicit
 confirmation: interactively it asks `install <tool>? [y/N]` once per tool;

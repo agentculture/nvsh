@@ -236,6 +236,17 @@ def cmd_setup(args: argparse.Namespace) -> int:
     if any_ran:
         chosen, reason = registry.choose(cfg)
 
+    # Persist the chosen backend as `[aliases].default` -- what `'default'`
+    # (and a bare `--agent`) resolves to from here on -- without touching
+    # `[agent] provider`, so a fallback pick (e.g. openai-compat because the
+    # configured provider isn't on PATH yet) never silently overwrites the
+    # operator's own intent in `[agent]`. Only written when it would change,
+    # so a repeat `nvsh setup` on an already-current config stays idempotent.
+    default_alias_written = cfg.aliases.get(nvsh_config.DEFAULT_ALIAS) != chosen
+    if default_alias_written:
+        cfg.aliases[nvsh_config.DEFAULT_ALIAS] = chosen
+        nvsh_config.save(cfg)
+
     result = {
         "rc": str(rc_path),
         "block_inserted": changed,
@@ -244,7 +255,12 @@ def cmd_setup(args: argparse.Namespace) -> int:
         "backup": str(backup_path) if backup_path else None,
         "shell_dir": str(shell_dir),
         "nvsh_bin": nvsh_bin,
-        "agent": {"name": chosen, "reason": reason, "key_hint": _agent_key_hint(chosen, cfg)},
+        "agent": {
+            "name": chosen,
+            "reason": reason,
+            "key_hint": _agent_key_hint(chosen, cfg),
+            "default_alias_written": default_alias_written,
+        },
         "installs": install_rows,
     }
 
