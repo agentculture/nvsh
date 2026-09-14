@@ -31,8 +31,8 @@ import sys
 from nvsh import config as nvsh_config
 from nvsh import installers
 from nvsh.agent import registry
-from nvsh.cli._errors import EXIT_USER_ERROR, CliError
-from nvsh.cli._output import emit_result
+from nvsh.cli._errors import EXIT_ENV_ERROR, EXIT_USER_ERROR, CliError
+from nvsh.cli._output import emit_diagnostic, emit_result
 
 #: Help text every ``--json`` flag in this verb group shares.
 _JSON_HELP = "Emit structured JSON."
@@ -161,19 +161,35 @@ def cmd_agent_use(args: argparse.Namespace) -> int:
     return 0
 
 
-def _install_confirm(args: argparse.Namespace) -> installers.ConfirmFn:
+def _is_interactive() -> bool:
+    """Whether there is a terminal to ask the operator on.
+
+    Mirrors ``setup.py``'s ``_is_interactive``: a closed, custom or
+    otherwise unavailable ``stdin`` can raise ``AttributeError``,
+    ``ValueError`` or ``OSError`` from ``isatty()`` rather than just
+    returning ``False``, and that must decline the install, not crash it.
+    """
+    try:
+        return bool(sys.stdin.isatty())
+    except (AttributeError, ValueError, OSError):
+        return False
+
+
+def _install_confirm(args: argparse.Namespace) -> installers.ConfirmFn | None:
     """The ``confirm`` callback :func:`nvsh.installers.run_install` gets.
 
     ``--yes`` always approves without asking. Otherwise, on a real terminal
-    we hand back ``None`` so ``run_install`` uses its own interactive
-    ``[y/N]`` prompt; off a terminal (no tty, and no ``--yes``) we decline
+    we hand back ``None`` so the caller leaves ``run_install``'s own
+    ``confirm`` default (its interactive ``[y/N]`` prompt) in place, rather
+    than reaching into ``installers._default_confirm`` -- a private name --
+    from this module. Off a terminal (no tty, and no ``--yes``) we decline
     without prompting -- there is nothing to prompt *to*, and blocking on
     ``input()`` with no operator attached would hang forever.
     """
     if bool(getattr(args, "yes", False)):
         return lambda _prompt: True
-    if sys.stdin.isatty():
-        return installers._default_confirm
+    if _is_interactive():
+        return None
     return lambda _prompt: False
 
 
@@ -187,7 +203,9 @@ def cmd_agent_install(args: argparse.Namespace) -> int:
         )
 
     step = installers.harness_install_step(name)
-    result = installers.run_install(step, confirm=_install_confirm(args))
+    confirm = _install_confirm(args)
+    run_install_kwargs = {} if confirm is None else {"confirm": confirm}
+    result = installers.run_install(step, **run_install_kwargs)
 
     payload = {
         "command": step.shell_line,
@@ -204,6 +222,22 @@ def cmd_agent_install(args: argparse.Namespace) -> int:
         if not step.executable:
             text += f"\nnote: {step.shell_line}"
         emit_result(text, json_mode=False)
+
+    # A declined install (ran=False) or a deliberately non-executable step
+    # (ran=False, returncode=None) is not a failure -- exit 0. But an
+    # install that actually ran and failed must not report success: a
+    # caller scripting `nvsh agent install claude` needs a nonzero exit to
+    # notice npm failed, not just a returncode buried in the JSON payload.
+    if result.ran and result.returncode not in (0, None):
+        emit_diagnostic(
+            f"install {name} ({step.tool}) failed: {step.shell_line!r} exited "
+            f"{result.returncode}\n"
+            "hint: a global npm install often needs sudo, or an nvm/fnm shim "
+            "on PATH so the user can install without sudo -- check "
+            "`npm config get prefix` and re-run once it points somewhere "
+            "writable."
+        )
+        return EXIT_ENV_ERROR
     return 0
 
 
