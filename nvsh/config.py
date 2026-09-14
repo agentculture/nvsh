@@ -333,6 +333,10 @@ def _apply_agents(raw: dict, cfg: Config) -> None:
 def _apply_aliases(raw: dict, cfg: Config) -> None:
     aliases_table = _table(raw, "aliases", "[aliases] must be a table")
     for name, spec in aliases_table.items():
+        if not re.fullmatch(r"[A-Za-z0-9_-]+", str(name)):
+            raise ConfigError(
+                f"[aliases] name {name!r} must be a bare key (letters, digits, '_' or '-')"
+            )
         if not isinstance(spec, str):
             raise ConfigError(f"[aliases] {name!r} must be a string 'backend[/model[/effort]]'")
         _parse_alias_target(spec)  # validated eagerly; raises ConfigError on a bad shape

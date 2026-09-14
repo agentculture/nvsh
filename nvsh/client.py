@@ -467,6 +467,14 @@ def default_target(config) -> Target | None:
     return resolve_target(config, DEFAULT_ALIAS)
 
 
+def _is_one_shot(target) -> bool:
+    """c25: a named target runs one-shot -- except ``default`` itself, which
+    *is* the warm daemon target and must stay in its conversation."""
+    from .config import DEFAULT_ALIAS
+
+    return target is not None and getattr(target, "alias", None) != DEFAULT_ALIAS
+
+
 def agent_override(config, name: str):
     """Point *config* at one target for a single request (d23, decision c25).
 
@@ -1494,7 +1502,7 @@ def handle_failure(
     # c25: a named target never rides the warm daemon session -- that
     # session belongs to ``default``, and answering `@claude/opus` out of it
     # would quietly answer from the default model instead.
-    one_shot = target is not None
+    one_shot = _is_one_shot(target)
 
     shell_id = _shell_pid(resolved)
     context = build_context(args, resolved)
@@ -1595,7 +1603,7 @@ def ask(
         env=resolved,
         shell_id=_shell_pid(resolved),
         config=config,
-        one_shot=target is not None,
+        one_shot=_is_one_shot(target),
         target=target,
     )
     return 130 if result.interrupted else 0

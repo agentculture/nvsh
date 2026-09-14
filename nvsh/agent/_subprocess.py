@@ -110,6 +110,31 @@ def _drain(stream: IO[str], sink: deque[str]) -> None:
         pass
 
 
+#: Argv fragments that would let a harness approve its own tool calls.
+#: "Propose, don't run" is not a policy an operator may configure away
+#: through ``extra_args``; every adapter refuses these at construction.
+BYPASS_ARGS = frozenset(
+    {
+        "--dangerously-skip-permissions",
+        "--dangerously-bypass-approvals-and-sandbox",
+        "--full-auto",
+        "--yolo",
+        "--trust-all-tools",
+        "danger-full-access",
+        "bypassPermissions",
+    }
+)
+
+
+def reject_bypass_args(extra_args: list[str], harness: str) -> None:
+    """Refuse ``extra_args`` that would bypass nvsh's approval gate."""
+    for arg in extra_args:
+        if arg in BYPASS_ARGS or any(
+            token in arg for token in BYPASS_ARGS if token.startswith("--")
+        ):
+            raise ValueError(f"{harness}: extra_args may not bypass approval ({arg!r})")
+
+
 def redacted_tail(tail: deque[str] | list[str]) -> str:
     """Join a stderr tail into one string, redacted before anyone sees it.
 

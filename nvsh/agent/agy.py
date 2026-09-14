@@ -53,6 +53,7 @@ proposes, never auto-applies (see the repo's ``CLAUDE.md``).
 from __future__ import annotations
 
 import json
+import os
 import queue
 import subprocess  # nosec B404 - fixed argv lists below, no shell=True
 import threading
@@ -60,7 +61,7 @@ from collections import deque
 from typing import Iterator, Mapping
 
 from ._env import child_env
-from ._subprocess import escalate_close, redacted_tail
+from ._subprocess import escalate_close, redacted_tail, reject_bypass_args
 from .base import AgentContext, AgentEvent, AgentRequest, Capabilities, EventKind, NvshAgent
 from .prompt import build_full_prompt
 
@@ -129,6 +130,10 @@ class AgyAgent(NvshAgent):
         self._model = model
         self._effort = effort
         self._extra_args = list(extra_args or [])
+        reject_bypass_args(self._extra_args, "agy")
+        #: Working directory the child runs in: bound per request (cold) or
+        #: at the first request (warm), never the daemon's launch directory.
+        self._cwd: str | None = None
         #: Who nvsh's own loop treats as the approval gate for this backend.
         #: Not sent to agy in any form -- agy's tools are unmediated (see
         #: capabilities()) -- kept purely so every backend's constructor
@@ -191,6 +196,7 @@ class AgyAgent(NvshAgent):
             text=True,
             bufsize=1,
             env=child_env(self._env),
+            cwd=self._cwd,
         )
         self._stdout_queue = queue.Queue()
         self._stderr_tail.clear()
@@ -217,9 +223,22 @@ class AgyAgent(NvshAgent):
 
     def run(self, request: AgentRequest, context: AgentContext) -> Iterator[AgentEvent]:
         prompt = build_full_prompt(request, context)
+        cwd = getattr(context, "cwd", None) or None
+        if cwd and not os.path.isdir(cwd):
+            cwd = None  # a vanished directory falls back to the inherited one
         if self._warm:
+            if cwd and self._cwd != cwd:
+                # A warm process is bound to one working tree: rebind by
+                # respawning when a request comes from a different directory.
+                self._cwd = cwd
+                if self._proc is not None and self._proc.poll() is None:
+                    self.close()
+                    self._closed = False
+                    self._cancelled = False
+                self._spawn_warm()
             yield from self._run_warm(prompt)
         else:
+            self._cwd = cwd
             yield from self._run_cold(prompt)
 
     def _run_cold(self, prompt: str) -> Iterator[AgentEvent]:
@@ -232,6 +251,7 @@ class AgyAgent(NvshAgent):
                 stderr=subprocess.PIPE,
                 text=True,
                 env=child_env(self._env),
+                cwd=self._cwd,
             )
         except OSError as exc:
             yield AgentEvent(kind=EventKind.ERROR, error=f"failed to start {argv[0]}: {exc}")

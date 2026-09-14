@@ -60,10 +60,12 @@ from nvsh import capture as capture_mod
 from nvsh import daemon as daemon_mod
 from nvsh.agent import registry as agent_registry
 from nvsh.config import (
+    DEFAULT_ALIAS,
     DEFAULT_KEY_FILE_DISPLAY,
     NO_BEARER_NOTE,
     BearerResolution,
     Config,
+    ConfigError,
     resolve_bearer,
 )
 from nvsh.platform import Platform
@@ -581,6 +583,16 @@ def _check_cli_harness_reachable(
             f"check the {binary} installation ('{binary} --version')",
         )
 
+    if _rc != 0 and _parse_cli_version(f"{stdout}\n{stderr}"):
+        # A parseable version printed by a failing process is not "reachable";
+        # an unparseable one keeps the softer "could not determine" warning.
+        return _check(
+            "agent_reachable",
+            False,
+            "error",
+            f"'{binary} --version' exited {_rc} ({display_name}-unreachable)",
+            f"check the {binary} installation ('{binary} --version')",
+        )
     version_text = f"{stdout}\n{stderr}"
     version = _parse_cli_version(version_text)
     version_note = f"version {_format_version(version)}" if version else "version unknown"
@@ -662,6 +674,18 @@ def check_agent_reachable(
 ) -> dict:
     home = home if home is not None else Path.home()
     provider = config.agent_provider
+    try:
+        # The harness nvsh will actually run is the default alias's backend,
+        # which may differ from the legacy ``[agent] provider``.
+        provider = config.resolve_target(DEFAULT_ALIAS)[0]
+    except ConfigError as exc:
+        return _check(
+            "agent_reachable",
+            False,
+            "error",
+            f"the default target does not resolve: {exc}",
+            "fix [aliases].default in config.toml (nvsh agent use <name>)",
+        )
 
     if provider == "pi":
         inputs = _pi_probe_inputs(config, home, which)

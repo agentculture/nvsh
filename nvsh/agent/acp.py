@@ -297,6 +297,9 @@ class AcpAgent(NvshAgent):
         self._tool_calling = tool_calling
         self._model_flag = model_flag
         self._cwd = str(cwd) if cwd is not None else os.getcwd()
+        #: An explicit ``cwd`` pins the session; otherwise the first request's
+        #: ``context.cwd`` wins over the daemon's own launch directory.
+        self._cwd_pinned = cwd is not None
         self._env = child_env(env)
         self._initialize_timeout = (
             initialize_timeout(env)
@@ -648,6 +651,9 @@ class AcpAgent(NvshAgent):
         return build_full_prompt(request, context)
 
     def run(self, request: AgentRequest, context: AgentContext) -> Iterator[AgentEvent]:
+        request_cwd = getattr(context, "cwd", None)
+        if request_cwd and not self._cwd_pinned and self._session_id is None:
+            self._cwd = str(request_cwd)
         try:
             self.start()
             prompt_id = self._send_request(

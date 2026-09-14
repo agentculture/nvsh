@@ -53,6 +53,7 @@ from ._subprocess import (
     build_full_prompt,
     escalate_close,
     redacted_tail,
+    reject_bypass_args,
 )
 from .base import (
     AgentContext,
@@ -220,6 +221,10 @@ class CodexAgent(SubprocessAgent):
         self._effort = str(resolved_effort) if resolved_effort else None
         raw_extra = extra_args if extra_args is not None else settings.get("extra_args") or []
         self._extra_args = [str(item) for item in raw_extra]
+        reject_bypass_args(self._extra_args, "codex")
+        for item in self._extra_args:
+            if item in BANNED_TOKENS or any(item.endswith(f"={token}") for token in BANNED_TOKENS):
+                raise ValueError(f"codex: extra_args may not set an approval bypass ({item!r})")
         self._approval = str(settings.get("approval") or approval)
         self._use_app_server = app_server
 
@@ -565,6 +570,14 @@ class CodexAgent(SubprocessAgent):
     ) -> AgentEvent | None:
         """A request *from* the server. Approval requests become proposals."""
         if method not in APPROVAL_METHODS:
+            # Answer it, or codex may block the turn waiting for a reply
+            # nobody will ever send; the operator still sees it as STATUS.
+            self._send(
+                {
+                    "id": obj.get("id"),
+                    "error": {"code": -32601, "message": f"nvsh does not handle {method}"},
+                }
+            )
             return AgentEvent(kind=EventKind.STATUS, text=method)
         request_id = obj.get("id")
         self._pending_approvals[request_id] = method
@@ -665,6 +678,20 @@ class CodexAgent(SubprocessAgent):
         return self._send(
             {"id": request_id, "result": {"decision": approve if approved else decline}}
         )
+
+    def respond_ui(self, request_id: Any, **fields: object) -> None:
+        """The shared responder entry point (mirrors ``PiAgent``/``ClaudeAgent``).
+
+        The panel, ``client_transport`` and the daemon all answer a PROPOSAL
+        through ``respond_ui``: ``confirmed=True`` or ``value="allow"`` means
+        approve, anything else (including ``cancelled=True``) declines.
+        """
+        if fields.get("cancelled"):
+            allow = False
+        else:
+            value = str(fields.get("value") or "").lower()
+            allow = bool(fields.get("confirmed")) or value in {"allow", "approve", "yes", "y"}
+        self.respond_approval(request_id, allow)
 
     def _decline_pending(self) -> None:
         """Answer every unanswered approval with a decline.

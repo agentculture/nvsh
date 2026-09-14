@@ -242,7 +242,22 @@ def cmd_setup(args: argparse.Namespace) -> int:
     # configured provider isn't on PATH yet) never silently overwrites the
     # operator's own intent in `[agent]`. Only written when it would change,
     # so a repeat `nvsh setup` on an already-current config stays idempotent.
-    default_alias_written = cfg.aliases.get(nvsh_config.DEFAULT_ALIAS) != chosen
+    # An explicit default alias the operator already wrote (possibly with a
+    # model and effort, e.g. "claude/opus/high") is kept whenever its backend
+    # is still usable; setup only fills in a missing or unusable default.
+    existing = cfg.aliases.get(nvsh_config.DEFAULT_ALIAS)
+    keep_existing = False
+    if existing:
+        try:
+            existing_backend, _m, _e, _a = cfg.resolve_target(nvsh_config.DEFAULT_ALIAS)
+            keep_existing = existing_backend in registry.ADAPTERS and registry.installed(
+                existing_backend, shutil.which
+            )
+        except nvsh_config.ConfigError:
+            keep_existing = False
+    if keep_existing:
+        chosen, reason = existing.split("/", 1)[0], f"[aliases].default = {existing!r} kept"
+    default_alias_written = not keep_existing and existing != chosen
     if default_alias_written:
         cfg.aliases[nvsh_config.DEFAULT_ALIAS] = chosen
         nvsh_config.save(cfg)

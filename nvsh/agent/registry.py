@@ -83,6 +83,9 @@ def _make_pi(config: Config) -> NvshAgent:
     return PiAgent(
         provider=str(provider) if provider is not None else None,
         model=str(model) if model is not None else None,
+        effort=_str_or_none(settings.get("effort")),
+        extra_args=_list_or_none(settings.get("extra_args")),
+        approval=str(settings.get("approval", "nvsh")),
     )
 
 

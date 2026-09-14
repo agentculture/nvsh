@@ -63,6 +63,7 @@ from ._subprocess import (
     _drain,
     build_prompt,
     build_system_prompt,
+    reject_bypass_args,
 )
 from .base import (
     AgentContext,
@@ -151,6 +152,7 @@ class ClaudeAgent(SubprocessAgent):
         self._effort = effort if effort is not None else _opt_str(settings.get("effort"))
         raw_extra = extra_args if extra_args is not None else settings.get("extra_args")
         self._extra_args = [str(item) for item in raw_extra] if raw_extra else []
+        reject_bypass_args(self._extra_args, "claude")
         self._approval = str(settings.get("approval") or approval or "nvsh")
         self._session_id = session_id or _opt_str(settings.get("session_id")) or str(uuid.uuid4())
         #: Set once a turn has run against ``_session_id``: a warm adapter

@@ -977,6 +977,11 @@ def test_thinking_run_is_closed_before_a_tool_call_and_before_a_proposal_and_don
             [
                 AgentEvent(kind=EventKind.THINKING, text="let me check"),
                 AgentEvent(kind=EventKind.TOOL_CALL, tool="bash", args={"command": "df -h"}),
+                AgentEvent(kind=EventKind.THINKING, text="now a fix"),
+                AgentEvent(
+                    kind=EventKind.PROPOSAL,
+                    proposal=Proposal(command="df -h /", rationale="see", kind=ProposalKind.FIX),
+                ),
                 AgentEvent(EventKind.DONE),
             ]
         )
@@ -984,6 +989,10 @@ def test_thinking_run_is_closed_before_a_tool_call_and_before_a_proposal_and_don
     text = out.getvalue()
     assert "\x1b[2mlet me check\x1b[0m\n" in text
     assert text.index("\x1b[0m\n") < text.index("... running: df -h")
+    assert "\x1b[2mnow a fix\x1b[0m\n" in text
+    # the second run is closed before the proposal is handed on: every dim
+    # SGR opened is matched by a reset, none is left open at stream end
+    assert text.count("\x1b[2m") == text.count("\x1b[0m")
 
 
 def test_thinking_with_nothing_after_it_is_still_closed_at_stream_end():
