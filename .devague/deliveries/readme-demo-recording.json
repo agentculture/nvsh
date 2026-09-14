@@ -2,7 +2,7 @@
   "plan_slug": "readme-demo-recording",
   "schema_version": 2,
   "created": "2026-09-14T16:59:37Z",
-  "updated": "2026-09-14T17:17:50Z",
+  "updated": "2026-09-14T17:22:19Z",
   "deviations": [
     {
       "id": "d1",
@@ -364,6 +364,25 @@
       "status": "proposed",
       "superseded": false,
       "seq": 21
+    },
+    {
+      "id": "e17",
+      "obligation_ref": "o14",
+      "test_ref": "manual: raw.githubusercontent.com/agentculture/nvsh/feat/readme-demo-recording/docs/demos/demo-spark.svg viewed in Chrome; curl -sI shows content-type image/svg+xml",
+      "behavior_text": "GitHub's raw host serves the committed SVG as an image and it animates in the browser; the README embed on the PR branch shows only alt text because its URL targets main, so the in-README rendering is checkable only after merge",
+      "contract_text": "the README renders the image on github.com and on PyPI's project page",
+      "evidence_type": "observation",
+      "strength": "fidelity",
+      "strength_basis": "observed by the main agent on PR #14 before merge; the asset renders, the embed does not yet resolve",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-14T17:25:00Z",
+        "commit": "66ebbfe"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 22
     }
   ],
   "deltas": [

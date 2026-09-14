@@ -48,7 +48,7 @@ Quoted verbatim from the `devague summary` skeleton:
 | `t7` | delivered | `docs/demos/README.md` "Re-recording" section: three commands per device, manual step, no CI regeneration, scripted fixture named. |
 | `t8` | delivered | `docs/demos/demo-{spark,thor,orin}.cast` recorded on the real devices on 2026-09-14 (Spark locally, Thor and Orin over ssh from a `git archive` of the branch) and their `.svg` renders; `tests/test_demo_casts.py` (18 drift tests). The two verification casts are byte-identical to `main`. |
 | `t9` | delivered | `README.md` embeds `demo-spark.svg` after the tagline with a scripted-demo caption and absolute links to the Thor and Orin renders, plus a "demos" bullet in the More list. The visual check on github.com and TestPyPI is pending the PR (evidence `e15`, filed `fail`/unchecked). |
-| `t10` | partial | `pyproject.toml` 0.11.1 → 0.12.0 and the CHANGELOG entry are committed; the PR itself is opened after this artifact by the `cicd` skill. |
+| `t10` | delivered | `pyproject.toml` 0.11.1 → 0.12.0, the CHANGELOG entry, and PR #14 opened by the `cicd` skill; merge is the human's gate 3. |
 
 ## Mid-work Decisions
 
@@ -79,7 +79,6 @@ the task contract; the `dN` in parentheses is the proposed record that covers it
 | `t4` | `h9` says two runs differ only in stamps; they differ in pty chunk boundaries too, so equality is asserted on the concatenated stream (delta `b2`) | acceptable |
 | `t2` | one test outside t2's file set edited at merge to exclude `demo` from "agent use accepts every adapter" | acceptable |
 | `t9` | rendering on github.com and TestPyPI unchecked until the PR exists (evidence `e15`) | needs-follow-up |
-| `t10` | PR not yet opened at the time of this artifact | needs-follow-up |
 
 ## Evidence
 
@@ -90,7 +89,7 @@ the task contract; the `dN` in parentheses is the proposed record that covers it
 - render: `docs/demos/demo-spark.svg` viewed in Chrome from a local server — one line per command, animation plays
 - commits: `ff52eda..13b2edf` (24 commits on `feat/readme-demo-recording`)
 - devague: obligations `o1`–`o15`, evidence `e1`–`e16`, deltas `b1`–`b5`, deviations `d1`–`d5`, lapses `l1`–`l5`, risks `r1`–`r4`
-- PRs / issues: none yet (opened after this artifact)
+- PRs / issues: [#14](https://github.com/agentculture/nvsh/pull/14) — lint, harness-smoke, version-check and GitGuardian green at open; `raw.githubusercontent.com` serves the branch SVG as `image/svg+xml` and it animates in Chrome (evidence `e17`); the README embed targets `main`, so on the PR branch it shows alt text until merge
 
 ## Delivery Claims
 
@@ -109,7 +108,7 @@ capped anyway rather than defaulting to high.
 | two recorder runs are diffable (identical output stream, pinned size and timestamp) | medium | test `tests/test_record_cast.py::test_two_feed_runs_are_identical_except_stamps` · evidence `e10`, delta `b2` — capped: lapse `l4`, chunk boundaries vary |
 | the committed casts contain no hostname, user name or LAN address | high | test `tests/test_demo_casts.py::test_cast_is_scrubbed_of_hosts_and_lan_addresses` · evidence `e8` |
 | one command renders a cast to the committed SVG | medium | file `scripts/demo-render.sh` · evidence `e13` (manual, needs npx and network) |
-| the image renders on github.com and on the PyPI project page | unverified | evidence `e15` filed unchecked — checked by eye once the PR and TestPyPI build exist |
+| the image renders on github.com and on the PyPI project page | low | evidence `e17`: the raw asset renders and animates; the README embed resolves only after merge (`e15` stays unchecked until then); TestPyPI page not yet viewed |
 | a maintainer with no prior context reproduces a device recording from `docs/demos/README.md` | unverified | evidence `e16` filed unmet — the loop was executed only by the agent that wrote it |
 | animated SVG plays in the GitHub mobile app | unverified | park `v2` / risk `r2` — no observation |
 
@@ -124,7 +123,7 @@ pending approval (not yet evidence): `l3`, `l4`, `l5`
 
 ## Remaining Work / Follow-up
 
-- `t10` — open the PR with the `cicd` skill; then check `README.md` on the PR page and the TestPyPI build by eye and re-file `e15` as pass or fail (owner: main agent, then the human at gate 3).
+- `t10` — PR #14 is open; after merge, view `README.md` on github.com and the PyPI project page by eye and re-file `e15` as pass or fail (owner: the human at gate 3, or the next session).
 - Owner adjudication: `devague deviate --confirm d1 d2 d3 d5` (and `d4`, settled as no visible defect), `devague lapse --confirm l3 l4 l5`, `devague evidence --confirm`/`--reject` for `e1`–`e16`, `devague delta --confirm` for `b1`–`b5`, `devague plan confirm` is already complete.
 - `r4` (follow_up) — `tests/test_cli_setup.py::test_hook_prints_refresh_notice_once_per_session` should stop the daemon it starts; pre-existing, out of this plan's scope.
 - `r1` — no size budget for the rendered images (currently 12–17 KB each; not a problem today).
