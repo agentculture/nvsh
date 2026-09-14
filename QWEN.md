@@ -46,13 +46,16 @@ confirmation (out of scope for v1), and machine-level undo beyond the
 approve/execute/verify loop (issue #7). If you describe any of those three
 as though they exist, mark it `(planned)`.
 
-nvsh now registers eight harness adapters in `nvsh/agent/registry.py`:
+nvsh now registers nine harness adapters in `nvsh/agent/registry.py`:
 `pi`, `qwen` itself (over ACP, `qwen --acp`, plan mode by default —
 `tool_calling=False` — because qwen 0.23.3 never sends
 `session/request_permission`), `qwen-p` (a stream-json print-mode,
 read-only fallback for when ACP is unavailable), `claude`, `codex`, `agy`
-(stream-json, always read-only for commands), `kiro` (over ACP) and
-`openai-compat`. `[aliases]` in `$XDG_CONFIG_HOME/nvsh/config.toml` maps a
+(stream-json, always read-only for commands), `kiro` (over ACP),
+`openai-compat`, and `demo` (a scripted fixture replayed through the real
+daemon and panel, used for the README recording, excluded from `setup`'s
+probe, and refused as a persisted default). `[aliases]` in
+`$XDG_CONFIG_HOME/nvsh/config.toml` maps a
 short name to a `backend[/model[/effort]]` target, with `default` reserved
 for a bare `nvsh --agent default`; `@target` at the prompt marks one
 request for that harness only, one-shot unless it is the default target.

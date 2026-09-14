@@ -19,9 +19,12 @@ approve/execute/verify loop is issue #7. When you summarize it, keep those
 still-open items separate from what GitHub issues #1 and #2 describe as
 already built.
 
-nvsh now speaks to eight harness adapters (pi, qwen over ACP, qwen-p as a
+nvsh now speaks to nine harness adapters (pi, qwen over ACP, qwen-p as a
 read-only stream-json fallback, claude, codex, agy — always read-only for
-commands, kiro over ACP, and openai-compat) chosen by a `[aliases]` table
+commands, kiro over ACP, openai-compat, and demo — a scripted fixture
+replayed through the real daemon and panel, used for the README recording,
+excluded from setup's probe, and refused as a persisted default) chosen by
+a `[aliases]` table
 (`$XDG_CONFIG_HOME/nvsh/config.toml`) or an explicit `@target` mark at the
 prompt; `nvsh setup` probes `PATH` and defaults to whichever harness is
 already installed, rather than hard-wiring pi. nvsh never edits a
