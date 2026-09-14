@@ -55,8 +55,10 @@ read-only stream-json fallback, claude, codex, agy — always read-only for
 commands, kiro over ACP, and openai-compat; `nvsh/agent/registry.py`).
 `[aliases]` in `$XDG_CONFIG_HOME/nvsh/config.toml` maps a short name to a
 `backend[/model[/effort]]` target, `default` reserved for a bare
-`nvsh --agent default`; `@target` at the prompt marks one request for that
-harness only. Where a harness has no approval channel it runs read-only:
+`nvsh --agent default`; `nvsh setup` probes `PATH` and picks whichever
+harness is already installed as that default, rather than hard-wiring pi.
+`@target` at the prompt marks one request for that harness only. Where a
+harness has no approval channel it runs read-only:
 "nvsh never edits, creates or overrides a harness's own settings or trust
 files (agy/claude settings.json, codex config.toml, kiro trust settings,
 qwen settings): it only passes launch flags and protocol-level policy, and

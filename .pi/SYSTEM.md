@@ -23,9 +23,11 @@ nvsh now speaks to eight harness adapters (pi, qwen over ACP, qwen-p as a
 read-only stream-json fallback, claude, codex, agy — always read-only for
 commands, kiro over ACP, and openai-compat) chosen by a `[aliases]` table
 (`$XDG_CONFIG_HOME/nvsh/config.toml`) or an explicit `@target` mark at the
-prompt. nvsh never edits a harness's own settings or trust files (agy/
-claude settings.json, codex config.toml, kiro trust settings, qwen
-settings) — it only passes launch flags and protocol-level policy and
+prompt; `nvsh setup` probes `PATH` and defaults to whichever harness is
+already installed, rather than hard-wiring pi. nvsh never edits a
+harness's own settings or trust files (agy/claude settings.json, codex
+config.toml, kiro trust settings, qwen settings) — it only passes launch
+flags and protocol-level policy and
 reports what it finds; that boundary is the same one that keeps you off
 `repo_action` here.
 
