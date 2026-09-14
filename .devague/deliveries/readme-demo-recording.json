@@ -2,7 +2,7 @@
   "plan_slug": "readme-demo-recording",
   "schema_version": 2,
   "created": "2026-09-14T16:59:37Z",
-  "updated": "2026-09-14T17:36:49Z",
+  "updated": "2026-09-14T17:57:45Z",
   "deviations": [
     {
       "id": "d1",
@@ -440,6 +440,25 @@
       "status": "proposed",
       "superseded": false,
       "seq": 25
+    },
+    {
+      "id": "e21",
+      "obligation_ref": "o1",
+      "test_ref": "tests/test_agent_demo.py::test_an_option_looking_token_or_fixture_default_is_refused tests/test_demo_casts.py::test_cast_shows_the_scenario_end_to_end",
+      "behavior_text": "an option-looking token or fixture default is refused; the proposal is 'chmod +x -- <script>' and the re-recorded casts on all three devices show it running",
+      "contract_text": "demo replays a committed fixture through the real daemon and client path (c4); the recorded scenario proposes chmod +x (c22)",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "SonarCloud S6350 on PR #14 fixed in 3eb21ee; devices re-recorded in 9ad7ee9; full suite 1859 passed",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-14T18:05:00Z",
+        "commit": "9ad7ee9"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 26
     }
   ],
   "deltas": [
@@ -524,6 +543,20 @@
         "e18",
         "e19",
         "e20"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    },
+    {
+      "id": "b7",
+      "kind": "amended",
+      "behavior_text": "The demo proposal is 'chmod +x -- <script>' (option parsing ended) and both the command-line token and the fixture's default_script pass an allowlist that refuses a leading '-'; no shell quoting is applied. All three recordings were re-recorded on the devices with this command",
+      "caused_by": [
+        "c22"
+      ],
+      "evidence_refs": [
+        "e21"
       ],
       "origin": "llm",
       "status": "proposed",
