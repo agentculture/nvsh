@@ -491,6 +491,8 @@ def _fake_openai_compat(monkeypatch: pytest.MonkeyPatch, agent: NvshAgent) -> No
             binary=None,
             factory=lambda _cfg: agent,
             description=spec.description,
+            path=spec.path,
+            hosted=spec.hosted,
         ),
     )
 

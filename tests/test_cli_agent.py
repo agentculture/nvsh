@@ -15,12 +15,12 @@ def xdg_home(tmp_path, monkeypatch):
     return tmp_path
 
 
-def test_agent_list_json_reports_all_five(capsys):
+def test_agent_list_json_reports_all_adapters(capsys):
     rc = main(["agent", "list", "--json"])
     assert rc == 0
     payload = json.loads(capsys.readouterr().out)
     names = {row["name"] for row in payload["adapters"]}
-    assert names == {"pi", "qwen", "claude", "codex", "openai-compat"}
+    assert names == {"pi", "qwen", "qwen-p", "claude", "codex", "agy", "kiro", "openai-compat"}
     for row in payload["adapters"]:
         assert "installed" in row
         assert "binary" in row
