@@ -5,7 +5,7 @@
   "schema_version": 5,
   "status": "exported",
   "created": "2026-09-14T05:12:53Z",
-  "updated": "2026-09-14T05:48:32Z",
+  "updated": "2026-09-14T06:16:12Z",
   "targets": [
     {
       "id": "c1",
@@ -1010,8 +1010,8 @@
       "text": "kiro-cli acp initialize/thought/request_permission behaviour is unverified (installed kiro-cli 2.0.0 not logged in); the kiro entry may need read-only mode if it never sends request_permission.",
       "kind": "unknown_nonblocking",
       "task_id": "t12",
-      "resolved": false,
-      "resolution": ""
+      "resolved": true,
+      "resolution": "Verified live 2026-09-14 after 'kiro-cli login' (kiro-cli 2.0.0 acp): initialize returns protocolVersion 1 with loadSession=true; session/new lists the operator's kiro agent configs as ACP modes (currentModeId kiro_default); a shell command produced tool_call (kind execute, rawInput.command) and a session/request_permission with allow_once/allow_always/... options, answered by the client, then tool_call_update x2 and end_turn. No agent_thought_chunk was emitted, so kiro declares thinking=False. The kiro entry therefore keeps approval='nvsh' via request_permission."
     },
     {
       "id": "r2",
@@ -1026,8 +1026,8 @@
       "text": "How 'claude -p --permission-prompts host' delivers a permission prompt in stream-json mode (control_request over --input-format stream-json vs --permission-prompt-tool needing an MCP server) is not yet established; if only an MCP server works, nvsh must host a tiny stdio MCP server in stdlib.",
       "kind": "unknown_nonblocking",
       "task_id": "t10",
-      "resolved": false,
-      "resolution": ""
+      "resolved": true,
+      "resolution": "t10 probed claude 2.1.270 live: '--permission-prompts host' alone never emits a control_request (denied tools come back as system/permission_denied); '--permission-prompt-tool stdio' (the flag the Agent SDK's own transport passes) delivers {type:control_request, request:{subtype:can_use_tool,...}} on stdout and blocks until a control_response {response:{subtype:success, request_id, response:{behavior:allow|deny}}} arrives on stdin; both allow and deny proven against the real CLI. No MCP permission server needed. ClaudeAgent uses this path."
     },
     {
       "id": "r4",

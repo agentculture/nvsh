@@ -1,0 +1,81 @@
+{
+  "plan_slug": "first-class-multi-harness-with-aliases",
+  "schema_version": 2,
+  "created": "2026-09-14T06:16:12Z",
+  "updated": "2026-09-14T06:17:29Z",
+  "deviations": [
+    {
+      "id": "d1",
+      "what": "qwen 0.23.3 sends session/request_permission in 'default' ACP mode (and once in 'plan' for read_file); the spec/brief said default mode executes with NO request_permission. AcpAgent answers it via nvsh approve either way; c53 (plan by default, approval='harness' opts into default) stands, and 'harness' mode is now also nvsh-mediated at the wire",
+      "task_ref": "t12",
+      "reason": "t12's live probe contradicted the 2026-09-14 scope probe; behaviour is safer than assumed, no code change needed beyond what t12 shipped",
+      "affects": [
+        "c53",
+        "t8"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "classification": "acceptable",
+      "seq": 1
+    },
+    {
+      "id": "d2",
+      "what": "t6's @target grammar table rows live in tests/test_triggers_prose.py (where the existing @name mark tests already are) instead of tests/test_triggers.py, which is the decide() rule table only",
+      "task_ref": "t6",
+      "reason": "keeps test_triggers.py single-purpose; same coverage, different file than the acceptance text named",
+      "affects": [],
+      "origin": "llm",
+      "status": "proposed",
+      "classification": "acceptable",
+      "seq": 2
+    },
+    {
+      "id": "d3",
+      "what": "the no-ACP qwen fallback (t13's stream-json print-mode QwenAgent) is selected explicitly by the operator as backend 'qwen-p' (alias default = 'qwen-p' or @qwen-p/model) rather than auto-picked by the registry when 'the ACP path is disabled'; it runs read-only (tool_calling=False, --approval-mode plan)",
+      "task_ref": "t13",
+      "reason": "no task defined a disable-ACP switch; an explicit backend name needs no new config key and keeps 'qwen' = ACP unambiguous",
+      "affects": [
+        "t8",
+        "c53"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "classification": "acceptable",
+      "seq": 3
+    },
+    {
+      "id": "d4",
+      "what": "for codex (app-server) and the qwen print-mode fallback, [agents.X] approval='harness' only changes what capabilities() reports: codex app-server has no approval UI of its own (the client is the UI) so nvsh mediates via requestApproval regardless; print-mode qwen has no approval channel at all",
+      "task_ref": "t11",
+      "reason": "reported by t11 and t13; the approval knob is meaningful only for harnesses with their own approval UI (qwen --acp, kiro)",
+      "affects": [
+        "t13",
+        "c53"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "classification": "needs-follow-up",
+      "seq": 4
+    },
+    {
+      "id": "d5",
+      "what": "t16 adds the shared close() escalation helper (wait -> terminate -> kill) to nvsh/agent/_subprocess.py and routes pi/acp/codex/agy/claude close() through it, touching those adapter files minimally",
+      "task_ref": "t16",
+      "reason": "the brief says 'import the shared escalation helper from _subprocess.py' but no such helper exists after wave 2; each wave-2 adapter shipped its own copy",
+      "affects": [
+        "t9",
+        "t10",
+        "t11",
+        "t12",
+        "t14"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "classification": "acceptable",
+      "seq": 5
+    }
+  ],
+  "evidence": [],
+  "deltas": [],
+  "supersessions": []
+}

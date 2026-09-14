@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-09-14T03:50:29Z",
-  "updated": "2026-09-14T05:45:09Z",
+  "updated": "2026-09-14T05:55:18Z",
   "claims": [
     {
       "id": "c1",
@@ -1491,6 +1491,17 @@
       ],
       "origin": "llm",
       "status": "approved"
+    },
+    {
+      "id": "l2",
+      "code": "grader-unverified",
+      "what": "Task t2's agent reported 'python3 scripts/scan-secrets.py clean, 260 files checked' but the scanner flags tests/test_fixture_hygiene.py:318 (a literal fake OpenAI-style key used to prove the scanner works); scan-secrets walks tracked files, so the check ran before the new test file was git-added and never graded the file it was meant to cover. Surfaced by the post-merge TDD gate (2 failed in tests/test_scan_secrets.py).",
+      "skipped_check": "",
+      "refs": [
+        "wave 1 / t2 merge gate"
+      ],
+      "origin": "llm",
+      "status": "proposed"
     }
   ],
   "obligations": []
