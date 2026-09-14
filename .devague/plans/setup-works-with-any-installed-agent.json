@@ -5,7 +5,7 @@
   "schema_version": 5,
   "status": "exported",
   "created": "2026-09-14T14:07:31Z",
-  "updated": "2026-09-14T14:39:17Z",
+  "updated": "2026-09-14T15:17:52Z",
   "targets": [
     {
       "id": "c1",
@@ -342,7 +342,7 @@
         "nvsh setup --agent codex/gpt-5/high writes [aliases].default = 'codex/gpt-5/high'; with codex off PATH it raises CliError exit 2 naming the binary and writes nothing",
         "no --agent: one probed harness becomes default silently; several on a tty prompt once with the ordered list (non-tool-calling rows marked 'read-only / plan mode'); --yes does not answer the pick; non-tty/--json takes the first row",
         "two consecutive setups, first which={} then which={claude}, end with [aliases].default = 'claude'; a kept default is re-probed only when it is openai-compat with no base_url",
-        "install offers come from installers.missing_tools(chosen=<pick>); setup with only claude on PATH has no pi row and key_hint None; after writing the alias setup calls _stop_daemon and reports daemon_stopped",
+        "install offers come from installers.missing_tools(chosen=`<pick>`); setup with only claude on PATH has no pi row and key_hint None; after writing the alias setup calls _stop_daemon and reports daemon_stopped",
         "tests/test_cli_setup.py covers one-harness, several-harnesses (tty prompt and non-tty), --agent hit and miss, and the sticky-fallback pair; no test still asserts pi-always-offered"
       ],
       "deps": [
@@ -366,7 +366,7 @@
       "id": "t5",
       "summary": "agent verbs: use and install cover all eight adapters",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "acceptance_criteria": [
         "nvsh agent use `<name>` accepts every key of registry.ADAPTERS and its help string lists all eight",
         "nvsh agent install `<name>` prints the step from installers.harness_install_step; runs it only after confirm or --yes when executable; agy and kiro print 'no known installer'",

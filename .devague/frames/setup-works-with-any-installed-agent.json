@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-09-14T13:42:34Z",
-  "updated": "2026-09-14T14:46:58Z",
+  "updated": "2026-09-14T15:25:28Z",
   "claims": [
     {
       "id": "c1",
@@ -803,7 +803,7 @@
         "t2 / README.md Safety first + What lands where"
       ],
       "origin": "llm",
-      "status": "proposed"
+      "status": "approved"
     },
     {
       "id": "l2",
@@ -814,7 +814,7 @@
         "t2 / README.md Work with it"
       ],
       "origin": "llm",
-      "status": "proposed"
+      "status": "approved"
     },
     {
       "id": "l3",
@@ -825,7 +825,7 @@
         "t2 brief / README.md Work with it + Safety first"
       ],
       "origin": "llm",
-      "status": "proposed"
+      "status": "approved"
     },
     {
       "id": "l4",
@@ -836,7 +836,7 @@
         "t1 / registry.probe qwen-p shared binary"
       ],
       "origin": "llm",
-      "status": "proposed"
+      "status": "approved"
     },
     {
       "id": "l5",
@@ -847,7 +847,7 @@
         "t4 / setup.py empty-probe path, registry.choose which default"
       ],
       "origin": "llm",
-      "status": "proposed"
+      "status": "approved"
     },
     {
       "id": "l6",
@@ -858,7 +858,7 @@
         "t7 / registry.choose forced path, Config.resolve_target"
       ],
       "origin": "llm",
-      "status": "proposed"
+      "status": "approved"
     },
     {
       "id": "l7",
@@ -869,7 +869,29 @@
         "t6 / Config.resolve_target by_alias"
       ],
       "origin": "llm",
-      "status": "proposed"
+      "status": "approved"
+    },
+    {
+      "id": "l8",
+      "code": "control-absent",
+      "what": "PR12 registry-fix agent wrote the probe de-dup tests and implementation in one pass and never ran the new tests against the pre-fix registry.py, so there was no red control showing they catch the qwen/qwen-p duplicate; main agent re-ran them against d0fc9a9's registry.py to supply the control",
+      "skipped_check": "red run of test_probe_lists_one_row_per_binary against pre-fix code",
+      "refs": [
+        "PR #12 review / registry.probe binary de-dup"
+      ],
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "l9",
+      "code": "assumption-for-measurement",
+      "what": "PR12 setup-fix agent designed _canonical_target's alias/adapter/@ precedence before reading registry._forced_backend, and only afterwards confirmed the two resolve in the same order; a mismatch would have saved a default that differs from what --agent validated",
+      "skipped_check": "read registry._forced_backend resolution order before designing _canonical_target",
+      "refs": [
+        "PR #12 review / setup._canonical_target vs registry._forced_backend"
+      ],
+      "origin": "llm",
+      "status": "approved"
     }
   ],
   "obligations": [
@@ -880,7 +902,7 @@
       "behavior": "with claude and codex on PATH and default config, choose() returns claude and never openai-compat; probe orders tool-calling adapters first",
       "source_text": "nvsh/agent/registry.py choose() falls straight to openai-compat when the configured provider (default pi) is off PATH, even with claude/codex installed; the unforced pick must prefer any installed adapter and reach openai-compat only when no harness binary is on PATH",
       "origin": "llm",
-      "status": "proposed"
+      "status": "approved"
     },
     {
       "id": "o2",
@@ -889,7 +911,7 @@
       "behavior": "a claude pick never offers pi or node; agy and kiro get 'no known installer'",
       "source_text": "nvsh/installers.py TOOLS hard-codes node+pi as always-missing helper tools, so setup offers to install pi even when claude/codex are on PATH; setup must offer installs only for the backend it picked (none when that backend is already installed)",
       "origin": "llm",
-      "status": "proposed"
+      "status": "approved"
     },
     {
       "id": "o3",
@@ -898,7 +920,7 @@
       "behavior": "a literal target is written to [aliases].default; a missing binary is exit 2 naming it, nothing written; a bare adapter name resolves",
       "source_text": "nvsh/cli/_commands/setup.py cmd_setup has no --agent flag; setup must accept `--agent <target>` (alias or `backend[/model[/effort]]`), fail loudly if that binary is missing, and write it to [aliases].default in the same run",
       "origin": "llm",
-      "status": "proposed"
+      "status": "approved"
     },
     {
       "id": "o4",
@@ -907,7 +929,7 @@
       "behavior": "one hit silent; several hits prompt once on a tty; --yes never answers the pick; non-tty takes the first row",
       "source_text": "default resolution on first setup: probe PATH for every adapter; one hit is the default; several hits on a terminal always prompt the operator with the list, tool-calling adapters first then ADAPTERS order, each non-tool-calling entry marked with a read-only/plan-mode warning; --yes answers install prompts only and never the pick; non-tty/--json takes the first entry of that ordered list; `--agent <target>` skips the probe; openai-compat is the pick only when no harness binary exists",
       "origin": "llm",
-      "status": "proposed"
+      "status": "approved"
     },
     {
       "id": "o5",
@@ -916,7 +938,7 @@
       "behavior": "an openai-compat default with no base_url is re-probed on the next setup once a harness is installed",
       "source_text": "a fallback pick must not stick: today setup writes [aliases].default = openai-compat and keeps it on every later run because registry.installed() is always True for a binary-less adapter; the new probe re-runs whenever the kept default is openai-compat with no [agents.openai-compat] base_url, so installing claude after a bad first setup is picked up by the next setup",
       "origin": "llm",
-      "status": "proposed"
+      "status": "approved"
     },
     {
       "id": "o6",
@@ -925,7 +947,7 @@
       "behavior": "a hosted pick prints the 'is hosted' line and --json carries agent.hosted",
       "source_text": "when the pick is a hosted harness (AdapterSpec.hosted: claude, codex, agy, kiro) setup prints one line: '`<name>` is hosted: on a failure the redacted command, output and device context leave this machine' -- the Safety first promise stated at the moment of choice, not only in the README",
       "origin": "llm",
-      "status": "proposed"
+      "status": "approved"
     },
     {
       "id": "o7",
@@ -934,7 +956,7 @@
       "behavior": "setup reports agent.reachable for the pick without changing its exit code",
       "source_text": "installed means the binary is on PATH, not that it is logged in; an unauthenticated claude or codex pick fails on the first real failure. setup runs doctor's agent_reachable check for the pick and reports the result without blocking",
       "origin": "llm",
-      "status": "proposed"
+      "status": "approved"
     },
     {
       "id": "o8",
@@ -943,7 +965,7 @@
       "behavior": "Darwin or a zsh SHELL adds the issue #11 warning; the rc stays the bash rc",
       "source_text": "nvsh setup warns (text and --json 'warnings') when the login shell is not bash or the OS is macOS: 'nvsh is not tested on macOS/zsh yet (see issue #11)'; the hook block is still written only to the bash rc",
       "origin": "llm",
-      "status": "proposed"
+      "status": "approved"
     },
     {
       "id": "o9",
@@ -952,7 +974,7 @@
       "behavior": "setup stops the daemon after a default change and its JSON stdout stays parseable",
       "source_text": "the daemon resolves 'default' from the Config it was constructed with (daemon.py default_target, no reload); after setup changes [aliases].default a warm daemon keeps the old harness, so setup must stop a running daemon (as uninstall does via nvsh daemon stop) or say so",
       "origin": "llm",
-      "status": "proposed"
+      "status": "approved"
     },
     {
       "id": "o10",
@@ -961,7 +983,7 @@
       "behavior": "use accepts every ADAPTERS key; install prints 'no known installer' for agy and kiro",
       "source_text": "nvsh/cli/_commands/agent.py: 'agent use' help lists five names and 'agent install' refuses everything but pi; both must cover all eight ADAPTERS, with install commands for the npm-installable harnesses (claude, codex, qwen)",
       "origin": "llm",
-      "status": "proposed"
+      "status": "approved"
     },
     {
       "id": "o11",
@@ -970,7 +992,7 @@
       "behavior": "explain setup names --agent, probe, hosted, macOS/zsh; explain agent install lists targets",
       "source_text": "nvsh/explain/catalog.py _SETUP, _AGENT_USE and _AGENT_INSTALL text follows the new flags and install targets, or teken cli doctor --strict and the introspection tests fail",
       "origin": "llm",
-      "status": "proposed"
+      "status": "approved"
     },
     {
       "id": "o12",
@@ -979,7 +1001,7 @@
       "behavior": "H2 order Install, Set up, Work with it, Safety first, What nvsh never does, What lands where, License; no relative repo links",
       "source_text": "README.md is rewritten in the devague README shape: one-paragraph announcement, Install, Set up (nvsh setup --agent claude|codex|...), Work with it, Safety first (nothing leaves the machine except to the agent you trust; with claude or codex that agent is a third party; redaction runs before anything is sent), What nvsh never does, What lands where; no status/history prose",
       "origin": "llm",
-      "status": "proposed"
+      "status": "approved"
     },
     {
       "id": "o13",
@@ -988,7 +1010,7 @@
       "behavior": "no ~/ paths in owned docs",
       "source_text": "README.md stays free of ~/ paths (tests/test_docs_architecture.py OWNED_DOCS) and docs/architecture.md's historical 'README.md:10-14' citation is left as-is; the README rewrite must pass markdownlint-cli2 with the repo's .markdownlint-cli2.yaml",
       "origin": "llm",
-      "status": "proposed"
+      "status": "approved"
     },
     {
       "id": "o14",
@@ -997,7 +1019,7 @@
       "behavior": "clean config, only claude on PATH: setup then a failing command reaches claude with no pi or key prompt",
       "source_text": "nvsh setup works with the agent you already have: it picks an installed harness (claude, codex, qwen, kiro, agy or pi) or takes `--agent <target>`, offers to install only what that pick needs, mentions an API key only when openai-compat is actually the pick, and the README says how in the devague announcement-first shape",
       "origin": "llm",
-      "status": "proposed"
+      "status": "approved"
     },
     {
       "id": "o15",
@@ -1006,7 +1028,16 @@
       "behavior": "reports the backend [aliases].default resolves to and names the source",
       "source_text": "nvsh/doctor_checks.py check_agent_configured reads [agent] provider only; it should report the resolved default target ([aliases].default) so doctor agrees with what setup wrote",
       "origin": "llm",
-      "status": "proposed"
+      "status": "approved"
+    },
+    {
+      "id": "o16",
+      "claim_id": "c23",
+      "seam": "registry.probe binary de-dup (PR #12 review)",
+      "behavior": "probe keeps one row per AdapterSpec.binary, so a qwen-only PATH is one harness picked silently; qwen-p stays selectable explicitly",
+      "source_text": "default resolution on first setup: probe PATH for every adapter; one hit is the default; several hits on a terminal always prompt the operator with the list, tool-calling adapters first then ADAPTERS order, each non-tool-calling entry marked with a read-only/plan-mode warning; --yes answers install prompts only and never the pick; non-tty/--json takes the first entry of that ordered list; `--agent <target>` skips the probe; openai-compat is the pick only when no harness binary exists",
+      "origin": "llm",
+      "status": "approved"
     }
   ]
 }

@@ -2,7 +2,7 @@
   "plan_slug": "setup-works-with-any-installed-agent",
   "schema_version": 2,
   "created": "2026-09-14T14:25:30Z",
-  "updated": "2026-09-14T14:47:40Z",
+  "updated": "2026-09-14T15:25:28Z",
   "deviations": [
     {
       "id": "d1",
@@ -13,7 +13,7 @@
         "t4"
       ],
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "classification": "acceptable",
       "seq": 1
     },
@@ -27,7 +27,7 @@
         "t4"
       ],
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "classification": "acceptable",
       "seq": 2
     }
@@ -48,7 +48,7 @@
         "commit": "463f887"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 3
     },
@@ -67,7 +67,7 @@
         "commit": "463f887"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 4
     },
@@ -86,7 +86,7 @@
         "commit": "463f887"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 5
     },
@@ -105,7 +105,7 @@
         "commit": "463f887"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 6
     },
@@ -124,7 +124,7 @@
         "commit": "463f887"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 7
     },
@@ -143,7 +143,7 @@
         "commit": "463f887"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 8
     },
@@ -162,7 +162,7 @@
         "commit": "463f887"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 9
     },
@@ -181,7 +181,7 @@
         "commit": "463f887"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 10
     },
@@ -200,7 +200,7 @@
         "commit": "463f887"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 11
     },
@@ -219,7 +219,7 @@
         "commit": "463f887"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 12
     },
@@ -238,7 +238,7 @@
         "commit": "463f887"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 13
     },
@@ -257,7 +257,7 @@
         "commit": "463f887"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 14
     },
@@ -276,7 +276,7 @@
         "commit": "463f887"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 15
     },
@@ -295,7 +295,7 @@
         "commit": "463f887"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 16
     },
@@ -314,9 +314,28 @@
         "commit": "463f887"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 17
+    },
+    {
+      "id": "e16",
+      "obligation_ref": "o16",
+      "test_ref": "tests/test_agent_registry.py::test_probe_lists_one_row_per_binary + ::test_choose_forced_qwen_p_still_selectable_despite_probe_dedup + tests/test_cli_setup.py::test_setup_qwen_only_path_is_a_single_harness_and_never_prompts",
+      "behavior_text": "which={qwen} probes exactly ['qwen']; forced qwen-p still resolves; setup on a qwen-only PATH on a tty picks qwen without prompting",
+      "contract_text": "one installed harness becomes the default silently",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "the three tests ran green on merged main at the named commit; the setup test was shown red against the pre-fix registry during the PR #12 review",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-14T15:19:42Z",
+        "commit": "4162f2f"
+      },
+      "origin": "llm",
+      "status": "approved",
+      "superseded": false,
+      "seq": 18
     }
   ],
   "deltas": [
@@ -331,9 +350,73 @@
         "e1"
       ],
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
+      "superseded": true
+    },
+    {
+      "id": "b2",
+      "kind": "amended",
+      "behavior_text": "on an empty probe (openai-compat fallback) setup still offers node and pi as the bootstrap path instead of scoping offers to the pick",
+      "caused_by": [
+        "d1"
+      ],
+      "evidence_refs": [
+        "e2"
+      ],
+      "origin": "llm",
+      "status": "approved",
+      "superseded": false
+    },
+    {
+      "id": "b3",
+      "kind": "added",
+      "behavior_text": "a bare adapter name (claude, @codex) is accepted by --agent / forced targets without an alias",
+      "caused_by": [
+        "d2"
+      ],
+      "evidence_refs": [
+        "e3"
+      ],
+      "origin": "llm",
+      "status": "approved",
+      "superseded": false
+    },
+    {
+      "id": "b4",
+      "kind": "amended",
+      "behavior_text": "_stop_daemon discards the child's stdout/stderr so 'daemon: not running' never precedes setup's --json payload",
+      "caused_by": [
+        "d2"
+      ],
+      "evidence_refs": [
+        "e9"
+      ],
+      "origin": "llm",
+      "status": "approved",
+      "superseded": false
+    },
+    {
+      "id": "b5",
+      "kind": "amended",
+      "behavior_text": "probe() keeps one row per shared binary, so qwen-p is no longer listed beside qwen and a qwen-only PATH picks qwen without a prompt",
+      "caused_by": [
+        "c23"
+      ],
+      "evidence_refs": [
+        "e16"
+      ],
+      "origin": "llm",
+      "status": "approved",
       "superseded": false
     }
   ],
-  "supersessions": []
+  "supersessions": [
+    {
+      "id": "s1",
+      "action": "supersede",
+      "target_ref": "b1",
+      "replacement_ref": "b5",
+      "origin": "user"
+    }
+  ]
 }
