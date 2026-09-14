@@ -15,6 +15,8 @@ import threading
 from collections import deque
 from typing import IO, Iterator
 
+from ..redact import redact
+from ._env import child_env
 from .base import AgentContext, AgentEvent, AgentRequest, EventKind, NvshAgent
 from .prompt import build_full_prompt as _build_full_prompt
 from .prompt import build_prompt as _build_prompt
@@ -49,6 +51,21 @@ def _drain(stream: IO[str], sink: deque[str]) -> None:
             sink.append(line)
     except (OSError, ValueError):  # closed underneath us by cancel/terminate
         pass
+
+
+def redacted_tail(tail: deque[str] | list[str]) -> str:
+    """Join a stderr tail into one string, redacted before anyone sees it.
+
+    Shared by every subprocess-backed adapter (and reusable by any other
+    adapter that keeps its own stderr tail, e.g. ``pi``) so "redact the
+    stderr before it reaches an ERROR event or a log line" is one choke
+    point instead of one per adapter. ``redact`` operates on bytes, so the
+    joined text round-trips through UTF-8 with ``surrogateescape`` the same
+    way ``nvsh.redact`` itself does.
+    """
+    text = "".join(tail)
+    redacted_bytes = redact(text.encode("utf-8", errors="surrogateescape"))
+    return redacted_bytes.decode("utf-8", errors="surrogateescape").strip()
 
 
 class SubprocessAgent(NvshAgent):
@@ -88,7 +105,7 @@ class SubprocessAgent(NvshAgent):
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
-                env=self._env,
+                env=child_env(self._env),
             )
         except OSError as exc:
             yield AgentEvent(kind=EventKind.ERROR, error=f"failed to start {argv[0]}: {exc}")
@@ -142,8 +159,8 @@ class SubprocessAgent(NvshAgent):
             return AgentEvent(kind=EventKind.DONE)
         if drain is not None:
             drain.join(timeout=_STDERR_JOIN_TIMEOUT)
-        stderr = "".join(tail)
-        return AgentEvent(kind=EventKind.ERROR, error=stderr.strip() or f"{argv[0]} exited {rc}")
+        stderr = redacted_tail(tail)
+        return AgentEvent(kind=EventKind.ERROR, error=stderr or f"{argv[0]} exited {rc}")
 
     def cancel(self) -> None:
         self._cancelled = True
