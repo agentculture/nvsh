@@ -75,6 +75,20 @@ def _looks_like_script(token: str) -> bool:
     return token.startswith("./") or token.endswith(".sh")
 
 
+def safe_script(token: object) -> str | None:
+    """*token* if it may be named in the ``chmod`` proposal, else ``None``.
+
+    Allowlisted characters only, no ``..`` segment, and never a leading
+    ``-`` -- a token that looks like an option would be an argument
+    injection even when quoted (SonarCloud S6350), so the fixture's own
+    ``default_script`` goes through this gate too.
+    """
+    text = str(token or "")
+    if not _SAFE_TOKEN.match(text) or text.startswith("-") or ".." in text.split("/"):
+        return None
+    return text
+
+
 def script_from_command(command: str, default: str = DEFAULT_SCRIPT) -> str:
     """The script the failing command line was trying to run.
 
@@ -95,9 +109,7 @@ def script_from_command(command: str, default: str = DEFAULT_SCRIPT) -> str:
         candidate = tokens[0]
     elif len(tokens) >= 2 and tokens[0] in _SCRIPT_RUNNERS and _looks_like_script(tokens[1]):
         candidate = tokens[1]
-    if candidate and _SAFE_TOKEN.match(candidate) and ".." not in candidate.split("/"):
-        return candidate
-    return default
+    return safe_script(candidate) or safe_script(default) or DEFAULT_SCRIPT
 
 
 def platform_kind(platform_block: str, default: str = DEFAULT_PLATFORM) -> str:
@@ -143,10 +155,12 @@ def load_events(path: Path, command: str, platform_block: str = "") -> list[Agen
     placeholder = str(data.get("script_placeholder") or SCRIPT_PLACEHOLDER)
     default = str(data.get("default_script") or DEFAULT_SCRIPT)
     platform_placeholder = str(data.get("platform_placeholder") or PLATFORM_PLACEHOLDER)
-    # The token is already restricted to a safe charset, so quoting is a
-    # no-op today; it stays so a future relaxation cannot reopen the hole.
+    # No shell quoting here on purpose: the token is allowlisted by
+    # safe_script (charset, no '..', no leading '-'), which is the defence
+    # quoting cannot give against an option-looking argument; the fixture's
+    # command also ends option parsing with '--' before the token.
     replacements = {
-        placeholder: shlex.quote(script_from_command(command, default)),
+        placeholder: script_from_command(command, default),
         platform_placeholder: platform_kind(platform_block),
     }
     return [event_from_dict(_substituted(raw, replacements)) for raw in data["events"]]

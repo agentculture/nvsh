@@ -235,10 +235,10 @@ def test_demo_record_end_to_end(tmp_path):
     assert "permission denied" in text.lower()
     # nvsh took it to the agent, and the agent proposed the fix
     assert "forwarding to demo" in text
-    assert "chmod +x ./run-model.sh" in text
+    assert "chmod +x -- ./run-model.sh" in text
     assert LEGEND in text
     # the operator's Enter ran it, and the retry succeeded
-    assert "nvsh: chmod +x ./run-model.sh -> exit 0" in text
+    assert "nvsh: chmod +x -- ./run-model.sh -> exit 0" in text
     assert demo_record.SUCCESS_LINE in text
     assert "nvsh$ " in text
 

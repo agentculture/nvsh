@@ -95,7 +95,7 @@ def test_the_single_proposal_is_chmod_on_the_script_from_the_failing_line():
     events = _events(demo_mod.DemoAgent(), "./run-model.sh")
     proposals = _proposals(events)
     assert len(proposals) == 1
-    assert proposals[0].command == "chmod +x ./run-model.sh"
+    assert proposals[0].command == "chmod +x -- ./run-model.sh"
     assert proposals[0].kind is ProposalKind.FIX
     assert proposals[0].rationale
     assert events[-1].kind is EventKind.DONE
@@ -114,7 +114,7 @@ def test_the_single_proposal_is_chmod_on_the_script_from_the_failing_line():
 def test_the_script_path_comes_from_the_failing_command_line(command, expected):
     assert demo_mod.script_from_command(command) == expected
     proposals = _proposals(_events(demo_mod.DemoAgent(), command))
-    assert proposals[0].command == f"chmod +x {expected}"
+    assert proposals[0].command == f"chmod +x -- {expected}"
 
 
 def test_a_missing_or_broken_fixture_is_an_error_event_not_a_crash(tmp_path):
@@ -263,7 +263,7 @@ def test_a_failing_command_with_demo_as_default_streams_through_the_daemon(
     out = panel.out.getvalue()
     assert "./run-model.sh failed (exit 126)" in out
     assert "executable" in out.lower()
-    assert "chmod +x ./run-model.sh" in out
+    assert "chmod +x -- ./run-model.sh" in out
     assert "chmod" not in capsys.readouterr().out, "the fix must be proposed, never run"
 
     # It really went through the daemon, not the client's one-shot fallback.
@@ -274,7 +274,7 @@ def test_a_failing_command_with_demo_as_default_streams_through_the_daemon(
     assert all(entry["target"]["backend"] == "demo" for entry in entries)
     proposals = [entry for entry in entries if entry["event"] == "proposal"]
     assert len(proposals) == 1
-    assert proposals[0]["proposal"]["command"] == "chmod +x ./run-model.sh"
+    assert proposals[0]["proposal"]["command"] == "chmod +x -- ./run-model.sh"
 
 
 # --- the platform placeholder (deviation d5) --------------------------------
@@ -337,7 +337,7 @@ def test_proposal_never_carries_shell_metacharacters():
 
     events = load_events(FIXTURE_PATH, "./model.sh;id")
     proposal = next(e.proposal for e in events if e.kind == EventKind.PROPOSAL)
-    assert proposal.command == "chmod +x ./run-model.sh"
+    assert proposal.command == "chmod +x -- ./run-model.sh"
     assert ";" not in proposal.command
 
 
@@ -381,3 +381,14 @@ def test_doctor_rejects_a_malformed_fixture(tmp_path):
     check = _check_demo_reachable(cfg)
     assert check["passed"] is False
     assert "unusable" in check["message"]
+
+
+def test_an_option_looking_token_or_fixture_default_is_refused():
+    from nvsh.agent.demo import DEFAULT_SCRIPT, safe_script, script_from_command
+
+    assert safe_script("-x.sh") is None
+    assert safe_script("--reference=/etc/passwd.sh") is None
+    assert safe_script("./ok.sh") == "./ok.sh"
+    # a fixture default that is itself unsafe is not trusted either
+    assert script_from_command("", default="-evil.sh") == DEFAULT_SCRIPT
+    assert script_from_command("-x.sh", default="./d.sh") == "./d.sh"

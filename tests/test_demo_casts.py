@@ -47,7 +47,7 @@ def test_cast_and_svg_are_committed(device):
 def test_cast_shows_the_scenario_end_to_end(device):
     text = _plain(DEMOS / f"demo-{device}.cast")
     assert "./run-model.sh: Permission denied" in text
-    assert "chmod +x ./run-model.sh" in text
+    assert "chmod +x -- ./run-model.sh" in text
     assert "model loaded, 42 tokens/s" in text  # the retry after the approved fix
     assert "(scripted demo reply)" in text
 

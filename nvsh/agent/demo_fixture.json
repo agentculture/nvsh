@@ -22,7 +22,7 @@
     {
       "kind": "proposal",
       "proposal": {
-        "command": "chmod +x {script}",
+        "command": "chmod +x -- {script}",
         "rationale": "restore the execute bit so the shell can run the script",
         "kind": "fix"
       }
