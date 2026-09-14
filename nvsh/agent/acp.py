@@ -45,7 +45,7 @@ from pathlib import Path
 from typing import Any, Iterator, Mapping, Sequence
 
 from ._env import child_env
-from ._subprocess import redacted_tail
+from ._subprocess import escalate_close, redacted_tail
 from .base import (
     AgentContext,
     AgentEvent,
@@ -839,20 +839,8 @@ class AcpAgent(NvshAgent):
                 }
             )
 
-    @staticmethod
-    def _wait_out(proc: subprocess.Popen) -> None:
-        """Wait for *proc*, escalating politely: wait, terminate, kill."""
-        for escalate in (None, proc.terminate, proc.kill):
-            if escalate is not None:
-                escalate()
-            try:
-                proc.wait(timeout=_CLOSE_WAIT_SECONDS)
-                return
-            except subprocess.TimeoutExpired:
-                continue
-
     def close(self) -> None:
-        """Idempotent teardown: close stdin, wait, then escalate to kill."""
+        """Idempotent teardown through the shared escalation helper (d5)."""
         if self._closed:
             return
         self._closed = True
@@ -861,13 +849,7 @@ class AcpAgent(NvshAgent):
         self._pending.clear()
         if proc is None:
             return
-        try:
-            if proc.stdin is not None:
-                proc.stdin.close()
-        except (ValueError, OSError):
-            pass
-        if proc.poll() is None:
-            self._wait_out(proc)
+        escalate_close(proc, wait=_CLOSE_WAIT_SECONDS)
         for thread in (self._reader_thread, self._stderr_thread):
             if thread is not None:
                 thread.join(timeout=_CLOSE_WAIT_SECONDS)
