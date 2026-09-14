@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-09-14T16:14:56Z",
-  "updated": "2026-09-14T17:17:50Z",
+  "updated": "2026-09-14T17:26:54Z",
   "claims": [
     {
       "id": "c1",
@@ -708,6 +708,17 @@
       "skipped_check": "",
       "refs": [
         "t5"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l6",
+      "code": "control-absent",
+      "what": "Pushed the Sonar-smell commit (11b4c92) without the full suite gating it: the shell chain ran flake8 (which failed on a missing import) and the commit/push on separate lines, so a red lint and a red test run did not stop the push; fixed in the next commit",
+      "skipped_check": "green flake8 and pytest as a precondition of git push",
+      "refs": [
+        "PR #14 / 11b4c92"
       ],
       "origin": "llm",
       "status": "proposed"
