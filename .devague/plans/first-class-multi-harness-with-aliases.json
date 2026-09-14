@@ -5,7 +5,7 @@
   "schema_version": 5,
   "status": "exported",
   "created": "2026-09-14T05:12:53Z",
-  "updated": "2026-09-14T06:16:12Z",
+  "updated": "2026-09-14T06:58:14Z",
   "targets": [
     {
       "id": "c1",
@@ -1050,6 +1050,14 @@
       "text": "kiro-cli 2.0.0 'chat --model <id>' is silently ignored ('[warn] failed to set model: Method not found', probe 2026-09-14) while an agent config file with a 'model' field pins it; 'kiro-cli acp --model' may behave the same, so the kiro entry must verify the active model and fall back to a generated agent config under XDG state if the flag is ignored.",
       "kind": "unknown_nonblocking",
       "task_id": "t12",
+      "resolved": false,
+      "resolution": ""
+    },
+    {
+      "id": "r7",
+      "text": "test hygiene: under 'pytest -n auto' tests/test_cli_setup.py::test_hook_prints_refresh_notice_once_per_session leaves one 'nvsh.daemon --foreground' (900s idle timeout) running after the suite, and tests/test_daemon_lifecycle.py::test_autostart_waits_for_a_cold_backend_instead_of_falling_back is timing-flaky under xdist load (passes alone); measured 2026-09-14 after wave 3",
+      "kind": "follow_up",
+      "task_id": "t16",
       "resolved": false,
       "resolution": ""
     }
