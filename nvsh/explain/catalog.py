@@ -442,15 +442,21 @@ unknown name with a user error.
 _AGENT_INSTALL = """\
 # nvsh agent install <name>
 
-Prints the install command for `<name>` (only `pi` today:
-`npm install -g @earendil-works/pi-coding-agent`). Runs it only with `--yes`
-or an interactive `y` confirmation, and only when `npm` is on PATH — it never
-runs anything on its own.
+Prints the install step `nvsh.installers.harness_install_step` computes for
+`<name>` (any of the eight `nvsh agent` names): `pi` keeps its own command
+(`npm install -g @earendil-works/pi-coding-agent`, when `npm` is on PATH);
+`claude`, `codex`, `qwen` and `qwen-p` get `npm install -g <package>` for
+their npm package, also gated on `npm` being on PATH; `agy`, `kiro` and
+`openai-compat` have no known installer, so the step prints
+"no known installer for `<name>`" and nothing is run. Executes the step only
+with `--yes` or an interactive `y` confirmation — never a non-executable
+step even then — and writes an audit-log row either way.
 
 ## Usage
 
     nvsh agent install pi
-    nvsh agent install pi --yes
+    nvsh agent install claude --yes
+    nvsh agent install agy       # prints "no known installer"
 """
 
 _DAEMON = """\
@@ -564,29 +570,63 @@ with `--rc`)
 immediately after the distro's interactive guard (`nvsh.rcfile`). A
 timestamped backup of the rc is written before any change, and a second run
 is idempotent: an unchanged rc after the first run makes `setup` write
-nothing at all. Also picks and reports the agent backend (`nvsh.agent.registry.choose()`),
-writing its pick to `[aliases].default` in `config.toml` (without touching
+nothing at all.
+
+## Picking the agent backend
+
+Without `--agent`, setup probes PATH for every registered harness
+(`nvsh.agent.registry.probe`): nothing installed falls back to
+`openai-compat` (with the gateway-key hint and the `node`/`pi` bootstrap
+offers); exactly one harness installed becomes `[aliases].default` silently;
+several installed means it asks once on a real terminal — a numbered list,
+tool-calling adapters first, non-tool-calling rows labelled `read-only /
+plan mode` — and `--yes` never answers that pick (it only answers the
+install-tool prompts below); off a terminal, or with `--json`, the first row
+of the probe wins without asking. `--agent <target>` (an alias, a bare
+adapter name such as `claude`, or `backend[/model[/effort]]`) skips the
+probe entirely and fails with exit 2 naming the missing binary when that
+target is not installed. An operator's own existing `[aliases].default` is
+kept as long as its backend is still installed; it is only re-probed when it
+is `openai-compat` with no `base_url` configured (i.e. nvsh chose it, not
+the operator). The pick is written to `[aliases].default` (without touching
 `[agent] provider`, so a fallback pick never silently overwrites the
-operator's own configured provider), and detects any of nvsh's helper tools
-that are missing (`pi`, `node` as
-pi's prerequisite, `uv`, `tmux` — see `nvsh.installers`), printing each
-one's purpose and exact install command. Nothing installs without explicit
-confirmation: interactively it asks `install <tool>? [y/N]` once per tool;
-`--yes` answers yes to all of them; `--no-install` lists the offers and
-installs nothing; `--json` is non-interactive by construction and only
-lists offers unless `--yes` is also given. A tool with no known installer
-for this machine (missing package manager) or whose only known installer is
-a curl-pipe-sh (`uv`, when neither `snap` nor a package manager applies) is
-only ever printed, never executed — not even with `--yes`. After any
-installs run, the agent backend is re-picked, so a freshly installed `pi`
-is reported immediately.
+operator's own configured provider), and a running daemon is stopped
+afterward so the new default takes effect on the next failure.
+
+A hosted pick (`claude`, `codex`, `agy`, `kiro`) prints the disclosure line
+"`<name>` is hosted: on a failure the redacted command, output and device
+context leave this machine". Setup also probes whether the picked backend
+is reachable right now and reports `agent reachable: <bool> (<message>)`.
+On macOS, or when `$SHELL` ends in `zsh`, it prints
+"warning: nvsh is not tested on macOS/zsh yet (see issue #11)" — the
+platform and hook still install, this is disclosure, not a refusal.
+
+## Installing missing helper tools
+
+Detects any of nvsh's helper tools that are missing (`pi`, `node` as pi's
+prerequisite, `uv`, `tmux` — see `nvsh.installers`), scoped to the picked
+backend's own prerequisites once a backend is chosen (the unscoped list
+only applies on a bare machine, to help bootstrap a harness at all), and
+prints each one's purpose and exact install command. Nothing installs
+without explicit confirmation: interactively it asks `install <tool>? [y/N]`
+once per tool; `--yes` answers yes to all of them; `--no-install` lists the
+offers and installs nothing; `--json` is non-interactive by construction and
+only lists offers unless `--yes` is also given. A tool with no known
+installer for this machine (missing package manager) or whose only known
+installer is a curl-pipe-sh (`uv`, when neither `snap` nor a package
+manager applies) is only ever printed, never executed — not even with
+`--yes`. After any installs run, the agent backend is re-picked (unless
+`--agent` forced it), so a freshly installed harness is reported
+immediately.
 
 ## Usage
 
     nvsh setup
     nvsh setup --rc /path/to/bashrc --json
-    nvsh setup --yes          # install every missing helper tool
-    nvsh setup --no-install   # list missing tools and commands only
+    nvsh setup --agent claude          # skip the probe, force this target
+    nvsh setup --agent codex/gpt-5/high
+    nvsh setup --yes                   # install every missing helper tool
+    nvsh setup --no-install            # list missing tools and commands only
 """
 
 _UNINSTALL = """\
