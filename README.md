@@ -7,6 +7,15 @@ agent you already trust diagnoses it and proposes a fix.
 
 > Works like a shell. Helps when things break. Fixes when you let it.
 
+![nvsh diagnosing a failed command on a DGX Spark](https://raw.githubusercontent.com/agentculture/nvsh/main/docs/demos/demo-spark.svg)
+
+Recorded on a DGX Spark with the scripted `demo` adapter — the diagnosis
+text is a committed fixture, the hook, daemon, panel and approval are
+real; the same session on a
+[Jetson AGX Thor](https://raw.githubusercontent.com/agentculture/nvsh/main/docs/demos/demo-thor.svg)
+and an
+[AGX Orin](https://raw.githubusercontent.com/agentculture/nvsh/main/docs/demos/demo-orin.svg).
+
 ## Install
 
 ```bash
@@ -96,6 +105,8 @@ More:
   — the `@target` grammar and the warm session.
 - [CLAUDE.md](https://github.com/agentculture/nvsh/blob/main/CLAUDE.md)
   — contributor conventions.
+- [demos](https://github.com/agentculture/nvsh/blob/main/docs/demos/README.md)
+  — how the recordings above were made, and the re-record loop.
 
 ## License
 
