@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-09-14T03:50:29Z",
-  "updated": "2026-09-14T06:50:49Z",
+  "updated": "2026-09-14T07:59:34Z",
   "claims": [
     {
       "id": "c1",
@@ -1574,5 +1574,222 @@
       "status": "proposed"
     }
   ],
-  "obligations": []
+  "obligations": [
+    {
+      "id": "o1",
+      "claim_id": "c3",
+      "seam": "PiAgent argv + rpc events",
+      "behavior": "effort becomes --thinking <effort> verbatim and thinking_delta streams as THINKING",
+      "source_text": "The Pi adapter itself is raised to the bar before others are measured against it: pi rpc 'thinking_*' assistantMessageEvent sub-types are currently ignored (docs/pi-rpc.md:92-95) and no effort flag is passed, although pi 0.85.1 --help exposes '--thinking <off|minimal|low|medium|high|xhigh|max>' and 'provider/id:<thinking>' model patterns; build_argv (pi.py:355-374) gains both.",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o2",
+      "claim_id": "c5",
+      "seam": "ClaudeAgent stream-json + stdio permission prompts",
+      "behavior": "a can_use_tool control_request becomes a PROPOSAL and allow/deny are answered on stdin",
+      "source_text": "ClaudeAgent (official 'claude -p --output-format stream-json') is the only Claude path: it passes --model and --effort from [agents.claude] (claude 2.1.270 --help: '--effort <low|medium|high|xhigh|max>'), uses --include-partial-messages for token streaming, --resume/--session-id for the warm-session and cold-resume paths, --permission-prompts host with a permission prompt tool nvsh hosts so tool calls become PROPOSALs, and maps thinking, tool_use and tool_result content parts to THINKING/TOOL_CALL/TOOL_RESULT instead of only type=assistant text parts (claude.py:38-56 today).",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o3",
+      "claim_id": "c40",
+      "seam": "CodexAgent app-server thread/start",
+      "behavior": "approvalPolicy on-request; requestApproval becomes PROPOSAL answered accept/decline",
+      "source_text": "CodexAgent starts every app-server thread with approvalPolicy 'on-request' (schema AskForApproval enum: untrusted | on-request | never | granular, from 'codex app-server generate-json-schema') and sandbox read-only, so item/commandExecution/requestApproval fires for commands and nvsh approve answers execCommandApproval; 'never' and danger-full-access are never sent.",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o4",
+      "claim_id": "c53",
+      "seam": "AcpAgent qwen entry mode/approval",
+      "behavior": "qwen is plan mode + tool_calling False unless [agents.qwen] approval='harness'",
+      "source_text": "qwen ships read-only by default: AcpAgent sets session/set_mode 'plan' for qwen and reports tool_calling=False; an operator may opt into qwen's own agent-side approval with one config line ([agents.qwen] approval = \"harness\", which sets mode 'default' and marks the harness 'unmediated' in capabilities and the audit log). Principle: nvsh is not opinionated where the operator can decide by config. (Operator decision 2026-09-14, resolving q2.)",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o5",
+      "claim_id": "c37",
+      "seam": "AgyAgent headless auto-deny",
+      "behavior": "an auto-denied command surfaces as STATUS, never ERROR; no skip-permissions flag",
+      "source_text": "AgyAgent: agy 1.0.1 headless auto-denies any tool needing the 'command' permission ('a tool required the \"command\" permission that headless mode cannot prompt for, so it was auto-denied. Add an allow-rule under permissions.allow in settings.json', probe 2026-09-14) while read tools such as list_dir run unprompted; its step_update 'tool' events carry tool_name and tool_info.parameters/output, which map to TOOL_CALL/TOOL_RESULT. Therefore agy is registered with tool_calling=False for commands (read-only), and nvsh never writes allow-rules into agy's settings.json.",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o6",
+      "claim_id": "c26",
+      "seam": "Config [aliases] + resolve_target",
+      "behavior": "flat alias table; 'default' reserved; alias and literal targets resolve to backend/model/effort",
+      "source_text": "Aliases are one flat table: each alias maps a name to a 'backend/model/effort' string (reviewer = \"claude/opus-5/medium\", local = \"qwen/worker\"), and a reserved alias 'default' is the single definition of the default harness, model and effort used when nothing else is specified, so the default is defined once and not duplicated across [agent]/[agents.*]. '@default <text>' is a valid mark like any other alias (one-shot, per the d23 rule). 'default' is listed first wherever aliases appear, and 'nvsh agent list', '/agent' and the completion palette show it resolved to its backend/model/effort so the operator always sees what a plain failure will be answered by. (Operator decision 2026-09-14, resolving q4; amended for @default and visibility.)",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o7",
+      "claim_id": "c13",
+      "seam": "@target grammar in triggers.py and readline.bash",
+      "behavior": "both parsers accept/reject the same table of @backend/model/effort and alias marks",
+      "source_text": "The @-mark grammar (deviation d23) is extended in BOTH parsers that must stay in lockstep \u2014 bash __nvsh_mark_line (nvsh/shell/readline.bash:140-159) and Python triggers._parse_agent_mark (nvsh/triggers.py:368-376) \u2014 from a bare adapter name to '@<target>' where target is 'backend[/model[/effort]]' or a [targets] alias; '/' joins the allowed charset, alias names join the palette returned by 'nvsh complete --json' so @reviewer and @local resolve exactly like @qwen, and the rewrite target '/ask --agent <name>' (readline.bash:153, slash.split_agent_flag slash.py:109-127) carries the full target.",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o8",
+      "claim_id": "c14",
+      "seam": "readline Tab on @ words",
+      "behavior": "no completion is offered for @targets",
+      "source_text": "Tab completion of @-targets stays unavailable: bash's hostname completion claims any first word starting with '@' before programmable completion runs (readline.bash:217-220, docs/shell-integration.md:201-204), so @reviewer is Enter-only like @qwen today; '/ask --agent <target>' remains the completable spelling.",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o9",
+      "claim_id": "c15",
+      "seam": "Daemon._build_agent",
+      "behavior": "the warm agent is built from the resolved default target with model/effort/extra_args/approval",
+      "source_text": "The configured default target (backend/model/effort) is what the daemon builds its warm agent from (Daemon._build_agent nvsh/daemon.py:651-667 via registry.choose) and what client one-shot runs use, so the default's effort and model are honored on every automatic failure call, not only on ad-hoc marks.",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o10",
+      "claim_id": "c25",
+      "seam": "client routing of @targets",
+      "behavior": "a non-default target runs one-shot in the client; the default goes to the warm daemon",
+      "source_text": "Ad-hoc @targets always run one-shot (the current d23 rule stays). The default target warms a daemon session when its harness supports one: claude 2.1.270 (--input-format stream-json keeps one print-mode process open across turns; --resume/--session-id), qwen 0.23.3 (--input-format stream-json, --session-id/--resume/--continue), agy 1.0.1 (--input-format stream-json verified: each stdin line is {\"event\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"...\"}} and yields step_update/result events; --continue/--conversation <id> for cold resume), codex 0.147.0 (app-server thread/start + turn/start over one stdio process, thread/resume across restarts). Any ACP-served agent warms through session/new + session/prompt + session/resume. Harnesses without a warm path fall back to cold per-turn processes with resume where available. (Operator decision 2026-09-14, resolving q3; amended for codex app-server and ACP.)",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o11",
+      "claim_id": "c16",
+      "seam": "Panel THINKING rendering",
+      "behavior": "THINKING is a dimmed run closed before the first TEXT_DELTA/TOOL_CALL/PROPOSAL/DONE; plain lines off tty",
+      "source_text": "The panel (nvsh/panel.py:542-588 _render_event) renders THINKING as a dimmed, clearly separated run that ends before the first TEXT_DELTA, under the same NO_COLOR/TERM=dumb/non-tty guards and hard-coded SGR rules as the rest of the panel, and TOOL_CALL/TOOL_RESULT rendering (panel.py:376-388, exitCode key sniffing) is checked against each harness's result shape rather than pi's alone.",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o12",
+      "claim_id": "c51",
+      "seam": "doctor check_agent_reachable per harness",
+      "behavior": "version parsed and compared, kiro auth state from whoami, hang = failed check; no model call",
+      "source_text": "doctor's per-harness reachability check reports auth state without a model call: kiro-cli 2.0.0 on this box answers 'You are not logged in, please log in with kiro-cli login' and 'kiro-cli acp' then prints nothing on stdout (probe 2026-09-14), agy prints 'Print mode: not authenticated', so an unauthenticated harness is a doctor failure with the login command as remediation, never a hung panel.",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o13",
+      "claim_id": "c38",
+      "seam": "every adapter argv/wire",
+      "behavior": "no bypass token (dangerously-skip-permissions, yolo, danger-full-access, --full-auto, --trust-all-tools) is ever sent",
+      "source_text": "Harness-side persistent auto-approval must not silently bypass nvsh approve: on this box agy's settings.json already carries 18 permissions.allow command rules (e.g. command(uv), command(git commit)) that make agy run those commands without any prompt, and claude (settings.json permissions.allow), codex (config.toml approval_policy/sandbox_mode) and qwen/kiro (--trust-tools, trustedWorkspaces) have equivalents. Each adapter launches with the strictest per-turn policy its protocol offers (codex app-server AskForApproval 'untrusted' or 'on-request' plus sandbox read-only; claude --permission-mode default and --permission-prompts host; qwen ACP set_mode; kiro without --trust-all-tools), and doctor reports any harness-side allowlist it can read as a warning naming the file, so the operator knows which commands would run unmediated.",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o14",
+      "claim_id": "c39",
+      "seam": "nvsh/ source",
+      "behavior": "no code path opens a harness settings/trust file for writing",
+      "source_text": "nvsh never edits, creates or overrides a harness's own settings or trust files (agy/claude settings.json, codex config.toml, kiro trust settings, qwen settings): it only passes launch flags and protocol-level policy, and reports what it finds.",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o15",
+      "claim_id": "c32",
+      "seam": "tests/test_agent_conformance.py",
+      "behavior": "every registered harness passes thinking/tool/proposal/effort/stderr cases via its fake",
+      "source_text": "Every registered harness passes the same conformance suite (tests/test_agent_conformance.py) extended with thinking, tool-call, proposal and effort cases: 6 of 6 harnesses (pi, agy, claude, codex, qwen, kiro) emit THINKING and TOOL_CALL from their scripted fakes (the ACP-driven ones through one scripted fake ACP agent), and 'nvsh agent list --json' reports capabilities with 0 harnesses claiming tool_calling=True that cannot route a tool call through nvsh approve.",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o16",
+      "claim_id": "c44",
+      "seam": "child environment of every adapter",
+      "behavior": "CLAUDECODE and CLAUDE_CODE_* are scrubbed",
+      "source_text": "Every adapter launches its harness with CLAUDECODE and CLAUDE_CODE_* scrubbed from the child environment (and the equivalent nesting markers of other harnesses when known), because a shell opened from inside a Claude Code session inherits them and the claude harness then refuses to start (probe 2026-09-14: session/new failed 'Query closed before response received' until the vars were unset).",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o17",
+      "claim_id": "c45",
+      "seam": "daemon wire version handshake",
+      "behavior": "client sends its version; daemon answers; mismatch retires the stale daemon and the request succeeds",
+      "source_text": "The daemon wire gains a version handshake: the client sends its nvsh version with each request and the daemon answers with its own (grep for version/protocol in nvsh/daemon.py and nvsh/client_transport.py finds none today); on mismatch after an upgrade the client stops the stale daemon and starts a new one instead of sending a 'target' the old daemon ignores; request_from_dict keeps accepting the old shape.",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o18",
+      "claim_id": "c47",
+      "seam": "process containment on close/idle/uninstall",
+      "behavior": "no harness child survives close() escalation, idle exit or uninstall",
+      "source_text": "Process containment: ACP agents and codex app-server run as direct children of the nvsh daemon or one-shot client (never via 'codex app-server daemon', which is a user-level daemon outside nvsh's lifetime); close() applies pi's wait/terminate/kill escalation (pi.py:815-830) to all of them, and 'nvsh uninstall' and daemon idle-exit leave no harness process behind (verified with pgrep in the tests).",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o19",
+      "claim_id": "c48",
+      "seam": "audit log lines",
+      "behavior": "every proposal/decision/outcome line carries the resolved target",
+      "source_text": "Observability: every request's resolved target (harness, model, effort, path acp|app-server|stream-json|rpc, warm|one-shot) is written to the audit log (nvsh/agent/audit.py) and shown in the panel header line, and 'nvsh context --show-context' prints it, so an operator can tell after the fact which model answered and what it was allowed to do.",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o20",
+      "claim_id": "c49",
+      "seam": "nvsh setup / agent use / /agent",
+      "behavior": "write [aliases].default",
+      "source_text": "'nvsh setup' and 'nvsh agent use <name>' (nvsh/cli/_commands/setup.py, agent.py:56-81, and the /agent use slash command) write the 'default' alias instead of [agent] provider, and an existing config with only [agent] provider is read as default = \"<provider>\" with the backend's configured model and no effort, so upgraded installs keep working without editing config.toml.",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o21",
+      "claim_id": "c50",
+      "seam": "tests/fakes and tests/fixtures",
+      "behavior": "no PII; every recorded transcript carries a recorded-from header",
+      "source_text": "Recorded fixtures under tests/fakes and tests/fixtures are scrubbed before commit: no absolute home paths (steward portability check fails on ~/ and /home/<user>/), no conversation/session ids, no account e-mails or tokens (agy's init event and codex thread ids carry them), enforced by scripts/scan-secrets.py and a fixture-lint test.",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o22",
+      "claim_id": "c11",
+      "seam": "registry.ADAPTERS + choose(forced=)",
+      "behavior": "agy/kiro/qwen(acp) registered with path+hosted; forced target fails loudly, never falls back",
+      "source_text": "registry.ADAPTERS (nvsh/agent/registry.py:87-123) registers 'agy' with binary 'agy' so 'nvsh agent list', doctor's agent_configured, the @-mark palette (slash.agent_mark_items, slash.py:363-374) and the conformance suite all see it; registry.choose (registry.py:147-173) accepts a forced target instead of only configured-or-openai-compat fallback.",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o23",
+      "claim_id": "c20",
+      "seam": "four harness prompt files + docs",
+      "behavior": "no drift: harness-smoke passes; culture.yaml and vendored skills byte-identical to main",
+      "source_text": "Docs move together under the harness-smoke drift rule: CLAUDE.md, AGENTS.override.md, .pi/SYSTEM.md, QWEN.md (CLAUDE.md:246-250; AGENTS.colleague.md repeats the same Pi/Nemotron prose at lines 42-51), plus docs/architecture.md:153-157, README.md:52-54, docs/config.example.toml, docs/shell-integration.md (mark grammar) and CHANGELOG.md; the committed spec docs/specs/2026-09-13-...md records 'PiAgent as the default' at lines 31,35,49, so this frame's export is a new decision record, not an edit of that one.",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o24",
+      "claim_id": "c30",
+      "seam": "end-to-end on the fleet",
+      "behavior": "a failure in a hooked shell uses the default target with a warm session and shows thinking; @alias and @literal run one-shot",
+      "source_text": "An operator sets one 'default' alias (backend/model/effort) in config.toml and every automatic failure call uses it with a warm session where the harness supports one; typing '@claude/sonnet/medium why did this fail?' or '@reviewer ...' or '@local ...' runs that target one-shot; whichever of pi, agy, claude, codex or qwen answers, the panel shows its thinking, tool calls and results, and any command it wants to run arrives as a proposal gated by nvsh approve, or the harness runs read-only and says so.",
+      "origin": "llm",
+      "status": "proposed"
+    }
+  ]
 }
