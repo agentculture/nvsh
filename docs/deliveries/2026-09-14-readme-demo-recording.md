@@ -89,7 +89,7 @@ the task contract; the `dN` in parentheses is the proposed record that covers it
 - render: `docs/demos/demo-spark.svg` viewed in Chrome from a local server — one line per command, animation plays
 - commits: `ff52eda..13b2edf` (24 commits on `feat/readme-demo-recording`)
 - devague: obligations `o1`–`o15`, evidence `e1`–`e16`, deltas `b1`–`b5`, deviations `d1`–`d5`, lapses `l1`–`l5`, risks `r1`–`r4`
-- PRs / issues: [#14](https://github.com/agentculture/nvsh/pull/14) — lint, harness-smoke, version-check and GitGuardian green at open; `raw.githubusercontent.com` serves the branch SVG as `image/svg+xml` and it animates in Chrome (evidence `e17`); the README embed targets `main`, so on the PR branch it shows alt text until merge
+- PRs / issues: [#14](https://github.com/agentculture/nvsh/pull/14) — lint, harness-smoke, version-check and GitGuardian green at open; `raw.githubusercontent.com` serves the branch SVG as `image/svg+xml` and it animates in Chrome (evidence `e17`); the README embed targets `main`, so on the PR branch it shows alt text until merge; TestPyPI `0.12.0.dev49` renders the README, caption and Thor/Orin links (viewed in Chrome), with the image likewise resolving only after merge
 
 ## Delivery Claims
 
