@@ -109,6 +109,10 @@ _QUIET_UPDATES = frozenset(
 #: these is progress, not a result.
 _PENDING_STATUSES = frozenset({"pending", "in_progress"})
 
+#: "That poll came up empty." ``None`` already means EOF on the reader
+#: queue, so waiting in vain needs a value of its own.
+_NOTHING = object()
+
 
 class AcpError(RuntimeError):
     """The ACP child did not hold up its end of the protocol.
@@ -184,6 +188,29 @@ ENTRIES: dict[str, AcpEntry] = {
 }
 
 
+@dataclass(frozen=True)
+class AcpPolicy:
+    """The per-harness knobs that are neither argv nor the session's mode.
+
+    Three of them are reported straight back out of
+    :meth:`AcpAgent.capabilities`; ``model_flag`` is how -- or whether --
+    the harness takes a model on the command line. They travel together
+    because they are set together, once, from the harness's
+    :class:`AcpEntry`, and keeping them in one frozen value stops
+    :meth:`AcpAgent.__init__` from growing a parameter per capability.
+    """
+
+    local_model: bool = False
+    effort_supported: bool = False
+    tool_calling: bool = False
+    model_flag: str | None = None
+
+
+#: The policy an agent gets when the caller names none: a harness that
+#: reports nothing extra and takes no model flag.
+_DEFAULT_POLICY = AcpPolicy()
+
+
 def initialize_timeout(env: Mapping[str, str] | None = None) -> float:
     """How long to wait for the ``initialize`` result, in seconds."""
     resolved = os.environ if env is None else env
@@ -242,6 +269,37 @@ def _proposal_fields(tool_call: Mapping[str, object]) -> tuple[str, str]:
     return command, rationale
 
 
+def _is_response_to(obj: object, request_id: int) -> bool:
+    """Is this frame the response to the request nvsh is waiting on?"""
+    return isinstance(obj, Mapping) and obj.get("id") == request_id and "method" not in obj
+
+
+def _is_server_request(obj: object) -> bool:
+    """Is this frame a request *from* the harness (a method with an id)?"""
+    return isinstance(obj, Mapping) and bool(obj.get("method")) and obj.get("id") is not None
+
+
+def _matching_value(values: object, wanted: str) -> str | None:
+    """The first of one config option's advertised values that ``wanted`` names.
+
+    Exact value first, then the option's display name, then a prefix -- qwen
+    names a model ``"worker(openai)"`` while an operator writes ``"worker"``.
+    ``None`` means the option advertised nothing usable, and the caller then
+    leaves the setting alone.
+    """
+    if not isinstance(values, list):
+        return None
+    for candidate in values:
+        if not isinstance(candidate, Mapping):
+            continue
+        value = candidate.get("value")
+        if not isinstance(value, str):
+            continue
+        if wanted in (value, candidate.get("name")) or value.startswith(wanted):
+            return value
+    return None
+
+
 def _selected_option(options: Sequence[object], allow: bool) -> tuple[str | None, str]:
     """Pick the option to answer a permission request with.
 
@@ -274,10 +332,7 @@ class AcpAgent(NvshAgent):
         *,
         mode: str | None = None,
         thinking: bool = False,
-        local_model: bool = False,
-        effort_supported: bool = False,
-        tool_calling: bool = False,
-        model_flag: str | None = None,
+        policy: AcpPolicy | None = None,
         env: Mapping[str, str] | None = None,
         cwd: str | Path | None = None,
         initialize_timeout_seconds: float | None = None,
@@ -292,10 +347,8 @@ class AcpAgent(NvshAgent):
         self._approval = approval
         self._mode = mode
         self._thinking = thinking
-        self._local_model = local_model
-        self._effort_supported = effort_supported
-        self._tool_calling = tool_calling
-        self._model_flag = model_flag
+        self._policy = policy if policy is not None else _DEFAULT_POLICY
+        self._model_flag = self._policy.model_flag
         self._cwd = str(cwd) if cwd is not None else os.getcwd()
         #: An explicit ``cwd`` pins the session; otherwise the first request's
         #: ``context.cwd`` wins over the daemon's own launch directory.
@@ -426,27 +479,14 @@ class AcpAgent(NvshAgent):
     def _config_value(self, config_id: str, wanted: str) -> str | None:
         """Match ``wanted`` against one advertised config option's values.
 
-        Exact value first, then the option's display name, then a prefix --
-        qwen names a model ``"worker(openai)"`` while an operator writes
-        ``"worker"``. ``None`` means the harness advertised no such option or
-        no matching value, and nvsh then leaves the setting alone rather
-        than sending something the harness would reject.
+        The matching itself is :func:`_matching_value`. ``None`` means the
+        harness advertised no such option, or no matching value, and nvsh
+        then leaves the setting alone rather than sending something the
+        harness would reject.
         """
         for option in self._config_options:
-            if not isinstance(option, Mapping) or option.get("id") != config_id:
-                continue
-            values = option.get("options")
-            if not isinstance(values, list):
-                return None
-            for candidate in values:
-                if not isinstance(candidate, Mapping):
-                    continue
-                value = candidate.get("value")
-                if not isinstance(value, str):
-                    continue
-                if wanted in (value, candidate.get("name")) or value.startswith(wanted):
-                    return value
-            return None
+            if isinstance(option, Mapping) and option.get("id") == config_id:
+                return _matching_value(option.get("options"), wanted)
         return None
 
     def _apply_config_option(self, config_id: str, wanted: str | None) -> None:
@@ -585,20 +625,8 @@ class AcpAgent(NvshAgent):
         deadline = time.monotonic() + timeout
         try:
             while True:
-                left = deadline - time.monotonic()
-                if left <= 0:
-                    raise AcpError(
-                        f"{self._name} did not answer {method} within {timeout:g}s"
-                        f"{self._exit_detail()}"
-                    )
-                try:
-                    obj = self._next_object(min(_POLL_INTERVAL_SECONDS, left))
-                except queue.Empty:
-                    if self._proc is not None and self._proc.poll() is not None:
-                        raise AcpError(
-                            f"{self._name} went away before answering {method}"
-                            f"{self._exit_detail()}"
-                        ) from None
+                obj = self._poll_frame(method, deadline, timeout)
+                if obj is _NOTHING:
                     continue
                 if obj is None:
                     carried.append(None)
@@ -606,18 +634,43 @@ class AcpAgent(NvshAgent):
                         f"{self._name} closed its output before answering {method}"
                         f"{self._exit_detail()}"
                     )
-                if isinstance(obj, Mapping) and obj.get("id") == request_id and "method" not in obj:
-                    if "error" in obj:
-                        raise AcpError(f"{self._name} rejected {method}: {_error_text(obj)}")
-                    result = obj.get("result")
-                    return dict(result) if isinstance(result, Mapping) else {}
-                if isinstance(obj, Mapping) and obj.get("method") and obj.get("id") is not None:
+                if _is_response_to(obj, request_id):
+                    return self._response_result(method, obj)
+                if _is_server_request(obj):
                     if obj.get("method") != "session/request_permission":
                         self._answer_unknown_request(obj)
                         continue
                 carried.append(obj)
         finally:
             self._held.extendleft(reversed(carried))
+
+    def _poll_frame(self, method: str, deadline: float, timeout: float) -> Any:
+        """One frame from the child, or :data:`_NOTHING` when none came.
+
+        Raises :class:`AcpError` when ``deadline`` has passed or the child
+        died without answering; ``_NOTHING`` means only that this poll came
+        up empty and the caller should go round again.
+        """
+        left = deadline - time.monotonic()
+        if left <= 0:
+            raise AcpError(
+                f"{self._name} did not answer {method} within {timeout:g}s{self._exit_detail()}"
+            )
+        try:
+            return self._next_object(min(_POLL_INTERVAL_SECONDS, left))
+        except queue.Empty:
+            if self._proc is not None and self._proc.poll() is not None:
+                raise AcpError(
+                    f"{self._name} went away before answering {method}{self._exit_detail()}"
+                ) from None
+            return _NOTHING
+
+    def _response_result(self, method: str, obj: Mapping[str, object]) -> dict:
+        """The ``result`` of our own response frame; an error frame raises."""
+        if "error" in obj:
+            raise AcpError(f"{self._name} rejected {method}: {_error_text(obj)}")
+        result = obj.get("result")
+        return dict(result) if isinstance(result, Mapping) else {}
 
     def _answer_unknown_request(self, obj: Mapping[str, object]) -> None:
         """Tell the harness nvsh does not implement one of its requests.
@@ -863,12 +916,12 @@ class AcpAgent(NvshAgent):
     def capabilities(self) -> Capabilities:
         return Capabilities(
             streaming=True,
-            tool_calling=self._tool_calling,
+            tool_calling=self._policy.tool_calling,
             cancellation=True,
             persistent_session=True,
-            local_model=self._local_model,
+            local_model=self._policy.local_model,
             thinking=self._thinking,
-            effort=self._effort_supported,
+            effort=self._policy.effort_supported,
             # Not a filesystem path: every ACP harness is reached the same
             # way, over the protocol, and that is what a caller needs to know.
             path="acp",
@@ -955,10 +1008,12 @@ def build(
         approval,
         mode=mode,
         thinking=entry.thinking,
-        local_model=entry.local_model,
-        effort_supported=entry.effort,
-        tool_calling=entry.approval_channel or harness_approval,
-        model_flag=entry.model_flag,
+        policy=AcpPolicy(
+            local_model=entry.local_model,
+            effort_supported=entry.effort,
+            tool_calling=entry.approval_channel or harness_approval,
+            model_flag=entry.model_flag,
+        ),
         env=env,
         cwd=cwd,
     )
