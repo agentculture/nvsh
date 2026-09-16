@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import Any, Iterator, Mapping
 
 from ..redact import redact
-from ._subprocess import escalate_close
+from ._subprocess import escalate_close, kill_tree
 from .base import (
     AgentContext,
     AgentEvent,
@@ -355,6 +355,11 @@ class PiAgent(NvshAgent):
         #: True between a `prompt` ack and the turn's DONE/ERROR. Only then
         #: can a steer reach the running turn.
         self._streaming = False
+        #: Set by force_stop(); tells the next run() that the process it is
+        #: about to (re)spawn is a fresh session, not a continuation, so
+        #: that run() opens with a STATUS 'new session' event (c33) instead
+        #: of silently picking up where a killed process left off.
+        self._new_session_pending = False
 
     # -- argv / lifecycle --------------------------------------------------
 
@@ -425,6 +430,10 @@ class PiAgent(NvshAgent):
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             env=self._env,
+            # New session/process group (task t2's kill_tree contract): pi's
+            # own tool grandchildren die with it under force_stop() instead
+            # of being orphaned when only pi itself is signalled.
+            start_new_session=True,
         )
         self._reader_thread = threading.Thread(target=self._reader_loop, daemon=True)
         self._reader_thread.start()
@@ -604,6 +613,9 @@ class PiAgent(NvshAgent):
         self._cancelled = False
         self._said.clear()
         prompt_text = self._prompt_for(request, context)
+        if self._new_session_pending:
+            self._new_session_pending = False
+            yield AgentEvent(kind=EventKind.STATUS, text="new session")
         # Acknowledged, like every other command: a prompt pi never answers
         # for is an error the operator gets to read, not silence (d14).
         self._command("prompt", message=prompt_text)
@@ -843,6 +855,42 @@ class PiAgent(NvshAgent):
         self._cancelled = True
         if self._proc is not None and self._proc.poll() is None:
             self._send({"type": "abort"})
+
+    def force_stop(self) -> None:
+        """End the turn for certain, even when pi ignores ``abort``.
+
+        ``abort`` is still sent first, as a courtesy to a pi that is merely
+        slow rather than wedged, but nothing here waits on it: the whole
+        process group is then walked down with
+        :func:`~nvsh.agent._subprocess.kill_tree` (SIGTERM, wait, SIGKILL),
+        which reaches any tool grandchild pi's bash tool started too, not
+        just pi itself -- the fake harness's ``NVSH_FAKE_IGNORE_CANCEL``
+        mode exists to prove exactly this path runs when the protocol-level
+        ``abort`` gets no reply at all.
+
+        Internal state is reset so the process is never reused half-dead:
+        the next :meth:`run` sees no live process, calls :meth:`start` to
+        spawn a fresh one, and -- because :attr:`_new_session_pending` is
+        left set here -- that run opens with a STATUS event naming it a
+        'new session' (assumption c33), so the operator is told the
+        previous turn's context is gone rather than left to assume it
+        continued.
+        """
+        self._cancelled = True
+        proc = self._proc
+        if proc is not None and proc.poll() is None:
+            self._send({"type": "abort"})
+        kill_tree(proc, grace=_CLOSE_WAIT_SECONDS)
+        for thread in (self._reader_thread, self._stderr_thread):
+            if thread is not None:
+                thread.join(timeout=_CLOSE_WAIT_SECONDS)
+        self._proc = None
+        self._reader_thread = None
+        self._stderr_thread = None
+        self._closed = True
+        self._queue = queue.Queue()
+        self._held.clear()
+        self._new_session_pending = True
 
     def close(self) -> None:
         """Idempotent teardown: close stdin, wait, then escalate to kill.
