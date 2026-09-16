@@ -570,6 +570,23 @@ def kill(*, shell_id: str | int | None = None, env: Mapping[str, str] | None = N
     return any(event.kind is EventKind.STATUS for event in events)
 
 
+def busy_choice(
+    choice: str,
+    *,
+    shell_id: str | int | None = None,
+    env: Mapping[str, str] | None = None,
+) -> bool:
+    """Answer the daemon's ``busy`` prompt for this shell's pending request (t10).
+
+    *choice* is ``"steer"``, ``"replace"`` or ``"exit"``. ``True`` once the
+    daemon accepted it; ``False`` when no daemon is listening, this shell has
+    no busy prompt open, the choice is unknown, or ``steer`` was chosen for a
+    harness with no mid-turn channel.
+    """
+    events = control("busy_choice", shell_id=shell_id, env=env, choice=choice)
+    return any(event.kind is EventKind.STATUS for event in events)
+
+
 def respond_ui(
     request_id: str,
     fields: Mapping[str, object] | None = None,

@@ -32,6 +32,10 @@ class EventKind(str, Enum):
     THINKING = "thinking"
     DONE = "done"
     ERROR = "error"
+    #: Daemon-only (t10): the agent is busy with a turn this request may
+    #: steer, replace or leave; ``args`` carries ``owner``, ``elapsed``,
+    #: ``steerable`` and ``choices``. Never yielded by an adapter.
+    BUSY = "busy"
 
 
 class ProposalKind(str, Enum):

@@ -82,6 +82,15 @@ _QUEUE_NOTICE_INTERVAL = 15.0
 #: decides whether the reply says "killed" or "still stopping".
 _KILL_WAIT = 3.0
 
+#: How long a request that got a ``busy`` event waits for a ``busy_choice``
+#: before it gives up on the prompt and queues as it always did. Bounds the
+#: wait for a client that ignores ``busy`` (one that predates t10), so it is
+#: never stranded; well under the client's 120 s stream timeout.
+_BUSY_CHOICE_TIMEOUT = 60.0
+
+#: The answers a ``busy`` prompt accepts.
+BUSY_CHOICES = ("steer", "replace", "exit")
+
 #: Control kinds that carry no agent request.
 _CONTROL_KINDS = frozenset(
     {
@@ -89,6 +98,7 @@ _CONTROL_KINDS = frozenset(
         "unregister",
         "cancel",
         "kill",
+        "busy_choice",
         "ui_response",
         "steer",
         "status",
@@ -388,6 +398,43 @@ class _ActiveTurn:
 
 
 @dataclass
+class _BusyPrompt:
+    """One request parked on a ``busy`` event, waiting for the operator's choice."""
+
+    turn: _ActiveTurn
+    steerable: bool
+    choice: str = ""
+    chosen: threading.Event = field(default_factory=threading.Event)
+
+
+def _shell_pid_gone(shell: str) -> bool:
+    """Is *shell* a pid that no longer exists?
+
+    A shell id is the hook's ``$$``. Anything that is not a positive integer
+    (a test's ``"A"``, an in-process caller) cannot be probed and counts as
+    alive, as does a pid we may not signal: only ``ESRCH`` means gone.
+    """
+    try:
+        pid = int(shell)
+    except ValueError:
+        return False
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    except OSError:
+        return False
+    return False
+
+
+def _overrides_steer(agent: NvshAgent) -> bool:
+    """Does *agent*'s adapter have a mid-turn channel (it overrides ``steer``)?"""
+    return getattr(type(agent), "steer", NvshAgent.steer) is not NvshAgent.steer
+
+
+@dataclass
 class _Waiter:
     """One request queued behind :class:`_ActiveTurn`."""
 
@@ -500,6 +547,7 @@ class Daemon:
         self._notified: set[str] = set()
         self._active: _ActiveTurn | None = None
         self._waiting: list[_Waiter] = []
+        self._busy: dict[str, _BusyPrompt] = {}
 
         self._server: _Server | None = None
         self._lock_fd: int | None = None
@@ -888,16 +936,25 @@ class Daemon:
             turn = self._active
             if turn is None or not shell or turn.shell != shell:
                 return "idle"
+        return self._force_stop_turn(turn, wait=wait)
+
+    def _force_stop_turn(self, turn: _ActiveTurn, *, wait: float = _KILL_WAIT) -> str:
+        """Force-stop *turn*, whoever owns it. Callers decide whether they may.
+
+        :meth:`kill_shell` allows only the owner; a ``replace`` answer to a
+        busy prompt also allows any shell once the owner's pid is gone.
+        """
+        with self._lock:
             if not turn.aborted:
                 turn.aborted = "killed"
             slot = turn.slot
             if slot in self._slots:
                 self._slots.remove(slot)
-            conversation = self._conversations.get(shell)
+            conversation = self._conversations.get(turn.shell)
             if conversation is not None:
                 conversation.pending_proposal = None
                 conversation.sleeping = True
-        self._log.info("force-stopping shell %s's turn", shell)
+        self._log.info("force-stopping shell %s's turn", turn.shell)
         try:
             slot.agent.force_stop()
         except Exception as exc:  # noqa: BLE001 - a kill must never wedge the daemon
@@ -1115,6 +1172,10 @@ class Daemon:
             yield AgentEvent(kind=EventKind.DONE)
             return
 
+        if kind == "busy_choice":
+            yield from self._handle_busy_choice(shell, message)
+            return
+
         if kind == "undo":
             yield from self._handle_undo(shell)
             return
@@ -1136,6 +1197,36 @@ class Daemon:
         yield AgentEvent(kind=EventKind.STATUS, text="stopping")
         yield AgentEvent(kind=EventKind.DONE)
         self.shutdown()
+
+    def _handle_busy_choice(
+        self, shell: str, message: Mapping[str, object]
+    ) -> Iterator[AgentEvent]:
+        """Deliver the operator's answer to this shell's own open busy prompt."""
+        choice = str(message.get("choice", "") or "")
+        if choice not in BUSY_CHOICES:
+            yield AgentEvent(
+                kind=EventKind.ERROR,
+                error=f"busy_choice must be one of {', '.join(BUSY_CHOICES)}",
+            )
+            return
+        with self._lock:
+            prompt = self._busy.get(shell) if shell else None
+            if prompt is not None and choice == "steer" and not prompt.steerable:
+                yield AgentEvent(
+                    kind=EventKind.ERROR,
+                    error="the running turn's harness has no mid-turn channel to steer",
+                )
+                return
+            if prompt is not None and not prompt.chosen.is_set():
+                prompt.choice = choice
+                prompt.chosen.set()
+            else:
+                prompt = None
+        if prompt is None:
+            yield AgentEvent(kind=EventKind.ERROR, error=f"no busy prompt open for {shell}")
+            return
+        yield AgentEvent(kind=EventKind.STATUS, text=f"busy choice {choice} for {shell}")
+        yield AgentEvent(kind=EventKind.DONE)
 
     def _handle_steer(self, shell: str, message: Mapping[str, object]) -> Iterator[AgentEvent]:
         """Inject the operator's text into this shell's running turn (d16).
@@ -1284,11 +1375,113 @@ class Daemon:
         # shared agent process must never interleave two conversations. The
         # wait is announced out loud, and the turn it waits for is watched,
         # so "one at a time" can never become "one, forever" (d12).
+        handled = yield from self._offer_busy(shell, request, connection)
+        if handled:
+            return
         yield from self._wait_for_the_agent(shell)
         try:
             yield from self._run_locked(shell, request, context, connection)
         finally:
             self._run_lock.release()
+
+    def _offer_busy(
+        self, shell: str, request: AgentRequest, connection: socket.socket | None
+    ) -> Iterator[AgentEvent]:
+        """The busy prompt (t10). Returns ``True`` when the request is finished.
+
+        Offered only to the shell that owns the running turn, or to any shell
+        once the owning shell's pid is gone (c8: a live other shell's turn is
+        never touched -- that shell just queues with the usual notice). The
+        request then parks until a ``busy_choice`` control arrives, the turn
+        ends on its own, the client walks away, or
+        :data:`_BUSY_CHOICE_TIMEOUT` passes; the last two fall back to the
+        queue. A targeted run holds the run lock without an active turn and
+        so never opens a prompt (plan risk r6).
+        """
+        with self._lock:
+            turn = self._active
+            if turn is None or turn.aborted or not shell or shell in self._busy:
+                return False
+            owner = turn.shell
+            if owner != shell and not _shell_pid_gone(owner):
+                return False
+            prompt = _BusyPrompt(turn, _overrides_steer(turn.slot.agent))
+            self._busy[shell] = prompt
+        try:
+            choices = [c for c in BUSY_CHOICES if c != "steer" or prompt.steerable]
+            yield AgentEvent(
+                kind=EventKind.BUSY,
+                text=f"the agent is busy with shell {owner}: {', '.join(choices)}?",
+                args={
+                    "owner": owner,
+                    "elapsed": round(turn.elapsed(), 1),
+                    "steerable": prompt.steerable,
+                    "choices": choices,
+                },
+            )
+            choice = yield from self._await_busy_choice(prompt, connection)
+        finally:
+            with self._lock:
+                if self._busy.get(shell) is prompt:
+                    del self._busy[shell]
+        return (yield from self._apply_busy_choice(shell, request, prompt, choice))
+
+    def _await_busy_choice(
+        self, prompt: _BusyPrompt, connection: socket.socket | None
+    ) -> Iterator[AgentEvent]:
+        """Wait for *prompt*'s answer; ``""`` means "queue as usual"."""
+        began = time.monotonic()
+        last_notice = began
+        while not prompt.chosen.wait(_TURN_WATCH_INTERVAL):
+            now = time.monotonic()
+            if prompt.turn.finished.is_set():
+                return ""
+            if _peer_is_gone(connection):
+                return "gone"
+            if now - began >= _BUSY_CHOICE_TIMEOUT:
+                yield AgentEvent(
+                    kind=EventKind.STATUS, text="no answer to the busy prompt; queueing"
+                )
+                return ""
+            if now - last_notice >= _QUEUE_NOTICE_INTERVAL:
+                last_notice = now
+                yield AgentEvent(kind=EventKind.STATUS, text="waiting for a busy choice")
+        return prompt.choice
+
+    def _apply_busy_choice(
+        self, shell: str, request: AgentRequest, prompt: _BusyPrompt, choice: str
+    ) -> Iterator[AgentEvent]:
+        """Act on the answer. Returns ``True`` when the request is finished."""
+        owner = prompt.turn.shell
+        if choice == "gone":
+            return True
+        if choice == "exit":
+            self._log.info("shell %s left shell %s's turn running", shell, owner)
+            yield AgentEvent(kind=EventKind.STATUS, text=f"left shell {owner}'s turn running")
+            yield AgentEvent(kind=EventKind.DONE, args={"busy_choice": "exit"})
+            return True
+        if choice == "steer":
+            delivered = False
+            if not prompt.turn.finished.is_set():
+                try:
+                    delivered = bool(prompt.turn.slot.agent.steer(request.prompt))
+                except Exception as exc:  # noqa: BLE001 - a steer must never wedge the daemon
+                    self._log.warning("steer failed: %s", exc)
+            if delivered:
+                self._log.info("shell %s steered shell %s's turn", shell, owner)
+                yield AgentEvent(kind=EventKind.STATUS, text=f"steer delivered to {owner}")
+                yield AgentEvent(kind=EventKind.DONE, args={"busy_choice": "steer"})
+                return True
+            # d16: no mid-turn channel took it, so it becomes the next request.
+            yield AgentEvent(
+                kind=EventKind.STATUS, text="steer not taken; sending it as the next request"
+            )
+            return False
+        if choice == "replace":
+            self._log.info("shell %s replaces shell %s's turn", shell, owner)
+            yield AgentEvent(kind=EventKind.STATUS, text=f"replacing shell {owner}'s turn")
+            self._force_stop_turn(prompt.turn)
+        return False
 
     def _run_locked(
         self,
