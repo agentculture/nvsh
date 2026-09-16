@@ -5,19 +5,55 @@ Reads a JSON events spec from ``$NVSH_FAKE_EVENTS`` (see
 ``tests/_fake_adapters.py``) and emits codex's ``{"msg": {...}}`` envelope
 lines so ``nvsh.agent.codex.CodexAgent`` can be exercised end to end without
 a real ``codex`` binary on PATH.
+
+Two more knobs, for the reliable-agent-stop tests:
+
+* ``NVSH_FAKE_IGNORE_CANCEL=1`` -- this fallback path has no protocol
+  cancel at all (the real ``codex exec`` reads no stdin either), so
+  "ignoring cancel" here means the turn simply never ends on its own: once
+  the scripted events are exhausted, the process blocks reading stdin
+  forever instead of exiting, standing in for a hung ``codex exec`` that
+  only a signal (``kill_tree``) can stop.
+* ``NVSH_FAKE_GRANDCHILD=1`` -- start a ``sleep 600`` child at launch and
+  write ``{"harness": <this pid>, "grandchild": <sleep's pid>}`` to
+  ``$NVSH_FAKE_PID_FILE``.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import subprocess  # nosec B404 - fixed argv below, test fixture only
 import sys
+from pathlib import Path
+
+
+def spawn_grandchild_if_requested() -> None:
+    """``NVSH_FAKE_GRANDCHILD=1``: start a sleeping child and record both pids."""
+    if os.environ.get("NVSH_FAKE_GRANDCHILD") != "1":
+        return
+    pid_file = os.environ.get("NVSH_FAKE_PID_FILE")
+    child = subprocess.Popen(["sleep", "600"])  # nosec B603 B607 - fixed argv
+    if pid_file:
+        Path(pid_file).write_text(
+            json.dumps({"harness": os.getpid(), "grandchild": child.pid}), encoding="utf-8"
+        )
+
+
+def hang_if_ignoring_cancel() -> None:
+    """``NVSH_FAKE_IGNORE_CANCEL=1``: never let the turn end on its own."""
+    if os.environ.get("NVSH_FAKE_IGNORE_CANCEL") != "1":
+        return
+    while sys.stdin.readline():
+        pass
 
 
 def main() -> int:
+    spawn_grandchild_if_requested()
     events_path = os.environ.get("NVSH_FAKE_EVENTS")
     events = json.loads(open(events_path, encoding="utf-8").read()) if events_path else []
 
+    exit_code = 0
     for event in events:
         kind = event.get("kind")
         if kind == "status":
@@ -27,16 +63,19 @@ def main() -> int:
         elif kind == "error":
             print(json.dumps({"msg": {"type": "error", "message": event.get("error", "")}}))
             sys.stdout.flush()
-            return 1
+            exit_code = 1
+            break
         elif kind == "done":
             print(json.dumps({"msg": {"type": "task_complete"}}))
             sys.stdout.flush()
-            return 0
+            exit_code = 0
+            break
         else:
             continue
         print(json.dumps({"msg": msg}))
         sys.stdout.flush()
-    return 0
+    hang_if_ignoring_cancel()
+    return exit_code
 
 
 if __name__ == "__main__":

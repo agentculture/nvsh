@@ -35,14 +35,41 @@ Environment knobs (all optional):
 * ``NVSH_FAKE_EVENTS=<path>`` -- for the ``exec --json`` path only: a JSON
   array of ``{"kind", "text", "error"}`` events to replay (the same file
   ``tests/_fake_adapters.py`` writes for ``tests/fakes/codex``).
+
+Two more knobs, for the reliable-agent-stop tests:
+
+* ``NVSH_FAKE_IGNORE_CANCEL=1`` -- a ``turn/interrupt`` request is received
+  and silently dropped: no JSON-RPC response, no ``turn/completed``
+  notification. This is what a harness that has stopped honouring its own
+  cancel protocol looks like from the client's side, so a test can prove
+  ``force_stop()`` (kill_tree, not the protocol) is what actually ends the
+  turn.
+* ``NVSH_FAKE_GRANDCHILD=1`` -- start a ``sleep 600`` child at launch and
+  write ``{"harness": <this pid>, "grandchild": <sleep's pid>}`` to
+  ``$NVSH_FAKE_PID_FILE``.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import subprocess  # nosec B404 - fixed argv below, test fixture only
 import sys
 import threading
+from pathlib import Path
+
+
+def spawn_grandchild_if_requested() -> None:
+    """``NVSH_FAKE_GRANDCHILD=1``: start a sleeping child and record both pids."""
+    if os.environ.get("NVSH_FAKE_GRANDCHILD") != "1":
+        return
+    pid_file = os.environ.get("NVSH_FAKE_PID_FILE")
+    child = subprocess.Popen(["sleep", "600"])  # nosec B603 B607 - fixed argv
+    if pid_file:
+        Path(pid_file).write_text(
+            json.dumps({"harness": os.getpid(), "grandchild": child.pid}), encoding="utf-8"
+        )
+
 
 THREAD_ID = "th-fake-0000-0001"
 TURN_ID = "turn-fake-0000-0001"
@@ -385,6 +412,8 @@ class Replay:
             if self.awaiting:
                 self.answer(message)
             return
+        if method == "turn/interrupt" and os.environ.get("NVSH_FAKE_IGNORE_CANCEL") == "1":
+            return  # ignore entirely: no response, no turn/completed
         if method in RESPONSES:
             emit({"id": message.get("id"), "result": RESPONSES[method]})
         else:
@@ -414,6 +443,7 @@ class Replay:
 
 
 def main() -> int:
+    spawn_grandchild_if_requested()
     argv = sys.argv[1:]
     if "exec" in argv:
         return run_exec()

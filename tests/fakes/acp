@@ -27,14 +27,41 @@ Environment knobs (all optional):
 * ``NVSH_TEST_ACP_UI_TIMEOUT`` -- seconds to wait for a permission answer
   before failing the prompt (default 10), so a broken client fails the test
   quickly instead of hanging the suite.
+
+Two more knobs, for the reliable-agent-stop tests:
+
+* ``NVSH_FAKE_IGNORE_CANCEL=1`` -- a ``session/cancel`` notification is
+  received and silently dropped: the pending ``session/prompt`` request is
+  never resolved. This is what a harness that has stopped honouring its
+  own cancel protocol looks like from the client's side, so a test can
+  prove ``force_stop()`` (kill_tree, not the protocol) is what actually
+  ends the turn.
+* ``NVSH_FAKE_GRANDCHILD=1`` -- start a ``sleep 600`` child at launch and
+  write ``{"harness": <this pid>, "grandchild": <sleep's pid>}`` to
+  ``$NVSH_FAKE_PID_FILE``.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import subprocess  # nosec B404 - fixed argv below, test fixture only
 import sys
 import threading
+from pathlib import Path
+
+
+def spawn_grandchild_if_requested() -> None:
+    """``NVSH_FAKE_GRANDCHILD=1``: start a sleeping child and record both pids."""
+    if os.environ.get("NVSH_FAKE_GRANDCHILD") != "1":
+        return
+    pid_file = os.environ.get("NVSH_FAKE_PID_FILE")
+    child = subprocess.Popen(["sleep", "600"])  # nosec B603 B607 - fixed argv
+    if pid_file:
+        Path(pid_file).write_text(
+            json.dumps({"harness": os.getpid(), "grandchild": child.pid}), encoding="utf-8"
+        )
+
 
 SESSION_ID = "acp-fake-session-0001"
 
@@ -92,7 +119,12 @@ RECORDED_SCRIPT = [
             "availableCommands": [{"name": "status", "description": "show version info"}],
         }
     },
-    {"update": {"sessionUpdate": "agent_thought_chunk", "content": {"type": "text", "text": "The"}}},
+    {
+        "update": {
+            "sessionUpdate": "agent_thought_chunk",
+            "content": {"type": "text", "text": "The"},
+        }
+    },
     {
         "update": {
             "sessionUpdate": "agent_thought_chunk",
@@ -330,6 +362,8 @@ class Fake:
             self.play()
             return
         if method == "session/cancel":
+            if os.environ.get("NVSH_FAKE_IGNORE_CANCEL") == "1":
+                return  # ignore: leave the pending prompt unresolved
             if self.prompt_id is not None:
                 result(self.prompt_id, {"stopReason": "cancelled"})
                 self.prompt_id = None
@@ -355,6 +389,7 @@ class Fake:
 
 
 def main():
+    spawn_grandchild_if_requested()
     raw_script = os.environ.get("NVSH_TEST_ACP_SCRIPT")
     script = json.loads(raw_script) if raw_script else RECORDED_SCRIPT
     fake = Fake(script)

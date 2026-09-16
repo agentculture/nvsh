@@ -27,13 +27,45 @@ inspecting ``AgyAgent`` internals.
 
 Nothing here imports ``nvsh`` -- it is spawned as a real subprocess, exactly
 like the real ``agy`` binary would be.
+
+Two more knobs, for the reliable-agent-stop tests:
+
+* ``NVSH_FAKE_IGNORE_CANCEL=1`` -- agy has no protocol-level cancel at all
+  (real cancellation is signal-only), so "ignoring cancel" here means the
+  turn simply never ends on its own: once the scripted turns are exhausted,
+  the process blocks reading stdin forever instead of exiting.
+* ``NVSH_FAKE_GRANDCHILD=1`` -- start a ``sleep 600`` child at launch and
+  write ``{"harness": <this pid>, "grandchild": <sleep's pid>}`` to
+  ``$NVSH_FAKE_PID_FILE``.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import subprocess  # nosec B404 - fixed argv below, test fixture only
 import sys
+from pathlib import Path
+
+
+def spawn_grandchild_if_requested() -> None:
+    """``NVSH_FAKE_GRANDCHILD=1``: start a sleeping child and record both pids."""
+    if os.environ.get("NVSH_FAKE_GRANDCHILD") != "1":
+        return
+    pid_file = os.environ.get("NVSH_FAKE_PID_FILE")
+    child = subprocess.Popen(["sleep", "600"])  # nosec B603 B607 - fixed argv
+    if pid_file:
+        Path(pid_file).write_text(
+            json.dumps({"harness": os.getpid(), "grandchild": child.pid}), encoding="utf-8"
+        )
+
+
+def hang_if_ignoring_cancel() -> None:
+    """``NVSH_FAKE_IGNORE_CANCEL=1``: never let the turn end on its own."""
+    if os.environ.get("NVSH_FAKE_IGNORE_CANCEL") != "1":
+        return
+    while sys.stdin.readline():
+        pass
 
 
 def _load_spec() -> dict:
@@ -64,11 +96,14 @@ def _play_turn(turn: dict) -> int:
 
 def main(argv: list[str]) -> int:
     _log_argv(argv)
+    spawn_grandchild_if_requested()
     spec = _load_spec()
     warm = "--input-format" in argv
 
     if not warm:
-        return _play_turn(spec)
+        exit_code = _play_turn(spec)
+        hang_if_ignoring_cancel()
+        return exit_code
 
     turns = list(spec.get("turns", []))
     exit_code = 0
@@ -77,6 +112,7 @@ def main(argv: list[str]) -> int:
         if not line:
             break
         exit_code = _play_turn(turn)
+    hang_if_ignoring_cancel()
     return exit_code
 
 
