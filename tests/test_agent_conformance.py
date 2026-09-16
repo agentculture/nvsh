@@ -599,31 +599,35 @@ def _write_json(path: Path, obj) -> None:
 
 
 def _case_agy_cold(tmp_path: Path) -> None:
-    """Cold agy spawns one child per turn with no process-group isolation of
-    its own (no ``start_new_session`` on that ``Popen`` -- unlike warm's),
-    so there is no tree to prove here: what this proves is that
-    force_stop() (AgyAgent has no override; the base default is
-    cancel()-then-close()) reliably kills that one child within budget even
-    though the fake ignores SIGTERM (``NVSH_FAKE_IGNORE_CANCEL=1``), and
-    that the next run() spawns a fresh one.
+    """Cold agy spawns its own process group per turn (``start_new_session``
+    on that ``Popen``, same as warm's -- task t22), so force_stop() must
+    reach a tool grandchild the cold child started, not just the child
+    alone. Proves force_stop() (AgyAgent has no override; the base default
+    is cancel()-then-close(), whose ``_terminate`` escalates through
+    ``kill_tree``) reliably kills the whole tree within budget even though
+    the fake ignores SIGTERM (``NVSH_FAKE_IGNORE_CANCEL=1``), and that the
+    next run() spawns a fresh one.
     """
+    pid_file = tmp_path / "pids.json"
     events_path = tmp_path / "events.json"
     _write_json(events_path, {"stdout": [], "exit_code": 0, "sleep_before": 3600})
-    env = _fake_adapters.fake_env(NVSH_FAKE_EVENTS=str(events_path), NVSH_FAKE_IGNORE_CANCEL="1")
+    env = _fake_adapters.fake_env(
+        NVSH_FAKE_EVENTS=str(events_path),
+        NVSH_FAKE_IGNORE_CANCEL="1",
+        NVSH_FAKE_GRANDCHILD="1",
+        NVSH_FAKE_PID_FILE=str(pid_file),
+    )
     agent = AgyAgent(warm=False, env=env)
     try:
         thread, _events, errors = _run_in_thread(
             agent, request=_agy_request(), context=AgentContext()
         )
-        deadline = time.monotonic() + 5.0
-        while agent._proc is None and time.monotonic() < deadline:  # noqa: SLF001
-            time.sleep(0.02)
-        assert agent._proc is not None, "agy cold: child never spawned"  # noqa: SLF001
-        pid = agent._proc.pid  # noqa: SLF001
-        assert _pid_alive(pid)
+        pids = _wait_for_pid_file(pid_file)
+        assert _pid_alive(pids["harness"])
+        assert _pid_alive(pids["grandchild"])
 
         agent.force_stop()
-        _assert_force_stopped(thread, errors, [pid])
+        _assert_force_stopped(thread, errors, [pids["harness"], pids["grandchild"]])
 
         _write_json(events_path, _agy_turn(done=True))
         second = list(agent.run(_agy_request(), AgentContext()))

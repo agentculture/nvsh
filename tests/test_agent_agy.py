@@ -522,6 +522,48 @@ def test_force_stop_kills_ignoring_warm_child_and_next_run_respawns(tmp_path):
     agent.close()
 
 
+# -- t22 (reliable-agent-stop): cold force_stop() kills the whole tree ----
+
+
+def test_cold_force_stop_kills_ignoring_child_and_grandchild_and_next_run_respawns(tmp_path):
+    """Cold agy: the ``Popen`` must lead its own process group
+    (``start_new_session=True``) and ``_terminate`` must escalate through
+    ``kill_tree``, or a tool grandchild the cold child started survives its
+    parent's death. A fake that ignores SIGTERM
+    (``NVSH_FAKE_IGNORE_CANCEL=1``) and spawns a ``sleep 600`` grandchild
+    (``NVSH_FAKE_GRANDCHILD=1``) is still gone, root and grandchild both,
+    within 3s of ``force_stop()``, and the next ``run()`` spawns a fresh
+    child."""
+    pid_file = tmp_path / "pids.json"
+    spec = {"stdout": [], "exit_code": 0, "sleep_before": 3600}
+    env = _fake_env(tmp_path, spec)
+    env["NVSH_FAKE_IGNORE_CANCEL"] = "1"
+    env["NVSH_FAKE_GRANDCHILD"] = "1"
+    env["NVSH_FAKE_PID_FILE"] = str(pid_file)
+    agent = AgyAgent(warm=False, env=env)
+
+    thread, _collected = _run_in_background(agent, "say OK")
+
+    deadline = time.monotonic() + 5.0
+    while not pid_file.exists() and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert pid_file.exists(), "cold agy: fake never wrote its pid file"
+    pids = json.loads(pid_file.read_text(encoding="utf-8"))
+    assert _pid_alive(pids["harness"])
+    assert _pid_alive(pids["grandchild"])
+
+    agent.force_stop()
+    thread.join(timeout=10)
+    assert not thread.is_alive(), "run() never returned after force_stop()"
+    assert _wait_gone([pids["harness"], pids["grandchild"]], within=3.0) == []
+
+    _write_spec(tmp_path, {"stdout": TEXT_TURN_STDOUT, "exit_code": 0})
+    events = list(agent.run(_request("say OK"), _context()))
+    assert events[-1].kind == EventKind.DONE, f"cold agy: next run() did not finish: {events}"
+
+    agent.close()
+
+
 # -- criterion 3: live smoke, opt-in only --------------------------------
 
 

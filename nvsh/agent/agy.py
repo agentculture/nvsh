@@ -62,7 +62,7 @@ from collections import deque
 from typing import Iterator, Mapping
 
 from ._env import child_env
-from ._subprocess import escalate_close, redacted_tail, reject_bypass_args
+from ._subprocess import escalate_close, kill_tree, redacted_tail, reject_bypass_args
 from .base import AgentContext, AgentEvent, AgentRequest, Capabilities, EventKind, NvshAgent
 from .prompt import build_full_prompt
 
@@ -261,6 +261,11 @@ class AgyAgent(NvshAgent):
                 text=True,
                 env=child_env(self._env),
                 cwd=self._cwd,
+                # Its own process group -- kill_tree (used by _terminate)
+                # can then reach a tool grandchild this cold turn's child
+                # started, not just the child alone (task t22, matching
+                # warm's _spawn_warm above).
+                start_new_session=True,
             )
         except OSError as exc:
             yield AgentEvent(kind=EventKind.ERROR, error=f"failed to start {argv[0]}: {exc}")
@@ -470,11 +475,10 @@ class AgyAgent(NvshAgent):
 
     def _terminate(self, proc: subprocess.Popen) -> None:
         if proc.poll() is None:
-            proc.terminate()
-            try:
-                proc.wait(timeout=_TERMINATE_TIMEOUT_SECONDS)
-            except subprocess.TimeoutExpired:
-                proc.kill()
+            # Through the process group the cold child leads (task t22), so
+            # a tool grandchild it started goes with it -- a plain
+            # terminate()/kill() on the leader alone would orphan it.
+            kill_tree(proc, grace=_TERMINATE_TIMEOUT_SECONDS)
 
     def close(self) -> None:
         # Shared escalation (stdin, wait, terminate/kill_tree) -- deviation
