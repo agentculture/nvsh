@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-09-16T17:00:45Z",
-  "updated": "2026-09-16T17:05:51Z",
+  "updated": "2026-09-16T17:14:13Z",
   "claims": [
     {
       "id": "c1",
@@ -66,7 +66,7 @@
     {
       "id": "c4",
       "kind": "requirement",
-      "text": "escalation is operator-driven: the first Ctrl+C/Esc sends the polite protocol cancel; a second press force-kills the harness process (terminate then kill) and the warm session is respawned on the next request; no automatic kill timer is added",
+      "text": "escalation is operator-driven: the first Ctrl+C/Esc sends the polite protocol cancel and the panel stays up showing 'stopping\u2026 press again to kill' until the turn ends; a second press force-kills the harness process tree and the warm session is respawned on the next request; no automatic kill timer is added",
       "origin": "user",
       "status": "confirmed",
       "honesty_conditions": [
@@ -77,10 +77,31 @@
           "instruction": ""
         }
       ],
-      "hard_questions": [],
+      "hard_questions": [
+        {
+          "id": "q4",
+          "text": "the first Ctrl+C raises KeyboardInterrupt and stream() returns the prompt at once (panel.py:689-699, 'Ctrl+C always returns the prompt' panel.py:49); once the prompt is back, a second Ctrl+C goes to readline, not nvsh \u2014 so where does the second press land? (a) after the first press the panel stays up showing 'stopping\u2026 Ctrl+C/Esc again to kill' until the turn ends, (b) the kill is reachable later via /stop or doctor --apply, (c) something else",
+          "resolved": true,
+          "blocking": false,
+          "resolution": "panel stays up while stopping: first Ctrl+C/Esc prints 'stopping\u2026 press again to kill' within 1s and keeps the panel until the turn really ends; second press kills the harness process tree; then the prompt returns"
+        },
+        {
+          "id": "q5",
+          "text": "contradiction with c22?",
+          "resolved": true,
+          "blocking": true,
+          "resolution": "panel stays up while stopping: first Ctrl+C/Esc prints 'stopping\u2026 press again to kill' within 1s and keeps the panel until the turn really ends; second press kills the harness process tree; then the prompt returns \u2014 c22 amended to measure the stopping line, not prompt return"
+        }
+      ],
       "links": [],
       "instruction": "",
-      "revisions": []
+      "revisions": [
+        {
+          "text": "escalation is operator-driven: the first Ctrl+C/Esc sends the polite protocol cancel; a second press force-kills the harness process (terminate then kill) and the warm session is respawned on the next request; no automatic kill timer is added",
+          "kind": "requirement",
+          "reason": "challenge q4/q5"
+        }
+      ]
     },
     {
       "id": "c5",
@@ -96,7 +117,15 @@
           "instruction": ""
         }
       ],
-      "hard_questions": [],
+      "hard_questions": [
+        {
+          "id": "q6",
+          "text": "reading stdin during the stream consumes whatever the operator types ahead (the next command); TIOCSTI push-back is disabled on current kernels (6.2+), so bytes read cannot be returned to readline \u2014 drop typeahead, or only watch for Esc/Ctrl+C and accept that typeahead is lost while the agent streams?",
+          "resolved": true,
+          "blocking": false,
+          "resolution": "accept: while the panel streams, keystrokes are consumed and discarded (never executed); only Esc and Ctrl+C act; documented"
+        }
+      ],
       "links": [],
       "instruction": "",
       "revisions": [
@@ -129,7 +158,7 @@
     {
       "id": "c7",
       "kind": "requirement",
-      "text": "a new request from the shell that owns a still-running turn opens a busy prompt that asks the operator: steer the running turn with the new request, replace the turn (stop it and run the new request), or exit back to the shell prompt leaving the turn alone",
+      "text": "a new request from the shell that owns a still-running turn \u2014 or from any shell when the owning shell pid is gone \u2014 opens a busy prompt: steer the running turn with the new request, replace the turn (stop it and run the new request), or exit back to the prompt leaving the turn alone",
       "origin": "user",
       "status": "confirmed",
       "honesty_conditions": [
@@ -147,6 +176,13 @@
           "resolved": true,
           "blocking": false,
           "resolution": "ask the user: allow steering the running turn with the new request, and from that prompt the operator can exit"
+        },
+        {
+          "id": "q8",
+          "text": "a shell is identified by its pid (NVSH_SHELL_PID or getppid, client.py:390-394); the common hung case over SSH is: connection drops, operator reconnects in a NEW shell, the old shell's turn is still stuck \u2014 the new shell is a different id, so it queues and never sees the busy prompt. Should the busy prompt also cover a turn whose owning shell is gone (dead pid / client-gone), or a turn owned by any shell of the same user?",
+          "resolved": true,
+          "blocking": true,
+          "resolution": "the busy prompt (steer/replace/exit) also appears for a turn whose owning shell pid is gone; doctor --apply kills a dead-owner turn freely, but a live other shell's turn only after an explicit confirm naming that shell"
         }
       ],
       "links": [],
@@ -156,13 +192,18 @@
           "text": "a new request from the shell that owns a hung turn supersedes it: the daemon aborts that shell's running turn and runs the new request instead of queueing behind it",
           "kind": "requirement",
           "reason": "q3 resolved: ask user, allow steering, exit from there"
+        },
+        {
+          "text": "a new request from the shell that owns a still-running turn opens a busy prompt that asks the operator: steer the running turn with the new request, replace the turn (stop it and run the new request), or exit back to the shell prompt leaving the turn alone",
+          "kind": "requirement",
+          "reason": "challenge q8"
         }
       ]
     },
     {
       "id": "c8",
       "kind": "boundary",
-      "text": "supersede never cancels another shell's turn: cancel_shell stays scoped to the calling shell (daemon.py:852-856 fixed a cross-shell cancel bug); other shells keep queueing",
+      "text": "replace/steer never touches a live other shell's turn: cancel_shell stays scoped to the calling shell (daemon.py:852-856); the only exceptions are a turn whose owning shell pid is gone (busy prompt applies) and doctor --apply after an explicit confirm naming the owning shell",
       "origin": "llm",
       "status": "confirmed",
       "honesty_conditions": [
@@ -176,12 +217,18 @@
       "hard_questions": [],
       "links": [],
       "instruction": "",
-      "revisions": []
+      "revisions": [
+        {
+          "text": "supersede never cancels another shell's turn: cancel_shell stays scoped to the calling shell (daemon.py:852-856 fixed a cross-shell cancel bug); other shells keep queueing",
+          "kind": "boundary",
+          "reason": "challenge q8/q9"
+        }
+      ]
     },
     {
       "id": "c9",
       "kind": "requirement",
-      "text": "when the operator declines the agent \u2014 choosing exit at the busy steer prompt, or Esc/ignore at a proposal \u2014 nvsh exits with one dedicated 'declined' exit code distinct from 0, 1, 2 and 130, recorded in the audit log; stops during work (Ctrl+C/Esc) stay 130",
+      "text": "when the operator declines the agent \u2014 exit at the busy prompt, or Esc/ignore at a proposal \u2014 nvsh reports one dedicated 'declined' exit code (allocated from the reserved 3+ range, cli/_errors.py:20), distinct from 0, 1, 2 and 130, visible as --json exit_code, in the audit log, and as direct 'nvsh ask' exit status; slash dispatch still exits 0 (d5)",
       "origin": "user",
       "status": "confirmed",
       "honesty_conditions": [
@@ -199,6 +246,13 @@
           "resolved": true,
           "blocking": false,
           "resolution": "Esc during work behaves exactly like Ctrl+C (same cancel path, same exit status)"
+        },
+        {
+          "id": "q7",
+          "text": "where is the declined exit code observable? nvsh slash deliberately exits 0 for any handled command (d5, cli/_commands/slash.py:41-50, docs/shell-integration.md 'Exit status') and hook.bash discards 'nvsh hook' status with '|| return 0' \u2014 so for Enter/Ctrl+G/@target/auto-trigger runs it would only show in 'nvsh slash --json' exit_code, the audit log, and direct 'nvsh ask'; is that enough, or should d5 change (risking nvsh diagnosing its own dispatch line)?",
+          "resolved": true,
+          "blocking": true,
+          "resolution": "keep d5: declined code is visible as exit_code in --json, in the audit log, and as the exit status of direct 'nvsh ask'; $? after /ask stays 0"
         }
       ],
       "links": [],
@@ -208,6 +262,11 @@
           "text": "when the operator declines the agent (stops or dismisses it), nvsh exits with a dedicated 'declined' exit code distinct from 130 and from errors, recorded in the audit log",
           "kind": "requirement",
           "reason": "user: declined covers busy-prompt exit + proposal ignore"
+        },
+        {
+          "text": "when the operator declines the agent \u2014 choosing exit at the busy steer prompt, or Esc/ignore at a proposal \u2014 nvsh exits with one dedicated 'declined' exit code distinct from 0, 1, 2 and 130, recorded in the audit log; stops during work (Ctrl+C/Esc) stay 130",
+          "kind": "requirement",
+          "reason": "challenge q7"
         }
       ]
     },
@@ -252,7 +311,7 @@
     {
       "id": "c12",
       "kind": "requirement",
-      "text": "nvsh doctor detects a hung agent turn (check in doctor_checks rubric) and, with --apply, fixes it by cancelling then killing the stuck harness so the next request respawns the session",
+      "text": "nvsh doctor detects a hung agent turn and, with --apply, fixes it by cancelling then killing the stuck harness so the next request respawns the session; a dead-owner turn is fixed directly, a live other shell's turn only after an explicit confirm naming that shell",
       "origin": "user",
       "status": "confirmed",
       "honesty_conditions": [
@@ -270,6 +329,13 @@
           "resolved": true,
           "blocking": false,
           "resolution": "doctor fixes a hung agent only with --apply; without it, it reports the failing check and names the --apply remediation"
+        },
+        {
+          "id": "q9",
+          "text": "doctor --apply runs from any shell of the user; c8 forbids cancelling another shell's turn \u2014 may doctor --apply kill a hung turn owned by another (possibly live) shell, only a turn whose owning shell is gone or past a threshold, or only after an interactive confirm naming the owning shell?",
+          "resolved": true,
+          "blocking": true,
+          "resolution": "the busy prompt (steer/replace/exit) also appears for a turn whose owning shell pid is gone; doctor --apply kills a dead-owner turn freely, but a live other shell's turn only after an explicit confirm naming that shell"
         }
       ],
       "links": [],
@@ -279,6 +345,11 @@
           "text": "nvsh doctor detects a hung agent turn and fixes it",
           "kind": "requirement",
           "reason": "q1 resolved: fix on --apply"
+        },
+        {
+          "text": "nvsh doctor detects a hung agent turn (check in doctor_checks rubric) and, with --apply, fixes it by cancelling then killing the stuck harness so the next request respawns the session",
+          "kind": "requirement",
+          "reason": "challenge q9"
         }
       ]
     },
@@ -435,7 +506,7 @@
     {
       "id": "c22",
       "kind": "success_signal",
-      "text": "with a fake harness that ignores cancel, on every adapter family and on both daemon and one-shot paths, the prompt returns within 1s of the first Ctrl+C/Esc and the harness process is gone within 3s of the second press",
+      "text": "with a fake harness that ignores cancel, on every adapter family and on both daemon and one-shot paths, a 'stopping\u2026 press again to kill' line appears within 1s of the first Ctrl+C/Esc, and the harness process tree is gone and the prompt returned within 3s of the second press",
       "origin": "llm",
       "status": "confirmed",
       "honesty_conditions": [
@@ -449,7 +520,13 @@
       "hard_questions": [],
       "links": [],
       "instruction": "tests/test_agent_stop.py parametrised over pi-rpc, codex app-server, acp, agy warm, claude stream-json, openai-compat, one-shot and daemon",
-      "revisions": []
+      "revisions": [
+        {
+          "text": "with a fake harness that ignores cancel, on every adapter family and on both daemon and one-shot paths, the prompt returns within 1s of the first Ctrl+C/Esc and the harness process is gone within 3s of the second press",
+          "kind": "success_signal",
+          "reason": "challenge q4/q5: panel stays up while stopping"
+        }
+      ]
     },
     {
       "id": "c23",
@@ -486,12 +563,230 @@
       "links": [],
       "instruction": "",
       "revisions": []
+    },
+    {
+      "id": "c26",
+      "kind": "requirement",
+      "text": "a force-stop reaches the daemon as its own control message (not a repeat cancel): _abort_turn returns early once turn.aborted is set (daemon.py:883-886), and the run lock stays held while the thread is parked in a harness that ignores cancel, so the kill must close the slot's agent (escalate_close) and replace the slot so the lock is released",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h21",
+          "text": "a daemon test with a harness that ignores cancel: the force-stop control message releases _run_lock within 3s and the next queued request runs on a fresh slot",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c27",
+      "kind": "requirement",
+      "text": "the force-stop kills the harness's whole process tree (its tool subprocesses too), not just the harness pid; harness children are spawned without start_new_session today (only the daemon uses it, daemon.py:241-253), so terminal SIGINT also hits one-shot harness children directly",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h22",
+          "text": "a test harness that spawns a sleeping grandchild: after the force-stop neither the harness nor the grandchild pid is alive",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c28",
+      "kind": "boundary",
+      "text": "holding stdin in cbreak mode to see Esc must never leave the terminal without echo or canonical mode: attributes are restored on every exit path, including SIGTERM and SSH hangup (SIGHUP), and Esc detection is off when stdin is not a tty, TERM=dumb or NVSH_DISABLE is set",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h23",
+          "text": "a pty test kills the client with SIGHUP and SIGTERM mid-stream and the tty is back in canonical+echo mode; Esc detection is not armed when stdin is not a tty or TERM=dumb",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c29",
+      "kind": "requirement",
+      "text": "Esc detection does not depend on the event source yielding: stream() iterates a generator that can block for up to the 120s daemon read timeout, so the stdin watch runs alongside it (select over tty + event source, or a reader thread) and a pressed Esc cancels within 1s even when no event arrives",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h24",
+          "text": "a pty test with an event source that yields nothing for 30s: Esc ends the stream within 1s",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c30",
+      "kind": "requirement",
+      "text": "every stop is audited: cancel (Ctrl+C/Esc), force-kill, steer, replace, busy-prompt exit, declined and doctor --apply each append an audit event with shell, target, turn elapsed and outcome; today audit records only proposal/decision/outcome/install (nvsh/agent/audit.py, loop.py:55-68, client.py:1071-1097)",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h25",
+          "text": "after each stop kind, the audit log contains exactly one matching event with shell, target, elapsed and outcome",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c31",
+      "kind": "requirement",
+      "text": "the busy prompt tells the truth about steer: it is offered only when the adapter has a mid-turn channel (pi, codex steer; claude, acp, qwen, agy, openai-compat return False per base.py:322 and agy.py:419, openai_compat.py:172), and a steer accepted by a harness that stays silent is followed by the same stop/replace choice instead of an endless wait",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h26",
+          "text": "for a non-steerable adapter the busy prompt omits steer; for a steerable harness that stays silent after steer, the prompt re-offers replace/exit",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c32",
+      "kind": "boundary",
+      "text": "overview's live agent section never autostarts the daemon and never blocks: it asks an existing socket with a short timeout and reports 'no daemon' otherwise; the static identity/verbs sections the teken rubric reads (cli/_commands/overview.py:36-53) stay unchanged",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h27",
+          "text": "overview --json with no daemon running returns within 1s, starts no process, and the rubric's static sections are byte-identical to today",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c33",
+      "kind": "assumption",
+      "text": "after a force-kill the conversation may be lost: pi's in-memory session, codex's app-server thread and acp's session die with the process; the next request starts a fresh harness session carrying nvsh's own last-failure context, and the panel says so",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h20",
+          "text": "a test kills each persistent adapter (pi, codex, acp, agy warm) mid-turn and the next request succeeds with a 'new session' status line",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c34",
+      "kind": "decision",
+      "text": "panel stays up while stopping: first Ctrl+C/Esc prints 'stopping\u2026 press again to kill' within 1s and keeps the panel until the turn really ends; second press kills the harness process tree; then the prompt returns",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c35",
+      "kind": "decision",
+      "text": "typeahead typed while the panel streams is consumed and discarded; only Esc and Ctrl+C act (kernel 6.2+ cannot push bytes back)",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c36",
+      "kind": "decision",
+      "text": "d5 stands: the declined exit code is observable via --json exit_code, the audit log and direct 'nvsh ask', never as $? after a slash dispatch",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c37",
+      "kind": "decision",
+      "text": "the busy prompt (steer/replace/exit) also appears for a turn whose owning shell pid is gone; doctor --apply kills a dead-owner turn freely, but a live other shell's turn only after an explicit confirm naming that shell",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
     }
   ],
   "open_vagueness": [
     {
       "id": "v1",
       "text": "exact reproduction of the operator's earlier Ctrl+C failure (backend, daemon vs one-shot, panel state) is not yet known",
+      "kind": "unknown_nonblocking",
+      "claim_id": null,
+      "resolved": false,
+      "resolution": "",
+      "resolution_claim_id": null
+    },
+    {
+      "id": "v2",
+      "text": "whether each persistent harness (pi, codex app-server, kiro/qwen ACP) can resume its conversation after a force-kill was not probed on the fleet",
+      "kind": "unknown_nonblocking",
+      "claim_id": null,
+      "resolved": false,
+      "resolution": "",
+      "resolution_claim_id": null
+    },
+    {
+      "id": "v3",
+      "text": "the operator's original Ctrl+C failure was never reproduced; it may be a path this pass did not examine (e.g. Ctrl+C during an approved command run via _run_command, or during the proposal key read)",
       "kind": "unknown_nonblocking",
       "claim_id": null,
       "resolved": false,
@@ -579,6 +874,116 @@
       "seeds": [
         "c15"
       ]
+    },
+    {
+      "id": "s11",
+      "surface": "challenge pass / lifecycle lens: nvsh/panel.py _on_sigint + stream()",
+      "finding": "first SIGINT calls cancel() once and raises KeyboardInterrupt, ending stream() immediately; there is no window in which a second press reaches nvsh, so c4's second-press kill has no landing point without changing when the prompt returns",
+      "seeds": [
+        "q4"
+      ]
+    },
+    {
+      "id": "s12",
+      "surface": "challenge pass / overlooked-actors lens: operator typing ahead during streaming",
+      "finding": "today nothing reads stdin during stream() (panel.py:560-570), so typeahead reaches bash's readline after the panel; an Esc watcher in cbreak must read those bytes first and cannot give them back \u2014 decision routed to hard question q6 on c5 (seed q5 recorded in error; q5 is the c4/c22 contradiction)",
+      "seeds": [
+        "q5"
+      ]
+    },
+    {
+      "id": "s13",
+      "surface": "challenge pass / concurrency lens: nvsh/daemon.py _abort_turn + _run_lock",
+      "finding": "_abort_turn is idempotent via turn.aborted (daemon.py:883-886) and only calls agent.cancel(); _run_lock is released only when the turn thread returns from agent.run(), so a hung harness keeps every shell queued",
+      "seeds": [
+        "c26"
+      ]
+    },
+    {
+      "id": "s14",
+      "surface": "challenge pass / failure-mode lens: nvsh/agent/_subprocess.py spawn + escalate_close",
+      "finding": "start_new_session appears only in daemon.py:253; adapter children share the client's process group in one-shot (terminal SIGINT reaches them) and escalate_close terminates a single pid, so tool grandchildren the agent started can be orphaned",
+      "seeds": [
+        "c27"
+      ]
+    },
+    {
+      "id": "s15",
+      "surface": "challenge pass / operations lens: nvsh/panel.py _save_termios/_restore_termios",
+      "finding": "termios is restored in stream()'s finally (panel.py:578-591) only for exits Python sees; SIGHUP/SIGTERM/SIGKILL of the client would leave cbreak/-echo in place once Esc detection holds the tty for the whole stream (hook constraint: never lock the operator out)",
+      "seeds": [
+        "c28"
+      ]
+    },
+    {
+      "id": "s16",
+      "surface": "challenge pass / concurrency lens: nvsh/panel.py stream loop",
+      "finding": "the for-event loop (panel.py:560-570) blocks inside the events generator (daemon read timeout 120s); only SIGINT wakes the main thread today, which is why Ctrl+C works and a key read inside the loop would not",
+      "seeds": [
+        "c29"
+      ]
+    },
+    {
+      "id": "s17",
+      "surface": "challenge pass / adjacent-systems lens: nvsh/cli/_commands/slash.py + docs/shell-integration.md Exit status",
+      "finding": "slash exits 0 whenever a registered command ran (d5) to stop __nvsh_hook diagnosing nvsh's own line; the operator-visible $? after /ask can never carry a declined code without reopening d5; cli/_errors.py:20 reserves 3+ for future categorisation, so the declined code must be allocated there",
+      "seeds": [
+        "q7"
+      ]
+    },
+    {
+      "id": "s18",
+      "surface": "challenge pass / observability lens: nvsh/agent/audit.py call sites",
+      "finding": "audit events are proposal, decision, outcome and install only; no record exists of an interrupted turn, a timeout abort (daemon.py:909-924 logs to the daemon log only) or a steer, so a stop leaves no audit trail",
+      "seeds": [
+        "c30"
+      ]
+    },
+    {
+      "id": "s19",
+      "surface": "challenge pass / overlooked-actors lens: SSH reconnect + nvsh/client.py _shell_pid",
+      "finding": "shell identity is the shell pid; a reconnecting SSH operator, a new tmux pane or a subshell is a different shell, and the daemon's client-gone watch only calls cancel() (daemon.py:914-916), so the stuck turn of a dead shell blocks the reconnecting operator behind a plain queue notice",
+      "seeds": [
+        "q8"
+      ]
+    },
+    {
+      "id": "s20",
+      "surface": "challenge pass / failure-mode lens: steer path daemon.py:1088-1120 + client.steer",
+      "finding": "daemon steer returns 'no running turn to steer' when no adapter accepts; client.steer then falls back to a new request (d16, client.py:1672-1675), which on a hung turn would queue behind the very turn it meant to steer",
+      "seeds": [
+        "c31"
+      ]
+    },
+    {
+      "id": "s21",
+      "surface": "challenge pass / security+reversibility lens: doctor --apply vs daemon.py cancel_shell isolation",
+      "finding": "cancel_shell is strictly per-shell after a cross-shell cancel bug (daemon.py:850-857); doctor is a separate process with no owning shell of the turn, so --apply needs its own authority rule; killing a harness mid tool call is not reversible",
+      "seeds": [
+        "q9"
+      ]
+    },
+    {
+      "id": "s22",
+      "surface": "challenge pass / adjacent-systems lens: nvsh/cli/_commands/overview.py",
+      "finding": "overview today is static (Identity, Verbs, Sibling-pattern artifacts) and is read by the agent-first rubric (teken cli doctor --strict); adding live daemon state makes it environment-dependent",
+      "seeds": [
+        "c32"
+      ]
+    },
+    {
+      "id": "s23",
+      "surface": "challenge pass / lifecycle lens: persistent_session adapters pi.py:870, codex.py:840, acp.py:929, agy.py:451",
+      "finding": "these adapters keep one long-lived process; close() escalates and the daemon slot would need a fresh agent; whether each harness can resume the prior session after its process is killed was not probed",
+      "seeds": [
+        "c33"
+      ]
+    },
+    {
+      "id": "s24",
+      "surface": "challenge pass / migration lens: nvsh/daemon.py version handshake",
+      "finding": "clean pass: new control kinds (kill, busy prompt) ride the existing VERSION_KEY handshake (daemon.py:97-116, 1005-1010) which refuses a mismatched client, so an old warm daemon after an upgrade fails loudly rather than misreading a kill; residual: a mixed-version daemon still holding a hung turn needs 'nvsh daemon stop'",
+      "seeds": []
     }
   ],
   "lapses": [],
