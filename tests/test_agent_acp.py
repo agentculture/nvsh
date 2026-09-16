@@ -21,6 +21,11 @@ from nvsh.agent import acp
 from nvsh.agent.acp import AcpAgent, AcpError, build
 from nvsh.agent.base import AgentContext, AgentEvent, AgentRequest, EventKind, RequestKind
 from tests import test_agent_conformance as conformance
+from tests._fake_adapters import reap_fake_pids  # noqa: F401 - fixture, used below
+
+# Teardown kills the fake harness/grandchild pids each test's fakes recorded
+# (task t23), so a failing or respawning case leaks no ``sleep 600``.
+pytestmark = pytest.mark.usefixtures("reap_fake_pids")
 
 FAKES_DIR = Path(__file__).parent / "fakes"
 

@@ -39,6 +39,12 @@ from typing import Iterator
 
 import pytest
 
+from tests._fake_adapters import reap_fake_pids  # noqa: F401 - fixture, used below
+
+# Teardown kills the fake harness/grandchild pids each test's fakes recorded
+# (task t23), so a failing or respawning case leaks no ``sleep 600``.
+pytestmark = pytest.mark.usefixtures("reap_fake_pids")
+
 FAKES = Path(__file__).parent / "fakes"
 
 #: How long a "still alive" check waits after the cancel message before

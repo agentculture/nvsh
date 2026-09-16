@@ -37,11 +37,14 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import stat
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Sequence
+
+import pytest
 
 from nvsh.agent.acp import build as acp_build
 from nvsh.agent.agy import AgyAgent
@@ -85,6 +88,53 @@ def conformance_context() -> AgentContext:
 # ---------------------------------------------------------------------------
 # Environments
 # ---------------------------------------------------------------------------
+
+
+def kill_fake_pids(pid_file: Path) -> None:
+    """Test teardown: SIGKILL the harness/grandchild a fake recorded in *pid_file*.
+
+    Only a pid whose command line still looks like the fake's (a ``sleep 600``
+    grandchild, or a process running a script from ``tests/fakes``) is
+    signalled, so a pid the kernel already handed to somebody else is left
+    alone. Never raises.
+    """
+    try:
+        pids = json.loads(Path(pid_file).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+    for role in ("grandchild", "harness"):
+        pid = pids.get(role) if isinstance(pids, dict) else None
+        if not isinstance(pid, int) or pid <= 1:
+            continue
+        try:
+            with open(f"/proc/{pid}/cmdline", "rb") as handle:
+                argv = handle.read().split(b"\0")
+        except OSError:
+            continue
+        ours = (
+            argv[:2] == [b"sleep", b"600"]
+            if role == "grandchild"
+            else any(str(FAKES_DIR).encode() in arg for arg in argv)
+        )
+        if ours:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except OSError:
+                pass
+
+
+@pytest.fixture
+def reap_fake_pids(request):
+    """Teardown: kill whatever a fake recorded in ``<tmp_path>/pids.json``.
+
+    ``NVSH_FAKE_GRANDCHILD=1`` fakes start a ``sleep 600``; a test that fails
+    (or a harness that respawned and overwrote the pid file) must not leave
+    it running for ten minutes after the suite ends.
+    """
+    yield
+    tmp_path = request.node.funcargs.get("tmp_path")
+    if tmp_path is not None:
+        kill_fake_pids(Path(tmp_path) / "pids.json")
 
 
 def fake_env(**extra: str) -> dict[str, str]:
