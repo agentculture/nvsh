@@ -62,6 +62,7 @@ from nvsh.agent.openai_compat import OpenAICompatAgent
 from nvsh.agent.pi import PiAgent
 from nvsh.agent.qwen import QwenAgent
 from tests import _fake_adapters
+from tests._fake_adapters import reap_fake_pids  # noqa: F401 - fixture, used below
 from tests._fake_adapters import (
     CASES,
     RAISE_ON_START,
@@ -74,6 +75,10 @@ from tests._fake_adapters import (
     drive,
 )
 from tests.test_agent_subprocess import _pid_alive, _wait_gone
+
+# Teardown kills the fake harness/grandchild pids each test's fakes recorded
+# (task t23), so a failing or respawning case leaks no ``sleep 600``.
+pytestmark = pytest.mark.usefixtures("reap_fake_pids")
 
 # Registry of adapter factories for the original five cases. Append here to
 # bring a new backend under them; append to CASES (in tests/_fake_adapters.py)

@@ -38,11 +38,16 @@ import pytest
 
 from nvsh.agent.agy import AgyAgent
 from nvsh.agent.base import AgentContext, AgentRequest, Capabilities, EventKind, RequestKind
+from tests._fake_adapters import reap_fake_pids  # noqa: F401 - fixture, used below
 
 # Reused rather than reimplemented: same "is this pid, counting zombies as
 # dead, really gone" helpers task t2 wrote and task t1's fixture work
 # already relies on the underlying convention of.
 from tests.test_agent_subprocess import _pid_alive, _wait_gone
+
+# Teardown kills the fake harness/grandchild pids each test's fakes recorded
+# (task t23), so a failing or respawning case leaks no ``sleep 600``.
+pytestmark = pytest.mark.usefixtures("reap_fake_pids")
 
 FAKES_DIR = Path(__file__).parent / "fakes"
 
