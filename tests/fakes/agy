@@ -28,23 +28,43 @@ inspecting ``AgyAgent`` internals.
 Nothing here imports ``nvsh`` -- it is spawned as a real subprocess, exactly
 like the real ``agy`` binary would be.
 
-Two more knobs, for the reliable-agent-stop tests:
+A few more knobs, for the reliable-agent-stop tests:
 
 * ``NVSH_FAKE_IGNORE_CANCEL=1`` -- agy has no protocol-level cancel at all
   (real cancellation is signal-only), so "ignoring cancel" here means the
   turn simply never ends on its own: once the scripted turns are exhausted,
-  the process blocks reading stdin forever instead of exiting.
+  the process blocks reading stdin forever instead of exiting. It also
+  makes this fake ignore ``SIGINT``/``SIGTERM`` (see ``NVSH_FAKE_SIGNAL_LOG``
+  below) instead of exiting on them, standing in for a harness whose stop
+  signal is swallowed -- only ``SIGKILL``
+  (``nvsh.agent._subprocess.kill_tree``'s last rung) can still end it.
 * ``NVSH_FAKE_GRANDCHILD=1`` -- start a ``sleep 600`` child at launch and
   write ``{"harness": <this pid>, "grandchild": <sleep's pid>}`` to
   ``$NVSH_FAKE_PID_FILE``.
+* ``NVSH_FAKE_SIGNAL_LOG=<path>`` -- append one JSON line
+  (``{"signal": <int>}``) to *path* whenever this process receives
+  ``SIGINT`` or ``SIGTERM``, so a test can prove a warm ``AgyAgent.cancel()``
+  really reached the child instead of only flipping a local flag (agy has
+  no protocol cancel to send). Without ``NVSH_FAKE_IGNORE_CANCEL``, the
+  fake exits right after logging, the way a real ``agy`` asked to stop
+  would.
+* ``NVSH_FAKE_READY_FILE=<path>`` -- touched once signal handling is
+  actually installed, so a test can wait for it instead of racing this
+  process's own interpreter startup before sending a signal.
+* A turn's own ``"sleep_before"`` (seconds) makes ``_play_turn`` sleep
+  before writing that turn's output -- long enough that a test can be sure
+  the fake is still "working" the turn when it sends a signal, instead of
+  racing a turn that finishes on its own first.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import signal
 import subprocess  # nosec B404 - fixed argv below, test fixture only
 import sys
+import time
 from pathlib import Path
 
 
@@ -68,6 +88,48 @@ def hang_if_ignoring_cancel() -> None:
         pass
 
 
+def install_signal_log() -> None:
+    """``NVSH_FAKE_SIGNAL_LOG``: log ``SIGINT``/``SIGTERM``, then act on it.
+
+    agy has no protocol-level cancel (see module docstring), so
+    ``AgyAgent.cancel()``/``force_stop()`` can only ever reach a warm child
+    through a signal. Logging receipt here is what
+    ``tests/test_agent_agy.py`` checks to prove that reached the child
+    instead of nvsh only flipping a local flag. Ignoring the signal instead
+    of exiting on it (``NVSH_FAKE_IGNORE_CANCEL=1``) stands in for a
+    harness whose own stop handling swallows it.
+    """
+    log_path = os.environ.get("NVSH_FAKE_SIGNAL_LOG")
+    ignore = os.environ.get("NVSH_FAKE_IGNORE_CANCEL") == "1"
+    if not log_path and not ignore:
+        return  # nothing to log, default signal disposition is fine as-is
+
+    def _handler(signum: int, _frame: object) -> None:
+        if log_path:
+            with open(log_path, "a", encoding="utf-8") as fh:
+                fh.write(json.dumps({"signal": int(signum)}) + "\n")
+        if not ignore:
+            os._exit(0)
+
+    signal.signal(signal.SIGINT, _handler)
+    signal.signal(signal.SIGTERM, _handler)
+
+
+def mark_signal_handling_ready() -> None:
+    """``NVSH_FAKE_READY_FILE``: touch *path* once signal handling is live.
+
+    Sending a signal right after ``Popen()`` returns races the child's own
+    interpreter startup -- until it has actually run
+    :func:`install_signal_log`, ``SIGINT``/``SIGTERM`` fall to the OS
+    default (kill outright, logging nothing), which a test could easily
+    mistake for the fake correctly ignoring/logging the signal. This marker
+    gives a test something concrete to wait on instead of a fixed sleep.
+    """
+    path = os.environ.get("NVSH_FAKE_READY_FILE")
+    if path:
+        Path(path).write_text("1", encoding="utf-8")
+
+
 def _load_spec() -> dict:
     events_path = os.environ.get("NVSH_FAKE_EVENTS")
     if not events_path:
@@ -85,6 +147,9 @@ def _log_argv(argv: list[str]) -> None:
 
 
 def _play_turn(turn: dict) -> int:
+    delay = turn.get("sleep_before")
+    if delay:
+        time.sleep(float(delay))
     for line in turn.get("stdout", []):
         sys.stdout.write(line.rstrip("\n") + "\n")
     sys.stdout.flush()
@@ -96,6 +161,8 @@ def _play_turn(turn: dict) -> int:
 
 def main(argv: list[str]) -> int:
     _log_argv(argv)
+    install_signal_log()
+    mark_signal_handling_ready()
     spawn_grandchild_if_requested()
     spec = _load_spec()
     warm = "--input-format" in argv

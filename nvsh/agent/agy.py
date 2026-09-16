@@ -55,6 +55,7 @@ from __future__ import annotations
 import json
 import os
 import queue
+import signal
 import subprocess  # nosec B404 - fixed argv lists below, no shell=True
 import threading
 from collections import deque
@@ -197,6 +198,10 @@ class AgyAgent(NvshAgent):
             bufsize=1,
             env=child_env(self._env),
             cwd=self._cwd,
+            # Its own process group -- kill_tree (used by force_stop's
+            # close()) can then reach a tool grandchild the warm child
+            # started, not just the child alone (task t2's requirement).
+            start_new_session=True,
         )
         self._stdout_queue = queue.Queue()
         self._stderr_tail.clear()
@@ -222,6 +227,10 @@ class AgyAgent(NvshAgent):
     # -- run --------------------------------------------------------------
 
     def run(self, request: AgentRequest, context: AgentContext) -> Iterator[AgentEvent]:
+        # Cancellation is per turn: a cancel()/force_stop() from the turn
+        # before this one must never carry over and short-circuit this one
+        # before it starts (matches pi.py's run()).
+        self._cancelled = False
         prompt = build_full_prompt(request, context)
         cwd = getattr(context, "cwd", None) or None
         if cwd and not os.path.isdir(cwd):
@@ -287,7 +296,12 @@ class AgyAgent(NvshAgent):
 
     def _run_warm(self, prompt: str) -> Iterator[AgentEvent]:
         if self._proc is None or self._proc.poll() is not None:
+            # A prior force_stop() (or a child that just died on its own)
+            # leaves ``_closed`` set; a freshly spawned process needs its
+            # own close() to run in full next time, not to be skipped as
+            # already-idempotently-closed.
             self._spawn_warm()
+            self._closed = False
         failure = self._write_turn(prompt)
         if failure is not None:
             yield failure
@@ -421,8 +435,38 @@ class AgyAgent(NvshAgent):
 
     def cancel(self) -> None:
         self._cancelled = True
-        if self._proc is not None and self._proc.poll() is None and not self._warm:
+        if self._proc is None or self._proc.poll() is not None:
+            return
+        if self._warm:
+            # Warm mode keeps the process alive across turns, so cancel()
+            # cannot simply terminate it the way cold mode does. agy has no
+            # protocol-level cancel (see module docstring), so a signal is
+            # the only lever that reaches the child at all -- setting
+            # ``_cancelled`` alone would just be a flag nobody outside this
+            # object ever sees. Anything already queued from the turn being
+            # cancelled is discarded too, so a stale event from before this
+            # cancel is never read as part of the next turn.
+            self._discard_queued_events()
+            self._signal_child(signal.SIGINT)
+        else:
             self._terminate(self._proc)
+
+    def _discard_queued_events(self) -> None:
+        """Drop whatever the background reader already queued for this turn."""
+        while True:
+            try:
+                self._stdout_queue.get_nowait()
+            except queue.Empty:
+                return
+
+    def _signal_child(self, sig: int) -> None:
+        """Best-effort: send *sig* to the warm child. Never raises."""
+        if self._proc is None:
+            return
+        try:
+            self._proc.send_signal(sig)
+        except (OSError, ValueError):  # already gone, or already reaped
+            pass
 
     def _terminate(self, proc: subprocess.Popen) -> None:
         if proc.poll() is None:
@@ -433,9 +477,14 @@ class AgyAgent(NvshAgent):
                 proc.kill()
 
     def close(self) -> None:
-        # Shared escalation (stdin, wait, terminate, kill) -- deviation d5.
-        # ``cancel`` keeps using ``_terminate`` on purpose: it ends one cold
-        # turn's child, it does not retire the adapter.
+        # Shared escalation (stdin, wait, terminate/kill_tree) -- deviation
+        # d5. ``cancel``'s cold branch keeps using ``_terminate`` on
+        # purpose: it ends one cold turn's child, it does not retire the
+        # adapter. ``force_stop`` (base.py's default: cancel() then
+        # close()) is what actually retires a warm child for good -- this
+        # is the escalation that reaches ``kill_tree`` and forces the next
+        # ``run()`` to respawn (``_run_warm`` spawns fresh whenever
+        # ``self._proc`` is gone).
         if self._closed:
             return
         escalate_close(self._proc, wait=_TERMINATE_TIMEOUT_SECONDS)
