@@ -29,12 +29,20 @@ from __future__ import annotations
 
 import json
 import os
+import signal
+import threading
+import time
 from pathlib import Path
 
 import pytest
 
 from nvsh.agent.agy import AgyAgent
 from nvsh.agent.base import AgentContext, AgentRequest, Capabilities, EventKind, RequestKind
+
+# Reused rather than reimplemented: same "is this pid, counting zombies as
+# dead, really gone" helpers task t2 wrote and task t1's fixture work
+# already relies on the underlying convention of.
+from tests.test_agent_subprocess import _pid_alive, _wait_gone
 
 FAKES_DIR = Path(__file__).parent / "fakes"
 
@@ -394,6 +402,124 @@ def test_cancel_mid_stream_stops_after_current_event(tmp_path):
     # already in flight is seen, and no DONE/ERROR ever arrives.
     assert len(seen) == 1
     assert not any(e.kind in (EventKind.DONE, EventKind.ERROR) for e in seen)
+
+
+# -- t7 (reliable-agent-stop): warm cancel()/force_stop() really stop -----
+
+
+def _run_in_background(agent: AgyAgent, prompt: str) -> tuple[threading.Thread, list]:
+    """Drive ``agent.run()`` to completion on a background thread.
+
+    A warm turn that never yields anything (the fake is asleep in
+    ``sleep_before``) would otherwise block whichever thread iterates it,
+    so every test below drives ``run()`` here and inspects ``agent._proc``
+    from the main thread instead of stepping the generator by hand.
+    """
+    collected: list = []
+    thread = threading.Thread(
+        target=lambda: collected.extend(agent.run(_request(prompt), _context())),
+        daemon=True,
+    )
+    thread.start()
+    return thread, collected
+
+
+def _wait_for_proc(agent: AgyAgent, timeout: float = 5.0):
+    deadline = time.monotonic() + timeout
+    while agent._proc is None and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert agent._proc is not None, "warm child never spawned"
+    return agent._proc
+
+
+def _wait_for_file(path: Path, timeout: float = 5.0) -> None:
+    """Block until *path* exists.
+
+    Sending a signal right after ``Popen()`` returns races the child's own
+    interpreter startup, before it has installed any signal handling at
+    all -- ``tests/fakes/agy`` touches ``NVSH_FAKE_READY_FILE`` once its
+    handler is live, so tests wait on that instead of a fixed sleep.
+    """
+    deadline = time.monotonic() + timeout
+    while not path.exists() and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert path.exists(), f"{path} was never created -- fake never became ready"
+
+
+def test_warm_cancel_signals_the_child_not_just_a_flag(tmp_path):
+    """Criterion 1: after cancel(), the fake's log proves it was actually
+    signalled -- a cancel that only flipped ``self._cancelled`` would leave
+    this log empty forever."""
+    spec = {"turns": [{"stdout": WARM_TURN1_STDOUT, "exit_code": 0, "sleep_before": 3600}]}
+    signal_log = tmp_path / "signals.jsonl"
+    ready_file = tmp_path / "ready"
+    env = _fake_env(tmp_path, spec)
+    env["NVSH_FAKE_SIGNAL_LOG"] = str(signal_log)
+    env["NVSH_FAKE_READY_FILE"] = str(ready_file)
+    agent = AgyAgent(warm=True, env=env)
+    agent.start()
+    _wait_for_file(ready_file)  # the very first (start()-spawned) child
+
+    thread, _collected = _run_in_background(agent, "say OK")
+    proc = _wait_for_proc(agent)
+
+    agent.cancel()
+    thread.join(timeout=5)
+    assert not thread.is_alive(), "run() never returned after cancel()"
+
+    deadline = time.monotonic() + 5
+    lines: list[str] = []
+    while time.monotonic() < deadline:
+        if signal_log.exists():
+            lines = signal_log.read_text(encoding="utf-8").splitlines()
+            if lines:
+                break
+        time.sleep(0.05)
+    assert lines, "cancel() never reached the child -- a flag-only cancel logs nothing"
+    logged = json.loads(lines[0])
+    assert logged["signal"] in (int(signal.SIGINT), int(signal.SIGTERM))
+
+    agent.close()
+    assert _wait_gone([proc.pid]) == []
+
+
+def test_force_stop_kills_ignoring_warm_child_and_next_run_respawns(tmp_path):
+    """Criterion 2: a fake that ignores the stop signal is still gone
+    within 3s of ``force_stop()`` (``kill_tree``'s SIGKILL rung), and the
+    next ``run()`` spawns a brand-new process rather than reusing the dead
+    one."""
+    spec = {"turns": [{"stdout": WARM_TURN1_STDOUT, "exit_code": 0, "sleep_before": 3600}]}
+    ready_file = tmp_path / "ready"
+    env = _fake_env(tmp_path, spec, argv_log=True)
+    env["NVSH_FAKE_IGNORE_CANCEL"] = "1"
+    env["NVSH_FAKE_READY_FILE"] = str(ready_file)
+    agent = AgyAgent(warm=True, env=env)
+    agent.start()
+    _wait_for_file(ready_file)  # the very first (start()-spawned) child
+
+    thread, _collected = _run_in_background(agent, "say OK")
+    proc = _wait_for_proc(agent)
+    assert _pid_alive(proc.pid)
+
+    agent.force_stop()
+    thread.join(timeout=10)
+    assert not thread.is_alive(), "run() never returned after force_stop()"
+    assert _wait_gone([proc.pid], within=3.0) == []
+
+    # A fresh spec (no more sleeping-forever turn) for the respawned child's
+    # first turn, so the next run() proves the respawn actually works
+    # end-to-end instead of hanging on the same scripted turn again.
+    _write_spec(tmp_path, {"turns": [{"stdout": WARM_TURN2_STDOUT, "exit_code": 0}]})
+    events = list(agent.run(_request("say DONE"), _context()))
+    assert events[-1].kind == EventKind.DONE
+    assert events[-1].text == "DONE\n"
+    assert agent._proc is not None
+    assert agent._proc.pid != proc.pid
+
+    argv_calls = _read_argv_log(tmp_path)
+    assert len(argv_calls) == 2  # one warm process per spawn: killed, then respawned
+
+    agent.close()
 
 
 # -- criterion 3: live smoke, opt-in only --------------------------------
