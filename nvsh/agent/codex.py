@@ -52,6 +52,7 @@ from ._subprocess import (
     SubprocessAgent,
     build_full_prompt,
     escalate_close,
+    kill_tree,
     redacted_tail,
     reject_bypass_args,
 )
@@ -247,6 +248,10 @@ class CodexAgent(SubprocessAgent):
         self._pending_approvals: dict[Any, str] = {}
         self._said: list[str] = []
         self._ack_timeout = ack_timeout(self._env)
+        #: Set by :meth:`force_stop`, consumed by the next :meth:`run`: the
+        #: app-server was killed out from under a turn, so the next call
+        #: rebuilds one from scratch and says so.
+        self._new_session_pending = False
 
     # -- argv --------------------------------------------------------------
 
@@ -310,6 +315,10 @@ class CodexAgent(SubprocessAgent):
             stderr=subprocess.PIPE,
             text=True,
             env=child_env(self._env),
+            # Its own process group, so force_stop's kill_tree reaches any
+            # tool grandchild the app-server started, not just the server
+            # itself (task t5; the same reasoning as SubprocessAgent.run).
+            start_new_session=True,
         )
         self._reader = threading.Thread(target=self._reader_loop, daemon=True)
         self._reader.start()
@@ -489,6 +498,7 @@ class CodexAgent(SubprocessAgent):
         self._cancelled = False
         self._said.clear()
         prompt = build_full_prompt(request, context)
+        fresh_session = self._new_session_pending
         try:
             if self._thread_id is None:
                 started = self._request("thread/start", self.thread_start_params(context))
@@ -501,6 +511,13 @@ class CodexAgent(SubprocessAgent):
         except CodexRpcError as exc:
             yield AgentEvent(kind=EventKind.ERROR, error=str(exc))
             return
+
+        if fresh_session:
+            # force_stop() killed the previous app-server out from under a
+            # turn; this run() spawned a brand new one and a brand new
+            # thread, so say so before streaming its events.
+            self._new_session_pending = False
+            yield AgentEvent(kind=EventKind.STATUS, text="new session")
 
         self._streaming = True
         try:
@@ -754,6 +771,27 @@ class CodexAgent(SubprocessAgent):
                     }
                 )
         super().cancel()
+
+    def force_stop(self) -> None:
+        """Stop the turn for certain, even if the app-server ignores its cancel.
+
+        Reuses :meth:`cancel` for the courtesy part -- ``turn/interrupt``,
+        declining every pending approval, and (on the ``codex exec``
+        fallback path) killing ``self._proc``'s tree through
+        ``SubprocessAgent.cancel`` -- but then, unlike the default
+        ``force_stop`` (``cancel()`` then ``close()``, which waits to see
+        whether the harness listened before escalating), unconditionally
+        ``kill_tree``s the app-server process itself rather than waiting on
+        it. ``_rpc``/``_thread_id``/``_turn_id`` are cleared by
+        :meth:`_teardown_app_server` (the same reset the initialize-failure
+        path already uses) so the next :meth:`run` spawns a fresh
+        app-server and starts a fresh thread instead of writing into a dead
+        pipe, and reports that with a ``STATUS`` "new session" event.
+        """
+        self.cancel()
+        kill_tree(self._rpc)
+        self._teardown_app_server()
+        self._new_session_pending = True
 
     def _teardown_app_server(self) -> None:
         # The escalation (stdin, wait, terminate, kill) is the shared
