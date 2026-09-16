@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
@@ -47,6 +48,21 @@ class _SSEHandler(BaseHTTPRequestHandler):
         self.server.last_auth_header = auth  # type: ignore[attr-defined]
         self.server.last_body = body  # type: ignore[attr-defined]
 
+        if "/stall" in self.path:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.end_headers()
+            self.wfile.flush()
+            # Headers are on the wire and nothing else ever will be: a
+            # stalled backend that never sends another byte and never
+            # closes. Tell the test the connection is really open, then
+            # block far longer than the 1s the acceptance criterion allows
+            # force_stop() to take -- only closing the response from the
+            # other side ends this.
+            self.server.stall_connected.set()  # type: ignore[attr-defined]
+            time.sleep(30)
+            return
+
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.end_headers()
@@ -62,6 +78,7 @@ def fake_server():
     server = ThreadingHTTPServer(("127.0.0.1", 0), _SSEHandler)
     server.last_auth_header = None
     server.last_body = None
+    server.stall_connected = threading.Event()
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
@@ -329,3 +346,45 @@ def test_an_unsteered_turn_is_still_one_standalone_user_message(fake_server):
     finally:
         agent.close()
     assert [m["role"] for m in fake_server.last_body["messages"]] == ["system", "user"]
+
+
+# ---------------------------------------------------------------------------
+# reliable-agent-stop (task t8): force_stop() on a stalled HTTP stream
+# ---------------------------------------------------------------------------
+
+
+def test_force_stop_on_a_stalled_stream_returns_within_one_second(fake_server):
+    """Acceptance criterion 2: a turn stuck reading a stream that never
+    sends another byte and never closes still unblocks -- because
+    force_stop() closes the response -- well under the 1s budget."""
+    base_url = f"http://127.0.0.1:{fake_server.server_port}/stall"
+    agent = OpenAICompatAgent({"base_url": base_url})
+    agent.start()
+
+    events: list = []
+    errors: list[BaseException] = []
+
+    def work() -> None:
+        try:
+            for event in agent.run(_request(), _context()):
+                events.append(event)
+        except BaseException as exc:  # noqa: BLE001 - re-raised on the main thread
+            errors.append(exc)
+
+    thread = threading.Thread(target=work, daemon=True)
+    thread.start()
+
+    assert fake_server.stall_connected.wait(timeout=5), "the stalled request never connected"
+    # Give the adapter's generator a moment to actually be blocked inside
+    # the read loop before force_stop() races it.
+    time.sleep(0.1)
+
+    started = time.monotonic()
+    agent.force_stop()
+    thread.join(timeout=5)
+    elapsed = time.monotonic() - started
+
+    assert not thread.is_alive(), "run() did not return after force_stop()"
+    assert elapsed < 1.0, f"force_stop() took {elapsed:.3f}s, budget is 1s"
+    if errors:
+        raise errors[0]

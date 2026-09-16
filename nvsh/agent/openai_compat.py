@@ -18,6 +18,7 @@ event naming the file and its mode, never its content.
 from __future__ import annotations
 
 import json
+import socket
 import urllib.error
 import urllib.request
 from typing import Iterator
@@ -132,7 +133,21 @@ class OpenAICompatAgent(NvshAgent):
 
     def _stream_events(self) -> Iterator[AgentEvent]:
         """Map the open SSE stream to events, ending in DONE either way."""
-        for raw_line in self._response:
+        iterator = iter(self._response)
+        while True:
+            try:
+                raw_line = next(iterator)
+            except StopIteration:
+                break
+            except (OSError, AttributeError, ValueError):
+                # A stalled stream's socket was just shut down from another
+                # thread (force_stop(), which is what unblocks this very
+                # read) -- that races http.client's own EOF handling here,
+                # which can surface as an OSError or (rarely) an
+                # AttributeError from its internal teardown rather than a
+                # clean StopIteration. Either way the read is over now,
+                # exactly like reaching EOF.
+                break
             if self._cancelled:
                 return
             data = self._sse_data(raw_line)
@@ -188,17 +203,60 @@ class OpenAICompatAgent(NvshAgent):
 
     def _close_response(self) -> None:
         if self._response is not None:
+            self._shutdown_socket()
             try:
                 self._response.close()
-            except OSError:
+            except (OSError, AttributeError):
+                # AttributeError: the socket shutdown just above can wake a
+                # concurrent blocked read in the turn's own thread, and its
+                # EOF handling (``http.client``'s own ``_close_conn``) races
+                # this thread to null out the response's internal buffer --
+                # both sides are just trying to release the same resource.
                 pass
             self._response = None
+
+    def _shutdown_socket(self) -> None:
+        """Shut down the response's socket before closing it.
+
+        ``run()``'s ``_stream_events`` blocks on a plain read of the
+        response (``for raw_line in self._response``) on whatever thread is
+        driving the turn. A stalled backend that stops sending bytes and
+        never closes its end leaves that read blocked for however long the
+        request's own socket timeout is (5s) -- ``close()`` alone does not
+        interrupt an in-progress blocking read from another thread. A POSIX
+        ``shutdown(SHUT_RDWR)`` on the underlying socket does: it is the
+        standard way to unblock a peer thread's blocking recv() on demand,
+        which is what lets ``force_stop()`` return well under its 1s budget
+        instead of waiting out the stall. Reaching for the private
+        ``fp.raw._sock`` is the only way to get at that socket through
+        ``http.client``/``urllib`` -- there is no public accessor -- and
+        every step here is best-effort: a stop must never raise.
+        """
+        sock = getattr(getattr(self._response, "fp", None), "raw", None)
+        sock = getattr(sock, "_sock", None) if sock is not None else None
+        if isinstance(sock, socket.socket):
+            try:
+                sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
 
     def close(self) -> None:
         if self._closed:
             return
         self._close_response()
         self._closed = True
+
+    def force_stop(self) -> None:
+        """Cancel and release for certain: closes the response either way.
+
+        ``cancel()``'s socket shutdown is what actually unblocks a stalled
+        stream's blocked read; ``close()`` (idempotent) guarantees the
+        response is gone even when ``cancel()`` was never called first.
+        """
+        try:
+            self.cancel()
+        finally:
+            self.close()
 
     def capabilities(self) -> Capabilities:
         return Capabilities(

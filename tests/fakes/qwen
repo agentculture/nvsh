@@ -29,7 +29,12 @@ Two more knobs, for the reliable-agent-stop tests:
   process does not exit: it blocks reading stdin instead, silently
   dropping anything it reads, including a host's stream-json interrupt
   request. This is what a harness that has stopped honouring its own
-  cancel protocol looks like from the client's side.
+  cancel protocol looks like from the client's side. ``QwenAgent`` (print
+  mode) has no duplex channel at all -- it spawns this fake with its stdin
+  closed (``DEVNULL``) -- so a closed/already-EOF stdin falls back to a
+  plain sleep instead of returning immediately: real print-mode qwen has no
+  cancel protocol either (task t8), so "ignoring cancel" for it just means
+  the process keeps running until a signal ends it.
 * ``NVSH_FAKE_GRANDCHILD=1`` -- start a ``sleep 600`` child at launch and
   write ``{"harness": <this pid>, "grandchild": <sleep's pid>}`` to
   ``$NVSH_FAKE_PID_FILE``.
@@ -41,6 +46,7 @@ import json
 import os
 import subprocess  # nosec B404 - fixed argv below, test fixture only
 import sys
+import time
 from pathlib import Path
 
 _SESSION_ID = "00000000-0000-4000-8000-000000000000"
@@ -61,6 +67,13 @@ def spawn_grandchild_if_requested() -> None:
 def hang_if_ignoring_cancel() -> None:
     """``NVSH_FAKE_IGNORE_CANCEL=1``: never let the turn end on its own."""
     if os.environ.get("NVSH_FAKE_IGNORE_CANCEL") != "1":
+        return
+    line = sys.stdin.readline()
+    if not line:
+        # stdin is closed/DEVNULL, exactly how QwenAgent's print-mode spawn
+        # runs it -- there is no pipe to drop an interrupt on, so hang the
+        # same way a stuck real qwen invocation would: only a signal ends it.
+        time.sleep(600)
         return
     while sys.stdin.readline():
         pass

@@ -231,6 +231,11 @@ class ClaudeAgent(SubprocessAgent):
                 stderr=subprocess.PIPE,
                 text=True,
                 env=child_env(self._env),
+                # Its own process group, so a stop can kill the whole tree
+                # (kill_tree, task t2) instead of leaving a tool grandchild
+                # behind when this adapter overrides SubprocessAgent.run to
+                # keep stdin a live pipe.
+                start_new_session=True,
             )
         except OSError as exc:
             yield AgentEvent(kind=EventKind.ERROR, error=f"failed to start {argv[0]}: {exc}")
