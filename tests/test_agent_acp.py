@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from pathlib import Path
 
 import pytest
@@ -297,6 +298,162 @@ def test_session_resume_reuses_a_stored_session(tmp_path):
     resume = next(f for f in _answers(log) if f.get("method") == "session/resume")
     assert resume["params"]["sessionId"] == "acp-stored-session-0002"
     assert resume["params"]["mcpServers"] == []
+
+
+# -- force_stop: kill_tree beats a harness that ignores session/cancel -----
+# (plan reliable-agent-stop, task t6)
+
+#: A script that pauses on a single permission request and never resolves
+#: the turn on its own -- exactly what a still-open dialog needs to prove
+#: force_stop() denies it rather than leaving it hanging.
+_PAUSED_ON_PERMISSION_SCRIPT = json.dumps(
+    [
+        {
+            "permission": {
+                "toolCall": {"toolCallId": "c1", "status": "pending", "title": "shell"},
+                "options": [{"optionId": "proceed_once", "name": "Allow", "kind": "allow_once"}],
+            }
+        }
+    ]
+)
+
+
+def _pid_alive(pid: int) -> bool:
+    """True while *pid* is a live (non-zombie) process.
+
+    Mirrors ``tests/test_agent_subprocess.py``'s helper: a zombie (state
+    ``Z``) is dead for this check's purposes even though ``os.kill(pid, 0)``
+    would still succeed on it.
+    """
+    try:
+        with open(f"/proc/{pid}/stat", encoding="utf-8") as handle:
+            stat = handle.read()
+    except OSError:
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            return False
+        return True
+    return stat.rsplit(")", 1)[1].split()[0] not in ("Z", "X")
+
+
+def _wait_gone(pids: list[int], within: float = 3.0) -> list[int]:
+    deadline = time.monotonic() + within
+    while time.monotonic() < deadline:
+        alive = [pid for pid in pids if _pid_alive(pid)]
+        if not alive:
+            return []
+        time.sleep(0.05)
+    return [pid for pid in pids if _pid_alive(pid)]
+
+
+def _wait_for_pid_file(path: Path, timeout: float = 5.0) -> dict:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if path.exists():
+            try:
+                return json.loads(path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                pass
+        time.sleep(0.05)
+    raise AssertionError(f"{path} was never written")
+
+
+def _ignoring_env(log: Path, pid_file: Path, **extra: str) -> dict[str, str]:
+    return _fake_env(
+        NVSH_FAKE_IGNORE_CANCEL="1",
+        NVSH_FAKE_GRANDCHILD="1",
+        NVSH_FAKE_PID_FILE=str(pid_file),
+        NVSH_TEST_ACP_SCRIPT=_PAUSED_ON_PERMISSION_SCRIPT,
+        NVSH_TEST_ACP_COMMANDS=str(log),
+        **extra,
+    )
+
+
+def test_force_stop_kills_the_process_tree_when_the_harness_ignores_cancel(tmp_path):
+    """Acceptance: force_stop() leaves no pid alive within 3s.
+
+    The fake ignores ``session/cancel`` and never resolves the turn on its
+    own, and it starts a ``sleep 600`` grandchild at launch (its own
+    process, outside nvsh's process group) to prove the whole tree -- not
+    just the harness itself -- is killed.
+    """
+    log = tmp_path / "frames.jsonl"
+    pid_file = tmp_path / "pids.json"
+    agent = _fake_agent(env=_ignoring_env(log, pid_file))
+
+    events = agent.run(_request(), _context())
+    proposal = next(e for e in events if e.kind is EventKind.PROPOSAL)
+    assert proposal.args["request_id"] in agent._pending
+
+    pids = _wait_for_pid_file(pid_file)
+    harness_pid, grandchild_pid = pids["harness"], pids["grandchild"]
+    assert _pid_alive(harness_pid)
+    assert _pid_alive(grandchild_pid)
+
+    # A spy on the raw frame writer, not the fake's own record of what it
+    # managed to read: force_stop() kills the process right after writing
+    # these frames, so whether the fake's reader thread got scheduled in
+    # time to log them before SIGTERM lands is a race nothing here should
+    # depend on. What must be true unconditionally is that nvsh *attempted*
+    # to send them.
+    sent: list[dict] = []
+    original_send = agent._send
+
+    def _spy_send(obj: dict) -> bool:
+        sent.append(obj)
+        return original_send(obj)
+
+    agent._send = _spy_send  # type: ignore[method-assign]
+
+    agent.force_stop()
+    events.close()
+
+    assert _wait_gone([harness_pid, grandchild_pid]) == []
+    # The open dialog was denied, not just abandoned.
+    assert agent._pending == {}
+
+    assert any(
+        obj.get("result", {}).get("outcome") == {"outcome": "cancelled"} for obj in sent
+    ), "the pending permission dialog was not denied"
+    assert any(
+        obj.get("method") == "session/cancel" for obj in sent
+    ), "session/cancel was never sent, even best-effort"
+
+
+def test_run_after_force_stop_reinitialises_a_new_session(tmp_path):
+    """Acceptance: the next run() after force_stop() re-initialises and succeeds."""
+    log = tmp_path / "frames.jsonl"
+    pid_file = tmp_path / "pids.json"
+    agent = _fake_agent(env=_ignoring_env(log, pid_file))
+
+    events = agent.run(_request(), _context())
+    next(e for e in events if e.kind is EventKind.PROPOSAL)
+    first_pid = agent._proc.pid
+
+    agent.force_stop()
+    events.close()
+
+    assert _wait_gone([first_pid]) == []
+    assert agent._proc is None
+    assert agent._session_id == ""
+
+    # A plain, immediately-resolving script for the second turn: this test
+    # is about re-initialisation succeeding, not about the cancel dance again.
+    agent._env["NVSH_TEST_ACP_SCRIPT"] = "[]"
+    second_events = list(agent.run(_request(), _context()))
+
+    assert second_events[-1].kind is EventKind.DONE
+    assert agent._proc is not None
+    assert agent._proc.pid != first_pid
+    assert agent._session_id
+
+    initialize_calls = [f for f in _answers(log) if f.get("method") == "initialize"]
+    new_session_calls = [f for f in _answers(log) if f.get("method") == "session/new"]
+    assert len(initialize_calls) == 2, "the second run() must re-run the ACP handshake"
+    assert len(new_session_calls) == 2
+
+    agent.close()
 
 
 # -- bounded initialize ----------------------------------------------------
