@@ -5,7 +5,7 @@
   "schema_version": 5,
   "status": "exported",
   "created": "2026-09-16T17:16:29Z",
-  "updated": "2026-09-16T20:12:05Z",
+  "updated": "2026-09-16T20:21:06Z",
   "targets": [
     {
       "id": "c1",
@@ -847,6 +847,14 @@
       "text": "doctor --apply confirms a live owner by shell id but kill_active does not carry that owner, so if the turn changes between the confirm prompt and the control message a different turn could be killed (t19)",
       "kind": "follow_up",
       "task_id": "t19",
+      "resolved": false,
+      "resolution": ""
+    },
+    {
+      "id": "r8",
+      "text": "a persistent harness (pi, codex, acp, agy warm) that died and is respawned by the next run() before close() never has its old process group reaped (reported by t23)",
+      "kind": "follow_up",
+      "task_id": "t23",
       "resolved": false,
       "resolution": ""
     }

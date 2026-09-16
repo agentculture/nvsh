@@ -1,0 +1,204 @@
+{
+  "plan_slug": "reliable-agent-stop",
+  "schema_version": 2,
+  "created": "2026-09-16T18:23:52Z",
+  "updated": "2026-09-16T20:12:05Z",
+  "deviations": [
+    {
+      "id": "d1",
+      "what": "panel non-tty fallback _read_line_key treated EOF on a binary stream (b'') as Enter = approve; t14 changed EOF to ignore",
+      "task_ref": "t14",
+      "reason": "pre-existing safety bug found on a hung-up pty during t14; a hung-up terminal could approve a proposed command, violating propose-don't-run",
+      "affects": [
+        "c5"
+      ],
+      "origin": "llm",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 1
+    },
+    {
+      "id": "d2",
+      "what": "a Ctrl+C/Esc press while on_proposal runs (e.g. an approved command executing) is acted on after on_proposal returns instead of ending the stream immediately",
+      "task_ref": "t14",
+      "reason": "the SIGINT handler now records presses into a stop state handled by the main loop; the running command still receives SIGINT from the terminal",
+      "affects": [
+        "c4",
+        "c2"
+      ],
+      "origin": "llm",
+      "status": "approved",
+      "classification": "needs-follow-up",
+      "seq": 2
+    },
+    {
+      "id": "d3",
+      "what": "tests/test_panel.py::test_ctrl_c_returns_to_a_prompt_within_one_second replaced by test_ctrl_c_says_stopping_within_one_second_and_a_second_press_returns_the_prompt",
+      "task_ref": "t14",
+      "reason": "the old test asserted one Ctrl+C ends the stream, contradicting amended c22 (panel stays up while stopping)",
+      "affects": [
+        "c22"
+      ],
+      "origin": "llm",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 3
+    },
+    {
+      "id": "d4",
+      "what": "t8 edited tests/fakes/qwen (a t1 file outside t8's brief): hang_if_ignoring_cancel falls back to sleep when stdin is already at EOF (QwenAgent spawns with stdin=DEVNULL)",
+      "task_ref": "t8",
+      "reason": "under the real adapter the fake exited immediately and orphaned its grandchild, so t8's acceptance test could not exercise force_stop; 5-line test-fixture fix",
+      "affects": [
+        "t1"
+      ],
+      "origin": "llm",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 4
+    },
+    {
+      "id": "d5",
+      "what": "t7 extended tests/fakes/agy (a t1 file) with NVSH_FAKE_SIGNAL_LOG, NVSH_FAKE_READY_FILE and per-turn sleep_before, and fixed stale _cancelled/_closed flags in agy.py run()/_run_warm()",
+      "task_ref": "t7",
+      "reason": "asserting the warm child received a stop needed a signal log and a readiness handshake (signal raced interpreter startup); the stale flags made the respawned turn return no events",
+      "affects": [
+        "t1",
+        "c3"
+      ],
+      "origin": "llm",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 5
+    },
+    {
+      "id": "d6",
+      "what": "t13 acceptance criterion 2 holds only for pi, codex and acp; for claude, qwen-p, openai-compat and agy cancel() already escalates, so removing force_stop() does not fail their cases",
+      "task_ref": "t13",
+      "reason": "those adapters' cancel() already kills or closes; the stop-and-respawn contract (c3, c15) is still proven for all 8 variants; user accepted without code change",
+      "affects": [
+        "c3",
+        "c15"
+      ],
+      "origin": "llm",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 6
+    },
+    {
+      "id": "d7",
+      "what": "added task t22: agy cold mode spawns in its own process group and its terminate uses kill_tree",
+      "task_ref": "t22",
+      "reason": "t13 found agy cold spawn (agy.py:256) lacks start_new_session and _terminate kills a single pid, so c27 was unmet for agy cold; user chose to fix in wave 4",
+      "affects": [
+        "c27",
+        "t7"
+      ],
+      "origin": "llm",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 7
+    },
+    {
+      "id": "d8",
+      "what": "one-shot teardown force-stops the adapter (kills the process tree) after any stop press, before close(), even if only the first polite press was made",
+      "task_ref": "t16",
+      "reason": "with codex (and acp per its docstring) a polite cancel ends the turn and close() lets the harness exit on stdin EOF, orphaning tool grandchildren; the adapter drops its process handle in close(), so the tree kill must happen inside one_shot; only fires after a press",
+      "affects": [
+        "c4",
+        "h3",
+        "c2"
+      ],
+      "origin": "llm",
+      "status": "approved",
+      "classification": "risky",
+      "seq": 8
+    },
+    {
+      "id": "d9",
+      "what": "panel.stream gained an on_busy hook routing BUSY events through the key-watcher suspension (panel.py edited by t17)",
+      "task_ref": "t17",
+      "reason": "BUSY events arrive on the feeder thread while the main thread reads keys; client.py cannot call show_busy safely without a panel hook",
+      "affects": [
+        "c7",
+        "t15"
+      ],
+      "origin": "llm",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 9
+    },
+    {
+      "id": "d10",
+      "what": "there is no 'nvsh ask' CLI verb; the declined exit code is observable as the return of client.ask()/handle_failure and slash --json exit_code, not as a direct 'nvsh ask' exit status",
+      "task_ref": "t17",
+      "reason": "c9 named 'direct nvsh ask', which does not exist; t17 did not add a CLI verb",
+      "affects": [
+        "c9",
+        "h8"
+      ],
+      "origin": "llm",
+      "status": "approved",
+      "classification": "needs-follow-up",
+      "seq": 10
+    },
+    {
+      "id": "d11",
+      "what": "client.ask (/ask, Ctrl+G, @target) now puts proposals to the operator on the panel like the hook path, including auto-inspect and the steer follow-up turn; before, ask passed no approvals",
+      "task_ref": "t17",
+      "reason": "without it 'ignore at a proposal' could never happen on the ask path, so c9's declined code was unreachable there",
+      "affects": [
+        "c9",
+        "c23"
+      ],
+      "origin": "llm",
+      "status": "approved",
+      "classification": "risky",
+      "seq": 11
+    },
+    {
+      "id": "d12",
+      "what": "five existing tests (4 in tests/test_client.py, 1 in tests/test_agent_demo.py) now expect exit 3 instead of 0 after an ignored proposal; /fix and /explain (_on_last_failure) also return 3 when declined",
+      "task_ref": "t17",
+      "reason": "c9 makes proposal ignore a declined run; consistency across ask entry points",
+      "affects": [
+        "c9"
+      ],
+      "origin": "llm",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 12
+    },
+    {
+      "id": "d13",
+      "what": "t20 added NVSH_FAKE_STALL_TURN=1 to tests/fakes/pi, codex-app-server and acp (t1 files) so a turn stays open and silent without an approval prompt",
+      "task_ref": "t20",
+      "reason": "without it the fake turns finish or park on an approval, where Ctrl+C cancels the key read and the two-press stop path is never reached",
+      "affects": [
+        "t1",
+        "c22"
+      ],
+      "origin": "llm",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 13
+    },
+    {
+      "id": "d14",
+      "what": "added task t23: normal close() kills the harness process tree on pi/codex/acp/agy, and test teardown stops leaking fake grandchildren",
+      "task_ref": "t23",
+      "reason": "lapse l5: close() let persistent harnesses exit on stdin EOF and orphan their tool processes (tests leaked ~16 sleep 600 per run); user chose to fix adapters' close(), not only the tests",
+      "affects": [
+        "c27",
+        "t2"
+      ],
+      "origin": "llm",
+      "status": "approved",
+      "classification": "risky",
+      "seq": 14
+    }
+  ],
+  "evidence": [],
+  "deltas": [],
+  "supersessions": []
+}
