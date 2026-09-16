@@ -108,7 +108,8 @@ timed out`. Three behaviors make that impossible:
   prints both.
 
 **Control messages never queue behind a turn.** `status`, `ping`,
-`register`, `unregister`, `cancel`, `undo`, `ui_response` and `stop` are
+`register`, `unregister`, `cancel`, `kill`, `busy_choice`, `kill_active`,
+`undo`, `ui_response` and `stop` are
 answered without taking the run lock, so `nvsh daemon status` answers
 instantly on a busy daemon and an approval dialog can always be answered
 while the turn that raised it is still open. (This already held during d12
@@ -116,8 +117,38 @@ while the turn that raised it is still open. (This already held during d12
 test.)
 
 An abort is only as good as the adapter's `cancel()`: `NvshAgent.run()`
-must respect a pending `cancel()` (the conformance suite checks this), and
-an adapter that ignored it would still hold the agent.
+must respect a pending `cancel()` (the conformance suite checks this). A
+harness that ignores it is handled by **`kill`**: the operator's second
+Ctrl+C/Esc sends a `kill` control, and the daemon calls the slot's
+`force_stop()` (kills the harness's process tree), drops the slot so the
+next request builds a fresh agent, and lets the run lock go. `kill` acts
+only on the calling shell's own turn; it waits up to 3 s and answers
+`killed <shell>` or `stopping <shell>`.
+
+**Busy prompt.** A request from the shell that owns the active turn — or
+from any shell when the owner's pid no longer exists — receives a `busy`
+event instead of the queue notice:
+
+```json
+{"kind": "busy", "text": "...", "args": {"owner": "3422579", "elapsed": 42.0,
+ "steerable": true, "choices": ["steer", "replace", "exit"]}}
+```
+
+`steer` is listed only for adapters that override `steer()` (pi, codex). The
+client answers on a separate connection with a `busy_choice` control
+(`choice`: `steer` | `replace` | `exit`). `steer` injects the request into
+the running turn (or queues it when the adapter refuses, d16); `replace`
+force-stops the turn and runs this request on a fresh agent; `exit` leaves
+the turn alone and ends with `done` carrying `args.busy_choice = "exit"`. A
+client that never answers (one that predates the prompt) falls back to the
+queue after 60 s. A daemon run on a non-default target does not register an
+active turn, so it is not visible to `kill` or the busy prompt (plan risk
+r6).
+
+**`kill_active`** is for `nvsh doctor --apply`, which never owns the turn:
+it force-stops the active turn when its owner pid is gone, or when the
+request carries `confirmed: true` after the operator agreed to a prompt
+naming the owning shell; otherwise it answers `refused`.
 
 ## Wire protocol
 
@@ -154,7 +185,10 @@ handshake. `kind` is one of:
 | `failure` / `slash` / `explicit` | run an agent request (the `request`/`context` objects are required) |
 | `register` | this shell is alive |
 | `unregister` | this shell exited; the last one stops the daemon |
-| `cancel` | abort what this shell is streaming (Ctrl+C) |
+| `cancel` | ask this shell's running turn to stop (first Ctrl+C/Esc) |
+| `kill` | force-stop this shell's running turn and release the agent (second press) |
+| `busy_choice` | answer a `busy` prompt: adds `choice` (`steer`/`replace`/`exit`) |
+| `kill_active` | force-stop the active turn for `nvsh doctor --apply`: adds `confirmed` |
 | `ui_response` | answer a proposal dialog: adds `request_id` and `fields` |
 | `status` / `ping` | one `status` event whose `text` is the state JSON |
 | `stop` | stop the daemon |

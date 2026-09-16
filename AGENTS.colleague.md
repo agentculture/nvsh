@@ -50,6 +50,16 @@ mode is parked, auto-apply (running a fix without confirmation) is out of
 scope for v1, and machine-level undo beyond the approve/execute/verify loop
 is tracked as issue #7 — don't describe those as implemented.
 
+Stopping the agent is reliable on every backend: while it works, the first
+Ctrl+C or Esc asks the harness to stop and the panel shows `stopping… press
+again to kill`; a second press kills the harness's process tree
+(`NvshAgent.force_stop()`, daemon `kill` control). A new request from a
+shell whose own turn is still running (or whose owner shell is gone) gets a
+busy prompt — steer, replace or exit; declining exits 3 (`EXIT_DECLINED`,
+visible in `--json` and the audit log, never as the prompt's `$?`); `nvsh
+overview` shows the active turn; `nvsh doctor --apply` clears a hung one.
+See `docs/shell-integration.md` "Stopping the agent".
+
 nvsh now registers nine harness adapters (pi, qwen over ACP, qwen-p as a
 read-only stream-json fallback, claude, codex, agy — always read-only for
 commands, kiro over ACP, openai-compat, and demo — a scripted fixture

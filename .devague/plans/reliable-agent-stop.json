@@ -5,7 +5,7 @@
   "schema_version": 5,
   "status": "exported",
   "created": "2026-09-16T17:16:29Z",
-  "updated": "2026-09-16T17:19:28Z",
+  "updated": "2026-09-16T19:40:57Z",
   "targets": [
     {
       "id": "c1",
@@ -756,6 +756,23 @@
         "h17"
       ],
       "instruction": "docs/shell-integration.md (stop, second press, typeahead dropped, busy prompt, declined exit 3, Exit status section keeps d5), docs/daemon.md (kill and busy controls), docs/current-spec.md; CLAUDE.md + AGENTS.override.md + .pi/SYSTEM.md + AGENTS.colleague.md + QWEN.md kept in sync; version-bump minor + CHANGELOG. Verify every c2-c15 claim names a passing test, grep shows NVSH_TURN_TIMEOUT is the only automatic kill bound (c13), and no stop path runs an agent-suggested command (c23)."
+    },
+    {
+      "id": "t22",
+      "summary": "agy cold mode: spawn in its own process group and kill the tree",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "agy cold with NVSH_FAKE_IGNORE_CANCEL=1 and NVSH_FAKE_GRANDCHILD=1: after force_stop() neither harness nor grandchild pid is alive within 3s",
+        "the agy-cold conformance case asserts the grandchild is gone and the next run() respawns"
+      ],
+      "deps": [
+        "t13"
+      ],
+      "covers": [
+        "c27"
+      ],
+      "instruction": "nvsh/agent/agy.py only: _run_cold's Popen gets start_new_session=True and _terminate uses kill_tree from nvsh/agent/_subprocess.py; tests/test_agent_conformance.py agy-cold case (and/or tests/test_agent_agy.py) asserts the grandchild dies. Deviation d6."
     }
   ],
   "risks": [
@@ -796,6 +813,22 @@
       "text": "pty-based timing tests (1s/3s) may flake under pytest -n auto on loaded Jetsons; keep generous polling and mark only the thresholds, not sleeps",
       "kind": "unknown_nonblocking",
       "task_id": "t20",
+      "resolved": false,
+      "resolution": ""
+    },
+    {
+      "id": "r6",
+      "text": "daemon targeted runs (_run_targeted, non-default harness) hold the run lock without registering an _ActiveTurn, so kill, the turn cap and the client-gone watch cannot reach them (reported by t9); c26/c7 are only met for default-target turns until this is covered",
+      "kind": "unknown_nonblocking",
+      "task_id": "t10",
+      "resolved": false,
+      "resolution": ""
+    },
+    {
+      "id": "r7",
+      "text": "doctor --apply confirms a live owner by shell id but kill_active does not carry that owner, so if the turn changes between the confirm prompt and the control message a different turn could be killed (t19)",
+      "kind": "follow_up",
+      "task_id": "t19",
       "resolved": false,
       "resolution": ""
     }

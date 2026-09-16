@@ -51,6 +51,8 @@ your approval — nvsh proposes, you accept, edit or reject.
 | `@claude ...`, `@codex ...` | Send one request to a specific harness. |
 | `nvsh doctor` | Health checks: platform, agent reachable, hook, capture, daemon. |
 | `nvsh context --show` | Print exactly the bytes that would be sent. |
+| `Ctrl+C` / `Esc` | Stop the agent mid-work; press again to kill a harness that ignores it. |
+| `nvsh doctor --apply` | Clear a hung agent turn. |
 
 Exit codes that aren't errors — Ctrl-C (`130`), SIGPIPE (`141`), `grep`
 finding nothing — never trigger it, and automatic calls are rate-limited.

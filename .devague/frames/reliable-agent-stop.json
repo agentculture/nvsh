@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-09-16T17:00:45Z",
-  "updated": "2026-09-16T17:14:13Z",
+  "updated": "2026-09-16T19:49:36Z",
   "claims": [
     {
       "id": "c1",
@@ -986,6 +986,56 @@
       "seeds": []
     }
   ],
-  "lapses": [],
+  "lapses": [
+    {
+      "id": "l1",
+      "code": "control-absent",
+      "what": "t5 codex force_stop: the turn/interrupt + approval-decline courtesy sent before kill_tree has no automated test (a log-based assertion raced the kill and was removed); only 'no pid alive' and 'new session' are test-proven",
+      "skipped_check": "assert turn/interrupt reached the harness before the kill",
+      "refs": [
+        "t5",
+        "c3"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l2",
+      "code": "grader-unverified",
+      "what": "t1's ignore-cancel fakes were only verified with stdin=PIPE, never through the real adapters; fake qwen exited at once under QwenAgent's stdin=DEVNULL, orphaning its grandchild (found and fixed by t8)",
+      "skipped_check": "drive each fake through its real adapter spawn",
+      "refs": [
+        "t1",
+        "t8"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l3",
+      "code": "assumption-for-measurement",
+      "what": "t7 chose SIGINT as agy's warm per-turn cancel by analogy to Ctrl-C, not from an observed agy transcript; real agy may treat SIGINT as quit (losing the warm session) or ignore it",
+      "skipped_check": "observe real agy's SIGINT handling on the fleet",
+      "refs": [
+        "t7",
+        "c3"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l4",
+      "code": "grader-unverified",
+      "what": "t17's client busy flow (steer/replace/exit, late busy_choice) is tested only against a stubbed send/busy_choice following the documented wire shape, never against the real daemon; Esc-exits-130 at the client level relies on panel tests",
+      "skipped_check": "drive the client busy flow against a real Daemon",
+      "refs": [
+        "t17",
+        "c7",
+        "h6"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    }
+  ],
   "obligations": []
 }
