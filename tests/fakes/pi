@@ -57,6 +57,10 @@ Two more knobs model a *stuck* pi for the reliable-agent-stop tests:
   write ``{"harness": <this pid>, "grandchild": <sleep's pid>}`` to
   ``$NVSH_FAKE_PID_FILE``, so a test can assert a whole process *tree* dies
   under ``kill_tree``, not just the direct child nvsh spawned.
+* ``NVSH_FAKE_STALL_TURN=1`` -- a ``prompt`` is acked and then left open: no
+  ``message_update``, no ``agent_end``, so an end-to-end stop test
+  (tests/test_agent_stop.py) has a turn that is genuinely in flight, silent
+  and free of approval dialogs when the operator presses Ctrl+C.
 """
 
 from __future__ import annotations
@@ -190,7 +194,7 @@ def ack(reader: "Reader", cmd: dict, command: str, **extra: object) -> None:
 def handle_prompt(reader: "Reader", cmd: dict) -> None:
     message = cmd.get("message", "")
     ack(reader, cmd, "prompt")
-    if STATE["mute"]:
+    if STATE["mute"] or os.environ.get("NVSH_FAKE_STALL_TURN") == "1":
         return
 
     emit(

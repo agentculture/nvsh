@@ -47,6 +47,10 @@ Two more knobs, for the reliable-agent-stop tests:
 * ``NVSH_FAKE_GRANDCHILD=1`` -- start a ``sleep 600`` child at launch and
   write ``{"harness": <this pid>, "grandchild": <sleep's pid>}`` to
   ``$NVSH_FAKE_PID_FILE``.
+* ``NVSH_FAKE_STALL_TURN=1`` -- ``turn/start`` emits the turn's opening notifications
+  and then nothing: no approval request, no ``turn/completed``, so an end-to-end stop test
+  (tests/test_agent_stop.py) has a turn that is genuinely in flight, silent
+  and free of approval dialogs when the operator presses Ctrl+C.
 """
 
 from __future__ import annotations
@@ -385,6 +389,8 @@ class Replay:
     def start_turn(self) -> None:
         for obj in BEFORE_APPROVAL:
             emit(obj)
+        if os.environ.get("NVSH_FAKE_STALL_TURN") == "1":
+            return  # the turn stays open with nothing more to say
         emit(LEGACY_APPROVAL_REQUEST if self.legacy else APPROVAL_REQUEST)
         self.awaiting = True
         self.watch(True)
