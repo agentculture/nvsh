@@ -578,6 +578,27 @@ def kill(*, shell_id: str | int | None = None, env: Mapping[str, str] | None = N
     return any(event.kind is EventKind.STATUS for event in events)
 
 
+def kill_active(*, confirmed: bool = False, env: Mapping[str, str] | None = None) -> str:
+    """Force-stop the daemon's current active turn, whoever owns it (task t19).
+
+    Unlike :func:`kill`, this is not scoped to the caller's own shell -- it
+    backs ``nvsh doctor --apply``, which runs as its own process and is
+    never the turn's owner. The daemon decides for itself whether *confirmed*
+    is honored: a dead-owner turn is killed regardless, a live-owner turn
+    only when *confirmed* is ``True``. Returns ``"killed"``/``"stopping"`` on
+    success, ``"idle"`` when nothing was running, ``"refused"`` when a live
+    owner needed confirmation that was not given, or ``"no_daemon"`` when
+    nothing is listening. Never raises.
+    """
+    events = control("kill_active", env=env, confirmed=confirmed, timeout=_daemon._KILL_WAIT + 5.0)
+    for event in events:
+        if event.kind is EventKind.STATUS:
+            return event.text
+        if event.kind is EventKind.ERROR:
+            return "refused" if "confirm" in event.error else "idle"
+    return "no_daemon"
+
+
 def busy_choice(
     choice: str,
     *,
