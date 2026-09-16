@@ -36,6 +36,12 @@ one live in ``tests/_fake_adapters.py``; this module only states the contract.
 from __future__ import annotations
 
 import inspect
+import json
+import os
+import threading
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
 import pytest
 
@@ -48,6 +54,13 @@ from nvsh.agent import (
     FakeAgent,
     RequestKind,
 )
+from nvsh.agent.acp import AcpAgent
+from nvsh.agent.agy import AgyAgent
+from nvsh.agent.claude import ClaudeAgent
+from nvsh.agent.codex import CodexAgent
+from nvsh.agent.openai_compat import OpenAICompatAgent
+from nvsh.agent.pi import PiAgent
+from nvsh.agent.qwen import QwenAgent
 from tests import _fake_adapters
 from tests._fake_adapters import (
     CASES,
@@ -60,6 +73,7 @@ from tests._fake_adapters import (
     QwenAgentViaFake,
     drive,
 )
+from tests.test_agent_subprocess import _pid_alive, _wait_gone
 
 # Registry of adapter factories for the original five cases. Append here to
 # bring a new backend under them; append to CASES (in tests/_fake_adapters.py)
@@ -351,3 +365,471 @@ def test_approval_and_unmediated_file_access_are_declared(adapter_case):
             f"{type(agent).__name__}.capabilities() never mentions {field!r}: it inherits the "
             f"Capabilities default instead of declaring what this backend actually does"
         )
+
+
+# ---------------------------------------------------------------------------
+# -- t13 (reliable-agent-stop): ignoring-harness stop and respawn, every
+# adapter family
+# ---------------------------------------------------------------------------
+#
+# One parametrised test over eight variants -- pi, codex, acp, agy warm, agy
+# cold, claude, qwen-p and openai-compat (agy's warm and cold modes spawn on
+# two different code paths in nvsh/agent/agy.py, so they are separate cases
+# here). Each variant drives its real adapter against the same
+# "NVSH_FAKE_IGNORE_CANCEL=1" fakes waves 1-2's per-adapter tests
+# (tests/test_pi_agent.py, test_agent_codex.py, test_agent_acp.py,
+# test_agent_agy.py, test_agent_claude.py, test_agent_qwen.py,
+# test_agent_openai_compat.py) already use, and proves the shared contract:
+#
+# 1. the turn is genuinely in flight -- the harness process, and (where the
+#    fake supports it) its own grandchild, are alive;
+# 2. cancel() alone cannot end a harness that ignores it, so force_stop() is
+#    what actually kills the whole process tree, well inside the same tight
+#    budget the per-adapter tests use (3s for a pid-based backend, 1s for
+#    openai-compat's HTTP stream) -- tight enough that falling back to
+#    NvshAgent's default cancel()-then-close() (whose escalate_close()
+#    still reaches kill_tree eventually, just through a slower wait/
+#    terminate/kill ladder) blows the budget and fails the case;
+# 3. the next run() on the very same adapter instance succeeds end to end.
+
+
+def _wait_for_pid_file(path: Path, timeout: float = 5.0) -> dict:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if path.exists():
+            try:
+                return json.loads(path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                pass
+        time.sleep(0.05)
+    raise AssertionError(f"{path} was never written")
+
+
+def _run_in_thread(agent, request=None, context=None):
+    """Drive ``agent.run()`` to completion on a background thread.
+
+    A turn against an ignoring-harness fake never ends on its own, so
+    stepping it on the calling thread would block the whole suite; every
+    case below drives it here and inspects the adapter/process from the
+    main thread instead, the same pattern
+    ``tests/test_agent_claude.py``/``test_agent_qwen.py``/
+    ``test_agent_openai_compat.py`` already use.
+    """
+    request = request if request is not None else _fake_adapters.conformance_request()
+    context = context if context is not None else _fake_adapters.conformance_context()
+    collected: list = []
+    errors: list[BaseException] = []
+
+    def work() -> None:
+        try:
+            for event in agent.run(request, context):
+                collected.append(event)
+        except BaseException as exc:  # noqa: BLE001 - re-raised on the main thread
+            errors.append(exc)
+
+    thread = threading.Thread(target=work, daemon=True)
+    thread.start()
+    return thread, collected, errors
+
+
+def _assert_force_stopped(thread, errors, pids, *, budget: float = 3.0) -> None:
+    """The turn really ended, and (where ``pids`` is non-empty) nothing survived."""
+    thread.join(timeout=budget + 7.0)
+    assert not thread.is_alive(), "run() never returned after force_stop()"
+    if errors:
+        raise errors[0]
+    if pids:
+        assert _wait_gone(pids, within=budget) == []
+
+
+# -- pi ----------------------------------------------------------------
+
+
+def _pi_env(tmp_path: Path, **extra: str) -> dict:
+    env = dict(os.environ)
+    env["PATH"] = str(_fake_adapters.FAKES_DIR) + os.pathsep + env.get("PATH", "")
+    env["HOME"] = str(tmp_path / "home")
+    env["XDG_STATE_HOME"] = str(tmp_path / "state")
+    Path(env["HOME"]).mkdir(parents=True, exist_ok=True)
+    env.update(extra)
+    return env
+
+
+def _case_pi(tmp_path: Path) -> None:
+    pid_file = tmp_path / "pids.json"
+    env = _pi_env(
+        tmp_path,
+        NVSH_FAKE_IGNORE_CANCEL="1",
+        NVSH_FAKE_GRANDCHILD="1",
+        NVSH_FAKE_PID_FILE=str(pid_file),
+    )
+    agent = PiAgent(pi_path="pi", env=env)
+    try:
+        agent.start()
+        pids = _wait_for_pid_file(pid_file)
+        assert _pid_alive(pids["harness"])
+
+        agent.force_stop()
+        assert _wait_gone([pids["harness"], pids["grandchild"]]) == []
+
+        events = list(
+            agent.run(_fake_adapters.conformance_request(), _fake_adapters.conformance_context())
+        )
+        assert events[-1].kind == EventKind.DONE, f"pi: next run() did not finish: {events}"
+    finally:
+        agent.close()
+
+
+# -- codex ---------------------------------------------------------------
+
+
+def _case_codex(tmp_path: Path) -> None:
+    pid_file = tmp_path / "pids.json"
+    env = _fake_adapters.fake_env(
+        NVSH_FAKE_IGNORE_CANCEL="1",
+        NVSH_FAKE_GRANDCHILD="1",
+        NVSH_FAKE_PID_FILE=str(pid_file),
+    )
+    agent = CodexAgent({}, binary="codex-app-server", env=env)
+    try:
+        thread, _events, errors = _run_in_thread(agent)
+        pids = _wait_for_pid_file(pid_file)
+        assert _pid_alive(pids["harness"])
+
+        agent.force_stop()
+        _assert_force_stopped(thread, errors, [pids["harness"], pids["grandchild"]])
+        assert agent._rpc is None  # noqa: SLF001 - proving no dead pipe is reused
+
+        second = drive(agent)
+        assert second[-1].kind == EventKind.DONE, f"codex: next run() did not finish: {second}"
+    finally:
+        agent.close()
+
+
+# -- acp (qwen/kiro's transport) -----------------------------------------
+
+_ACP_PAUSED_ON_PERMISSION_SCRIPT = json.dumps(
+    [
+        {
+            "permission": {
+                "toolCall": {"toolCallId": "c1", "status": "pending", "title": "shell"},
+                "options": [{"optionId": "proceed_once", "name": "Allow", "kind": "allow_once"}],
+            }
+        }
+    ]
+)
+
+
+def _case_acp(tmp_path: Path) -> None:
+    pid_file = tmp_path / "pids.json"
+    log = tmp_path / "frames.jsonl"
+    env = _fake_adapters.fake_env(
+        NVSH_FAKE_IGNORE_CANCEL="1",
+        NVSH_FAKE_GRANDCHILD="1",
+        NVSH_FAKE_PID_FILE=str(pid_file),
+        NVSH_TEST_ACP_SCRIPT=_ACP_PAUSED_ON_PERMISSION_SCRIPT,
+        NVSH_TEST_ACP_COMMANDS=str(log),
+    )
+    agent = AcpAgent(["acp"], "fake", env=env, thinking=True)
+    try:
+        events = agent.run(
+            _fake_adapters.conformance_request(), _fake_adapters.conformance_context()
+        )
+        proposal = next(e for e in events if e.kind is EventKind.PROPOSAL)
+        assert proposal.args["request_id"] in agent._pending  # noqa: SLF001
+
+        pids = _wait_for_pid_file(pid_file)
+        assert _pid_alive(pids["harness"])
+
+        agent.force_stop()
+        events.close()
+        assert _wait_gone([pids["harness"], pids["grandchild"]]) == []
+        assert agent._pending == {}  # noqa: SLF001 - the open dialog was denied
+
+        agent._env["NVSH_TEST_ACP_SCRIPT"] = "[]"  # noqa: SLF001 - a plain second turn
+        second = list(
+            agent.run(_fake_adapters.conformance_request(), _fake_adapters.conformance_context())
+        )
+        assert second[-1].kind == EventKind.DONE, f"acp: next run() did not finish: {second}"
+    finally:
+        agent.close()
+
+
+# -- agy: warm and cold are separate code paths (nvsh/agent/agy.py) -----
+
+
+def _agy_turn(*, done: bool, step_index: int = 1) -> dict:
+    conversation = "fake-conv-t13"
+    stdout = [
+        json.dumps(
+            {
+                "event": "step_update",
+                "step_update": {
+                    "conversation_id": conversation,
+                    "step_index": step_index,
+                    "state": "ACTIVE",
+                    "step_type": "agent_response",
+                    "text_delta": "hi",
+                },
+            }
+        )
+    ]
+    if done:
+        stdout.append(
+            json.dumps(
+                {
+                    "event": "result",
+                    "result": {
+                        "conversation_id": conversation,
+                        "status": "SUCCESS",
+                        "response": "hi",
+                    },
+                }
+            )
+        )
+    return {"stdout": stdout, "exit_code": 0}
+
+
+def _agy_request() -> AgentRequest:
+    return AgentRequest(kind=RequestKind.EXPLICIT, prompt="say hi")
+
+
+def _write_json(path: Path, obj) -> None:
+    path.write_text(json.dumps(obj), encoding="utf-8")
+
+
+def _case_agy_cold(tmp_path: Path) -> None:
+    """Cold agy spawns one child per turn with no process-group isolation of
+    its own (no ``start_new_session`` on that ``Popen`` -- unlike warm's),
+    so there is no tree to prove here: what this proves is that
+    force_stop() (AgyAgent has no override; the base default is
+    cancel()-then-close()) reliably kills that one child within budget even
+    though the fake ignores SIGTERM (``NVSH_FAKE_IGNORE_CANCEL=1``), and
+    that the next run() spawns a fresh one.
+    """
+    events_path = tmp_path / "events.json"
+    _write_json(events_path, {"stdout": [], "exit_code": 0, "sleep_before": 3600})
+    env = _fake_adapters.fake_env(NVSH_FAKE_EVENTS=str(events_path), NVSH_FAKE_IGNORE_CANCEL="1")
+    agent = AgyAgent(warm=False, env=env)
+    try:
+        thread, _events, errors = _run_in_thread(
+            agent, request=_agy_request(), context=AgentContext()
+        )
+        deadline = time.monotonic() + 5.0
+        while agent._proc is None and time.monotonic() < deadline:  # noqa: SLF001
+            time.sleep(0.02)
+        assert agent._proc is not None, "agy cold: child never spawned"  # noqa: SLF001
+        pid = agent._proc.pid  # noqa: SLF001
+        assert _pid_alive(pid)
+
+        agent.force_stop()
+        _assert_force_stopped(thread, errors, [pid])
+
+        _write_json(events_path, _agy_turn(done=True))
+        second = list(agent.run(_agy_request(), AgentContext()))
+        assert second[-1].kind == EventKind.DONE, f"agy cold: next run() did not finish: {second}"
+    finally:
+        agent.close()
+
+
+def _case_agy_warm(tmp_path: Path) -> None:
+    pid_file = tmp_path / "pids.json"
+    events_path = tmp_path / "events.json"
+    _write_json(events_path, {"turns": [{"stdout": [], "exit_code": 0, "sleep_before": 3600}]})
+    env = _fake_adapters.fake_env(
+        NVSH_FAKE_EVENTS=str(events_path),
+        NVSH_FAKE_IGNORE_CANCEL="1",
+        NVSH_FAKE_GRANDCHILD="1",
+        NVSH_FAKE_PID_FILE=str(pid_file),
+    )
+    agent = AgyAgent(warm=True, env=env)
+    try:
+        agent.start()  # the very first, start()-spawned warm child
+        pids = _wait_for_pid_file(pid_file)
+        assert _pid_alive(pids["harness"])
+        first_pid = pids["harness"]
+
+        # An empty AgentContext (cwd="") keeps run() from treating this as
+        # a different working tree and respawning before the turn is even
+        # sent (AgyAgent.run() rebinds -- closes and re-spawns -- whenever
+        # ``context.cwd`` differs from the process it already has bound).
+        thread, _events, errors = _run_in_thread(
+            agent, request=_agy_request(), context=AgentContext()
+        )
+        time.sleep(0.2)  # let the prompt actually reach the sleeping turn
+
+        agent.force_stop()
+        _assert_force_stopped(thread, errors, [pids["harness"], pids["grandchild"]])
+
+        _write_json(events_path, {"turns": [_agy_turn(done=True)]})
+        second = list(agent.run(_agy_request(), AgentContext()))
+        assert second[-1].kind == EventKind.DONE, f"agy warm: next run() did not finish: {second}"
+        assert agent._proc is not None  # noqa: SLF001
+        assert agent._proc.pid != first_pid  # noqa: SLF001 - a genuinely fresh process
+    finally:
+        agent.close()
+
+
+# -- claude ----------------------------------------------------------------
+
+
+def _case_claude(tmp_path: Path) -> None:
+    pid_file = tmp_path / "pids.json"
+    env = _fake_adapters.fake_env(
+        NVSH_FAKE_IGNORE_CANCEL="1",
+        NVSH_FAKE_GRANDCHILD="1",
+        NVSH_FAKE_PID_FILE=str(pid_file),
+    )
+    agent = ClaudeAgent({}, env=env)
+    try:
+        agent.start()
+        thread, _events, errors = _run_in_thread(agent)
+        pids = _wait_for_pid_file(pid_file)
+        assert _pid_alive(pids["harness"])
+
+        agent.force_stop()
+        _assert_force_stopped(thread, errors, [pids["harness"], pids["grandchild"]])
+
+        # A plain, immediately-resolving script for the second turn.
+        agent._env["NVSH_FAKE_EVENTS"] = _fake_adapters._write_events_file(  # noqa: SLF001
+            [AgentEvent(kind=EventKind.DONE)]
+        )
+        agent.start()
+        second = list(
+            agent.run(_fake_adapters.conformance_request(), _fake_adapters.conformance_context())
+        )
+        assert second[-1].kind == EventKind.DONE, f"claude: next run() did not finish: {second}"
+    finally:
+        agent.close()
+
+
+# -- qwen-p (print-mode fallback) ------------------------------------------
+
+
+def _case_qwen_p(tmp_path: Path) -> None:
+    pid_file = tmp_path / "pids.json"
+    env = _fake_adapters.fake_env(
+        NVSH_FAKE_IGNORE_CANCEL="1",
+        NVSH_FAKE_GRANDCHILD="1",
+        NVSH_FAKE_PID_FILE=str(pid_file),
+    )
+    agent = QwenAgent({}, env=env)
+    try:
+        agent.start()
+        thread, _events, errors = _run_in_thread(
+            agent, request=AgentRequest(kind=RequestKind.EXPLICIT, prompt="hi")
+        )
+        pids = _wait_for_pid_file(pid_file)
+        assert _pid_alive(pids["harness"])
+
+        agent.force_stop()
+        _assert_force_stopped(thread, errors, [pids["harness"], pids["grandchild"]])
+
+        agent._env["NVSH_FAKE_EVENTS"] = _fake_adapters._write_events_file(  # noqa: SLF001
+            [AgentEvent(kind=EventKind.DONE)]
+        )
+        agent.start()
+        second = list(
+            agent.run(AgentRequest(kind=RequestKind.EXPLICIT, prompt="hi"), AgentContext())
+        )
+        assert second[-1].kind == EventKind.DONE, f"qwen-p: next run() did not finish: {second}"
+    finally:
+        agent.close()
+
+
+# -- openai-compat (HTTP, not a subprocess) --------------------------------
+
+
+class _StallOrServeHandler(BaseHTTPRequestHandler):
+    """Stalls forever on a path containing ``/stall``, else serves one turn."""
+
+    server_version = "NvshConformanceT13/1.0"
+
+    def log_message(self, *_args):  # noqa: D401 - silence test server logging
+        pass
+
+    def do_POST(self):  # noqa: N802 - http.server API
+        length = int(self.headers.get("Content-Length", "0"))
+        if length:
+            self.rfile.read(length)
+        if "/stall" in self.path:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.end_headers()
+            self.wfile.flush()
+            self.server.stall_connected.set()  # type: ignore[attr-defined]
+            time.sleep(30)
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.end_headers()
+        self.wfile.write(b'data: {"choices": [{"delta": {"content": "ok"}}]}\n\n')
+        self.wfile.write(b"data: [DONE]\n\n")
+        self.wfile.flush()
+
+
+def _case_openai_compat(_tmp_path: Path) -> None:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _StallOrServeHandler)
+    server.stall_connected = threading.Event()  # type: ignore[attr-defined]
+    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+    server_thread.start()
+    try:
+        base_url = f"http://127.0.0.1:{server.server_port}/stall"
+        agent = OpenAICompatAgent({"base_url": base_url})
+        agent.start()
+        try:
+            thread, _events, errors = _run_in_thread(agent)
+            assert server.stall_connected.wait(  # type: ignore[attr-defined]
+                timeout=5
+            ), "the stalled request never connected"
+            time.sleep(0.1)  # let the generator actually block on the read
+
+            started = time.monotonic()
+            agent.force_stop()
+            _assert_force_stopped(thread, errors, [], budget=1.0)
+            elapsed = time.monotonic() - started
+            assert elapsed < 1.0, f"openai-compat: force_stop() took {elapsed:.3f}s, budget is 1s"
+
+            agent._base_url = f"http://127.0.0.1:{server.server_port}"  # noqa: SLF001
+            agent.start()
+            second = list(
+                agent.run(
+                    _fake_adapters.conformance_request(), _fake_adapters.conformance_context()
+                )
+            )
+            assert (
+                second[-1].kind == EventKind.DONE
+            ), f"openai-compat: next run() did not finish: {second}"
+        finally:
+            agent.close()
+    finally:
+        server.shutdown()
+        server_thread.join(timeout=5)
+
+
+STOP_CASES = [
+    ("pi", _case_pi),
+    ("codex", _case_codex),
+    ("acp", _case_acp),
+    ("agy-warm", _case_agy_warm),
+    ("agy-cold", _case_agy_cold),
+    ("claude", _case_claude),
+    ("qwen-p", _case_qwen_p),
+    ("openai-compat", _case_openai_compat),
+]
+
+
+@pytest.mark.parametrize("stop_case", STOP_CASES, ids=[name for name, _ in STOP_CASES])
+def test_ignoring_harness_stop_and_respawn(stop_case, tmp_path):
+    """Every adapter family: cancel() cannot end an ignoring harness, so
+    force_stop() kills the whole process tree within budget, and the very
+    same adapter instance's next run() succeeds end to end.
+
+    Removing (or no-oping) any one adapter's ``force_stop()`` override falls
+    back to ``NvshAgent``'s default -- ``cancel()`` then ``close()``, whose
+    ``escalate_close()`` still reaches ``kill_tree`` eventually but only
+    after a slower wait/terminate/kill ladder -- which blows this test's
+    budget and fails only that adapter's case.
+    """
+    _name, check = stop_case
+    check(tmp_path)
