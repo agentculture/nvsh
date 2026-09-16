@@ -559,6 +559,17 @@ def cancel(*, shell_id: str | int | None = None, env: Mapping[str, str] | None =
     return bool(control("cancel", shell_id=shell_id, env=env))
 
 
+def kill(*, shell_id: str | int | None = None, env: Mapping[str, str] | None = None) -> bool:
+    """Force-stop this shell's running turn (the second press).
+
+    ``True`` once the daemon has force-stopped a turn this shell owns;
+    ``False`` when no daemon is listening or this shell has no running turn.
+    The timeout outlasts the daemon's own wait for the killed turn to end.
+    """
+    events = control("kill", shell_id=shell_id, env=env, timeout=_daemon._KILL_WAIT + 5.0)
+    return any(event.kind is EventKind.STATUS for event in events)
+
+
 def respond_ui(
     request_id: str,
     fields: Mapping[str, object] | None = None,

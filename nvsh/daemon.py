@@ -77,12 +77,18 @@ _TURN_WATCH_INTERVAL = 0.05
 #: receiving bytes instead of timing out in silence.
 _QUEUE_NOTICE_INTERVAL = 15.0
 
+#: How long a ``kill`` control waits for the killed turn to hand back the run
+#: lock before answering. The kill itself is not bounded by this; it only
+#: decides whether the reply says "killed" or "still stopping".
+_KILL_WAIT = 3.0
+
 #: Control kinds that carry no agent request.
 _CONTROL_KINDS = frozenset(
     {
         "register",
         "unregister",
         "cancel",
+        "kill",
         "ui_response",
         "steer",
         "status",
@@ -863,6 +869,43 @@ class Daemon:
             except Exception as exc:  # noqa: BLE001
                 self._log.warning("cancel failed: %s", exc)
 
+    def kill_shell(self, shell: str, *, wait: float = _KILL_WAIT) -> str:
+        """Force-stop *shell*'s own running turn, for a harness that ignores cancel.
+
+        The second press (t9): the slot's adapter gets ``force_stop()``, the
+        turn is marked aborted so its handler thread stops streaming, and the
+        slot is dropped from the pool so the next request builds a *fresh*
+        agent instead of reusing a process in an unknown state. The run lock
+        is released by the killed turn's own handler thread as ``run()``
+        returns; this waits up to *wait* seconds to see that happen.
+
+        Strictly per-shell, like :meth:`cancel_shell`: a shell whose turn is
+        not the active one kills nothing. Returns ``"killed"``,
+        ``"stopping"`` (force-stopped but the turn has not ended yet) or
+        ``"idle"`` (nothing of this shell's to kill). Never raises.
+        """
+        with self._lock:
+            turn = self._active
+            if turn is None or not shell or turn.shell != shell:
+                return "idle"
+            if not turn.aborted:
+                turn.aborted = "killed"
+            slot = turn.slot
+            if slot in self._slots:
+                self._slots.remove(slot)
+            conversation = self._conversations.get(shell)
+            if conversation is not None:
+                conversation.pending_proposal = None
+                conversation.sleeping = True
+        self._log.info("force-stopping shell %s's turn", shell)
+        try:
+            slot.agent.force_stop()
+        except Exception as exc:  # noqa: BLE001 - a kill must never wedge the daemon
+            self._log.warning("force_stop failed: %s", exc)
+        with _suppressed():
+            slot.agent.close()
+        return "killed" if turn.finished.wait(max(0.0, wait)) else "stopping"
+
     # -- the active turn (deviation d12) -----------------------------------
 
     def active_turn(self) -> dict | None:
@@ -1060,6 +1103,15 @@ class Daemon:
         if kind == "cancel":
             self.cancel_shell(shell)
             yield AgentEvent(kind=EventKind.STATUS, text=f"cancelled {shell}")
+            yield AgentEvent(kind=EventKind.DONE)
+            return
+
+        if kind == "kill":
+            outcome = self.kill_shell(shell)
+            if outcome == "idle":
+                yield AgentEvent(kind=EventKind.ERROR, error=f"no running turn to kill for {shell}")
+                return
+            yield AgentEvent(kind=EventKind.STATUS, text=f"{outcome} {shell}")
             yield AgentEvent(kind=EventKind.DONE)
             return
 
@@ -1331,6 +1383,8 @@ class Daemon:
         event of its own gets a DONE; one that reported its own terminal
         event gets nothing more.
         """
+        if active.aborted == "killed":
+            return AgentEvent(kind=EventKind.ERROR, error="the agent turn was force-stopped")
         if active.aborted == "timeout":
             return AgentEvent(
                 kind=EventKind.ERROR,
