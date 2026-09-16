@@ -318,3 +318,111 @@ def test_keys_at_a_proposal_mid_stream_reach_the_proposal_not_the_watcher(pty_pa
     assert cancelled == []
     assert result.interrupted is False
     assert result.done is True
+
+
+# --- t15: the busy prompt (steer / replace / exit) -------------------------
+#
+# nvsh/daemon.py (t10) yields a BUSY event to the shell that owns a still
+# running turn (or whose owning shell pid is gone), carrying {owner, elapsed,
+# steerable}. panel.show_busy renders that prompt and returns one of
+# STEER/REPLACE/BUSY_EXIT. steer is offered only when the adapter serving the
+# turn has a mid-turn channel (steerable=True); a harness with none must
+# never let 't' be read as steer. When steer is chosen but the harness stays
+# silent (no event acknowledging the steer arrives within the timeout), the
+# prompt is shown again without steer -- there's nothing left to steer with,
+# only replace or exit.
+
+
+def _busy_panel(typed: str, out=None):
+    return panel_mod.Panel(
+        out=out if out is not None else io.StringIO(),
+        in_=io.StringIO(typed),
+        env={},
+        isatty=False,
+    )
+
+
+def test_show_busy_steerable_offers_all_three_and_reads_steer():
+    out = io.StringIO()
+    p = _busy_panel("t\n", out)
+    choice = p.show_busy("shell-a", 12.0, True)
+    assert choice == panel_mod.STEER
+    text = out.getvalue()
+    assert "[t]" in text
+    assert "steer" in text.lower()
+
+
+def test_show_busy_steerable_reads_replace_and_exit():
+    assert _busy_panel("r\n").show_busy("shell-a", 1.0, True) == panel_mod.REPLACE
+    assert _busy_panel("\x1b\n").show_busy("shell-a", 1.0, True) == panel_mod.BUSY_EXIT
+
+
+def test_show_busy_non_steerable_has_no_steer_option_in_the_legend():
+    out = io.StringIO()
+    p = _busy_panel("r\n", out)
+    p.show_busy("shell-a", 5.0, False)
+    text = out.getvalue()
+    assert "[t]" not in text
+    assert "steer" not in text.lower()
+
+
+def test_show_busy_non_steerable_t_is_not_accepted_as_steer():
+    # 't' means nothing when steer isn't offered: it falls through to exit,
+    # the same as any other key the legend doesn't list (Esc, 'q', ...).
+    choice = _busy_panel("t\n").show_busy("shell-a", 5.0, False)
+    assert choice != panel_mod.STEER
+    assert choice == panel_mod.BUSY_EXIT
+
+
+def test_show_busy_steer_then_event_arrives_returns_steer_without_reoffering():
+    out = io.StringIO()
+    p = _busy_panel("t\n", out)
+    seen_timeouts: list[float] = []
+
+    def await_event(timeout: float) -> bool:
+        seen_timeouts.append(timeout)
+        return True  # the harness acknowledged the steer in time
+
+    choice = p.show_busy("shell-a", 3.0, True, await_event=await_event)
+    assert choice == panel_mod.STEER
+    assert seen_timeouts == [10.0]
+    # Only ever prompted once: no second legend was printed.
+    assert out.getvalue().count("[t]") == 1
+
+
+def test_show_busy_steer_then_silence_reoffers_replace_and_exit():
+    out = io.StringIO()
+    # First read: 't' for steer. After the silent steer times out, the
+    # prompt is shown again (steer no longer offered) and reads 'r'.
+    p = _busy_panel("t\nr\n", out)
+
+    def await_event(timeout: float) -> bool:
+        assert timeout == 10.0
+        return False  # the harness never acknowledged the steer
+
+    choice = p.show_busy("shell-a", 3.0, True, await_event=await_event)
+    assert choice == panel_mod.REPLACE
+    text = out.getvalue()
+    # The steer option was offered on the first prompt only.
+    assert text.count("[t]") == 1
+    # The reoffer prompt still names replace and exit.
+    assert text.lower().count("replace") >= 2
+    assert "exit" in text.lower()
+
+
+def test_show_busy_steer_then_silence_reoffer_can_exit():
+    p = _busy_panel("t\n\x1b\n")
+
+    def await_event(timeout: float) -> bool:
+        return False
+
+    choice = p.show_busy("shell-a", 3.0, True, await_event=await_event)
+    assert choice == panel_mod.BUSY_EXIT
+
+
+def test_show_busy_without_await_event_returns_steer_immediately():
+    # A caller that does not care about the reoffer (or hasn't wired the
+    # daemon event source yet) gets the pre-t17 behaviour: steer returns at
+    # once, no waiting.
+    choice = _busy_panel("t\n").show_busy("shell-a", 3.0, True)
+    assert choice == panel_mod.STEER

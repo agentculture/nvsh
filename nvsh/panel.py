@@ -137,6 +137,20 @@ IGNORE = "ignore"
 #: stays available.
 REFUSED = "refused"
 
+#: What :meth:`Panel.show_busy` can return (t15). A new request from the
+#: shell that owns a still-running turn -- or from any shell when the owning
+#: shell's pid is gone -- gets one of these three instead of silent queueing.
+STEER = "steer"
+REPLACE = "replace"
+BUSY_EXIT = "busy_exit"
+
+#: How long :meth:`Panel.show_busy` waits, after a steer choice, for some
+#: event to prove the harness actually reacted before re-offering
+#: replace/exit (a steerable adapter that accepted the steer and then said
+#: nothing must not leave the operator staring at a prompt that already
+#: resolved).
+STEER_SILENCE_TIMEOUT = 10.0
+
 #: The one-line key legend. Kept within 80 columns so it never wraps on a
 #: bare ssh into a Jetson, where a wrapped legend costs the panel a line and
 #: reads as two half-legends. ``+session``/``+user`` are the abbreviation
@@ -1080,11 +1094,69 @@ class Panel:
             return raw.decode("utf-8", errors="replace")
         return str(raw or "")
 
-    def _read_choice(self) -> str:
+    # -- the busy prompt (t15) ----------------------------------------------
+
+    def show_busy(
+        self,
+        owner: str,
+        elapsed: float,
+        steerable: bool,
+        *,
+        await_event: Callable[[float], bool] | None = None,
+    ) -> str:
+        """Show the busy prompt for a turn already running for ``owner``.
+
+        Returns :data:`STEER`, :data:`REPLACE` or :data:`BUSY_EXIT`. ``[t]``
+        steer is only offered -- and only ever read as steer -- when
+        ``steerable`` is true; a harness with no mid-turn channel must never
+        let a stray ``t`` keypress be mistaken for one, so it falls through
+        to :data:`BUSY_EXIT` exactly like any other key the legend does not
+        list (matching how an unrecognised proposal key ignores, above).
+
+        ``await_event`` is the caller's hook for "did the harness actually
+        react": after a steer choice, it is called once with
+        :data:`STEER_SILENCE_TIMEOUT` seconds and must return ``True`` the
+        moment some event proves the steer landed, or ``False`` once that
+        long has passed with nothing. On ``False`` the prompt is shown again
+        -- steer is not re-offered, since the operator already tried it and
+        it produced nothing to steer with; only replace/exit remain. Passing
+        no ``await_event`` (the default, and every caller before t17 wires
+        the daemon's event source) keeps steer's old immediate return.
+        """
+        choice = self._read_busy_choice(owner, elapsed, steerable)
+        if choice == STEER and await_event is not None and not await_event(STEER_SILENCE_TIMEOUT):
+            self.note(f"nvsh: {owner} stayed silent after steer")
+            return self._read_busy_choice(owner, elapsed, False)
+        return choice
+
+    def _busy_legend(self, steerable: bool) -> str:
+        parts = []
+        if steerable:
+            parts.append("[t] steer")
+        parts.append("[r] replace")
+        parts.append("[Esc] exit")
+        return " ".join(parts)
+
+    def _read_busy_choice(self, owner: str, elapsed: float, steerable: bool) -> str:
+        s = self.style
+        self.line(
+            f"{s.bold}{s.yellow}nvsh:{s.reset} busy -- {owner} still running ({int(elapsed)}s)"
+        )
+        self.line(self._busy_legend(steerable))
+        key = self._read_choice_key()
+        if steerable and key in ("t", "T"):
+            return STEER
+        if key in ("r", "R"):
+            return REPLACE
+        return BUSY_EXIT
+
+    def _read_choice_key(self) -> str:
         if self.isatty:
-            key = _read_key(self.in_)
-        else:
-            key = _read_line_key(self.in_)
+            return _read_key(self.in_)
+        return _read_line_key(self.in_)
+
+    def _read_choice(self) -> str:
+        key = self._read_choice_key()
         if key in ("\r", "\n"):
             return APPROVE
         if key == "s":
