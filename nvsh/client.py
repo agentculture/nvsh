@@ -49,6 +49,7 @@ import os
 import re
 import shlex
 import subprocess  # nosec B404 - argv is always ["bash", "-c", <approved command>]
+import threading
 import time
 import uuid
 from dataclasses import dataclass, replace
@@ -65,6 +66,7 @@ from .agent.base import (
     RequestKind,
     Target,
 )
+from .cli._errors import EXIT_DECLINED
 from .panel import (
     APPROVE,
     APPROVE_SESSION,
@@ -75,6 +77,8 @@ from .panel import (
     EXPLAIN,
     IGNORE,
     REFUSED,
+    REPLACE,
+    STEER,
     TELL,
     Panel,
     StreamResult,
@@ -1053,6 +1057,7 @@ def _proposal_handler(
     context: AgentContext | None = None,
     config=None,
     env: Mapping[str, str] | None = None,
+    turn: "_Turn | None" = None,
 ):
     """Answer one proposal, sending the answer wherever the dialog came from.
 
@@ -1095,6 +1100,9 @@ def _proposal_handler(
         choice = _decide_proposal(panel, proposal, details=details, inject=inject)
         if audit is not None:
             audit.record(event="decision", proposal=proposal, decision=choice)
+        if choice == IGNORE and turn is not None:
+            # Esc/ignore at a proposal declines the agent (c9): exit 3.
+            turn.decline("ignored proposal")
         _apply_decision(
             panel,
             proposal,
@@ -1361,6 +1369,145 @@ class _StopTarget:
         return client_transport.kill(shell_id=self._shell_id, env=self._env)
 
 
+class _Turn:
+    """One request's stop lifecycle: its audit trail and whether it was declined (t17).
+
+    ``declined`` is shared across a turn and its follow-up (the caller owns
+    the list), so any decline in either makes the entry point exit
+    :data:`~nvsh.cli._errors.EXIT_DECLINED`. ``ended`` asks the event source
+    to stop yielding -- set when a busy exit could not reach the daemon, so
+    the request would otherwise sit in the daemon's queue with the operator
+    already gone.
+    """
+
+    def __init__(
+        self, audit, *, shell_id: int, target: Target | None, declined: list[str] | None
+    ) -> None:
+        self._audit = audit
+        self._shell_id = shell_id
+        self._target = target
+        self._started = time.monotonic()
+        self.declined = declined if declined is not None else []
+        self.ended = False
+
+    def elapsed(self) -> float:
+        return round(time.monotonic() - self._started, 3)
+
+    def record(self, kind: str, outcome: object, elapsed: float | None = None) -> None:
+        """Append one ``stop`` audit line; an unwritable log never breaks the stop."""
+        if self._audit is None:
+            return
+        try:
+            self._audit.record_stop(
+                kind,
+                self._shell_id,
+                self._target,
+                self.elapsed() if elapsed is None else elapsed,
+                outcome,
+            )
+        except OSError:  # pragma: no cover - state dir vanished mid-turn
+            pass
+
+    def decline(self, outcome: str) -> None:
+        self.declined.append(outcome)
+        self.record("declined", outcome)
+
+    def audited(self, kind: str, action):
+        """Wrap one stop press so it is recorded exactly once, with its result."""
+
+        def call() -> object:
+            try:
+                result = action()
+            except Exception:
+                self.record(kind, "error")
+                raise
+            self.record(kind, "failed" if result is False else "sent")
+            return result
+
+        return call
+
+    def until_ended(self, events: Iterable[AgentEvent]):
+        iterator = iter(events)
+        try:
+            for event in iterator:
+                yield event
+                if self.ended:
+                    return
+        finally:
+            close = getattr(iterator, "close", None)
+            if callable(close):
+                close()
+
+
+#: The daemon's answer to one busy choice, as the audit line names it.
+_BUSY_OUTCOME = {True: "accepted", False: "no busy prompt open"}
+
+
+def _busy_choice_within(choice: str, timeout: float, *, shell_id: int, env) -> bool:
+    """Send one busy choice; ``False`` if refused or not answered within ``timeout``."""
+    answer: list[bool] = []
+
+    def send() -> None:
+        try:
+            answer.append(bool(client_transport.busy_choice(choice, shell_id=shell_id, env=env)))
+        except Exception:  # noqa: BLE001 - an unreachable daemon is a refusal
+            answer.append(False)
+
+    worker = threading.Thread(target=send, daemon=True, name="nvsh-busy-choice")
+    worker.start()
+    worker.join(timeout)
+    return bool(answer and answer[0])
+
+
+def _busy_handler(panel: Panel, turn: _Turn, *, shell_id: int, env: Mapping[str, str]):
+    """Answer the daemon's ``busy`` prompt: steer, replace or exit (t17).
+
+    The daemon sends it when this shell already owns a running turn (or the
+    owner is gone). Steer is offered only when the daemon says the harness
+    has a mid-turn channel; the steer counts as heard once the daemon
+    accepts it, and when it does not within the panel's silence window the
+    panel re-offers replace/exit. A choice the daemon no longer takes (its
+    busy prompt timed out into the queue) is said so, never raised.
+    """
+
+    def handle(event: AgentEvent) -> None:
+        args = event.args or {}
+        owner = str(args.get("owner") or "agent")
+        try:
+            elapsed = float(args.get("elapsed") or 0.0)
+        except (TypeError, ValueError):
+            elapsed = 0.0
+        choices = args.get("choices")
+        steerable = bool(args.get("steerable")) and (
+            not isinstance(choices, list) or "steer" in choices
+        )
+
+        def await_steer(timeout: float) -> bool:
+            heard = _busy_choice_within("steer", timeout, shell_id=shell_id, env=env)
+            turn.record("steer", "accepted" if heard else "silent", elapsed)
+            return heard
+
+        choice = panel.show_busy(
+            owner, elapsed, steerable, await_event=await_steer if steerable else None
+        )
+        if choice == STEER:
+            return
+        wire = "replace" if choice == REPLACE else "exit"
+        accepted = _busy_choice_within(wire, 10.0, shell_id=shell_id, env=env)
+        if choice == REPLACE:
+            turn.record("replace", _BUSY_OUTCOME[accepted], elapsed)
+            if not accepted:
+                panel.note("nvsh: the busy prompt already closed; this request is queued")
+            return
+        # Exit: leave the running turn alone and decline this request.
+        turn.record("busy_exit", _BUSY_OUTCOME[accepted], elapsed)
+        turn.decline("busy exit")
+        if not accepted:
+            turn.ended = True
+
+    return handle
+
+
 def _stream_request(
     panel: Panel,
     request: AgentRequest,
@@ -1375,6 +1522,7 @@ def _stream_request(
     steers: list[str] | None = None,
     one_shot: bool = False,
     target: Target | None = None,
+    declined: list[str] | None = None,
 ) -> StreamResult:
     # One resolution, used three ways: the adapter routes on it, the panel
     # header names it, and every audit line is stamped with it (t16/t18).
@@ -1387,6 +1535,7 @@ def _stream_request(
         panel.set_target(resolved, _target_path(resolved), warm)
     if target is not None:
         request = replace(request, target=target)
+    turn = _Turn(audit, shell_id=shell_id, target=resolved, declined=declined)
     audit = _targeted_audit(audit, resolved)
     responder = client_transport.Responder(shell_id=shell_id, env=env)
     on_proposal = None
@@ -1401,21 +1550,25 @@ def _stream_request(
             context=context,
             config=config,
             env=env,
+            turn=turn,
         )
     stop = _StopTarget(responder, shell_id=shell_id, env=env)
     return panel.stream(
-        _send(
-            request,
-            context,
-            env=env,
-            shell_id=shell_id,
-            config=config,
-            responder=responder,
-            one_shot=one_shot,
+        turn.until_ended(
+            _send(
+                request,
+                context,
+                env=env,
+                shell_id=shell_id,
+                config=config,
+                responder=responder,
+                one_shot=one_shot,
+            )
         ),
         on_proposal=on_proposal,
-        cancel=stop.cancel,
-        force_stop=stop.force_stop,
+        cancel=turn.audited("cancel", stop.cancel),
+        force_stop=turn.audited("force_kill", stop.force_stop),
+        on_busy=_busy_handler(panel, turn, shell_id=shell_id, env=env),
     )
 
 
@@ -1510,7 +1663,9 @@ def handle_failure(
     """Diagnose one failed command. Returns the exit code ``nvsh hook`` reports.
 
     ``0`` in every normal case (the operator's own command already reported
-    its status); ``130`` when the operator pressed Ctrl+C during the stream.
+    its status); ``130`` when the operator pressed Ctrl+C during the stream;
+    :data:`~nvsh.cli._errors.EXIT_DECLINED` (3) when the operator declined the
+    agent -- exit at a busy prompt, or Esc/ignore at a proposal (t17).
     """
     resolved = dict(os.environ if env is None else env)
     panel = _panel_for(panel, resolved)
@@ -1550,6 +1705,7 @@ def handle_failure(
     approvals = _load_approvals()
     inspections: list[tuple[str, RunResult]] = []
     steers: list[str] = []
+    declined: list[str] = []
     audit = _audit(resolved)
     result = _stream_request(
         panel,
@@ -1564,6 +1720,7 @@ def handle_failure(
         steers=steers,
         one_shot=one_shot,
         target=target,
+        declined=declined,
     )
     if result.interrupted:
         return 130
@@ -1582,10 +1739,11 @@ def handle_failure(
             audit=audit,
             one_shot=one_shot,
             target=target,
+            declined=declined,
         )
         if follow.interrupted:
             return 130
-    return 0
+    return EXIT_DECLINED if declined else 0
 
 
 def ask(
@@ -1608,6 +1766,10 @@ def ask(
     qwen ...``, which is what the ``@qwen`` mark is rewritten to). An
     unavailable one is a single refusal line and exit 1 -- never a silent
     fall back to the default (deviation d23).
+
+    Returns ``130`` after Ctrl+C/Esc and :data:`~nvsh.cli._errors.EXIT_DECLINED`
+    when the operator declined the agent (t17). A proposal is answered on
+    the panel like the hook's, so ignoring one is a decline too.
     """
     resolved = dict(os.environ if env is None else env)
     panel = _panel_for(panel, resolved)
@@ -1635,17 +1797,48 @@ def ask(
         failure_id=str(state.get("failure_id", "") or ""),
         ask=question,
     )
+    context = build_context(args, resolved)
+    shell_id = _shell_pid(resolved)
+    approvals = _load_approvals()
+    inspections: list[tuple[str, RunResult]] = []
+    steers: list[str] = []
+    declined: list[str] = []
+    audit = _audit(resolved)
     result = _stream_request(
         panel,
         request,
-        build_context(args, resolved),
+        context,
         env=resolved,
-        shell_id=_shell_pid(resolved),
+        shell_id=shell_id,
         config=config,
+        approvals=approvals,
+        inspections=inspections,
+        audit=audit,
+        steers=steers,
         one_shot=_is_one_shot(target),
         target=target,
+        declined=declined,
     )
-    return 130 if result.interrupted else 0
+    if result.interrupted:
+        return 130
+    if inspections or steers:
+        follow = _stream_request(
+            panel,
+            replace(request, prompt=_follow_up_prompt(inspections, steers)),
+            context,
+            env=resolved,
+            shell_id=shell_id,
+            config=config,
+            approvals=approvals,
+            inspections=[],
+            audit=audit,
+            one_shot=_is_one_shot(target),
+            target=target,
+            declined=declined,
+        )
+        if follow.interrupted:
+            return 130
+    return EXIT_DECLINED if declined else 0
 
 
 def _on_last_failure(prompt: str, panel: Panel | None, env: Mapping[str, str] | None) -> int:
@@ -1661,6 +1854,7 @@ def _on_last_failure(prompt: str, panel: Panel | None, env: Mapping[str, str] | 
     approvals = _load_approvals()
     audit = _audit(resolved)
     steers: list[str] = []
+    declined: list[str] = []
     result = _stream_request(
         panel,
         _failure_request(state, prompt=prompt),
@@ -1672,6 +1866,7 @@ def _on_last_failure(prompt: str, panel: Panel | None, env: Mapping[str, str] | 
         inspections=[],
         audit=audit,
         steers=steers,
+        declined=declined,
     )
     if result.interrupted:
         return 130
@@ -1686,10 +1881,11 @@ def _on_last_failure(prompt: str, panel: Panel | None, env: Mapping[str, str] | 
             approvals=approvals,
             inspections=[],
             audit=audit,
+            declined=declined,
         )
         if follow.interrupted:
             return 130
-    return 0
+    return EXIT_DECLINED if declined else 0
 
 
 def steer(text: str, *, panel: Panel | None = None, env: Mapping[str, str] | None = None) -> int:

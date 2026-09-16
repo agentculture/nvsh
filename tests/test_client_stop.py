@@ -371,3 +371,255 @@ def test_daemon_fallback_to_one_shot_stops_the_bound_agent(monkeypatch, tmp_path
     assert errors == []
     assert result.interrupted is True
     assert agent.calls == ["cancel", "force_stop"]
+
+
+# -- t17: busy prompt, declined exit code and stop audit ----------------------
+
+
+@pytest.fixture
+def stop_env(tmp_path, monkeypatch):
+    """XDG dirs under tmp, both in os.environ (config/approvals) and passed as env."""
+    for name in ("XDG_STATE_HOME", "XDG_CONFIG_HOME", "XDG_RUNTIME_DIR"):
+        path = tmp_path / name.lower()
+        path.mkdir()
+        monkeypatch.setenv(name, str(path))
+    monkeypatch.setenv("NVSH_SHELL_PID", "4242")
+    monkeypatch.setattr(client, "_platform_block", lambda: "platform: generic")
+    return {
+        "XDG_STATE_HOME": str(tmp_path / "xdg_state_home"),
+        "XDG_CONFIG_HOME": str(tmp_path / "xdg_config_home"),
+        "XDG_RUNTIME_DIR": str(tmp_path / "xdg_runtime_dir"),
+        "NVSH_SHELL_PID": "4242",
+    }
+
+
+def _typed_panel(typed: str) -> Panel:
+    return Panel(out=io.StringIO(), in_=io.StringIO(typed), env={"NO_COLOR": "1"}, isatty=False)
+
+
+def _stops(env: dict[str, str]) -> list[dict]:
+    from nvsh.agent.audit import AuditLog
+
+    return [entry for entry in AuditLog(env=env).read_all() if entry["event"] == "stop"]
+
+
+def _busy_event(steerable: bool) -> AgentEvent:
+    choices = ["steer", "replace", "exit"] if steerable else ["replace", "exit"]
+    return AgentEvent(
+        kind=EventKind.BUSY,
+        text="a turn is still running",
+        args={"owner": "4242", "elapsed": 42.0, "steerable": steerable, "choices": choices},
+    )
+
+
+def _busy_daemon(monkeypatch, *, steerable: bool, accept: bool = True):
+    """Fake daemon: BUSY, then whatever the chosen control would produce."""
+    chosen: list[str] = []
+    answered = threading.Event()
+
+    def fake_busy_choice(choice, *, shell_id=None, env=None):
+        chosen.append(choice)
+        answered.set()
+        return accept
+
+    def fake_send(request, context, **kwargs):
+        yield _busy_event(steerable)
+        if not answered.wait(5):
+            yield AgentEvent(kind=EventKind.ERROR, error="no busy choice arrived")
+            return
+        if not accept:
+            # A daemon that already fell back to the queue: nothing more comes.
+            time.sleep(30)
+            return
+        yield AgentEvent(kind=EventKind.STATUS, text="ok")
+        if chosen[-1] == "replace":
+            yield AgentEvent(kind=EventKind.TEXT_DELTA, text="fresh answer")
+        yield AgentEvent(kind=EventKind.DONE, args={"busy_choice": chosen[-1]})
+
+    monkeypatch.setattr(client_transport, "send", fake_send)
+    monkeypatch.setattr(client_transport, "busy_choice", fake_busy_choice)
+    return chosen
+
+
+def _assert_stop_shape(entry: dict, kind: str) -> None:
+    assert entry["kind"] == kind
+    assert entry["shell"] == 4242
+    assert "target" in entry
+    assert isinstance(entry["elapsed"], (int, float))
+    assert entry["outcome"] not in (None, "")
+
+
+def test_busy_exit_makes_ask_exit_declined_and_audits_once(stop_env, monkeypatch):
+    from nvsh.cli._errors import EXIT_DECLINED
+
+    chosen = _busy_daemon(monkeypatch, steerable=True)
+    code = client.ask("why?", panel=_typed_panel("\x1b\n"), env=stop_env)
+
+    assert code == EXIT_DECLINED == 3
+    assert chosen == ["exit"]
+    stops = _stops(stop_env)
+    assert [entry["kind"] for entry in stops] == ["busy_exit", "declined"]
+    for entry in stops:
+        _assert_stop_shape(entry, entry["kind"])
+    assert stops[0]["elapsed"] == 42.0
+
+
+def test_busy_exit_with_the_prompt_already_closed_still_ends_declined(stop_env, monkeypatch):
+    chosen = _busy_daemon(monkeypatch, steerable=False, accept=False)
+    panel = _typed_panel("\x1b\n")
+    started = time.monotonic()
+    code = client.ask("why?", panel=panel, env=stop_env)
+
+    assert code == 3
+    assert time.monotonic() - started < 10
+    assert chosen == ["exit"]
+    assert [entry["kind"] for entry in _stops(stop_env)] == ["busy_exit", "declined"]
+
+
+def test_busy_steer_sends_the_steer_control_and_audits_it(stop_env, monkeypatch):
+    chosen = _busy_daemon(monkeypatch, steerable=True)
+    code = client.ask("why?", panel=_typed_panel("t\n"), env=stop_env)
+
+    assert code == 0
+    assert chosen == ["steer"]
+    stops = _stops(stop_env)
+    assert [entry["kind"] for entry in stops] == ["steer"]
+    _assert_stop_shape(stops[0], "steer")
+
+
+def test_busy_replace_sends_the_replace_control_and_audits_it(stop_env, monkeypatch):
+    chosen = _busy_daemon(monkeypatch, steerable=False)
+    panel = _typed_panel("r\n")
+    code = client.ask("why?", panel=panel, env=stop_env)
+
+    assert code == 0
+    assert chosen == ["replace"]
+    assert "fresh answer" in panel.out.getvalue()
+    stops = _stops(stop_env)
+    assert [entry["kind"] for entry in stops] == ["replace"]
+    _assert_stop_shape(stops[0], "replace")
+
+
+def _proposal_daemon(monkeypatch):
+    from nvsh.agent.base import Proposal, ProposalKind
+
+    proposal = Proposal(command="sudo reboot", kind=ProposalKind.FIX, rationale="try it")
+
+    def fake_send(request, context, **kwargs):
+        yield AgentEvent(kind=EventKind.PROPOSAL, proposal=proposal)
+        yield AgentEvent(kind=EventKind.DONE)
+
+    monkeypatch.setattr(client_transport, "send", fake_send)
+
+
+def test_proposal_ignore_makes_ask_exit_declined_and_audits_once(stop_env, monkeypatch):
+    _proposal_daemon(monkeypatch)
+    code = client.ask("why?", panel=_typed_panel("\x1b\n"), env=stop_env)
+
+    assert code == 3
+    stops = _stops(stop_env)
+    assert [entry["kind"] for entry in stops] == ["declined"]
+    _assert_stop_shape(stops[0], "declined")
+
+
+def test_proposal_ignore_makes_handle_failure_exit_declined(stop_env, monkeypatch):
+    import types
+
+    _proposal_daemon(monkeypatch)
+    args = types.SimpleNamespace(
+        exit=2, pipestatus="2", line="ls /nope", cwd=stop_env["XDG_STATE_HOME"], log="", json=False
+    )
+    code = client.handle_failure(args, panel=_typed_panel("q\n"), env=stop_env)
+
+    assert code == 3
+    assert [entry["kind"] for entry in _stops(stop_env)] == ["declined"]
+
+
+def test_slash_json_reports_declined_exit_code_but_exits_zero(stop_env, monkeypatch, capsys):
+    from nvsh.cli import main
+
+    _busy_daemon(monkeypatch, steerable=False)
+    monkeypatch.delenv("NVSH_DRAFT", raising=False)
+    monkeypatch.setattr(client, "_panel_for", lambda panel, env: _typed_panel("\x1b\n"))
+    code = main(["slash", "--json", "--platform", "generic", "/ask why?"])
+
+    assert code == 0
+    payload = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert payload == {"command": "ask", "exit_code": 3}
+
+
+def test_ctrl_c_during_work_exits_130_and_audits_cancel_and_force_kill_once(stop_env, monkeypatch):
+    first = threading.Event()
+    killed = threading.Event()
+    calls: list[str] = []
+
+    def fake_send(request, context, **kwargs):
+        yield AgentEvent(kind=EventKind.TEXT_DELTA, text="working")
+        first.set()
+        killed.wait(10)
+
+    def fake_cancel(*, shell_id=None, env=None):
+        calls.append("cancel")
+        return True
+
+    def fake_kill(*, shell_id=None, env=None):
+        calls.append("kill")
+        killed.set()
+        return True
+
+    monkeypatch.setattr(client_transport, "send", fake_send)
+    monkeypatch.setattr(client_transport, "cancel", fake_cancel)
+    monkeypatch.setattr(client_transport, "kill", fake_kill)
+
+    errors: list[str] = []
+    cancelled = threading.Event()
+
+    def press() -> None:
+        _press_when(first, errors)
+        deadline = time.monotonic() + 5
+        while not calls and time.monotonic() < deadline:
+            time.sleep(0.01)
+        cancelled.set()
+        _press_when(cancelled, errors)
+
+    presser = threading.Thread(target=press, daemon=True)
+    presser.start()
+    code = client.ask("why?", panel=_typed_panel(""), env=stop_env)
+    presser.join(5)
+
+    assert errors == []
+    assert code == 130
+    assert calls == ["cancel", "kill"]
+    stops = _stops(stop_env)
+    assert [entry["kind"] for entry in stops] == ["cancel", "force_kill"]
+    for entry in stops:
+        _assert_stop_shape(entry, entry["kind"])
+
+
+def test_single_ctrl_c_exits_130_and_audits_only_cancel(stop_env, monkeypatch):
+    first = threading.Event()
+    stopped = threading.Event()
+
+    def fake_send(request, context, **kwargs):
+        yield AgentEvent(kind=EventKind.TEXT_DELTA, text="working")
+        first.set()
+        stopped.wait(10)
+        yield AgentEvent(kind=EventKind.DONE)
+
+    def fake_cancel(*, shell_id=None, env=None):
+        stopped.set()
+        return True
+
+    monkeypatch.setattr(client_transport, "send", fake_send)
+    monkeypatch.setattr(client_transport, "cancel", fake_cancel)
+    monkeypatch.setattr(client_transport, "kill", _forbidden("kill"))
+
+    errors: list[str] = []
+    presser = threading.Thread(target=_press_when, args=(first, errors), daemon=True)
+    presser.start()
+    code = client.ask("why?", panel=_typed_panel(""), env=stop_env)
+    presser.join(5)
+
+    assert errors == []
+    assert code == 130
+    assert [entry["kind"] for entry in _stops(stop_env)] == ["cancel"]

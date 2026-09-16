@@ -557,8 +557,13 @@ class Panel:
         on_proposal: Callable[[Proposal, AgentEvent], object] | None = None,
         cancel: Callable[[], object] | None = None,
         force_stop: Callable[[], object] | None = None,
+        on_busy: Callable[[AgentEvent], object] | None = None,
     ) -> StreamResult:
         """Render ``events`` as they arrive; return what happened.
+
+        ``on_busy`` is called with each ``busy`` event (t17), with the key
+        watcher suspended like ``on_proposal``, so the busy prompt reads its
+        own keys on the main thread.
 
         The first Ctrl+C or lone Esc calls ``cancel`` once, prints the
         stopping line and keeps rendering until the source ends; a second
@@ -599,7 +604,13 @@ class Panel:
             feeder.start()
             self._arm_waiting()
             started_text = self._stream_loop(
-                feeder, watcher, stop, result, started_text, self._suspending(watcher, on_proposal)
+                feeder,
+                watcher,
+                stop,
+                result,
+                started_text,
+                self._suspending(watcher, on_proposal),
+                self._suspending(watcher, on_busy),
             )
         except KeyboardInterrupt:
             result.interrupted = True
@@ -632,6 +643,7 @@ class Panel:
         result: StreamResult,
         started_text: bool,
         on_proposal: Callable[[Proposal, AgentEvent], object] | None,
+        on_busy: Callable[[AgentEvent], object] | None = None,
     ) -> bool:
         """Render events and act on presses until the stream ends.
 
@@ -654,7 +666,7 @@ class Panel:
             # (``on_proposal`` blocks on a keypress).
             self._pause_waiting()
             started_text, last = self._render_event(
-                payload, result, started_text, on_proposal=on_proposal
+                payload, result, started_text, on_proposal=on_proposal, on_busy=on_busy
             )
             if last:
                 return started_text
@@ -696,8 +708,8 @@ class Panel:
 
     @staticmethod
     def _suspending(
-        watcher: keys.KeyWatcher, on_proposal: Callable[[Proposal, AgentEvent], object] | None
-    ) -> Callable[[Proposal, AgentEvent], object] | None:
+        watcher: keys.KeyWatcher, on_proposal: Callable[..., object] | None
+    ) -> Callable[..., object] | None:
         """Wrap ``on_proposal`` so the key watcher lets go of stdin meanwhile.
 
         The proposal reads its own keys (raw) and the tell prompt reads a
@@ -706,12 +718,12 @@ class Panel:
         if on_proposal is None:
             return None
 
-        def call(proposal: Proposal, event: AgentEvent) -> object:
+        def call(*args: object) -> object:
             armed = watcher.active
             if armed:
                 watcher.__exit__(None, None, None)
             try:
-                return on_proposal(proposal, event)
+                return on_proposal(*args)
             finally:
                 if armed:
                     watcher.__enter__()
@@ -764,6 +776,7 @@ class Panel:
         started_text: bool,
         *,
         on_proposal: Callable[[Proposal, AgentEvent], object] | None,
+        on_busy: Callable[[AgentEvent], object] | None = None,
     ) -> tuple[bool, bool]:
         """Render one streamed event onto the panel and record it.
 
@@ -802,6 +815,12 @@ class Panel:
             if on_proposal is not None:
                 # Blocks on a keypress; the ticker stays paused throughout.
                 on_proposal(event.proposal, event)
+            return started_text, False
+        if kind is EventKind.BUSY:
+            started_text = self._end_text_run(started_text)
+            if on_busy is not None:
+                # Blocks on a keypress, exactly like a proposal.
+                on_busy(event)
             return started_text, False
         if kind is EventKind.ERROR:
             result.error = event.error

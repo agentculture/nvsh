@@ -185,7 +185,7 @@ def test_non_allowlisted_proposal_goes_to_the_panel_and_is_not_run(xdg, monkeypa
     calls = []
     monkeypatch.setattr(client_transport, "send", _stub_send(calls, _proposal_events(proposal)))
     p = _panel("q\n")  # 'q' -> ignore
-    assert client_mod.handle_failure(_args(xdg.tmp), panel=p) == 0
+    assert client_mod.handle_failure(_args(xdg.tmp), panel=p) == 3  # ignored: declined (t17)
     assert not marker.exists()
     assert f"touch {marker}" in p.out.getvalue()
     assert len(calls) == 1
@@ -498,7 +498,7 @@ def test_one_shot_ignored_proposal_denies_through_the_in_process_agent(xdg, monk
     _one_shot_pi(monkeypatch, xdg.tmp, _dialog_script("which nvidia-smi"), responses)
 
     p = _panel("q\n")  # anything but Enter -> ignore
-    assert client_mod.handle_failure(_args(xdg.tmp), panel=p) == 0
+    assert client_mod.handle_failure(_args(xdg.tmp), panel=p) == 3  # ignored: declined (t17)
 
     assert _responses(responses) == [
         {"type": "extension_ui_response", "id": "ui-11", "value": "deny"}
@@ -849,7 +849,7 @@ def test_explain_with_a_rationale_prints_it_without_asking_the_agent(xdg, monkey
     calls = []
     monkeypatch.setattr(client_transport, "send", _stub_send(calls, _proposal_events(proposal)))
     p = _panel("e\nq\n")
-    assert client_mod.handle_failure(_args(xdg.tmp), panel=p) == 0
+    assert client_mod.handle_failure(_args(xdg.tmp), panel=p) == 3  # ignored: declined (t17)
     text = p.out.getvalue()
     assert "why: check memory" in text
     assert "(no rationale given)" not in text
@@ -892,7 +892,9 @@ def test_details_report_approval_patterns_backend_conversation_and_context(xdg, 
     proposal = Proposal(command="whatis ls", rationale="look it up", kind=ProposalKind.INSPECT)
     monkeypatch.setattr(client_transport, "send", _stub_send([], _proposal_events(proposal)))
     p = _panel("d\nq\n")
-    assert client_mod.handle_failure(_args(xdg.tmp, log=str(log)), panel=p) == 0
+    assert (
+        client_mod.handle_failure(_args(xdg.tmp, log=str(log)), panel=p) == 3
+    )  # ignored: declined (t17)
     text = p.out.getvalue()
     assert "kind: inspect" in text
     assert "command: whatis ls" in text
