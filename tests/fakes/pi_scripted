@@ -38,16 +38,39 @@ looked like in the terminal. That deadline is a watchdog *thread*, not a
 back to back (the d16 steer, then the deny), both land in one read, and
 ``select`` would then report "nothing to read" while the second line was
 already sitting in Python's own buffer.
+
+Two more knobs model a *stuck* pi for the reliable-agent-stop tests (same
+contract as ``tests/fakes/pi``):
+
+* ``NVSH_FAKE_IGNORE_CANCEL=1`` -- an ``abort`` command is received and
+  silently dropped: no ``response`` ack at all.
+* ``NVSH_FAKE_GRANDCHILD=1`` -- start a ``sleep 600`` child at launch and
+  write ``{"harness": <this pid>, "grandchild": <sleep's pid>}`` to
+  ``$NVSH_FAKE_PID_FILE``.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import subprocess  # nosec B404 - fixed argv below, test fixture only
 import sys
 import threading
 import uuid
 from pathlib import Path
+
+
+def spawn_grandchild_if_requested() -> None:
+    """``NVSH_FAKE_GRANDCHILD=1``: start a sleeping child and record both pids."""
+    if os.environ.get("NVSH_FAKE_GRANDCHILD") != "1":
+        return
+    pid_file = os.environ.get("NVSH_FAKE_PID_FILE")
+    child = subprocess.Popen(["sleep", "600"])  # nosec B603 B607 - fixed argv
+    if pid_file:
+        Path(pid_file).write_text(
+            json.dumps({"harness": os.getpid(), "grandchild": child.pid}), encoding="utf-8"
+        )
+
 
 #: The session file this process is "writing", the way the real pi owns the
 #: name of its own session file inside ``--session-dir``.
@@ -105,6 +128,7 @@ def emit_script(events: list, await_ui: bool) -> tuple:
 
 
 def main() -> None:
+    spawn_grandchild_if_requested()
     script = json.loads(os.environ.get("NVSH_TEST_PI_SCRIPT", "[]"))
     await_ui = os.environ.get("NVSH_TEST_PI_AWAIT_UI") == "1"
     ui_timeout = float(os.environ.get("NVSH_TEST_PI_UI_TIMEOUT", "10"))
@@ -148,6 +172,8 @@ def main() -> None:
                 pending, awaiting = emit_script(script, await_ui)
                 watchdog = watch(awaiting)
         elif cmd_type == "abort":
+            if os.environ.get("NVSH_FAKE_IGNORE_CANCEL") == "1":
+                continue  # ignore: no ack at all -- a stuck harness
             emit({"id": cmd.get("id"), "type": "response", "command": "abort", "success": True})
         elif cmd_type == "extension_ui_response":
             record(cmd)
