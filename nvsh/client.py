@@ -1324,6 +1324,43 @@ def _targeted_audit(audit, target: Target | None):
     return _TargetedAudit(audit, target)
 
 
+class _StopTarget:
+    """Where the panel's two presses go for one request (t16).
+
+    The first press calls :meth:`cancel`, the second :meth:`force_stop`.
+    Which process they reach is decided *at press time*, not up front: the
+    request starts out aimed at the daemon, but :func:`client_transport.one_shot`
+    -- whether chosen outright or fallen back to mid-call -- binds the
+    in-process adapter onto ``responder``. That adapter's own ``cancel()`` /
+    ``force_stop()`` is then the only thing that can stop it, since the
+    harnesses that spawn in their own session no longer see the terminal's
+    SIGINT. With no bound agent the daemon gets ``cancel`` then ``kill``.
+    The first press also marks ``responder.stopping``, so a one-shot turn
+    that winds down politely is still torn down with ``force_stop()`` and
+    leaves no harness grandchild behind.
+    Both are called from the panel's main thread while ``run()`` may be
+    blocked on the feeder thread, which every adapter's stop methods allow.
+    """
+
+    def __init__(self, responder, *, shell_id: int, env: Mapping[str, str]) -> None:
+        self._responder = responder
+        self._shell_id = shell_id
+        self._env = env
+
+    def cancel(self) -> object:
+        self._responder.stopping = True
+        agent = self._responder.agent
+        if agent is not None:
+            return agent.cancel()
+        return client_transport.cancel(shell_id=self._shell_id, env=self._env)
+
+    def force_stop(self) -> object:
+        agent = self._responder.agent
+        if agent is not None:
+            return agent.force_stop()
+        return client_transport.kill(shell_id=self._shell_id, env=self._env)
+
+
 def _stream_request(
     panel: Panel,
     request: AgentRequest,
@@ -1365,6 +1402,7 @@ def _stream_request(
             config=config,
             env=env,
         )
+    stop = _StopTarget(responder, shell_id=shell_id, env=env)
     return panel.stream(
         _send(
             request,
@@ -1376,7 +1414,8 @@ def _stream_request(
             one_shot=one_shot,
         ),
         on_proposal=on_proposal,
-        cancel=lambda: client_transport.cancel(shell_id=shell_id, env=env),
+        cancel=stop.cancel,
+        force_stop=stop.force_stop,
     )
 
 

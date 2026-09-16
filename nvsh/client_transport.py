@@ -88,6 +88,11 @@ class Responder:
         self.shell_id = shell_id
         self.env = env
         self.agent: object | None = None
+        #: Set by the client's first stop press (t16). A one-shot adapter torn
+        #: down after a stop is force-stopped, not just closed: ``close()``
+        #: lets a harness that exits on stdin EOF leave its grandchildren
+        #: behind, and nothing outlives a one-shot client.
+        self.stopping = False
 
     def bind_agent(self, agent: object) -> None:
         """Point answers at ``agent`` -- the one-shot, in-process backend."""
@@ -312,6 +317,9 @@ def one_shot(
         yield AgentEvent(kind=EventKind.ERROR, error=f"agent error: {exc}")
         return
     finally:
+        if responder is not None and responder.stopping:
+            with contextlib.suppress(Exception):  # kill the whole tree, not just the leader
+                agent.force_stop()
         with contextlib.suppress(Exception):  # teardown must not mask the answer
             agent.close()
     if not saw_terminal:
