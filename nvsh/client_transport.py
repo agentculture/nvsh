@@ -599,9 +599,15 @@ def stop(*, env: Mapping[str, str] | None = None) -> bool:
     return bool(control("stop", env=env))
 
 
-def status(*, env: Mapping[str, str] | None = None) -> dict:
-    """Report the daemon's state, or ``{"running": False, ...}`` when it is down."""
-    events = control("status", env=env)
+def status(*, env: Mapping[str, str] | None = None, timeout: float = 5.0) -> dict:
+    """Report the daemon's state, or ``{"running": False, ...}`` when it is down.
+
+    ``timeout`` bounds the connect wait (``control`` never autostarts, so a
+    missing socket returns instantly regardless); callers on a fast,
+    always-on read path such as ``nvsh overview`` pass a short one so a
+    stale socket that never answers cannot make them hang.
+    """
+    events = control("status", env=env, timeout=timeout)
     for event in events:
         if event.kind is EventKind.STATUS:
             try:
