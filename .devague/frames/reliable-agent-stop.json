@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-09-16T17:00:45Z",
-  "updated": "2026-09-16T19:49:36Z",
+  "updated": "2026-09-16T20:11:15Z",
   "claims": [
     {
       "id": "c1",
@@ -1032,6 +1032,20 @@
         "t17",
         "c7",
         "h6"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l5",
+      "code": "control-absent",
+      "what": "tests leak 'sleep 600' fake grandchildren (~16 per full suite run): test_fakes_ignore_cancel.py leaves 9; the conformance pi/codex/acp/agy-warm/agy-cold cases and one test each in test_agent_acp.py and test_agent_agy.py leave 1 \u2014 the respawned harness is closed via escalate_close, exits on stdin EOF and orphans its grandchild; no task checked for leaked processes",
+      "skipped_check": "count fake grandchildren alive after each test file",
+      "refs": [
+        "t1",
+        "t13",
+        "t6",
+        "t7"
       ],
       "origin": "llm",
       "status": "proposed"

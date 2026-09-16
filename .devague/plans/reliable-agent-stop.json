@@ -5,7 +5,7 @@
   "schema_version": 5,
   "status": "exported",
   "created": "2026-09-16T17:16:29Z",
-  "updated": "2026-09-16T19:40:57Z",
+  "updated": "2026-09-16T20:12:05Z",
   "targets": [
     {
       "id": "c1",
@@ -773,6 +773,24 @@
         "c27"
       ],
       "instruction": "nvsh/agent/agy.py only: _run_cold's Popen gets start_new_session=True and _terminate uses kill_tree from nvsh/agent/_subprocess.py; tests/test_agent_conformance.py agy-cold case (and/or tests/test_agent_agy.py) asserts the grandchild dies. Deviation d6."
+    },
+    {
+      "id": "t23",
+      "summary": "normal close() kills the harness process tree on every persistent adapter, and tests stop leaking fake grandchildren",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "for pi, codex, acp and agy (warm and cold): run() then close() with NVSH_FAKE_GRANDCHILD=1 leaves no grandchild pid alive within 3s",
+        "close() never signals nvsh's own process group (existing t2 test still passes)",
+        "a full pytest -n auto run starts and leaves zero 'sleep 600' processes newer than the run"
+      ],
+      "deps": [
+        "t20"
+      ],
+      "covers": [
+        "c27"
+      ],
+      "instruction": "Deviation d14 (lapse l5). nvsh/agent/_subprocess.py escalate_close plus nvsh/agent/pi.py, codex.py, acp.py, agy.py: after the graceful stdin-close wait, any remaining members of the harness's process group are killed (SIGTERM, grace, SIGKILL to the group recorded at spawn), even when the leader already exited on EOF \u2014 never signalling nvsh's own group. Tests: teardown in tests/test_fakes_ignore_cancel.py, tests/test_agent_conformance.py, tests/test_agent_acp.py and tests/test_agent_agy.py kills pids from NVSH_FAKE_PID_FILE; add a guard test that runs each persistent adapter with NVSH_FAKE_GRANDCHILD=1 through run() then close() and asserts the grandchild is gone."
     }
   ],
   "risks": [
