@@ -10,6 +10,8 @@ idempotent close) so each concrete adapter only supplies ``_argv`` and
 
 from __future__ import annotations
 
+import os
+import signal
 import subprocess  # nosec B404 - fixed argv lists below, no shell=True
 import threading
 from collections import deque
@@ -88,17 +90,80 @@ def escalate_close(
             stdin.close()
         except (OSError, ValueError):  # OSError covers BrokenPipeError
             pass
-    for escalate, timeout in ((None, wait), (proc.terminate, grace), (proc.kill, grace)):
-        if escalate is not None:
-            try:
-                escalate()
-            except (OSError, ValueError):  # already gone, or already reaped
-                return proc.poll()
+    try:
+        return proc.wait(timeout=wait)
+    except subprocess.TimeoutExpired:
+        pass
+    # Terminate and kill through the process group when the child leads its
+    # own (task t2), so tool grandchildren the harness started go with it.
+    return kill_tree(proc, grace=grace)
+
+
+def _own_group(proc: subprocess.Popen) -> int | None:
+    """The process group *proc* leads, or ``None`` when signalling one is unsafe.
+
+    Only a live (or not-yet-reaped zombie) child is asked: until it is
+    reaped its pid cannot be reused, so the group id is really its group.
+    A child sharing nvsh's own group (spawned without
+    ``start_new_session``) returns ``None`` -- signalling that group would
+    signal nvsh itself.
+    """
+    if proc.returncode is not None:
+        return None
+    try:
+        pgid = os.getpgid(proc.pid)
+    except OSError:
+        return None
+    if pgid != proc.pid or pgid == os.getpgrp():
+        return None
+    return pgid
+
+
+def _signal(proc: subprocess.Popen, pgid: int | None, sig: int) -> None:
+    """Send *sig* to *pgid* when known, else to *proc* alone. Never raises."""
+    try:
+        if pgid is not None:
+            os.killpg(pgid, sig)
+        elif proc.poll() is None:
+            proc.send_signal(sig)
+    except (OSError, ValueError):  # already gone, or already reaped
+        pass
+
+
+def kill_tree(proc: subprocess.Popen | None, grace: float = 2.0) -> int | None:
+    """Stop *proc* and everything in its process group: SIGTERM, wait, SIGKILL.
+
+    Adapter children are spawned with ``start_new_session=True``, so the
+    child leads a process group holding every tool grandchild it started;
+    signalling the group is what keeps a stop from orphaning them. A child
+    that does not lead its own group (or already shares nvsh's) is
+    signalled alone, exactly like ``terminate()``/``kill()``.
+
+    The group gets SIGKILL after the grace period even when the leader
+    already exited on SIGTERM, because a grandchild that ignores SIGTERM
+    outlives its parent. Only signals are sent -- no harness settings or
+    trust file is ever read or written. Returns the child's exit status, or
+    ``None`` when it could not be reaped. Never raises.
+    """
+    if proc is None:
+        return None
+    try:
+        pgid = _own_group(proc)
+        _signal(proc, pgid, signal.SIGTERM)
         try:
-            return proc.wait(timeout=timeout)
+            proc.wait(timeout=grace)
         except subprocess.TimeoutExpired:
-            continue
-    return proc.poll()
+            pass
+        # Reaping the leader does not free the group id while any member
+        # lives, so the group SIGKILL still reaches surviving grandchildren.
+        _signal(proc, pgid, signal.SIGKILL)
+        try:
+            proc.wait(timeout=grace)
+        except subprocess.TimeoutExpired:
+            pass
+        return proc.poll()
+    except Exception:  # noqa: BLE001 - a stop on the failure path must never raise
+        return getattr(proc, "returncode", None)
 
 
 def _drain(stream: IO[str], sink: deque[str]) -> None:
@@ -188,6 +253,9 @@ class SubprocessAgent(NvshAgent):
                 stderr=subprocess.PIPE,
                 text=True,
                 env=child_env(self._env),
+                # Its own process group, so a stop can kill the whole tree
+                # (kill_tree) and the terminal's SIGINT never reaches it.
+                start_new_session=True,
             )
         except OSError as exc:
             yield AgentEvent(kind=EventKind.ERROR, error=f"failed to start {argv[0]}: {exc}")
@@ -250,11 +318,7 @@ class SubprocessAgent(NvshAgent):
 
     def _terminate_if_running(self) -> None:
         if self._proc is not None and self._proc.poll() is None:
-            self._proc.terminate()
-            try:
-                self._proc.wait(timeout=2)
-            except subprocess.TimeoutExpired:
-                self._proc.kill()
+            kill_tree(self._proc, grace=CLOSE_WAIT_SECONDS)
 
     def close(self) -> None:
         # Close, not cancel: the stdin rung matters here and must not run

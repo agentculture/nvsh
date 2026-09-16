@@ -335,6 +335,20 @@ class NvshAgent(abc.ABC):
     def cancel(self) -> None:
         """Ask the in-flight ``run()`` to stop yielding further events."""
 
+    def force_stop(self) -> None:
+        """Stop the in-flight turn for certain, even if the harness ignores it.
+
+        Deliberately *not* abstract: the default asks politely
+        (:meth:`cancel`) and then releases everything (:meth:`close`, which
+        for subprocess adapters ends in a process-group kill). Adapters with
+        a protocol-level interrupt override it. A stop only ever sends
+        signals and protocol messages; it never edits harness files.
+        """
+        try:
+            self.cancel()
+        finally:
+            self.close()
+
     @abc.abstractmethod
     def close(self) -> None:
         """Release any resources (subprocess, sockets, ...). Idempotent."""
