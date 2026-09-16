@@ -1,0 +1,804 @@
+{
+  "slug": "reliable-agent-stop",
+  "title": "reliable agent stop",
+  "frame_slug": "reliable-agent-stop",
+  "schema_version": 5,
+  "status": "exported",
+  "created": "2026-09-16T17:16:29Z",
+  "updated": "2026-09-16T17:19:28Z",
+  "targets": [
+    {
+      "id": "c1",
+      "kind": "announcement",
+      "text": "Stopping the agent is reliable: Ctrl+C and Esc stop a running agent on every backend, a second press kills a harness that ignores the stop, a new request from the same shell supersedes its own hung turn, a declined run exits with a distinct status, overview shows what the agent is doing and doctor fixes a hung agent",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h15",
+      "kind": "honesty",
+      "text": "every sub-claim (c2-c15) has a passing test named in the plan before the feature is called shipped",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c2",
+      "kind": "requirement",
+      "text": "Ctrl+C reliably stops a running agent on every backend and both paths (daemon and one-shot); the operator reported Ctrl+C did not stop the agent earlier",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h1",
+      "kind": "honesty",
+      "text": "an integration test reproduces the one-shot path: Ctrl+C mid-stream calls the in-process adapter's cancel() and no harness child survives the client",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c3",
+      "kind": "requirement",
+      "text": "every adapter's stop path ends the running turn: pi (abort), codex (turn/interrupt), acp (session/cancel) and warm agy (flag only, nothing sent) leave the harness running if it ignores cancel; the fix covers all adapters per the all-backends rule",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h2",
+      "kind": "honesty",
+      "text": "each of pi, codex, acp, agy-warm, claude, qwen-p, agy-cold and openai-compat has a test where cancel() ends the running turn and the next run() works",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c4",
+      "kind": "requirement",
+      "text": "escalation is operator-driven: the first Ctrl+C/Esc sends the polite protocol cancel and the panel stays up showing 'stopping\u2026 press again to kill' until the turn ends; a second press force-kills the harness process tree and the warm session is respawned on the next request; no automatic kill timer is added",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h3",
+      "kind": "honesty",
+      "text": "a second press within the same stream calls a kill escalation (escalate_close: terminate, wait, kill) exactly once; a single press never kills",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c5",
+      "kind": "requirement",
+      "text": "Esc during agent work (thinking, text, waiting ticker) is identical to Ctrl+C: same cancel path, second press kills, exit 130; Esc keeps meaning 'ignore' at the proposal legend",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h4",
+      "kind": "honesty",
+      "text": "a pty test sends a lone ESC during streaming and gets the same StreamResult(interrupted=True) and exit 130 as SIGINT",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c6",
+      "kind": "requirement",
+      "text": "a lone Esc is distinguished from multi-byte escape sequences (arrow/function keys) with a short read timeout, and the leftover sequence bytes are drained rather than leaked into the next read",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h5",
+      "kind": "honesty",
+      "text": "a pty test sends an arrow-key sequence during streaming and at the proposal: it neither interrupts nor counts as Esc, and no stray bytes reach the next read",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c7",
+      "kind": "requirement",
+      "text": "a new request from the shell that owns a still-running turn \u2014 or from any shell when the owning shell pid is gone \u2014 opens a busy prompt: steer the running turn with the new request, replace the turn (stop it and run the new request), or exit back to the prompt leaving the turn alone",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h6",
+      "kind": "honesty",
+      "text": "a daemon test with a running turn for shell A: a new request from A gets the busy prompt; steer delivers via agent.steer (or falls back as d16 describes), replace cancels then runs, exit leaves the turn running and returns 0 to the prompt",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c8",
+      "kind": "boundary",
+      "text": "replace/steer never touches a live other shell's turn: cancel_shell stays scoped to the calling shell (daemon.py:852-856); the only exceptions are a turn whose owning shell pid is gone (busy prompt applies) and doctor --apply after an explicit confirm naming the owning shell",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h7",
+      "kind": "honesty",
+      "text": "a daemon test: shell B's request while A's turn runs still queues with the busy notice and never gets A's steer/replace prompt",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c9",
+      "kind": "requirement",
+      "text": "when the operator declines the agent \u2014 exit at the busy prompt, or Esc/ignore at a proposal \u2014 nvsh reports one dedicated 'declined' exit code (allocated from the reserved 3+ range, cli/_errors.py:20), distinct from 0, 1, 2 and 130, visible as --json exit_code, in the audit log, and as direct 'nvsh ask' exit status; slash dispatch still exits 0 (d5)",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h8",
+      "kind": "honesty",
+      "text": "the declined path's exit code is distinct from 0, 1, 2 and 130, documented in docs/shell-integration.md, and written to the audit log",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c10",
+      "kind": "boundary",
+      "text": "the operator's original $? for the failing command is never changed by the declined status; the hook stays '|| return 0' so nvsh can never lock the prompt (CLAUDE.md Hook constraints)",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h9",
+      "kind": "honesty",
+      "text": "hook.bash still runs the client with '|| return 0' and a test asserts the operator's $? and PIPESTATUS for the failing command are unchanged after a declined run",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c11",
+      "kind": "requirement",
+      "text": "nvsh overview shows what the agent is doing now: active turn (shell, target, elapsed) and the queue, from the daemon's existing status",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h10",
+      "kind": "honesty",
+      "text": "nvsh overview --json includes the daemon's active_turn (shell, target, elapsed) and queued fields, and reports 'no daemon' cleanly when none runs",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c12",
+      "kind": "requirement",
+      "text": "nvsh doctor detects a hung agent turn and, with --apply, fixes it by cancelling then killing the stuck harness so the next request respawns the session; a dead-owner turn is fixed directly, a live other shell's turn only after an explicit confirm naming that shell",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h11",
+      "kind": "honesty",
+      "text": "doctor without --apply never mutates; doctor --apply on a hung turn cancels, then kills after the grace, and the check passes on re-run",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c14",
+      "kind": "boundary",
+      "text": "nvsh never edits a harness's own settings to make cancel work; stops use launch flags, protocol messages and process signals only (docs/specs/2026-09-14-first-class-multi-harness-with-aliases.md)",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h13",
+      "kind": "honesty",
+      "text": "no stop path writes to any harness settings or trust file; only protocol messages and signals are used",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c15",
+      "kind": "requirement",
+      "text": "tests simulate a harness that ignores cancel for each adapter family (rpc, app-server, acp, stream-json warm) and assert the second press kills it and the next request respawns the session",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h14",
+      "kind": "honesty",
+      "text": "the ignoring-harness fake exists for each adapter family and runs in the default pytest -n auto suite",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c19",
+      "kind": "audience",
+      "text": "operators at an nvsh-hooked bash prompt on Jetson / DGX Spark / RTX, often over SSH, who called the agent and now want it to stop or take a different direction",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h16",
+      "kind": "honesty",
+      "text": "docs/shell-integration.md documents Ctrl+C/Esc stop, second-press kill, the busy prompt and the declined exit code for the prompt operator",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c20",
+      "kind": "before_state",
+      "text": "Ctrl+C sends a polite cancel that pi, codex, acp and warm agy harnesses can ignore, the one-shot path never calls cancel() at all, Esc does nothing while the agent works, a second request from the same shell silently queues behind a hung turn for up to 300s, and a hung daemon turn can only be cleared with an OS-level kill",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h17",
+      "kind": "honesty",
+      "text": "each before-state fact is cited by a recorded scope entry (s1-s10) with file:line",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c21",
+      "kind": "after_state",
+      "text": "a first Ctrl+C or Esc cancels the running turn on every backend and path, a second press kills an unresponsive harness, a new request from the same shell offers steer / replace / exit instead of silent queueing, overview shows the active turn, and doctor --apply clears a hung turn",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h18",
+      "kind": "honesty",
+      "text": "each after-state behaviour maps to a requirement claim (c2-c12) with its own confirmed honesty condition",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c22",
+      "kind": "success_signal",
+      "text": "with a fake harness that ignores cancel, on every adapter family and on both daemon and one-shot paths, a 'stopping\u2026 press again to kill' line appears within 1s of the first Ctrl+C/Esc, and the harness process tree is gone and the prompt returned within 3s of the second press",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h19",
+      "kind": "honesty",
+      "text": "the 1s / 3s thresholds are asserted by tests, not measured by hand",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c26",
+      "kind": "requirement",
+      "text": "a force-stop reaches the daemon as its own control message (not a repeat cancel): _abort_turn returns early once turn.aborted is set (daemon.py:883-886), and the run lock stays held while the thread is parked in a harness that ignores cancel, so the kill must close the slot's agent (escalate_close) and replace the slot so the lock is released",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h21",
+      "kind": "honesty",
+      "text": "a daemon test with a harness that ignores cancel: the force-stop control message releases _run_lock within 3s and the next queued request runs on a fresh slot",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c27",
+      "kind": "requirement",
+      "text": "the force-stop kills the harness's whole process tree (its tool subprocesses too), not just the harness pid; harness children are spawned without start_new_session today (only the daemon uses it, daemon.py:241-253), so terminal SIGINT also hits one-shot harness children directly",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h22",
+      "kind": "honesty",
+      "text": "a test harness that spawns a sleeping grandchild: after the force-stop neither the harness nor the grandchild pid is alive",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c28",
+      "kind": "boundary",
+      "text": "holding stdin in cbreak mode to see Esc must never leave the terminal without echo or canonical mode: attributes are restored on every exit path, including SIGTERM and SSH hangup (SIGHUP), and Esc detection is off when stdin is not a tty, TERM=dumb or NVSH_DISABLE is set",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h23",
+      "kind": "honesty",
+      "text": "a pty test kills the client with SIGHUP and SIGTERM mid-stream and the tty is back in canonical+echo mode; Esc detection is not armed when stdin is not a tty or TERM=dumb",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c29",
+      "kind": "requirement",
+      "text": "Esc detection does not depend on the event source yielding: stream() iterates a generator that can block for up to the 120s daemon read timeout, so the stdin watch runs alongside it (select over tty + event source, or a reader thread) and a pressed Esc cancels within 1s even when no event arrives",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h24",
+      "kind": "honesty",
+      "text": "a pty test with an event source that yields nothing for 30s: Esc ends the stream within 1s",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c30",
+      "kind": "requirement",
+      "text": "every stop is audited: cancel (Ctrl+C/Esc), force-kill, steer, replace, busy-prompt exit, declined and doctor --apply each append an audit event with shell, target, turn elapsed and outcome; today audit records only proposal/decision/outcome/install (nvsh/agent/audit.py, loop.py:55-68, client.py:1071-1097)",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h25",
+      "kind": "honesty",
+      "text": "after each stop kind, the audit log contains exactly one matching event with shell, target, elapsed and outcome",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c31",
+      "kind": "requirement",
+      "text": "the busy prompt tells the truth about steer: it is offered only when the adapter has a mid-turn channel (pi, codex steer; claude, acp, qwen, agy, openai-compat return False per base.py:322 and agy.py:419, openai_compat.py:172), and a steer accepted by a harness that stays silent is followed by the same stop/replace choice instead of an endless wait",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h26",
+      "kind": "honesty",
+      "text": "for a non-steerable adapter the busy prompt omits steer; for a steerable harness that stays silent after steer, the prompt re-offers replace/exit",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c32",
+      "kind": "boundary",
+      "text": "overview's live agent section never autostarts the daemon and never blocks: it asks an existing socket with a short timeout and reports 'no daemon' otherwise; the static identity/verbs sections the teken rubric reads (cli/_commands/overview.py:36-53) stay unchanged",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h27",
+      "kind": "honesty",
+      "text": "overview --json with no daemon running returns within 1s, starts no process, and the rubric's static sections are byte-identical to today",
+      "deferred": false,
+      "deferred_reason": ""
+    }
+  ],
+  "tasks": [
+    {
+      "id": "t1",
+      "summary": "fake harnesses gain an ignore-cancel mode that also spawns a sleeping grandchild",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "with NVSH_FAKE_IGNORE_CANCEL unset, the existing pytest -n auto suite passes unchanged",
+        "tests/test_fakes_ignore_cancel.py: each fake under the flag is still alive 3s after receiving its family's cancel message, and the pid file lists harness and grandchild pids"
+      ],
+      "deps": [],
+      "covers": [],
+      "instruction": "edit only tests/fakes/{pi,pi_scripted,codex,codex-app-server,acp,agy,claude,qwen}: when NVSH_FAKE_IGNORE_CANCEL=1, the fake ignores SIGINT/SIGTERM-free protocol cancels (pi abort, codex turn/interrupt, acp session/cancel, stream-json interrupt) and keeps streaming nothing; when NVSH_FAKE_GRANDCHILD=1 it starts 'sleep 600' as a child and writes both pids to $NVSH_FAKE_PID_FILE. Default behaviour unchanged."
+    },
+    {
+      "id": "t2",
+      "summary": "process-tree spawn and kill escalation in _subprocess and a force_stop() on NvshAgent",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "a child that spawns a sleeping grandchild: after kill_tree neither pid exists within 3s",
+        "kill_tree on an already-dead process returns without raising",
+        "grep over nvsh/agent shows no stop path opening a harness settings/trust file"
+      ],
+      "deps": [],
+      "covers": [
+        "c27",
+        "h22",
+        "c14",
+        "h13"
+      ],
+      "instruction": "nvsh/agent/_subprocess.py: spawn adapter children with start_new_session=True; add kill_tree(proc, grace=2.0) that sends SIGTERM to the process group, waits, then SIGKILL to the group, never raising. nvsh/agent/base.py: add non-abstract force_stop() defaulting to cancel() then close() (close uses kill_tree). Only signals and protocol messages \u2014 never touch harness settings files. Tests in tests/test_agent_subprocess.py."
+    },
+    {
+      "id": "t3",
+      "summary": "declined exit code constant and stop audit events",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "EXIT_DECLINED is 3 and differs from EXIT_SUCCESS, EXIT_USER_ERROR, EXIT_ENV_ERROR and 130",
+        "record_stop writes one JSON line with event='stop', kind, shell, target, elapsed and outcome; an unknown kind raises ValueError"
+      ],
+      "deps": [],
+      "covers": [],
+      "instruction": "nvsh/cli/_errors.py: add EXIT_DECLINED = 3 (first of the reserved 3+ range) with a comment; nvsh/agent/audit.py: add record_stop(kind, shell, target, elapsed, outcome) where kind is one of cancel, force_kill, steer, replace, busy_exit, declined, doctor_apply; tests in tests/test_audit.py."
+    },
+    {
+      "id": "t4",
+      "summary": "overview shows the live agent turn without autostarting the daemon",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "overview --json with no daemon returns within 1s, spawns no process, and contains agent_activity.daemon=false",
+        "with a fake daemon reporting an active turn, overview --json includes shell, target, elapsed and queued",
+        "agent_sections() and cli_sections() output is byte-identical to before (teken cli doctor --strict still passes)"
+      ],
+      "deps": [],
+      "covers": [
+        "c11",
+        "h10",
+        "c32",
+        "h27"
+      ],
+      "instruction": "nvsh/cli/_commands/overview.py: add a separate 'Agent activity' section built from client_transport.status (no autostart, short connect timeout); include active_turn shell/target/elapsed and queued; report 'no daemon running' otherwise. Keep agent_sections()/cli_sections() static output byte-identical; add the live section only to the rendered global overview. Tests in tests/test_cli.py or a new tests/test_overview_activity.py."
+    },
+    {
+      "id": "t5",
+      "summary": "codex adapter: force_stop kills the app-server and cancel is unchanged",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "fake app-server ignoring turn/interrupt: force_stop() leaves no pid alive within 3s",
+        "the next run() after force_stop() succeeds with a 'new session' status event"
+      ],
+      "deps": [
+        "t1",
+        "t2"
+      ],
+      "covers": [],
+      "instruction": "nvsh/agent/codex.py only: force_stop() sends turn/interrupt, declines pending approvals, then kill_tree on the app-server process and clears _rpc/_thread_id so the next run() starts a fresh app-server with a 'new session' status. Tests in tests/test_agent_codex.py with tests/fakes/codex-app-server under NVSH_FAKE_IGNORE_CANCEL=1."
+    },
+    {
+      "id": "t6",
+      "summary": "acp adapter (kiro, qwen): force_stop kills the ACP process tree",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "fake acp ignoring session/cancel: force_stop() leaves no pid alive within 3s",
+        "the next run() after force_stop() re-initialises and succeeds with a 'new session' status event"
+      ],
+      "deps": [
+        "t1",
+        "t2"
+      ],
+      "covers": [],
+      "instruction": "nvsh/agent/acp.py only: force_stop() denies pending permission dialogs, sends session/cancel, then kill_tree and resets the session so the next run() re-initialises. Tests in tests/test_agent_acp.py with tests/fakes/acp under NVSH_FAKE_IGNORE_CANCEL=1."
+    },
+    {
+      "id": "t7",
+      "summary": "agy adapter: warm cancel really stops the turn and force_stop kills",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "warm mode: after cancel() the fake agy child receives a stop (signal or protocol) \u2014 asserted via the fake's log",
+        "warm fake ignoring the stop: force_stop() leaves no pid alive within 3s and the next run() respawns"
+      ],
+      "deps": [
+        "t1",
+        "t2"
+      ],
+      "covers": [],
+      "instruction": "nvsh/agent/agy.py only: in warm mode cancel() must stop reading and signal the child (no silent flag-only cancel); force_stop() kills the warm child's process tree and forces a respawn. Cold mode keeps terminate->kill. Tests in tests/test_agent_agy.py with tests/fakes/agy."
+    },
+    {
+      "id": "t8",
+      "summary": "stream-json and http adapters: force_stop via kill_tree (claude, qwen-p, openai-compat)",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "fake claude and fake qwen ignoring interrupts spawning a grandchild: force_stop() leaves no pid alive within 3s",
+        "openai-compat force_stop() on a stalled HTTP stream returns within 1s"
+      ],
+      "deps": [
+        "t1",
+        "t2"
+      ],
+      "covers": [],
+      "instruction": "nvsh/agent/claude.py, nvsh/agent/qwen.py, nvsh/agent/openai_compat.py only: confirm the inherited SubprocessAgent cancel now uses kill_tree on the process group; openai_compat force_stop closes the response. Tests in tests/test_agent_claude.py, tests/test_agent_qwen.py, tests/test_agent_openai_compat.py."
+    },
+    {
+      "id": "t9",
+      "summary": "daemon force-stop control message releases the run lock",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "with an agent ignoring cancel, a kill control message releases _run_lock within 3s and the next queued request runs on a fresh slot",
+        "kill from shell B does nothing to shell A's turn"
+      ],
+      "deps": [
+        "t2"
+      ],
+      "covers": [
+        "c26",
+        "h21"
+      ],
+      "instruction": "nvsh/daemon.py + nvsh/client_transport.py: add a 'kill' control kind (never queued, like cancel) scoped to the calling shell that calls slot.agent.force_stop(), marks the turn aborted, replaces the slot with a fresh agent and lets _run_lock release; add client_transport.kill(shell_id, env). Tests in new tests/test_daemon_stop.py with a FakeAgent whose run() ignores cancel."
+    },
+    {
+      "id": "t10",
+      "summary": "daemon busy event for the owning shell or a dead-owner turn: steer/replace/exit",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "request from owning shell A during A's turn gets a BUSY event with steerable matching the adapter",
+        "request from shell B while live A runs gets the existing queue notice and never a BUSY event",
+        "request from shell B while A's owning pid is dead gets a BUSY event",
+        "replace kills the old turn and runs the new request; exit leaves the old turn running"
+      ],
+      "deps": [
+        "t9"
+      ],
+      "covers": [
+        "c8",
+        "h7"
+      ],
+      "instruction": "nvsh/daemon.py + nvsh/agent/base.py (EventKind.BUSY) + nvsh/client_transport.py: when a request arrives from the shell that owns the active turn, or the owning shell pid no longer exists (os.kill(pid, 0)), yield a BUSY event {owner, elapsed, steerable} and wait for a choice control message: steer (agent.steer), replace (kill then run this request), exit (leave the turn, end this request). Other shells keep today's queue notice. steerable = the slot adapter overrides steer (pi, codex). Tests in tests/test_daemon_stop.py."
+    },
+    {
+      "id": "t11",
+      "summary": "terminal key watcher module: cbreak hold, lone-Esc disambiguation, safe restore",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "pty test: a lone ESC yields 'esc' within 100ms; ESC [ A (arrow) yields None and leaves no bytes unread",
+        "pty test: sending SIGHUP and SIGTERM to a child process holding KeyWatcher leaves the pty in ICANON|ECHO mode",
+        "KeyWatcher is a no-op (poll returns None, termios untouched) when stdin is not a tty or TERM=dumb or NVSH_DISABLE=1"
+      ],
+      "deps": [],
+      "covers": [
+        "c28",
+        "h23"
+      ],
+      "instruction": "new nvsh/keys.py (stdlib only): KeyWatcher context manager that, only when stdin is a tty, TERM != dumb and NVSH_DISABLE unset, saves termios, sets cbreak (ISIG kept on), installs SIGHUP/SIGTERM handlers that restore termios then re-raise the previous disposition, and exposes poll(timeout)->'esc'|None: a lone 0x1b followed by no byte within 50ms is 'esc'; a CSI/SS3 sequence is drained whole and ignored; every other byte is discarded (typeahead dropped, decision c35). Also export read_choice_key(fd) for single-key reads with the same disambiguation. Tests in new tests/test_keys.py using pty.openpty."
+    },
+    {
+      "id": "t12",
+      "summary": "pi adapter: force_stop kills the rpc process tree and the next run respawns",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "fake pi ignoring abort: force_stop() leaves no harness or grandchild pid alive within 3s",
+        "the next run() after force_stop() succeeds and yields a status event containing 'new session'"
+      ],
+      "deps": [
+        "t1",
+        "t2"
+      ],
+      "covers": [],
+      "instruction": "nvsh/agent/pi.py only: implement force_stop() as abort then kill_tree of the long-lived rpc process, reset internal state so the next run() spawns a fresh process and yields a STATUS 'new session' line (assumption c33). Tests in tests/test_pi_agent.py using tests/fakes/pi with NVSH_FAKE_IGNORE_CANCEL=1."
+    },
+    {
+      "id": "t13",
+      "summary": "cross-adapter conformance: ignoring-harness stop and respawn for every family",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "the parametrised conformance test runs for all 8 adapter variants in pytest -n auto and passes",
+        "removing force_stop() from any one adapter makes its parametrised case fail"
+      ],
+      "deps": [
+        "t12",
+        "t5",
+        "t6",
+        "t7",
+        "t8"
+      ],
+      "covers": [
+        "c3",
+        "h2",
+        "c15",
+        "h14"
+      ],
+      "instruction": "tests/test_agent_conformance.py only: add a parametrised test over pi, codex, acp, agy warm, agy cold, claude, qwen-p, openai-compat using the ignore-cancel fakes: cancel() ends the turn or the following force_stop() kills it; the next run() works. Must run in the default pytest -n auto suite (no skip markers beyond a missing binary)."
+    },
+    {
+      "id": "t14",
+      "summary": "panel stop state: first press stops politely, panel stays up, second press kills; Esc equals Ctrl+C",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "pty: lone ESC during streaming yields StreamResult(interrupted=True) identical to SIGINT",
+        "a single press never calls force_stop; a second press calls it exactly once",
+        "event source silent for 30s: Esc prints the stopping line within 1s",
+        "arrow key during streaming and at the proposal neither interrupts nor counts as Esc and leaves no stray bytes"
+      ],
+      "deps": [
+        "t11"
+      ],
+      "covers": [
+        "c4",
+        "h3",
+        "c5",
+        "h4",
+        "c29",
+        "h24",
+        "c6",
+        "h5"
+      ],
+      "instruction": "nvsh/panel.py: stream(..., cancel, force_stop) runs the event iteration in a worker thread feeding a queue so the main thread polls KeyWatcher (nvsh/keys.py) and SIGINT together; first Ctrl+C/Esc calls cancel once and prints 'stopping\u2026 press again to kill' within 1s, keeps rendering until done; second press calls force_stop exactly once and ends with interrupted=True. _read_key uses keys.read_choice_key so arrow keys are not Esc at the proposal. Tests in new tests/test_panel_stop.py using pty."
+    },
+    {
+      "id": "t15",
+      "summary": "panel busy prompt: steer / replace / exit, steer only when steerable",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "non-steerable: legend has no steer option and 't' is not accepted",
+        "steerable harness silent after steer: prompt re-offers replace/exit"
+      ],
+      "deps": [
+        "t14"
+      ],
+      "covers": [
+        "c31",
+        "h26"
+      ],
+      "instruction": "nvsh/panel.py: show_busy(owner, elapsed, steerable) returns STEER, REPLACE or BUSY_EXIT; omit [t] steer when not steerable; after a steer with no event for 10s, re-offer replace/exit. Tests appended to tests/test_panel_stop.py."
+    },
+    {
+      "id": "t16",
+      "summary": "client wiring: one-shot and daemon two-press stop",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "one-shot: first Ctrl+C calls the in-process adapter cancel(); second calls force_stop(); no harness child survives the client",
+        "daemon path: second press sends the kill control message exactly once"
+      ],
+      "deps": [
+        "t13",
+        "t9",
+        "t14"
+      ],
+      "covers": [
+        "c2",
+        "h1"
+      ],
+      "instruction": "nvsh/client.py: pass cancel/force_stop per path \u2014 daemon: client_transport.cancel/kill; one-shot: the in-process adapter's cancel()/force_stop() (today only a socket cancel is sent, client.py:1379). Tests in new tests/test_client_stop.py driving one_shot with the ignore-cancel fakes."
+    },
+    {
+      "id": "t17",
+      "summary": "client wiring: busy prompt, declined exit code and stop audit",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "busy exit and proposal ignore make direct 'nvsh ask' exit 3 and 'nvsh slash --json' report exit_code 3 while exiting 0",
+        "each stop kind appends exactly one audit event with shell, target, elapsed and outcome",
+        "Ctrl+C/Esc during work still exit 130"
+      ],
+      "deps": [
+        "t16",
+        "t10",
+        "t15",
+        "t3"
+      ],
+      "covers": [
+        "c7",
+        "h6",
+        "c9",
+        "h8",
+        "c30",
+        "h25"
+      ],
+      "instruction": "nvsh/client.py: handle BUSY events via panel.show_busy and send steer/replace/exit controls; busy exit and proposal ignore return EXIT_DECLINED from ask/handle_failure; slash stays exit 0 with exit_code in --json (d5); call audit.record_stop for cancel, force_kill, steer, replace, busy_exit, declined. Tests appended to tests/test_client_stop.py."
+    },
+    {
+      "id": "t18",
+      "summary": "hook keeps the operator's exit status after declined and stopped runs",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "stub client exiting 3 or 130: $? and PIPESTATUS observed at the next prompt equal the failing command's",
+        "a test asserts hook.bash's client call is followed by '|| return 0'"
+      ],
+      "deps": [
+        "t17"
+      ],
+      "covers": [
+        "c10",
+        "h9"
+      ],
+      "instruction": "tests/test_hook_bash.py only (no hook.bash change expected): run an interactive bash with the hook and a stub nvsh exiting 3 and 130; assert $? and PIPESTATUS of the failing command are unchanged and hook.bash still ends the client call with '|| return 0'."
+    },
+    {
+      "id": "t19",
+      "summary": "doctor detects a hung turn and --apply fixes it with owner authority",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "plain doctor never sends a mutating control message (asserted with a recording fake transport)",
+        "doctor --apply on a dead-owner hung turn kills it and a re-run passes the check",
+        "doctor --apply on a live other shell's turn without confirm changes nothing"
+      ],
+      "deps": [
+        "t9",
+        "t10",
+        "t3"
+      ],
+      "covers": [
+        "c12",
+        "h11"
+      ],
+      "instruction": "nvsh/doctor_checks.py + nvsh/cli/_commands/doctor.py + nvsh/explain/catalog.py: add check 'agent_turn_not_hung' (failing when active_turn elapsed exceeds a threshold or its owner pid is dead) whose remediation names 'nvsh doctor --apply'; --apply kills a dead-owner turn directly, and a live other shell's turn only after a y/N confirm naming that shell (no tty refuses live-owner kills); audit doctor_apply. Tests in tests/test_doctor_checks.py and tests/test_cli_doctor_extensions.py."
+    },
+    {
+      "id": "t20",
+      "summary": "end-to-end success signal: stopping line within 1s, tree gone and prompt back within 3s",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "for every family and both paths: stopping line within 1s of first press; harness tree gone and prompt returned within 3s of second press"
+      ],
+      "deps": [
+        "t17"
+      ],
+      "covers": [
+        "c22",
+        "h19",
+        "c21",
+        "h18"
+      ],
+      "instruction": "new tests/test_agent_stop.py: parametrised over adapter families x {daemon, one-shot}, drive the real client+panel in a pty with ignore-cancel fakes; assert timings with time.monotonic, not by hand."
+    },
+    {
+      "id": "t21",
+      "summary": "docs, harness prompts and version bump",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "markdownlint-cli2 and scripts/harness-smoke.py --stage config pass",
+        "a table in the delivery notes maps c2-c15 to passing test node ids; grep finds no timer-driven kill besides NVSH_TURN_TIMEOUT",
+        "pyproject version is a minor bump over 0.12.1 with a CHANGELOG entry"
+      ],
+      "deps": [
+        "t17",
+        "t19",
+        "t4",
+        "t20",
+        "t18"
+      ],
+      "covers": [
+        "c1",
+        "h15",
+        "c19",
+        "h16",
+        "c20",
+        "h17"
+      ],
+      "instruction": "docs/shell-integration.md (stop, second press, typeahead dropped, busy prompt, declined exit 3, Exit status section keeps d5), docs/daemon.md (kill and busy controls), docs/current-spec.md; CLAUDE.md + AGENTS.override.md + .pi/SYSTEM.md + AGENTS.colleague.md + QWEN.md kept in sync; version-bump minor + CHANGELOG. Verify every c2-c15 claim names a passing test, grep shows NVSH_TURN_TIMEOUT is the only automatic kill bound (c13), and no stop path runs an agent-suggested command (c23)."
+    }
+  ],
+  "risks": [
+    {
+      "id": "r1",
+      "text": "start_new_session on adapter children means terminal Ctrl+C no longer signals one-shot harness children directly; until t16 wires the in-process cancel, a one-shot Ctrl+C could leave the harness running longer than today \u2014 land t2 and t16 in the same PR, never ship between them",
+      "kind": "unknown_nonblocking",
+      "task_id": "t2",
+      "resolved": false,
+      "resolution": ""
+    },
+    {
+      "id": "r2",
+      "text": "moving stream() event iteration into a worker thread can change output ordering that the README demo casts and tests/test_demo_casts.py pin; re-record or confirm casts unchanged",
+      "kind": "unknown_nonblocking",
+      "task_id": "t14",
+      "resolved": false,
+      "resolution": ""
+    },
+    {
+      "id": "r3",
+      "text": "whether pi, codex app-server and kiro/qwen ACP resume the conversation after a force-kill was not probed on the fleet (frame v2); verify on thor/orin/spark after merge",
+      "kind": "follow_up",
+      "task_id": "t13",
+      "resolved": false,
+      "resolution": ""
+    },
+    {
+      "id": "r4",
+      "text": "the operator's original Ctrl+C failure was never reproduced (frame v1/v3); attempt a repro on the fleet with the new tests before calling c2 delivered",
+      "kind": "follow_up",
+      "task_id": "t16",
+      "resolved": false,
+      "resolution": ""
+    },
+    {
+      "id": "r5",
+      "text": "pty-based timing tests (1s/3s) may flake under pytest -n auto on loaded Jetsons; keep generous polling and mark only the thresholds, not sleeps",
+      "kind": "unknown_nonblocking",
+      "task_id": "t20",
+      "resolved": false,
+      "resolution": ""
+    }
+  ],
+  "obligations": []
+}
