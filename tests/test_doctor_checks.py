@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import http.server
 import json
+import os
 import socket
 import subprocess
 import threading
@@ -717,6 +718,68 @@ def test_daemon_status_is_always_info():
     assert "/tmp/nvsh/daemon.sock" in check_running["message"]
 
 
+# --- agent_turn_not_hung (task t19) ----------------------------------------------
+
+
+def test_agent_turn_not_hung_passes_with_no_active_turn():
+    check = doctor_checks.check_agent_turn_not_hung(None, threshold=300.0)
+    assert check["passed"] is True
+    assert check["severity"] == "info"
+
+
+def test_agent_turn_not_hung_passes_when_owner_alive_and_within_threshold():
+    check = doctor_checks.check_agent_turn_not_hung(
+        {"shell": "123", "elapsed": 5.0},
+        threshold=300.0,
+        pid_gone=lambda shell: False,
+    )
+    assert check["passed"] is True
+    assert check["severity"] == "info"
+
+
+def test_agent_turn_not_hung_fails_when_owner_pid_is_dead():
+    check = doctor_checks.check_agent_turn_not_hung(
+        {"shell": "999999", "elapsed": 1.0},
+        threshold=300.0,
+        pid_gone=lambda shell: True,
+    )
+    assert check["passed"] is False
+    assert check["severity"] == "warning"
+    assert "999999" in check["message"]
+    assert check["remediation"] == "nvsh doctor --apply"
+
+
+def test_agent_turn_not_hung_fails_when_elapsed_exceeds_threshold():
+    check = doctor_checks.check_agent_turn_not_hung(
+        {"shell": "123", "elapsed": 999.0},
+        threshold=300.0,
+        pid_gone=lambda shell: False,
+    )
+    assert check["passed"] is False
+    assert check["severity"] == "warning"
+    assert "exceeds" in check["message"]
+
+
+def test_agent_turn_not_hung_included_in_collect_checks_via_probes():
+    """collect_checks wires the check to Probes.active_turn, not a hard-coded call."""
+    own_pid = str(os.getpid())
+    checks = doctor_checks.collect_checks(
+        env={},
+        current_version="1.2.3",
+        config=Config(),
+        config_error=None,
+        platform=Platform(kind="generic", values=()),
+        which=lambda name: None,
+        run=lambda argv, timeout: (1, "", ""),
+        probes=doctor_checks.Probes(active_turn=lambda env: {"shell": own_pid, "elapsed": 1.0}),
+    )
+    check = _check(checks, "agent_turn_not_hung")
+    # own_pid is this test process's own pid -- always alive -- so the check
+    # falls through to the elapsed-vs-threshold comparison and passes.
+    assert check["passed"] is True
+    assert own_pid in check["message"]
+
+
 # --- terminfo_present -----------------------------------------------------------
 
 
@@ -783,6 +846,7 @@ def test_collect_checks_returns_every_new_check_id(tmp_path):
         "bindings_present",
         "capture_active",
         "daemon_status",
+        "agent_turn_not_hung",
         "terminfo_present",
     }
     for check in checks:

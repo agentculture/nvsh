@@ -98,6 +98,7 @@ _CONTROL_KINDS = frozenset(
         "unregister",
         "cancel",
         "kill",
+        "kill_active",
         "busy_choice",
         "ui_response",
         "steer",
@@ -427,6 +428,17 @@ def _shell_pid_gone(shell: str) -> bool:
     except OSError:
         return False
     return False
+
+
+def shell_pid_gone(shell: str) -> bool:
+    """Public wrapper around :func:`_shell_pid_gone` (task t19).
+
+    ``nvsh.doctor_checks`` and ``nvsh doctor --apply`` need the same
+    pid-liveness predicate the daemon itself uses to decide whether a
+    live-owner kill needs the operator's confirmation, so this is exposed
+    rather than duplicated.
+    """
+    return _shell_pid_gone(shell)
 
 
 def _overrides_steer(agent: NvshAgent) -> bool:
@@ -963,6 +975,29 @@ class Daemon:
             slot.agent.close()
         return "killed" if turn.finished.wait(max(0.0, wait)) else "stopping"
 
+    def kill_active_turn(self, *, confirmed: bool, wait: float = _KILL_WAIT) -> str:
+        """Force-stop the active turn whoever owns it, for ``nvsh doctor --apply`` (t19).
+
+        Unlike :meth:`kill_shell`, the caller here (``nvsh doctor``, running
+        as its own process) is never the turn's owner, so ownership alone
+        can't gate this. The daemon decides for itself, never trusting the
+        caller's own belief about the owner: a dead-owner turn (the shell
+        that started it no longer exists) is killed outright regardless of
+        *confirmed*; a turn with a live owner is killed only when *confirmed*
+        is ``True`` -- the caller's signal that the operator was shown that
+        shell's id and agreed. Returns ``"idle"`` (nothing running),
+        ``"refused"`` (live owner, not confirmed) or :meth:`_force_stop_turn`'s
+        ``"killed"``/``"stopping"``. Never raises.
+        """
+        with self._lock:
+            turn = self._active
+            if turn is None:
+                return "idle"
+            owner = turn.shell
+        if not confirmed and not _shell_pid_gone(owner):
+            return "refused"
+        return self._force_stop_turn(turn, wait=wait)
+
     # -- the active turn (deviation d12) -----------------------------------
 
     def active_turn(self) -> dict | None:
@@ -1169,6 +1204,22 @@ class Daemon:
                 yield AgentEvent(kind=EventKind.ERROR, error=f"no running turn to kill for {shell}")
                 return
             yield AgentEvent(kind=EventKind.STATUS, text=f"{outcome} {shell}")
+            yield AgentEvent(kind=EventKind.DONE)
+            return
+
+        if kind == "kill_active":
+            confirmed = bool(message.get("confirmed", False))
+            outcome = self.kill_active_turn(confirmed=confirmed)
+            if outcome == "idle":
+                yield AgentEvent(kind=EventKind.ERROR, error="no active turn to kill")
+                return
+            if outcome == "refused":
+                yield AgentEvent(
+                    kind=EventKind.ERROR,
+                    error="active turn has a live owner; confirm required",
+                )
+                return
+            yield AgentEvent(kind=EventKind.STATUS, text=outcome)
             yield AgentEvent(kind=EventKind.DONE)
             return
 

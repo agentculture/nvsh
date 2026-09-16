@@ -482,3 +482,89 @@ def test_shell_pid_gone_only_for_a_numeric_dead_pid() -> None:
     assert daemon_mod._shell_pid_gone(str(os.getpid())) is False
     assert daemon_mod._shell_pid_gone("A") is False
     assert daemon_mod._shell_pid_gone("0") is False
+
+
+def test_shell_pid_gone_public_wrapper_matches_the_private_predicate() -> None:
+    """``nvsh.doctor_checks`` calls the public name; it must agree with the private one."""
+    assert daemon_mod.shell_pid_gone(_dead_pid()) is True
+    assert daemon_mod.shell_pid_gone(str(os.getpid())) is False
+
+
+# --- kill_active: owner-authority kill for `nvsh doctor --apply` (t19) ------
+
+
+def test_kill_active_is_a_control_message_that_never_queues() -> None:
+    assert "kill_active" in daemon_mod._CONTROL_KINDS
+
+
+def test_kill_active_without_a_daemon_returns_no_daemon(tmp_path: Path) -> None:
+    assert client_transport.kill_active(env=_env(tmp_path)) == "no_daemon"
+
+
+def test_kill_active_with_no_running_turn_is_idle(tmp_path: Path) -> None:
+    env = _env(tmp_path)
+    daemon = daemon_mod.Daemon(Config(), env=env, agent_factory=_factory([]))
+    _start(daemon)
+    try:
+        assert client_transport.kill_active(env=env) == "idle"
+    finally:
+        daemon.shutdown()
+
+
+def test_kill_active_kills_a_dead_owner_turn_without_confirmation(tmp_path: Path) -> None:
+    """The core of doctor --apply: a dead-owner turn is killed with owner authority."""
+    env = _env(tmp_path)
+    agents: list[StubbornAgent] = []
+    daemon = daemon_mod.Daemon(Config(), env=env, agent_factory=_factory(agents))
+    _start(daemon)
+    owner = _dead_pid()
+    try:
+        hung = _hang(env, agents, owner)
+        assert client_transport.kill_active(confirmed=False, env=env) in ("killed", "stopping")
+        hung.join(5.0)
+        assert not hung.is_alive()
+        assert daemon.active_turn() is None
+    finally:
+        for agent in agents:
+            agent.killed.set()
+        daemon.shutdown()
+
+    assert agents[0].force_stops == 1
+
+
+def test_kill_active_refuses_a_live_owner_without_confirmation(tmp_path: Path) -> None:
+    env = _env(tmp_path)
+    agents: list[StubbornAgent] = []
+    daemon = daemon_mod.Daemon(Config(), env=env, agent_factory=_factory(agents))
+    _start(daemon)
+    try:
+        hung = _hang(env, agents, "A")
+        assert client_transport.kill_active(confirmed=False, env=env) == "refused"
+        time.sleep(0.2)
+        turn = daemon.active_turn()
+        assert turn is not None and turn["shell"] == "A"
+        assert agents[0].force_stops == 0
+        assert hung.is_alive()
+    finally:
+        for agent in agents:
+            agent.killed.set()
+        daemon.shutdown()
+
+
+def test_kill_active_kills_a_live_owner_once_confirmed(tmp_path: Path) -> None:
+    env = _env(tmp_path)
+    agents: list[StubbornAgent] = []
+    daemon = daemon_mod.Daemon(Config(), env=env, agent_factory=_factory(agents))
+    _start(daemon)
+    try:
+        hung = _hang(env, agents, "A")
+        assert client_transport.kill_active(confirmed=True, env=env) in ("killed", "stopping")
+        hung.join(5.0)
+        assert not hung.is_alive()
+        assert daemon.active_turn() is None
+    finally:
+        for agent in agents:
+            agent.killed.set()
+        daemon.shutdown()
+
+    assert agents[0].force_stops == 1
