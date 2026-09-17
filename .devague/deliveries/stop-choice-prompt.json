@@ -2,7 +2,7 @@
   "plan_slug": "stop-choice-prompt",
   "schema_version": 2,
   "created": "2026-09-17T18:23:45Z",
-  "updated": "2026-09-17T19:16:05Z",
+  "updated": "2026-09-17T21:54:03Z",
   "deviations": [
     {
       "id": "d1",
@@ -67,7 +67,1583 @@
       "seq": 4
     }
   ],
-  "evidence": [],
-  "deltas": [],
+  "evidence": [
+    {
+      "id": "e1",
+      "obligation_ref": "o1",
+      "test_ref": "tests/test_panel_stop.py::test_first_press_opens_the_prompt_within_1s_and_calls_nothing",
+      "behavior_text": "the first Ctrl+C/Esc shows the choice legend within 1 s and calls neither cancel, force_stop nor on_steer before a key is read",
+      "contract_text": "While the agent works on a terminal, the first Ctrl+C or lone Esc opens a one-line choice prompt -- [t] steer  [s] stop  [Esc] keep going -- instead of cancelling; nothing is sent to the harness until the operator picks. The change is confined to Panel._on_press (nvsh/panel.py:705-717), the one place the first press is decided today.",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "2 case(s) passed, 0 failed at db124ea; ran green at the named commit; whether it fails without the change was reported by the task agent, not re-run by the main agent",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T21:53:28Z",
+        "commit": "db124ea"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 5
+    },
+    {
+      "id": "e2",
+      "obligation_ref": "o1",
+      "test_ref": "tests/test_panel_stop.py::test_first_press_closes_an_open_thinking_run_before_the_prompt",
+      "behavior_text": "the first Ctrl+C/Esc shows the choice legend within 1 s and calls neither cancel, force_stop nor on_steer before a key is read",
+      "contract_text": "While the agent works on a terminal, the first Ctrl+C or lone Esc opens a one-line choice prompt -- [t] steer  [s] stop  [Esc] keep going -- instead of cancelling; nothing is sent to the harness until the operator picks. The change is confined to Panel._on_press (nvsh/panel.py:705-717), the one place the first press is decided today.",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "1 case(s) passed, 0 failed at db124ea; ran green at the named commit; whether it fails without the change was reported by the task agent, not re-run by the main agent",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T21:53:28Z",
+        "commit": "db124ea"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 6
+    },
+    {
+      "id": "e3",
+      "obligation_ref": "o2",
+      "test_ref": "tests/test_panel_stop.py::test_a_single_press_never_calls_force_stop",
+      "behavior_text": "s (or Ctrl+C typed at the prompt) prints STOPPING_TEXT once and cancels once; a further press calls force_stop exactly once",
+      "contract_text": "[s] stop does exactly what the first press does today: polite cancel through _StopTarget.cancel, the 'stopping\u2026 press again to kill' line, and a further Ctrl+C/Esc still force-kills the process tree. Stopping is never more than two keys away, and a Ctrl+C typed at the choice prompt itself means stop.",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "2 case(s) passed, 0 failed at db124ea; ran green at the named commit; whether it fails without the change was reported by the task agent, not re-run by the main agent",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T21:53:28Z",
+        "commit": "db124ea"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 7
+    },
+    {
+      "id": "e4",
+      "obligation_ref": "o2",
+      "test_ref": "tests/test_panel_stop.py::test_second_press_calls_force_stop_exactly_once",
+      "behavior_text": "s (or Ctrl+C typed at the prompt) prints STOPPING_TEXT once and cancels once; a further press calls force_stop exactly once",
+      "contract_text": "[s] stop does exactly what the first press does today: polite cancel through _StopTarget.cancel, the 'stopping\u2026 press again to kill' line, and a further Ctrl+C/Esc still force-kills the process tree. Stopping is never more than two keys away, and a Ctrl+C typed at the choice prompt itself means stop.",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "3 case(s) passed, 0 failed at db124ea; ran green at the named commit; whether it fails without the change was reported by the task agent, not re-run by the main agent",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T21:53:28Z",
+        "commit": "db124ea"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 8
+    },
+    {
+      "id": "e5",
+      "obligation_ref": "o2",
+      "test_ref": "tests/test_panel_stop.py::test_ctrl_c_typed_at_the_choice_prompt_stops_like_s",
+      "behavior_text": "s (or Ctrl+C typed at the prompt) prints STOPPING_TEXT once and cancels once; a further press calls force_stop exactly once",
+      "contract_text": "[s] stop does exactly what the first press does today: polite cancel through _StopTarget.cancel, the 'stopping\u2026 press again to kill' line, and a further Ctrl+C/Esc still force-kills the process tree. Stopping is never more than two keys away, and a Ctrl+C typed at the choice prompt itself means stop.",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "1 case(s) passed, 0 failed at db124ea; ran green at the named commit; whether it fails without the change was reported by the task agent, not re-run by the main agent",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T21:53:28Z",
+        "commit": "db124ea"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 9
+    },
+    {
+      "id": "e6",
+      "obligation_ref": "o3",
+      "test_ref": "tests/test_panel_stop.py::test_t_reads_a_correction_line_and_hands_it_to_on_steer",
+      "behavior_text": "the typed line reaches the harness's steer channel mid-turn through Responder.steer and the turn then ends normally",
+      "contract_text": "[t] steer reads one free-text line with the existing tell reader (Panel.read_tell, panel.py:1108-1133) and delivers it through the existing Responder.steer path (client_transport.py:101-121), the same move as the proposal prompt's [t] and /steer; no new daemon control message is added.",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "2 case(s) passed, 0 failed at db124ea; ran green at the named commit; whether it fails without the change was reported by the task agent, not re-run by the main agent",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T21:53:28Z",
+        "commit": "db124ea"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 10
+    },
+    {
+      "id": "e7",
+      "obligation_ref": "o3",
+      "test_ref": "tests/test_stop_prompt_e2e.py::test_steer_from_one_press_reaches_the_harness_mid_turn_and_exits_zero",
+      "behavior_text": "the typed line reaches the harness's steer channel mid-turn through Responder.steer and the turn then ends normally",
+      "contract_text": "[t] steer reads one free-text line with the existing tell reader (Panel.read_tell, panel.py:1108-1133) and delivers it through the existing Responder.steer path (client_transport.py:101-121), the same move as the proposal prompt's [t] and /steer; no new daemon control message is added.",
+      "evidence_type": "integration",
+      "strength": "execution",
+      "strength_basis": "1 case(s) passed, 0 failed at db124ea; ran green at the named commit; whether it fails without the change was reported by the task agent, not re-run by the main agent",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T21:53:28Z",
+        "commit": "db124ea"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 11
+    },
+    {
+      "id": "e8",
+      "obligation_ref": "o4",
+      "test_ref": "tests/test_agent_conformance.py::test_exactly_pi_and_codex_declare_steer_true",
+      "behavior_text": "exactly pi and codex declare steer=True; the busy prompt offers steer from the capability, not from a steer() override",
+      "contract_text": "Whether a harness can take a correction mid-turn becomes a declared capability (Capabilities.steer in nvsh/agent/base.py), true only for pi and codex; the choice prompt and the daemon's busy prompt both read it, replacing daemon._overrides_steer (daemon.py:454-456), which today reports openai-compat and agy as steerable because they override steer() only to return False.",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "1 case(s) passed, 0 failed at db124ea; ran green at the named commit; whether it fails without the change was reported by the task agent, not re-run by the main agent",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T21:53:28Z",
+        "commit": "db124ea"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 12
+    },
+    {
+      "id": "e9",
+      "obligation_ref": "o4",
+      "test_ref": "tests/test_daemon_stop.py::test_busy_choices_follow_capabilities_steer_not_the_steer_override",
+      "behavior_text": "exactly pi and codex declare steer=True; the busy prompt offers steer from the capability, not from a steer() override",
+      "contract_text": "Whether a harness can take a correction mid-turn becomes a declared capability (Capabilities.steer in nvsh/agent/base.py), true only for pi and codex; the choice prompt and the daemon's busy prompt both read it, replacing daemon._overrides_steer (daemon.py:454-456), which today reports openai-compat and agy as steerable because they override steer() only to return False.",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "1 case(s) passed, 0 failed at db124ea; ran green at the named commit; whether it fails without the change was reported by the task agent, not re-run by the main agent",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T21:53:28Z",
+        "commit": "db124ea"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 13
+    },
+    {
+      "id": "e10",
+      "obligation_ref": "o4",
+      "test_ref": "tests/test_daemon_stop.py::test_overrides_steer_is_gone_from_the_daemon_module",
+      "behavior_text": "exactly pi and codex declare steer=True; the busy prompt offers steer from the capability, not from a steer() override",
+      "contract_text": "Whether a harness can take a correction mid-turn becomes a declared capability (Capabilities.steer in nvsh/agent/base.py), true only for pi and codex; the choice prompt and the daemon's busy prompt both read it, replacing daemon._overrides_steer (daemon.py:454-456), which today reports openai-compat and agy as steerable because they override steer() only to return False.",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "1 case(s) passed, 0 failed at db124ea; ran green at the named commit; whether it fails without the change was reported by the task agent, not re-run by the main agent",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T21:53:28Z",
+        "commit": "db124ea"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 14
+    },
+    {
+      "id": "e11",
+      "obligation_ref": "o4",
+      "test_ref": "tests/test_cli_agent.py::test_agent_list_json_shows_steer_capability_for_every_adapter",
+      "behavior_text": "exactly pi and codex declare steer=True; the busy prompt offers steer from the capability, not from a steer() override",
+      "contract_text": "Whether a harness can take a correction mid-turn becomes a declared capability (Capabilities.steer in nvsh/agent/base.py), true only for pi and codex; the choice prompt and the daemon's busy prompt both read it, replacing daemon._overrides_steer (daemon.py:454-456), which today reports openai-compat and agy as steerable because they override steer() only to return False.",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "1 case(s) passed, 0 failed at db124ea; ran green at the named commit; whether it fails without the change was reported by the task agent, not re-run by the main agent",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T21:53:28Z",
+        "commit": "db124ea"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 15
+    },
+    {
+      "id": "e12",
+      "obligation_ref": "o5",
+      "test_ref": "tests/test_panel_stop.py::test_esc_at_the_prompt_keeps_going_with_no_events_lost",
+      "behavior_text": "Esc or the timeout resumes rendering with no event lost, sends nothing and leaves interrupted False",
+      "contract_text": "[Esc] keep going dismisses the prompt, sends nothing to the harness and resumes rendering; the turn's exit status and result.interrupted are unaffected, so a dismissed accidental press is not reported as exit 130.",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "1 case(s) passed, 0 failed at db124ea; ran green at the named commit; whether it fails without the change was reported by the task agent, not re-run by the main agent",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T21:53:28Z",
+        "commit": "db124ea"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 16
+    },
+    {
+      "id": "e13",
+      "obligation_ref": "o5",
+      "test_ref": "tests/test_panel_stop.py::test_timeout_at_the_prompt_keeps_going",
+      "behavior_text": "Esc or the timeout resumes rendering with no event lost, sends nothing and leaves interrupted False",
+      "contract_text": "[Esc] keep going dismisses the prompt, sends nothing to the harness and resumes rendering; the turn's exit status and result.interrupted are unaffected, so a dismissed accidental press is not reported as exit 130.",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "1 case(s) passed, 0 failed at db124ea; ran green at the named commit; whether it fails without the change was reported by the task agent, not re-run by the main agent",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T21:53:28Z",
+        "commit": "db124ea"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 17
+    },
+    {
+      "id": "e14",
+      "obligation_ref": "o5",
+      "test_ref": "tests/test_stop_prompt_e2e.py::test_keep_going_from_one_press_and_esc_renders_the_rest_and_exits_zero",
+      "behavior_text": "Esc or the timeout resumes rendering with no event lost, sends nothing and leaves interrupted False",
+      "contract_text": "[Esc] keep going dismisses the prompt, sends nothing to the harness and resumes rendering; the turn's exit status and result.interrupted are unaffected, so a dismissed accidental press is not reported as exit 130.",
+      "evidence_type": "integration",
+      "strength": "execution",
+      "strength_basis": "1 case(s) passed, 0 failed at db124ea; ran green at the named commit; whether it fails without the change was reported by the task agent, not re-run by the main agent",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T21:53:28Z",
+        "commit": "db124ea"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 18
+    },
+    {
+      "id": "e15",
+      "obligation_ref": "o5",
+      "test_ref": "tests/test_stop_prompt_e2e.py::test_an_unanswered_prompt_times_out_into_keep_going",
+      "behavior_text": "Esc or the timeout resumes rendering with no event lost, sends nothing and leaves interrupted False",
+      "contract_text": "[Esc] keep going dismisses the prompt, sends nothing to the harness and resumes rendering; the turn's exit status and result.interrupted are unaffected, so a dismissed accidental press is not reported as exit 130.",
+      "evidence_type": "integration",
+      "strength": "execution",
+      "strength_basis": "1 case(s) passed, 0 failed at db124ea; ran green at the named commit; whether it fails without the change was reported by the task agent, not re-run by the main agent",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T21:53:28Z",
+        "commit": "db124ea"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 19
+    },
+    {
+      "id": "e16",
+      "obligation_ref": "o6",
+      "test_ref": "tests/test_panel_stop.py::test_non_tty_first_sigint_cancels_at_once_without_a_prompt",
+      "behavior_text": "the first SIGINT cancels at once and no prompt text is written",
+      "contract_text": "Where the prompt cannot be shown or answered -- stdin or stdout is not a tty, TERM=dumb, --json -- the first Ctrl+C stops immediately exactly as it does today, so scripts and piped sessions keep their current behaviour.",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "1 case(s) passed, 0 failed at db124ea; ran green at the named commit; whether it fails without the change was reported by the task agent, not re-run by the main agent",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T21:53:28Z",
+        "commit": "db124ea"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 20
+    },
+    {
+      "id": "e17",
+      "obligation_ref": "o6",
+      "test_ref": "tests/test_panel_stop.py::test_term_dumb_first_press_cancels_at_once_without_a_prompt",
+      "behavior_text": "the first SIGINT cancels at once and no prompt text is written",
+      "contract_text": "Where the prompt cannot be shown or answered -- stdin or stdout is not a tty, TERM=dumb, --json -- the first Ctrl+C stops immediately exactly as it does today, so scripts and piped sessions keep their current behaviour.",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "1 case(s) passed, 0 failed at db124ea; ran green at the named commit; whether it fails without the change was reported by the task agent, not re-run by the main agent",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T21:53:28Z",
+        "commit": "db124ea"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 21
+    },
+    {
+      "id": "e18",
+      "obligation_ref": "o6",
+      "test_ref": "tests/test_panel_stop.py::test_stop_prompt_false_stops_at_once_on_a_tty",
+      "behavior_text": "the first SIGINT cancels at once and no prompt text is written",
+      "contract_text": "Where the prompt cannot be shown or answered -- stdin or stdout is not a tty, TERM=dumb, --json -- the first Ctrl+C stops immediately exactly as it does today, so scripts and piped sessions keep their current behaviour.",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "1 case(s) passed, 0 failed at db124ea; ran green at the named commit; whether it fails without the change was reported by the task agent, not re-run by the main agent",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T21:53:28Z",
+        "commit": "db124ea"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 22
+    },
+    {
+      "id": "e19",
+      "obligation_ref": "o6",
+      "test_ref": "tests/test_client_stop.py::test_slash_json_disables_the_stop_prompt_on_ask",
+      "behavior_text": "the first SIGINT cancels at once and no prompt text is written",
+      "contract_text": "Where the prompt cannot be shown or answered -- stdin or stdout is not a tty, TERM=dumb, --json -- the first Ctrl+C stops immediately exactly as it does today, so scripts and piped sessions keep their current behaviour.",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "1 case(s) passed, 0 failed at db124ea; ran green at the named commit; whether it fails without the change was reported by the task agent, not re-run by the main agent",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T21:53:28Z",
+        "commit": "db124ea"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 23
+    },
+    {
+      "id": "e20",
+      "obligation_ref": "o6",
+      "test_ref": "tests/test_client_stop.py::test_hook_json_disables_the_stop_prompt",
+      "behavior_text": "the first SIGINT cancels at once and no prompt text is written",
+      "contract_text": "Where the prompt cannot be shown or answered -- stdin or stdout is not a tty, TERM=dumb, --json -- the first Ctrl+C stops immediately exactly as it does today, so scripts and piped sessions keep their current behaviour.",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "1 case(s) passed, 0 failed at db124ea; ran green at the named commit; whether it fails without the change was reported by the task agent, not re-run by the main agent",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T21:53:28Z",
+        "commit": "db124ea"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 24
+    },
+    {
+      "id": "e21",
+      "obligation_ref": "o7",
+      "test_ref": "tests/test_client_stop.py::test_keep_going_writes_exactly_one_audit_line_with_its_reason",
+      "behavior_text": "each prompt outcome writes exactly one stop line; keep_going carries reason key or timeout; a correction is stored only as its length",
+      "contract_text": "The audit log records what the operator chose at the prompt. nvsh/agent/audit.py STOP_KINDS (19-29) gains keep_going; [s] keeps the existing cancel/force_kill kinds; a steer from the prompt reuses the existing steer kind with a field naming where it came from (stop prompt versus busy prompt), so existing audit readers keep working.",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "2 case(s) passed, 0 failed at db124ea; ran green at the named commit; whether it fails without the change was reported by the task agent, not re-run by the main agent",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T21:53:28Z",
+        "commit": "db124ea"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 25
+    },
+    {
+      "id": "e22",
+      "obligation_ref": "o7",
+      "test_ref": "tests/test_client_stop.py::test_keep_going_at_eof_omits_the_reason_field",
+      "behavior_text": "each prompt outcome writes exactly one stop line; keep_going carries reason key or timeout; a correction is stored only as its length",
+      "contract_text": "The audit log records what the operator chose at the prompt. nvsh/agent/audit.py STOP_KINDS (19-29) gains keep_going; [s] keeps the existing cancel/force_kill kinds; a steer from the prompt reuses the existing steer kind with a field naming where it came from (stop prompt versus busy prompt), so existing audit readers keep working.",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "1 case(s) passed, 0 failed at db124ea; ran green at the named commit; whether it fails without the change was reported by the task agent, not re-run by the main agent",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T21:53:28Z",
+        "commit": "db124ea"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 26
+    },
+    {
+      "id": "e23",
+      "obligation_ref": "o7",
+      "test_ref": "tests/test_client_stop.py::test_stop_outcome_writes_no_extra_audit_line_beyond_the_existing_cancel",
+      "behavior_text": "each prompt outcome writes exactly one stop line; keep_going carries reason key or timeout; a correction is stored only as its length",
+      "contract_text": "The audit log records what the operator chose at the prompt. nvsh/agent/audit.py STOP_KINDS (19-29) gains keep_going; [s] keeps the existing cancel/force_kill kinds; a steer from the prompt reuses the existing steer kind with a field naming where it came from (stop prompt versus busy prompt), so existing audit readers keep working.",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "1 case(s) passed, 0 failed at db124ea; ran green at the named commit; whether it fails without the change was reported by the task agent, not re-run by the main agent",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T21:53:28Z",
+        "commit": "db124ea"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 27
+    },
+    {
+      "id": "e24",
+      "obligation_ref": "o7",
+      "test_ref": "tests/test_audit.py::test_record_stop_records_correction_length_not_text",
+      "behavior_text": "each prompt outcome writes exactly one stop line; keep_going carries reason key or timeout; a correction is stored only as its length",
+      "contract_text": "The audit log records what the operator chose at the prompt. nvsh/agent/audit.py STOP_KINDS (19-29) gains keep_going; [s] keeps the existing cancel/force_kill kinds; a steer from the prompt reuses the existing steer kind with a field naming where it came from (stop prompt versus busy prompt), so existing audit readers keep working.",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "1 case(s) passed, 0 failed at db124ea; ran green at the named commit; whether it fails without the change was reported by the task agent, not re-run by the main agent",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T21:53:28Z",
+        "commit": "db124ea"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 28
+    },
+    {
+      "id": "e25",
+      "obligation_ref": "o8",
+      "test_ref": "tests/test_client_stop.py::test_stop_and_correct_cancels_once_then_streams_the_correction",
+      "behavior_text": "t plus a line cancels the turn once, waits for it to end, then streams the correction as a second request; a killed stop-and-correct sends no follow-up",
+      "contract_text": "'Stop and correct' sends the correction even though the turn was interrupted: today handle_failure, ask and the slash path return 130 before the follow-up request (nvsh/client.py:1739, 1826, 1904), which would drop the typed text. After a stop-and-correct the client waits for the cancelled turn to end, then streams the correction as the next request; only a plain [s] stop returns 130 without a follow-up.",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "3 case(s) passed, 0 failed at db124ea; ran green at the named commit; whether it fails without the change was reported by the task agent, not re-run by the main agent",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T21:53:28Z",
+        "commit": "db124ea"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 29
+    },
+    {
+      "id": "e26",
+      "obligation_ref": "o8",
+      "test_ref": "tests/test_client_stop.py::test_a_killed_stop_and_correct_exits_130_and_sends_no_follow_up",
+      "behavior_text": "t plus a line cancels the turn once, waits for it to end, then streams the correction as a second request; a killed stop-and-correct sends no follow-up",
+      "contract_text": "'Stop and correct' sends the correction even though the turn was interrupted: today handle_failure, ask and the slash path return 130 before the follow-up request (nvsh/client.py:1739, 1826, 1904), which would drop the typed text. After a stop-and-correct the client waits for the cancelled turn to end, then streams the correction as the next request; only a plain [s] stop returns 130 without a follow-up.",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "3 case(s) passed, 0 failed at db124ea; ran green at the named commit; whether it fails without the change was reported by the task agent, not re-run by the main agent",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T21:53:28Z",
+        "commit": "db124ea"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 30
+    },
+    {
+      "id": "e27",
+      "obligation_ref": "o8",
+      "test_ref": "tests/test_stop_prompt_e2e.py::test_stop_and_correct_on_openai_compat_resends_a_self_contained_request",
+      "behavior_text": "t plus a line cancels the turn once, waits for it to end, then streams the correction as a second request; a killed stop-and-correct sends no follow-up",
+      "contract_text": "'Stop and correct' sends the correction even though the turn was interrupted: today handle_failure, ask and the slash path return 130 before the follow-up request (nvsh/client.py:1739, 1826, 1904), which would drop the typed text. After a stop-and-correct the client waits for the cancelled turn to end, then streams the correction as the next request; only a plain [s] stop returns 130 without a follow-up.",
+      "evidence_type": "integration",
+      "strength": "execution",
+      "strength_basis": "1 case(s) passed, 0 failed at db124ea; ran green at the named commit; whether it fails without the change was reported by the task agent, not re-run by the main agent",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T21:53:28Z",
+        "commit": "db124ea"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 31
+    },
+    {
+      "id": "e28",
+      "obligation_ref": "o8",
+      "test_ref": "tests/test_stop_prompt_e2e.py::test_stop_and_correct_on_a_subprocess_family_resends_the_correction",
+      "behavior_text": "t plus a line cancels the turn once, waits for it to end, then streams the correction as a second request; a killed stop-and-correct sends no follow-up",
+      "contract_text": "'Stop and correct' sends the correction even though the turn was interrupted: today handle_failure, ask and the slash path return 130 before the follow-up request (nvsh/client.py:1739, 1826, 1904), which would drop the typed text. After a stop-and-correct the client waits for the cancelled turn to end, then streams the correction as the next request; only a plain [s] stop returns 130 without a follow-up.",
+      "evidence_type": "integration",
+      "strength": "execution",
+      "strength_basis": "1 case(s) passed, 0 failed at db124ea; ran green at the named commit; whether it fails without the change was reported by the task agent, not re-run by the main agent",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T21:53:28Z",
+        "commit": "db124ea"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 32
+    },
+    {
+      "id": "e29",
+      "obligation_ref": "o9",
+      "test_ref": "tests/test_client_stop.py::test_the_follow_up_prompt_is_self_contained_for_every_adapter_family",
+      "behavior_text": "the follow-up prompt carries the original request, the stopped notice and the redacted correction for every adapter family, built without harness session state",
+      "contract_text": "The stop-and-correct request is self-contained: nvsh composes it from the original request and the operator's correction (and says the previous attempt was stopped), so it does not depend on the harness remembering the cancelled turn. agy in warm mode respawns after cancel() (nvsh/agent/agy.py:493-515) and a one-shot run has no session at all.",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "7 case(s) passed, 0 failed at db124ea; ran green at the named commit; whether it fails without the change was reported by the task agent, not re-run by the main agent",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T21:53:28Z",
+        "commit": "db124ea"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 33
+    },
+    {
+      "id": "e30",
+      "obligation_ref": "o9",
+      "test_ref": "tests/test_client_stop.py::test_the_follow_up_prompt_is_identical_across_families",
+      "behavior_text": "the follow-up prompt carries the original request, the stopped notice and the redacted correction for every adapter family, built without harness session state",
+      "contract_text": "The stop-and-correct request is self-contained: nvsh composes it from the original request and the operator's correction (and says the previous attempt was stopped), so it does not depend on the harness remembering the cancelled turn. agy in warm mode respawns after cancel() (nvsh/agent/agy.py:493-515) and a one-shot run has no session at all.",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "1 case(s) passed, 0 failed at db124ea; ran green at the named commit; whether it fails without the change was reported by the task agent, not re-run by the main agent",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T21:53:28Z",
+        "commit": "db124ea"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 34
+    },
+    {
+      "id": "e31",
+      "obligation_ref": "o9",
+      "test_ref": "tests/test_client_stop.py::test_openai_compat_does_not_send_the_correction_twice",
+      "behavior_text": "the follow-up prompt carries the original request, the stopped notice and the redacted correction for every adapter family, built without harness session state",
+      "contract_text": "The stop-and-correct request is self-contained: nvsh composes it from the original request and the operator's correction (and says the previous attempt was stopped), so it does not depend on the harness remembering the cancelled turn. agy in warm mode respawns after cancel() (nvsh/agent/agy.py:493-515) and a one-shot run has no session at all.",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "1 case(s) passed, 0 failed at db124ea; ran green at the named commit; whether it fails without the change was reported by the task agent, not re-run by the main agent",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T21:53:28Z",
+        "commit": "db124ea"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 35
+    },
+    {
+      "id": "e32",
+      "obligation_ref": "o10",
+      "test_ref": "tests/test_client_stop.py::test_correction_is_redacted_before_delivery_and_never_reaches_the_audit_log",
+      "behavior_text": "a token-shaped string typed as a correction reaches the adapter redacted and never appears in audit.jsonl",
+      "contract_text": "The correction line typed at the stop prompt is passed through nvsh/redact.py before it leaves the process (steer, or the stop-and-correct follow-up), and the audit line records that a correction was sent and its length, never its text.",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "1 case(s) passed, 0 failed at db124ea; ran green at the named commit; whether it fails without the change was reported by the task agent, not re-run by the main agent",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T21:53:28Z",
+        "commit": "db124ea"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 36
+    },
+    {
+      "id": "e33",
+      "obligation_ref": "o11",
+      "test_ref": "tests/test_client_stop.py::test_a_refused_steer_asks_once_and_stop_and_corrects_on_yes",
+      "behavior_text": "nvsh says it could not steer and asks once; yes runs stop-and-correct, anything else discards the text with an audit line",
+      "contract_text": "Capabilities.steer says what the harness can do in principle; the runtime answer is steer()'s return value. When [t] was offered as 'steer' and steer() returns False (codex fell back to exec mode, no thread/turn id yet, the turn already ended), nvsh tells the operator it could not steer and asks once whether to stop and correct instead -- it never silently drops the text and never cancels without saying so.",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "1 case(s) passed, 0 failed at db124ea; ran green at the named commit; whether it fails without the change was reported by the task agent, not re-run by the main agent",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T21:53:28Z",
+        "commit": "db124ea"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 37
+    },
+    {
+      "id": "e34",
+      "obligation_ref": "o11",
+      "test_ref": "tests/test_client_stop.py::test_a_refused_steer_discards_the_text_on_anything_but_yes",
+      "behavior_text": "nvsh says it could not steer and asks once; yes runs stop-and-correct, anything else discards the text with an audit line",
+      "contract_text": "Capabilities.steer says what the harness can do in principle; the runtime answer is steer()'s return value. When [t] was offered as 'steer' and steer() returns False (codex fell back to exec mode, no thread/turn id yet, the turn already ended), nvsh tells the operator it could not steer and asks once whether to stop and correct instead -- it never silently drops the text and never cancels without saying so.",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "1 case(s) passed, 0 failed at db124ea; ran green at the named commit; whether it fails without the change was reported by the task agent, not re-run by the main agent",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T21:53:28Z",
+        "commit": "db124ea"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 38
+    },
+    {
+      "id": "e35",
+      "obligation_ref": "o11",
+      "test_ref": "tests/test_panel_stop.py::test_confirm_reads_yes",
+      "behavior_text": "nvsh says it could not steer and asks once; yes runs stop-and-correct, anything else discards the text with an audit line",
+      "contract_text": "Capabilities.steer says what the harness can do in principle; the runtime answer is steer()'s return value. When [t] was offered as 'steer' and steer() returns False (codex fell back to exec mode, no thread/turn id yet, the turn already ended), nvsh tells the operator it could not steer and asks once whether to stop and correct instead -- it never silently drops the text and never cancels without saying so.",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "2 case(s) passed, 0 failed at db124ea; ran green at the named commit; whether it fails without the change was reported by the task agent, not re-run by the main agent",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T21:53:28Z",
+        "commit": "db124ea"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 39
+    },
+    {
+      "id": "e36",
+      "obligation_ref": "o11",
+      "test_ref": "tests/test_panel_stop.py::test_confirm_reads_no_for_everything_that_is_not_y",
+      "behavior_text": "nvsh says it could not steer and asks once; yes runs stop-and-correct, anything else discards the text with an audit line",
+      "contract_text": "Capabilities.steer says what the harness can do in principle; the runtime answer is steer()'s return value. When [t] was offered as 'steer' and steer() returns False (codex fell back to exec mode, no thread/turn id yet, the turn already ended), nvsh tells the operator it could not steer and asks once whether to stop and correct instead -- it never silently drops the text and never cancels without saying so.",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "5 case(s) passed, 0 failed at db124ea; ran green at the named commit; whether it fails without the change was reported by the task agent, not re-run by the main agent",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T21:53:28Z",
+        "commit": "db124ea"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 40
+    },
+    {
+      "id": "e37",
+      "obligation_ref": "o12",
+      "test_ref": "tests/test_client_stop.py::test_steer_label_resolved_from_capability_on_daemon_path",
+      "behavior_text": "the [t] label comes from registry.steer_capable on the daemon and one-shot paths with no capability information from the daemon, starting no harness",
+      "contract_text": "The client learns the active harness's Capabilities.steer without asking the daemon, the way registry._tool_calling already reads tool_calling: by constructing the adapter class for the resolved target and reading .capabilities() (nvsh/agent/registry.py:305-317). No new wire field is needed for the stop prompt; the busy event's existing 'steerable' arg is filled from the same capability.",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "1 case(s) passed, 0 failed at db124ea; ran green at the named commit; whether it fails without the change was reported by the task agent, not re-run by the main agent",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T21:53:28Z",
+        "commit": "db124ea"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 41
+    },
+    {
+      "id": "e38",
+      "obligation_ref": "o12",
+      "test_ref": "tests/test_client_stop.py::test_steer_label_resolved_from_capability_on_one_shot_path",
+      "behavior_text": "the [t] label comes from registry.steer_capable on the daemon and one-shot paths with no capability information from the daemon, starting no harness",
+      "contract_text": "The client learns the active harness's Capabilities.steer without asking the daemon, the way registry._tool_calling already reads tool_calling: by constructing the adapter class for the resolved target and reading .capabilities() (nvsh/agent/registry.py:305-317). No new wire field is needed for the stop prompt; the busy event's existing 'steerable' arg is filled from the same capability.",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "1 case(s) passed, 0 failed at db124ea; ran green at the named commit; whether it fails without the change was reported by the task agent, not re-run by the main agent",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T21:53:28Z",
+        "commit": "db124ea"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 42
+    },
+    {
+      "id": "e39",
+      "obligation_ref": "o12",
+      "test_ref": "tests/test_agent_registry.py::test_steer_capable_reads_capability_without_starting_the_adapter",
+      "behavior_text": "the [t] label comes from registry.steer_capable on the daemon and one-shot paths with no capability information from the daemon, starting no harness",
+      "contract_text": "The client learns the active harness's Capabilities.steer without asking the daemon, the way registry._tool_calling already reads tool_calling: by constructing the adapter class for the resolved target and reading .capabilities() (nvsh/agent/registry.py:305-317). No new wire field is needed for the stop prompt; the busy event's existing 'steerable' arg is filled from the same capability.",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "1 case(s) passed, 0 failed at db124ea; ran green at the named commit; whether it fails without the change was reported by the task agent, not re-run by the main agent",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T21:53:28Z",
+        "commit": "db124ea"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 43
+    },
+    {
+      "id": "e40",
+      "obligation_ref": "o13",
+      "test_ref": "tests/test_promptkeys.py::test_no_key_returns_timeout_within_a_second",
+      "behavior_text": "read_choice returns TIMEOUT on time, drains escape sequences whole, returns EOF without spinning, and gives the terminal back on SIGTERM and SIGHUP",
+      "contract_text": "The 30 s timeout needs a timed single-key read, which does not exist: _read_raw_key blocks forever (nvsh/panel.py:1408-1442) and KeyWatcher.poll is timed but discards every byte except a lone Esc (nvsh/keys.py:133-157). The prompt gets a select()-based timed read that returns t, s, Esc, Ctrl+C, EOF or timeout, with escape sequences drained as today. Boundary c7 is narrowed accordingly: Esc disambiguation, KeyWatcher and typeahead discard stay unchanged, but a timed read may be added beside them.",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "1 case(s) passed, 0 failed at db124ea; ran green at the named commit; whether it fails without the change was reported by the task agent, not re-run by the main agent",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T21:53:28Z",
+        "commit": "db124ea"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 44
+    },
+    {
+      "id": "e41",
+      "obligation_ref": "o13",
+      "test_ref": "tests/test_promptkeys.py::test_csi_sequence_neither_answers_nor_leaves_bytes_behind",
+      "behavior_text": "read_choice returns TIMEOUT on time, drains escape sequences whole, returns EOF without spinning, and gives the terminal back on SIGTERM and SIGHUP",
+      "contract_text": "The 30 s timeout needs a timed single-key read, which does not exist: _read_raw_key blocks forever (nvsh/panel.py:1408-1442) and KeyWatcher.poll is timed but discards every byte except a lone Esc (nvsh/keys.py:133-157). The prompt gets a select()-based timed read that returns t, s, Esc, Ctrl+C, EOF or timeout, with escape sequences drained as today. Boundary c7 is narrowed accordingly: Esc disambiguation, KeyWatcher and typeahead discard stay unchanged, but a timed read may be added beside them.",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "1 case(s) passed, 0 failed at db124ea; ran green at the named commit; whether it fails without the change was reported by the task agent, not re-run by the main agent",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T21:53:28Z",
+        "commit": "db124ea"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 45
+    },
+    {
+      "id": "e42",
+      "obligation_ref": "o13",
+      "test_ref": "tests/test_promptkeys.py::test_ss3_sequence_neither_answers_nor_leaves_bytes_behind",
+      "behavior_text": "read_choice returns TIMEOUT on time, drains escape sequences whole, returns EOF without spinning, and gives the terminal back on SIGTERM and SIGHUP",
+      "contract_text": "The 30 s timeout needs a timed single-key read, which does not exist: _read_raw_key blocks forever (nvsh/panel.py:1408-1442) and KeyWatcher.poll is timed but discards every byte except a lone Esc (nvsh/keys.py:133-157). The prompt gets a select()-based timed read that returns t, s, Esc, Ctrl+C, EOF or timeout, with escape sequences drained as today. Boundary c7 is narrowed accordingly: Esc disambiguation, KeyWatcher and typeahead discard stay unchanged, but a timed read may be added beside them.",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "1 case(s) passed, 0 failed at db124ea; ran green at the named commit; whether it fails without the change was reported by the task agent, not re-run by the main agent",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T21:53:28Z",
+        "commit": "db124ea"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 46
+    },
+    {
+      "id": "e43",
+      "obligation_ref": "o13",
+      "test_ref": "tests/test_promptkeys.py::test_eof_returns_eof_at_once_without_spinning",
+      "behavior_text": "read_choice returns TIMEOUT on time, drains escape sequences whole, returns EOF without spinning, and gives the terminal back on SIGTERM and SIGHUP",
+      "contract_text": "The 30 s timeout needs a timed single-key read, which does not exist: _read_raw_key blocks forever (nvsh/panel.py:1408-1442) and KeyWatcher.poll is timed but discards every byte except a lone Esc (nvsh/keys.py:133-157). The prompt gets a select()-based timed read that returns t, s, Esc, Ctrl+C, EOF or timeout, with escape sequences drained as today. Boundary c7 is narrowed accordingly: Esc disambiguation, KeyWatcher and typeahead discard stay unchanged, but a timed read may be added beside them.",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "1 case(s) passed, 0 failed at db124ea; ran green at the named commit; whether it fails without the change was reported by the task agent, not re-run by the main agent",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T21:53:28Z",
+        "commit": "db124ea"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 47
+    },
+    {
+      "id": "e44",
+      "obligation_ref": "o13",
+      "test_ref": "tests/test_promptkeys.py::test_a_termination_signal_gives_the_terminal_back",
+      "behavior_text": "read_choice returns TIMEOUT on time, drains escape sequences whole, returns EOF without spinning, and gives the terminal back on SIGTERM and SIGHUP",
+      "contract_text": "The 30 s timeout needs a timed single-key read, which does not exist: _read_raw_key blocks forever (nvsh/panel.py:1408-1442) and KeyWatcher.poll is timed but discards every byte except a lone Esc (nvsh/keys.py:133-157). The prompt gets a select()-based timed read that returns t, s, Esc, Ctrl+C, EOF or timeout, with escape sequences drained as today. Boundary c7 is narrowed accordingly: Esc disambiguation, KeyWatcher and typeahead discard stay unchanged, but a timed read may be added beside them.",
+      "evidence_type": "automated",
+      "strength": "sensitivity",
+      "strength_basis": "2 case(s) passed, 0 failed at db124ea; the main agent also ran this test against the unfixed product code and saw it fail",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T21:53:28Z",
+        "commit": "db124ea"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 48
+    },
+    {
+      "id": "e45",
+      "obligation_ref": "o14",
+      "test_ref": "tests/test_promptkeys.py::test_two_esc_within_20ms_leave_the_read_unanswered",
+      "behavior_text": "keys typed before the prompt is drawn never answer it, and a key typed once after it is drawn always does",
+      "contract_text": "Keys typed before the prompt is on screen never answer it: pending input is discarded when the prompt is drawn, so a double-tapped Esc or a key-repeat opens the prompt and leaves it open rather than instantly choosing 'keep going' (or, with Ctrl+C twice, instantly stopping). Today Esc Esc means 'stop, then kill'; after this change it must not silently mean 'nothing happened'.",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "1 case(s) passed, 0 failed at db124ea; ran green at the named commit; whether it fails without the change was reported by the task agent, not re-run by the main agent",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T21:53:28Z",
+        "commit": "db124ea"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 49
+    },
+    {
+      "id": "e46",
+      "obligation_ref": "o14",
+      "test_ref": "tests/test_promptkeys.py::test_typeahead_of_an_allowed_key_is_discarded",
+      "behavior_text": "keys typed before the prompt is drawn never answer it, and a key typed once after it is drawn always does",
+      "contract_text": "Keys typed before the prompt is on screen never answer it: pending input is discarded when the prompt is drawn, so a double-tapped Esc or a key-repeat opens the prompt and leaves it open rather than instantly choosing 'keep going' (or, with Ctrl+C twice, instantly stopping). Today Esc Esc means 'stop, then kill'; after this change it must not silently mean 'nothing happened'.",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "1 case(s) passed, 0 failed at db124ea; ran green at the named commit; whether it fails without the change was reported by the task agent, not re-run by the main agent",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T21:53:28Z",
+        "commit": "db124ea"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 50
+    },
+    {
+      "id": "e47",
+      "obligation_ref": "o14",
+      "test_ref": "tests/test_promptkeys.py::test_a_key_typed_the_instant_the_prompt_appears_is_never_lost",
+      "behavior_text": "keys typed before the prompt is drawn never answer it, and a key typed once after it is drawn always does",
+      "contract_text": "Keys typed before the prompt is on screen never answer it: pending input is discarded when the prompt is drawn, so a double-tapped Esc or a key-repeat opens the prompt and leaves it open rather than instantly choosing 'keep going' (or, with Ctrl+C twice, instantly stopping). Today Esc Esc means 'stop, then kill'; after this change it must not silently mean 'nothing happened'.",
+      "evidence_type": "automated",
+      "strength": "sensitivity",
+      "strength_basis": "1 case(s) passed, 0 failed at db124ea; the main agent also ran this test against the unfixed product code and saw it fail",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T21:53:28Z",
+        "commit": "db124ea"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 51
+    },
+    {
+      "id": "e48",
+      "obligation_ref": "o14",
+      "test_ref": "tests/test_panel_stop.py::test_a_key_typed_the_instant_the_legend_appears_always_answers",
+      "behavior_text": "keys typed before the prompt is drawn never answer it, and a key typed once after it is drawn always does",
+      "contract_text": "Keys typed before the prompt is on screen never answer it: pending input is discarded when the prompt is drawn, so a double-tapped Esc or a key-repeat opens the prompt and leaves it open rather than instantly choosing 'keep going' (or, with Ctrl+C twice, instantly stopping). Today Esc Esc means 'stop, then kill'; after this change it must not silently mean 'nothing happened'.",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "1 case(s) passed, 0 failed at db124ea; ran green at the named commit; whether it fails without the change was reported by the task agent, not re-run by the main agent",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T21:53:28Z",
+        "commit": "db124ea"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 52
+    },
+    {
+      "id": "e49",
+      "obligation_ref": "o15",
+      "test_ref": "tests/test_panel_stop.py::test_never_mind_at_the_correction_line_sends_nothing",
+      "behavior_text": "an empty line, Ctrl+C or EOF at the correction line, and EOF at the prompt, send nothing and cancel nothing",
+      "contract_text": "At the correction line after [t], an empty line, Ctrl+C or end of input means 'never mind': nothing is sent, nothing is cancelled and the turn keeps going -- the existing read_tell rule (nvsh/panel.py:1108-1133). End of input at the choice prompt itself (a hung-up terminal) also means keep going locally and never stop or steer, matching reliable-agent-stop deviation d1; the daemon's client-gone watch ends the turn.",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "4 case(s) passed, 0 failed at db124ea; ran green at the named commit; whether it fails without the change was reported by the task agent, not re-run by the main agent",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T21:53:28Z",
+        "commit": "db124ea"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 53
+    },
+    {
+      "id": "e50",
+      "obligation_ref": "o15",
+      "test_ref": "tests/test_panel_stop.py::test_eof_at_the_choice_prompt_keeps_going_and_sends_nothing",
+      "behavior_text": "an empty line, Ctrl+C or EOF at the correction line, and EOF at the prompt, send nothing and cancel nothing",
+      "contract_text": "At the correction line after [t], an empty line, Ctrl+C or end of input means 'never mind': nothing is sent, nothing is cancelled and the turn keeps going -- the existing read_tell rule (nvsh/panel.py:1108-1133). End of input at the choice prompt itself (a hung-up terminal) also means keep going locally and never stop or steer, matching reliable-agent-stop deviation d1; the daemon's client-gone watch ends the turn.",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "1 case(s) passed, 0 failed at db124ea; ran green at the named commit; whether it fails without the change was reported by the task agent, not re-run by the main agent",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T21:53:28Z",
+        "commit": "db124ea"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 54
+    },
+    {
+      "id": "e51",
+      "obligation_ref": "o16",
+      "test_ref": "tests/test_panel_stop.py::test_s_with_done_already_queued_renders_it_all_and_reports_not_running",
+      "behavior_text": "s renders the whole answer without reporting an interrupt; a correction becomes the next request on both kinds of target",
+      "contract_text": "The turn can finish while the prompt is open (the agent keeps working; only rendering is paused). Choosing [s] or [t] after that must not misreport: the rest of the answer is still rendered, a stop sent to an already-finished turn does not mark the result interrupted or exit 130, and a correction typed then simply becomes the next request.",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "1 case(s) passed, 0 failed at db124ea; ran green at the named commit; whether it fails without the change was reported by the task agent, not re-run by the main agent",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T21:53:28Z",
+        "commit": "db124ea"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 55
+    },
+    {
+      "id": "e52",
+      "obligation_ref": "o16",
+      "test_ref": "tests/test_panel_stop.py::test_a_turn_that_finishes_while_the_correction_is_typed_cancels_nothing",
+      "behavior_text": "s renders the whole answer without reporting an interrupt; a correction becomes the next request on both kinds of target",
+      "contract_text": "The turn can finish while the prompt is open (the agent keeps working; only rendering is paused). Choosing [s] or [t] after that must not misreport: the rest of the answer is still rendered, a stop sent to an already-finished turn does not mark the result interrupted or exit 130, and a correction typed then simply becomes the next request.",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "1 case(s) passed, 0 failed at db124ea; ran green at the named commit; whether it fails without the change was reported by the task agent, not re-run by the main agent",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T21:53:28Z",
+        "commit": "db124ea"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 56
+    },
+    {
+      "id": "e53",
+      "obligation_ref": "o16",
+      "test_ref": "tests/test_client_stop.py::test_a_finished_turn_queues_the_correction_on_a_steer_capable_target",
+      "behavior_text": "s renders the whole answer without reporting an interrupt; a correction becomes the next request on both kinds of target",
+      "contract_text": "The turn can finish while the prompt is open (the agent keeps working; only rendering is paused). Choosing [s] or [t] after that must not misreport: the rest of the answer is still rendered, a stop sent to an already-finished turn does not mark the result interrupted or exit 130, and a correction typed then simply becomes the next request.",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "2 case(s) passed, 0 failed at db124ea; ran green at the named commit; whether it fails without the change was reported by the task agent, not re-run by the main agent",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T21:53:28Z",
+        "commit": "db124ea"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 57
+    },
+    {
+      "id": "e54",
+      "obligation_ref": "o16",
+      "test_ref": "tests/test_client_stop.py::test_a_finished_turn_queues_the_correction_on_a_stop_and_correct_target",
+      "behavior_text": "s renders the whole answer without reporting an interrupt; a correction becomes the next request on both kinds of target",
+      "contract_text": "The turn can finish while the prompt is open (the agent keeps working; only rendering is paused). Choosing [s] or [t] after that must not misreport: the rest of the answer is still rendered, a stop sent to an already-finished turn does not mark the result interrupted or exit 130, and a correction typed then simply becomes the next request.",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "2 case(s) passed, 0 failed at db124ea; ran green at the named commit; whether it fails without the change was reported by the task agent, not re-run by the main agent",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T21:53:28Z",
+        "commit": "db124ea"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 58
+    },
+    {
+      "id": "e55",
+      "obligation_ref": "o16",
+      "test_ref": "tests/test_client_stop.py::test_not_running_correction_is_a_plain_next_request",
+      "behavior_text": "s renders the whole answer without reporting an interrupt; a correction becomes the next request on both kinds of target",
+      "contract_text": "The turn can finish while the prompt is open (the agent keeps working; only rendering is paused). Choosing [s] or [t] after that must not misreport: the rest of the answer is still rendered, a stop sent to an already-finished turn does not mark the result interrupted or exit 130, and a correction typed then simply becomes the next request.",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "1 case(s) passed, 0 failed at db124ea; ran green at the named commit; whether it fails without the change was reported by the task agent, not re-run by the main agent",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T21:53:28Z",
+        "commit": "db124ea"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 59
+    },
+    {
+      "id": "e56",
+      "obligation_ref": "o17",
+      "test_ref": "tests/test_client_stop.py::test_keep_going_exits_zero",
+      "behavior_text": "0 for keep going and a delivered steer; the follow-up turn's own status after stop-and-correct; 130 for s; --json exit_code and the audit log agree",
+      "contract_text": "Exit status: a turn that was steered from the prompt and then finishes normally exits 0 like an uninterrupted turn; 130 is reserved for [s] stop (and the kill that may follow it); keep going never changes the status.",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "1 case(s) passed, 0 failed at db124ea; ran green at the named commit; whether it fails without the change was reported by the task agent, not re-run by the main agent",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T21:53:28Z",
+        "commit": "db124ea"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 60
+    },
+    {
+      "id": "e57",
+      "obligation_ref": "o17",
+      "test_ref": "tests/test_client_stop.py::test_a_delivered_steer_exits_zero_with_no_follow_up",
+      "behavior_text": "0 for keep going and a delivered steer; the follow-up turn's own status after stop-and-correct; 130 for s; --json exit_code and the audit log agree",
+      "contract_text": "Exit status: a turn that was steered from the prompt and then finishes normally exits 0 like an uninterrupted turn; 130 is reserved for [s] stop (and the kill that may follow it); keep going never changes the status.",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "1 case(s) passed, 0 failed at db124ea; ran green at the named commit; whether it fails without the change was reported by the task agent, not re-run by the main agent",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T21:53:28Z",
+        "commit": "db124ea"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 61
+    },
+    {
+      "id": "e58",
+      "obligation_ref": "o17",
+      "test_ref": "tests/test_client_stop.py::test_the_follow_up_turns_own_status_is_what_stop_and_correct_reports",
+      "behavior_text": "0 for keep going and a delivered steer; the follow-up turn's own status after stop-and-correct; 130 for s; --json exit_code and the audit log agree",
+      "contract_text": "Exit status: a turn that was steered from the prompt and then finishes normally exits 0 like an uninterrupted turn; 130 is reserved for [s] stop (and the kill that may follow it); keep going never changes the status.",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "1 case(s) passed, 0 failed at db124ea; ran green at the named commit; whether it fails without the change was reported by the task agent, not re-run by the main agent",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T21:53:28Z",
+        "commit": "db124ea"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 62
+    },
+    {
+      "id": "e59",
+      "obligation_ref": "o17",
+      "test_ref": "tests/test_client_stop.py::test_json_exit_code_and_the_audit_log_agree_on_a_stop_and_correct",
+      "behavior_text": "0 for keep going and a delivered steer; the follow-up turn's own status after stop-and-correct; 130 for s; --json exit_code and the audit log agree",
+      "contract_text": "Exit status: a turn that was steered from the prompt and then finishes normally exits 0 like an uninterrupted turn; 130 is reserved for [s] stop (and the kill that may follow it); keep going never changes the status.",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "1 case(s) passed, 0 failed at db124ea; ran green at the named commit; whether it fails without the change was reported by the task agent, not re-run by the main agent",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T21:53:28Z",
+        "commit": "db124ea"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 63
+    },
+    {
+      "id": "e60",
+      "obligation_ref": "o17",
+      "test_ref": "tests/test_stop_prompt_e2e.py::test_stop_from_one_press_and_s_exits_130",
+      "behavior_text": "0 for keep going and a delivered steer; the follow-up turn's own status after stop-and-correct; 130 for s; --json exit_code and the audit log agree",
+      "contract_text": "Exit status: a turn that was steered from the prompt and then finishes normally exits 0 like an uninterrupted turn; 130 is reserved for [s] stop (and the kill that may follow it); keep going never changes the status.",
+      "evidence_type": "integration",
+      "strength": "execution",
+      "strength_basis": "1 case(s) passed, 0 failed at db124ea; ran green at the named commit; whether it fails without the change was reported by the task agent, not re-run by the main agent",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T21:53:28Z",
+        "commit": "db124ea"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 64
+    },
+    {
+      "id": "e61",
+      "obligation_ref": "o18",
+      "test_ref": "tests/test_panel_stop.py::test_ctrl_c_at_another_prompt_never_opens_the_choice_prompt",
+      "behavior_text": "the press goes straight to the stop path and never opens the choice prompt",
+      "contract_text": "A Ctrl+C typed while another nvsh prompt is already open (a proposal's keys or the busy prompt) goes straight to stop, exactly as it does today; the choice prompt opens only for a press made while the panel is streaming.",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "2 case(s) passed, 0 failed at db124ea; ran green at the named commit; whether it fails without the change was reported by the task agent, not re-run by the main agent",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T21:53:28Z",
+        "commit": "db124ea"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 65
+    },
+    {
+      "id": "e62",
+      "obligation_ref": "o19",
+      "test_ref": "tests/test_stop_prompt_e2e.py::test_a_client_paused_at_the_prompt_loses_no_events_and_is_not_client_gone",
+      "behavior_text": "no event is lost or reordered and the turn is not aborted as client-gone",
+      "contract_text": "While the prompt is open the client reads nothing from the daemon socket. This is safe for 30 s: the daemon's _write is a blocking write with no send timeout (nvsh/daemon.py:511-517), so a full socket buffer back-pressures the turn thread rather than dropping events; _peer_is_gone does not fire for a client that is merely not reading (daemon.py:1079-1093); the 300 s turn cap keeps counting, so a pause can at most consume 30 s of it. kill and cancel travel on their own connections and are unaffected.",
+      "evidence_type": "integration",
+      "strength": "execution",
+      "strength_basis": "1 case(s) passed, 0 failed at db124ea; ran green at the named commit; whether it fails without the change was reported by the task agent, not re-run by the main agent",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T21:53:28Z",
+        "commit": "db124ea"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 66
+    },
+    {
+      "id": "e63",
+      "obligation_ref": "o20",
+      "test_ref": "tests/test_panel_stop.py::test_esc_prompts_then_stops_within_1s_each_while_the_source_is_silent",
+      "behavior_text": "the prompt appears within 1 s; after s the stopping line appears within 1 s and a further press returns within 3 s, for every adapter family on both paths",
+      "contract_text": "The prompt appears within 1 s of the first press; after [s] the 'stopping\u2026' line appears within 1 s and a further press returns the prompt within 3 s, as in 0.13.0; an unanswered prompt resumes at 30 s (+/- 1 s); keep going and a delivered steer exit 0 with interrupted unset; 100% of registered adapters declare Capabilities.steer and only pi and codex declare it true.",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "1 case(s) passed, 0 failed at db124ea; ran green at the named commit; whether it fails without the change was reported by the task agent, not re-run by the main agent",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T21:53:28Z",
+        "commit": "db124ea"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 67
+    },
+    {
+      "id": "e64",
+      "obligation_ref": "o20",
+      "test_ref": "tests/test_agent_stop.py::test_two_presses_stop_every_family_on_both_paths",
+      "behavior_text": "the prompt appears within 1 s; after s the stopping line appears within 1 s and a further press returns within 3 s, for every adapter family on both paths",
+      "contract_text": "The prompt appears within 1 s of the first press; after [s] the 'stopping\u2026' line appears within 1 s and a further press returns the prompt within 3 s, as in 0.13.0; an unanswered prompt resumes at 30 s (+/- 1 s); keep going and a delivered steer exit 0 with interrupted unset; 100% of registered adapters declare Capabilities.steer and only pi and codex declare it true.",
+      "evidence_type": "integration",
+      "strength": "execution",
+      "strength_basis": "14 case(s) passed, 0 failed at db124ea; ran green at the named commit; whether it fails without the change was reported by the task agent, not re-run by the main agent",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T21:53:28Z",
+        "commit": "db124ea"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 68
+    },
+    {
+      "id": "e65",
+      "obligation_ref": "o21",
+      "test_ref": "tests/test_keys.py",
+      "behavior_text": "key detection is unchanged: tests/test_keys.py passes unmodified",
+      "contract_text": "Lone-Esc versus escape-sequence detection, cbreak handling, typeahead discard and the SIGHUP/SIGTERM terminal restore in nvsh/keys.py are not changed; the prompt reuses _suspending, _read_choice_key and the _busy_legend pattern from nvsh/panel.py rather than reading keys a new way.",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "15 case(s) passed, 0 failed at db124ea; ran green at the named commit; whether it fails without the change was reported by the task agent, not re-run by the main agent",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T21:53:28Z",
+        "commit": "db124ea"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 69
+    },
+    {
+      "id": "e66",
+      "obligation_ref": "o22",
+      "test_ref": "tests/test_close_kills_tree.py",
+      "behavior_text": "existing stop behaviour is unchanged: the daemon stop cases, close-kills-tree and the conformance stop cases pass",
+      "contract_text": "Force-stop, process-tree kill, the daemon's cancel/kill controls, slot removal after a kill, the per-run cancelled-flag reset and every adapter's cancel() are unchanged; the prompt only decides whether and when the existing cancel is called.",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "9 case(s) passed, 0 failed at db124ea; ran green at the named commit; whether it fails without the change was reported by the task agent, not re-run by the main agent",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T21:53:28Z",
+        "commit": "db124ea"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 70
+    },
+    {
+      "id": "e67",
+      "obligation_ref": "o22",
+      "test_ref": "tests/test_daemon_stop.py::test_kill_releases_the_run_lock_and_the_queued_request_runs_on_a_fresh_slot",
+      "behavior_text": "existing stop behaviour is unchanged: the daemon stop cases, close-kills-tree and the conformance stop cases pass",
+      "contract_text": "Force-stop, process-tree kill, the daemon's cancel/kill controls, slot removal after a kill, the per-run cancelled-flag reset and every adapter's cancel() are unchanged; the prompt only decides whether and when the existing cancel is called.",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "1 case(s) passed, 0 failed at db124ea; ran green at the named commit; whether it fails without the change was reported by the task agent, not re-run by the main agent",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T21:53:28Z",
+        "commit": "db124ea"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 71
+    },
+    {
+      "id": "e68",
+      "obligation_ref": "o22",
+      "test_ref": "tests/test_agent_conformance.py::test_ignoring_harness_stop_and_respawn",
+      "behavior_text": "existing stop behaviour is unchanged: the daemon stop cases, close-kills-tree and the conformance stop cases pass",
+      "contract_text": "Force-stop, process-tree kill, the daemon's cancel/kill controls, slot removal after a kill, the per-run cancelled-flag reset and every adapter's cancel() are unchanged; the prompt only decides whether and when the existing cancel is called.",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "8 case(s) passed, 0 failed at db124ea; ran green at the named commit; whether it fails without the change was reported by the task agent, not re-run by the main agent",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T21:53:28Z",
+        "commit": "db124ea"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 72
+    },
+    {
+      "id": "e69",
+      "obligation_ref": "o23",
+      "test_ref": "tests/test_panel_stop.py::test_a_press_during_teardown_never_escapes_stream",
+      "behavior_text": "a Ctrl+C during panel teardown never escapes stream(), restores the terminal and the previous handler, and is recorded as an interrupt",
+      "contract_text": "[s] stop does exactly what the first press does today: polite cancel through _StopTarget.cancel, the 'stopping\u2026 press again to kill' line, and a further Ctrl+C/Esc still force-kills the process tree. Stopping is never more than two keys away, and a Ctrl+C typed at the choice prompt itself means stop.",
+      "evidence_type": "automated",
+      "strength": "sensitivity",
+      "strength_basis": "3 case(s) passed, 0 failed at db124ea; the main agent also ran this test against the unfixed product code and saw it fail",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T21:53:28Z",
+        "commit": "db124ea"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 73
+    },
+    {
+      "id": "e70",
+      "obligation_ref": "o23",
+      "test_ref": "tests/test_panel_stop.py::test_repeated_presses_during_teardown_are_all_absorbed",
+      "behavior_text": "a Ctrl+C during panel teardown never escapes stream(), restores the terminal and the previous handler, and is recorded as an interrupt",
+      "contract_text": "[s] stop does exactly what the first press does today: polite cancel through _StopTarget.cancel, the 'stopping\u2026 press again to kill' line, and a further Ctrl+C/Esc still force-kills the process tree. Stopping is never more than two keys away, and a Ctrl+C typed at the choice prompt itself means stop.",
+      "evidence_type": "automated",
+      "strength": "sensitivity",
+      "strength_basis": "1 case(s) passed, 0 failed at db124ea; the main agent also ran this test against the unfixed product code and saw it fail",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T21:53:28Z",
+        "commit": "db124ea"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 74
+    }
+  ],
+  "deltas": [
+    {
+      "id": "b1",
+      "kind": "amended",
+      "behavior_text": "While the agent works on a terminal, the first Ctrl+C or lone Esc no longer cancels the turn: the panel pauses and shows 'nvsh: paused -- [t] steer  [s] stop  [Esc] keep going', and nothing reaches the harness until a key is read.",
+      "caused_by": [
+        "c2"
+      ],
+      "evidence_refs": [
+        "e1",
+        "e2"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    },
+    {
+      "id": "b2",
+      "kind": "amended",
+      "behavior_text": "Stopping now takes a choice first: [s] (or Ctrl+C typed at the prompt) does what the first press used to do -- 'stopping\u2026 press again to kill', one polite cancel -- and a further press still kills the process tree.",
+      "caused_by": [
+        "c3"
+      ],
+      "evidence_refs": [
+        "e3",
+        "e4",
+        "e63",
+        "e64"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    },
+    {
+      "id": "b3",
+      "kind": "added",
+      "behavior_text": "[Esc], or 30 s without an answer, dismisses the prompt: nothing is sent, rendering resumes with no event lost, and the exit status is unaffected.",
+      "caused_by": [
+        "c6",
+        "c19"
+      ],
+      "evidence_refs": [
+        "e12",
+        "e13"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    },
+    {
+      "id": "b4",
+      "kind": "added",
+      "behavior_text": "[t] takes one typed line. On pi and codex it is delivered into the running turn; on every other harness the key reads '[t] stop & correct' and nvsh cancels the turn, waits for it to end, and sends a self-contained follow-up (original request, a stopped notice, the correction).",
+      "caused_by": [
+        "c4",
+        "c18",
+        "c22",
+        "c23"
+      ],
+      "evidence_refs": [
+        "e6",
+        "e7",
+        "e25",
+        "e26",
+        "e29",
+        "e30"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    },
+    {
+      "id": "b5",
+      "kind": "added",
+      "behavior_text": "The correction typed at the prompt is redacted before it leaves the process, and the audit log records only its length (correction_chars).",
+      "caused_by": [
+        "c29"
+      ],
+      "evidence_refs": [
+        "e32"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    },
+    {
+      "id": "b6",
+      "kind": "added",
+      "behavior_text": "If a steer-capable harness refuses the steer at runtime, nvsh says it could not steer and asks once (y) whether to stop and correct; any other answer discards the text with a 'steer'/'discarded' audit line.",
+      "caused_by": [
+        "c30",
+        "d3"
+      ],
+      "evidence_refs": [
+        "e33",
+        "e34"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    },
+    {
+      "id": "b7",
+      "kind": "added",
+      "behavior_text": "A correction typed after the turn has already finished -- before the prompt was answered or while the line was being typed -- becomes the next request with no cancel and no stopped notice; [s] on a finished turn renders the whole answer and exits 0.",
+      "caused_by": [
+        "c36"
+      ],
+      "evidence_refs": [
+        "e51",
+        "e52"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    },
+    {
+      "id": "b8",
+      "kind": "amended",
+      "behavior_text": "Exit status: 0 after keep going or a delivered steer; the follow-up turn's own status after stop & correct; 130 only for [s] on a running turn and for a kill.",
+      "caused_by": [
+        "c20"
+      ],
+      "evidence_refs": [
+        "e56",
+        "e57"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    },
+    {
+      "id": "b9",
+      "kind": "amended",
+      "behavior_text": "Where the prompt cannot be shown -- no tty, TERM=dumb, or --json (nvsh slash --json and nvsh hook --json now tell the panel) -- the first Ctrl+C still stops at once and no prompt text is written.",
+      "caused_by": [
+        "c9",
+        "d2"
+      ],
+      "evidence_refs": [
+        "e16",
+        "e17"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    },
+    {
+      "id": "b10",
+      "kind": "added",
+      "behavior_text": "Every adapter declares Capabilities.steer (true only for pi and codex); it appears in 'nvsh agent list --json' and the client reads it without starting a harness.",
+      "caused_by": [
+        "c5",
+        "c31"
+      ],
+      "evidence_refs": [
+        "e8",
+        "e9",
+        "e37",
+        "e38"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    },
+    {
+      "id": "b11",
+      "kind": "amended",
+      "behavior_text": "The busy prompt offers [t] steer only where the harness declares it can steer; it no longer offers it on openai-compat or agy, which override steer() only to return False.",
+      "caused_by": [
+        "c5"
+      ],
+      "evidence_refs": [
+        "e8",
+        "e9"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    },
+    {
+      "id": "b12",
+      "kind": "added",
+      "behavior_text": "The audit log gains the stop kind keep_going and optional origin (stop_prompt, busy_prompt) and reason (key, timeout) fields; each prompt outcome writes exactly one stop line.",
+      "caused_by": [
+        "c13"
+      ],
+      "evidence_refs": [
+        "e21",
+        "e22"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    },
+    {
+      "id": "b13",
+      "kind": "added",
+      "behavior_text": "Prompts read their key with a timed reader that discards typeahead before the prompt is drawn, never loses a key typed after it, and gives the terminal back if the process gets SIGHUP or SIGTERM while the prompt is open.",
+      "caused_by": [
+        "c32",
+        "c33"
+      ],
+      "evidence_refs": [
+        "e40",
+        "e41",
+        "e45",
+        "e46"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    },
+    {
+      "id": "b14",
+      "kind": "amended",
+      "behavior_text": "A Ctrl+C typed while a proposal or busy prompt is open goes straight to stop and never opens the choice prompt; an empty line, Ctrl+C or end of input at the correction line, and end of input at the prompt, send nothing.",
+      "caused_by": [
+        "c37",
+        "c34"
+      ],
+      "evidence_refs": [
+        "e61",
+        "e49",
+        "e50"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    },
+    {
+      "id": "b15",
+      "kind": "amended",
+      "behavior_text": "A Ctrl+C that lands while the panel is shutting down no longer raises a traceback: it is recorded as an interrupt, the terminal and the previous SIGINT handler are restored, and nothing is sent to the harness.",
+      "caused_by": [
+        "d4"
+      ],
+      "evidence_refs": [
+        "e69",
+        "e70"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    }
+  ],
   "supersessions": []
 }
