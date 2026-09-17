@@ -81,6 +81,7 @@ from .panel import (
     REPLACE,
     STEER,
     STEER_LABEL,
+    STOP_BEGUN,
     TELL,
     Panel,
     StreamResult,
@@ -127,6 +128,32 @@ STEERED = "steered"
 #: (spec decision, task t7/t8 split -- t7 wires the label and the redacted
 #: delivery, t8 the stop-and-resend sequencing).
 STOP_AND_CORRECT_LABEL = "stop & correct"
+
+#: Where a stop-prompt audit line came from (t8). ``[s] stop`` writes its
+#: ``cancel`` line without it, so a ``cancel`` that carries it is the one a
+#: stop-and-correct made -- told apart without adding a second line to
+#: either outcome.
+_STOP_PROMPT_ORIGIN = "stop_prompt"
+
+#: What the operator is asked when ``[t]`` was offered as "steer" but the
+#: harness's own ``steer()`` refused it at runtime (spec c30): the text is
+#: never silently dropped, so either the operator agrees to stop and resend
+#: it, or they say so and it is discarded -- and audited as discarded.
+COULD_NOT_STEER_NOTE = "nvsh: could not steer the running turn"
+STOP_AND_CORRECT_QUESTION = "stop the agent and send your correction as a new request?"
+CORRECTION_DISCARDED_NOTE = "nvsh: correction discarded; the agent keeps going"
+STOP_AND_CORRECT_NOTE = "nvsh: stopping, then asking again with your correction ..."
+
+#: The sentence that makes a stop-and-correct follow-up self-contained
+#: (spec c23): the harness may have no memory of the cancelled turn at all
+#: (a one-shot run has no session; warm agy respawns after a cancel), so
+#: what it was working on and what the operator changed both travel in the
+#: prompt nvsh composes from its *own* request.
+STOPPED_NOTICE = (
+    "The previous attempt was stopped by the operator before it finished. "
+    "It was working on the request below; start again from it and follow "
+    "the operator's correction at the end."
+)
 
 #: What ``[e]`` asks the agent when the proposal came with no rationale and
 #: there is a conversation to ask in (deviation d17). Two sentences, because
@@ -1398,6 +1425,11 @@ class _Turn:
         self._started = time.monotonic()
         self.declined = declined if declined is not None else []
         self.ended = False
+        #: Whether the cancel this turn is about to make is a stop-and-correct
+        #: rather than a plain ``[s]`` stop (t8). It stamps that one ``cancel``
+        #: audit line with ``origin``/``reason`` so the log tells the two
+        #: apart; the line itself is still the single line ``audited`` writes.
+        self.correcting = False
 
     def elapsed(self) -> float:
         return round(time.monotonic() - self._started, 3)
@@ -1446,12 +1478,30 @@ class _Turn:
             try:
                 result = action()
             except Exception:
-                self.record(kind, "error")
+                self.record(kind, "error", **self._stop_fields(kind))
                 raise
-            self.record(kind, "failed" if result is False else "sent")
+            self.record(kind, "failed" if result is False else "sent", **self._stop_fields(kind))
             return result
 
         return call
+
+    def _stop_fields(self, kind: str) -> dict[str, str]:
+        """The extra field a stop-and-correct's ``cancel`` line carries (t8).
+
+        Still exactly one line per outcome: this only marks *which* kind of
+        stop that one line records. ``[s] stop`` writes the same ``cancel``
+        kind with no ``origin`` at all (t7 deliberately left it off, so the
+        line stayed byte-for-byte the pre-prompt one), so ``origin =
+        stop_prompt`` on a ``cancel`` means exactly one thing: the turn was
+        cancelled so the operator's correction could be resent. The matching
+        ``steer``/``queued`` line, written just before it, says what it was.
+        ``reason`` is not used here: :data:`~nvsh.agent.audit.STOP_REASONS`
+        is a closed set (``key``/``timeout``) about *how a prompt ended*, and
+        this is not that.
+        """
+        if kind == "cancel" and self.correcting:
+            return {"origin": _STOP_PROMPT_ORIGIN}
+        return {}
 
     def until_ended(self, events: Iterable[AgentEvent]):
         iterator = iter(events)
@@ -1594,7 +1644,7 @@ def _stop_prompt_steer(
     turn: "_Turn",
     steer_label: str,
 ):
-    """Build ``on_steer`` for :meth:`Panel.stream` (t7, spec c4/c29).
+    """Build ``on_steer`` for :meth:`Panel.stream` (t7/t8, spec c4/c22/c29/c30).
 
     The typed correction is redacted before it goes anywhere -- into
     ``Responder.steer`` (the same mid-turn path ``_injector`` uses) or into
@@ -1604,31 +1654,72 @@ def _stop_prompt_steer(
     ``steers`` list -- the same list ``_injector`` feeds -- so it still
     reaches the agent as part of the next request, exactly as the proposal
     prompt's ``[t]`` already does when ``responder.steer`` returns ``False``.
+
+    Three answers go back to the panel (t8):
+
+    ``True``
+        the harness took the correction mid-turn; nothing is stopped.
+    :data:`~nvsh.panel.STOP_BEGUN`
+        stop and correct: the panel cancels this turn once, prints the
+        stopping line and keeps the next press as the kill press, and the
+        caller then sends the queued correction as a self-contained next
+        request (:func:`_follow_up_prompt`).
+    ``False``
+        nothing more happens to this turn -- either because the operator
+        declined the stop when a steer-capable harness refused at runtime
+        (the text is discarded, and audited as such), or because the text is
+        queued for the next request without a stop being needed.
     """
 
-    def on_steer(text: str) -> bool:
+    def queue(redacted: str, outcome: str) -> None:
+        if steers is not None:
+            steers.append(redacted)
+        turn.record("steer", outcome, origin=_STOP_PROMPT_ORIGIN, correction=redacted)
+
+    def on_steer(text: str) -> object:
         redacted = _redact(text)
         delivered = bool(responder.steer(redacted))
-        if delivered and steer_label == STEER_LABEL:
-            panel.note("nvsh: steering the agent ...")
-        else:
-            if steers is not None:
-                steers.append(redacted)
+        if delivered:
+            # The harness took it mid-turn: nothing is stopped, whatever the
+            # label said. (A "stop & correct" label with a delivering steer()
+            # is unreachable in practice -- the label comes from the same
+            # adapter's capability -- but if it ever happened, cancelling a
+            # turn that just accepted the correction would be the one clearly
+            # wrong move, so it is not made.)
+            if steer_label == STEER_LABEL:
+                panel.note("nvsh: steering the agent ...")
+                turn.record("steer", "delivered", origin=_STOP_PROMPT_ORIGIN, correction=redacted)
+                return True
+            queue(redacted, "queued")
             panel.note("nvsh: no mid-turn channel; asking next instead ...")
-        turn.record(
-            "steer",
-            "delivered" if delivered else "queued",
-            origin="stop_prompt",
-            correction=redacted,
-        )
-        # t8: stop-and-correct sequencing (cancel, wait for the turn to end,
-        # resend the correction as a self-contained follow-up request) and
-        # the runtime fallback when a steer-capable harness's steer() still
-        # returns False both extend from here. This task never cancels the
-        # turn and never changes the 130 exit-code logic.
-        return delivered
+            return False
+        if steer_label == STEER_LABEL and not _agreed_to_correct(panel):
+            # c30: offered as steer, refused by the harness at runtime, and
+            # the operator would rather keep the turn than stop it. The text
+            # is dropped -- but said so, and written to the audit log.
+            turn.record("steer", "discarded", origin=_STOP_PROMPT_ORIGIN, correction=redacted)
+            panel.note(CORRECTION_DISCARDED_NOTE)
+            return False
+        # Stop and correct (c22/c23): the redacted text rides the same
+        # ``steers`` list ``_injector`` feeds, and the panel is told to begin
+        # the stop -- one polite cancel, the stopping line, the next press
+        # still the kill press. The follow-up request is composed by the
+        # caller once this turn has actually ended.
+        queue(redacted, "queued")
+        turn.correcting = True
+        panel.note(STOP_AND_CORRECT_NOTE)
+        return STOP_BEGUN
 
     return on_steer
+
+
+def _agreed_to_correct(panel: Panel) -> bool:
+    """Say the steer failed and ask once whether to stop and correct (c30/h21)."""
+    panel.note(COULD_NOT_STEER_NOTE)
+    try:
+        return bool(panel.confirm(STOP_AND_CORRECT_QUESTION))
+    except Exception:  # noqa: BLE001 - an unaskable question is not a yes
+        return False
 
 
 def _stream_request(
@@ -1703,19 +1794,63 @@ def _stream_request(
     )
 
 
-def _follow_up_prompt(inspections: list[tuple[str, RunResult]], steers: list[str]) -> str:
+def _follow_up_prompt(
+    inspections: list[tuple[str, RunResult]],
+    steers: list[str],
+    *,
+    stopped: bool = False,
+    original: str = "",
+) -> str:
     """The one prompt that carries everything the last turn produced back.
 
     An inspection's output and the operator's steer can both come out of a
     single turn (``[t]`` after an auto-run inspector), and they belong in
     one follow-up: two requests would be two turns, and the second would
     have lost the first's answer.
+
+    ``stopped`` says the previous turn was cancelled so this correction
+    could be sent (t8): the prompt then also carries :data:`STOPPED_NOTICE`
+    and ``original`` -- the text of nvsh's *own* previous request -- so the
+    follow-up stands on its own even when the harness remembers nothing of
+    the cancelled turn (spec c23: a one-shot run has no session at all, and
+    warm agy respawns after a cancel). Nothing here reads harness session
+    state; it is composed from what the client already holds.
     """
     parts = []
     if inspections:
         parts.append(_inspection_prompt(inspections))
+    if stopped:
+        parts.append(STOPPED_NOTICE)
+        if original:
+            parts.append(original)
     parts.extend(steers)
     return "\n\n".join(parts)
+
+
+def _follow_up_request(
+    request: AgentRequest,
+    result: StreamResult,
+    inspections: list[tuple[str, RunResult]],
+    steers: list[str],
+) -> AgentRequest | None:
+    """The next request after a turn that produced inspections or a correction.
+
+    ``None`` when there is nothing to send back. Shared by all three entry
+    points (``handle_failure``, ``ask`` and the slash path), so a
+    stop-and-correct is composed the same way whichever one the operator
+    reached the prompt from.
+    """
+    if not (inspections or steers):
+        return None
+    return _with_prompt(
+        request,
+        _follow_up_prompt(
+            inspections,
+            steers,
+            stopped=result.stopped_to_correct,
+            original=request.prompt,
+        ),
+    )
 
 
 def _inspection_prompt(inspections: list[tuple[str, RunResult]]) -> str:
@@ -1861,8 +1996,8 @@ def handle_failure(
     if result.interrupted:
         return 130
 
-    if inspections or steers:
-        follow_up = _failure_request(state, prompt=_follow_up_prompt(inspections, steers))
+    follow_up = _follow_up_request(request, result, inspections, steers)
+    if follow_up is not None:
         follow = _stream_request(
             panel,
             follow_up,
@@ -1954,10 +2089,11 @@ def ask(
     )
     if result.interrupted:
         return 130
-    if inspections or steers:
+    follow_up = _follow_up_request(request, result, inspections, steers)
+    if follow_up is not None:
         follow = _stream_request(
             panel,
-            _with_prompt(request, _follow_up_prompt(inspections, steers)),
+            follow_up,
             context,
             env=resolved,
             shell_id=shell_id,
@@ -2024,9 +2160,10 @@ def _on_last_failure(
     audit = _audit(resolved)
     steers: list[str] = []
     declined: list[str] = []
+    request = _failure_request(state, prompt=prompt)
     result = _stream_request(
         panel,
-        _failure_request(state, prompt=prompt),
+        request,
         context,
         env=resolved,
         shell_id=shell_id,
@@ -2040,10 +2177,11 @@ def _on_last_failure(
     )
     if result.interrupted:
         return 130
-    if steers:
+    follow_up = _follow_up_request(request, result, [], steers)
+    if follow_up is not None:
         follow = _stream_request(
             panel,
-            _failure_request(state, prompt=_follow_up_prompt([], steers)),
+            follow_up,
             context,
             env=resolved,
             shell_id=shell_id,

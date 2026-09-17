@@ -1087,3 +1087,224 @@ def test_stop_prompt_false_stops_at_once_on_a_tty(pty_pair):
     assert STOPPING in text
     assert "paused" not in text
     assert PAUSED_LEGEND not in text
+
+
+# --- t8 / deviation d3, seam A: the caller says a stop has begun ------------
+#
+# ``on_steer`` may answer :data:`nvsh.panel.STOP_BEGUN` instead of a bool:
+# the caller has decided to stop this turn so it can resend the correction.
+# The panel then does the visible half of a ``[s]`` press -- the stopping
+# line, one polite cancel, the next press as the kill press -- but never
+# reports the turn as interrupted, because the operator asked for a
+# correction, not for the agent to stop.
+
+
+#: The label a harness with no mid-turn channel is offered under -- the one
+#: the stop-and-correct path is actually reached through.
+STOP_AND_CORRECT_LABEL = "stop & correct"
+CORRECT_LEGEND = f"[t] {STOP_AND_CORRECT_LABEL}  [s] stop  [Esc] keep going"
+
+
+CORRECTION = b"look at nvpmodel instead\n"
+
+
+def _stop_to_correct_run(pty_pair, *, second_press: str | None = None):
+    """Press once, choose [t], type a line, and answer with STOP_BEGUN."""
+    master, tty_in = pty_pair
+    out = io.StringIO()
+    p = _panel(tty_in, out)
+    calls: dict[str, list] = {"cancel": [], "kill": [], "choice": [], "steer": []}
+    cancelled = threading.Event()
+
+    def cancel():
+        calls["cancel"].append(1)
+        cancelled.set()
+
+    def on_steer(text: str) -> object:
+        calls["steer"].append(text)
+        return panel_mod.STOP_BEGUN
+
+    def events():
+        yield AgentEvent(kind=EventKind.TEXT_DELTA, text="working")
+        _press("esc", master)
+        assert _wait_for(lambda: CORRECT_LEGEND in out.getvalue()), out.getvalue()
+        assert _answer(master, b"t", lambda: TELL_PROMPT in out.getvalue(), tty_in), out.getvalue()
+        time.sleep(0.15)
+        os.write(master, CORRECTION)
+        assert cancelled.wait(15), out.getvalue()
+        if second_press is not None:
+            _press(second_press, master)
+            assert _wait_for(lambda: calls["kill"]), out.getvalue()
+            # The harness ignores the cancel: only the kill ends this.
+            while True:
+                time.sleep(0.05)
+        yield AgentEvent(kind=EventKind.TEXT_DELTA, text=" winding down")
+        yield AgentEvent(kind=EventKind.DONE)
+
+    result = p.stream(
+        events(),
+        cancel=cancel,
+        force_stop=lambda: calls["kill"].append(1),
+        on_choice=lambda outcome, reason: calls["choice"].append((outcome, reason)),
+        on_steer=on_steer,
+        steer_label=STOP_AND_CORRECT_LABEL,
+    )
+    return result, out.getvalue(), calls
+
+
+def test_stop_begun_cancels_once_prints_stopping_and_is_not_an_interruption(pty_pair):
+    result, out, calls = _stop_to_correct_run(pty_pair)
+    assert calls["steer"] == ["look at nvpmodel instead"]
+    assert calls["choice"] == [("steer", "key")]
+    assert calls["cancel"] == [1]
+    assert calls["kill"] == []
+    assert out.count(STOPPING) == 1
+    # Rendering continued until the cancelled turn produced its own end.
+    assert result.text == "working winding down"
+    assert result.done is True
+    assert result.stopped_to_correct is True
+    assert result.interrupted is False
+    assert "nvsh: interrupted" not in out
+
+
+@pytest.mark.parametrize("second", ["esc", "sigint"])
+def test_a_press_after_stop_begun_kills_once_and_interrupts(pty_pair, second):
+    result, out, calls = _stop_to_correct_run(pty_pair, second_press=second)
+    assert calls["cancel"] == [1]
+    assert calls["kill"] == [1]
+    # The choice prompt is never re-opened once a stop has begun.
+    assert out.count(CORRECT_LEGEND) == 1
+    assert result.stopped_to_correct is True
+    assert result.interrupted is True
+
+
+def test_stop_begun_on_an_already_finished_turn_cancels_nothing(pty_pair):
+    """c36: the turn ended while only rendering was paused.
+
+    The caller still answers ``STOP_BEGUN`` -- it cannot know the turn is
+    over -- and the panel stops nothing: there is no running turn to cancel,
+    so the correction simply becomes the caller's next request.
+    """
+    master, tty_in = pty_pair
+    out = io.StringIO()
+    p = _panel(tty_in, out)
+    calls: dict[str, list] = {"cancel": [], "kill": [], "choice": [], "steer": []}
+    at_prompt = threading.Event()
+
+    def events():
+        yield AgentEvent(kind=EventKind.TEXT_DELTA, text="working")
+        _press("esc", master)
+        assert _wait_for(lambda: CORRECT_LEGEND in out.getvalue()), out.getvalue()
+        at_prompt.set()
+        yield AgentEvent(kind=EventKind.DONE)
+
+    def typist():
+        assert at_prompt.wait(15)
+        _answer(master, b"t", lambda: TELL_PROMPT in out.getvalue(), tty_in)
+        time.sleep(0.15)
+        os.write(master, CORRECTION)
+
+    thread = threading.Thread(target=typist, daemon=True)
+    thread.start()
+    try:
+        result = p.stream(
+            events(),
+            cancel=lambda: calls["cancel"].append(1),
+            force_stop=lambda: calls["kill"].append(1),
+            on_choice=lambda outcome, reason: calls["choice"].append((outcome, reason)),
+            on_steer=lambda text: (calls["steer"].append(text), panel_mod.STOP_BEGUN)[1],
+            steer_label=STOP_AND_CORRECT_LABEL,
+        )
+    finally:
+        thread.join(15)
+    out = out.getvalue()
+    assert calls["steer"] == ["look at nvpmodel instead"]
+    assert calls["cancel"] == [] and calls["kill"] == []
+    assert result.not_running is True
+    assert result.stopped_to_correct is False
+    assert result.interrupted is False
+    assert result.text == "working"
+    assert STOPPING not in out
+
+
+# --- t8 / deviation d3, seam B: Panel.confirm, a one-key yes/no ------------
+
+QUESTION = "stop the agent and send your correction as a new request?"
+
+
+def _confirm_run(pty_pair, key: bytes | None, *, hang_up: bool = False):
+    master, tty_in = pty_pair
+    out = io.StringIO()
+    p = _panel(tty_in, out)
+    done = threading.Event()
+
+    def typist():
+        if not _wait_for(lambda: QUESTION in out.getvalue()):
+            return
+        time.sleep(0.15)
+        if hang_up:
+            os.close(master)
+            return
+        while key is not None and not done.is_set():
+            try:
+                os.write(master, key)
+            except OSError:  # pragma: no cover - the pty went away
+                return
+            time.sleep(0.2)
+
+    thread = threading.Thread(target=typist, daemon=True)
+    thread.start()
+    try:
+        answer = p.confirm(QUESTION)
+    finally:
+        done.set()
+        thread.join(15)
+        _drain(tty_in)
+    return answer, out.getvalue()
+
+
+@pytest.mark.parametrize("key", [b"y", b"Y"])
+def test_confirm_reads_yes(pty_pair, key):
+    answer, out = _confirm_run(pty_pair, key)
+    assert answer is True
+    assert f"nvsh: {QUESTION} [y/N]" in out
+
+
+@pytest.mark.parametrize(
+    "key,hang_up",
+    [(b"n", False), (b"N", False), (b"\x1b", False), (b"\x03", False), (None, True)],
+    ids=["n", "N", "esc", "ctrl-c", "eof"],
+)
+def test_confirm_reads_no_for_everything_that_is_not_y(pty_pair, key, hang_up):
+    answer, _out = _confirm_run(pty_pair, key, hang_up=hang_up)
+    assert answer is False
+
+
+def test_confirm_times_out_as_no(pty_pair, monkeypatch):
+    monkeypatch.setattr(panel_mod, "STOP_PROMPT_TIMEOUT", 0.5)
+    started = time.monotonic()
+    answer, _out = _confirm_run(pty_pair, None)
+    assert answer is False
+    assert 0.4 < time.monotonic() - started < 30.0
+
+
+def test_confirm_off_a_tty_is_no_at_once_and_asks_nothing():
+    out = io.StringIO()
+    # A stdin that would block forever if it were ever read.
+    p = panel_mod.Panel(out=out, in_=io.StringIO(), env=TTY_ENV, isatty=False)
+    started = time.monotonic()
+    assert p.confirm(QUESTION) is False
+    assert time.monotonic() - started < 1.0
+    assert out.getvalue() == ""
+
+
+def test_confirm_under_term_dumb_is_no_at_once(pty_pair):
+    master, tty_in = pty_pair
+    out = io.StringIO()
+    p = _panel(tty_in, out, env={"TERM": "dumb", "NO_COLOR": "1"})
+    os.write(master, b"y")  # even with a yes already typed
+    started = time.monotonic()
+    assert p.confirm(QUESTION) is False
+    assert time.monotonic() - started < 1.0
+    assert out.getvalue() == ""
+    _drain(tty_in)

@@ -166,6 +166,17 @@ BUSY_EXIT = "busy_exit"
 KEEP_GOING = "keep_going"
 STOP = "stop"
 
+#: What an ``on_steer`` callback returns instead of ``True``/``False`` to say
+#: "I have begun stopping this turn so I can resend the correction" (t8,
+#: deviation d3). ``True`` (delivered mid-turn) and ``False`` (queued, turn
+#: untouched) keep exactly the meaning they had in t6/t7; this third answer
+#: is the only one that makes the panel print :data:`STOPPING_TEXT`, call
+#: ``cancel`` once and treat the next press as the kill press. It is *not*
+#: an operator stop: :attr:`StreamResult.interrupted` stays clear and
+#: :attr:`StreamResult.stopped_to_correct` is set instead, so the caller can
+#: tell "stopped by ``[s]``" from "stopped in order to correct".
+STOP_BEGUN = "stop_begun"
+
 #: Why the prompt ended: the operator pressed a key, nobody answered in
 #: time, or the terminal hung up (``""`` -- end of input means keep going
 #: locally and nothing is sent, spec c34).
@@ -185,6 +196,11 @@ STEER_LABEL = "steer"
 #: The keys the stop-choice prompt answers to (Esc and Ctrl+C are handled by
 #: :func:`nvsh.promptkeys.read_choice` itself).
 _STOP_PROMPT_KEYS = ("t", "s")
+
+#: The keys :meth:`Panel.confirm` answers to (t8, deviation d3). Only ``y``
+#: (or ``Y``) is yes; ``n``, Esc, Ctrl+C, end of input and the timeout are
+#: all no, so a question nobody answers never acts.
+_CONFIRM_KEYS = ("y", "n")
 
 #: Each answer's ``(outcome, reason)``. Anything unlisted keeps going, which
 #: is the outcome that sends nothing and changes nothing.
@@ -376,6 +392,14 @@ class StreamResult:
     #: interruption -- the caller uses this to say "not running" rather than
     #: exit 130, and to send a correction as a plain next request.
     not_running: bool = False
+    #: The turn was politely cancelled so the operator's correction could be
+    #: resent as the next request (t8): ``on_steer`` answered
+    #: :data:`STOP_BEGUN`. This is deliberately *not* ``interrupted`` -- the
+    #: operator did not ask for the agent to stop, they asked for it to be
+    #: corrected -- so the caller sends the follow-up and reports the
+    #: follow-up's own status rather than 130. A press *after* the stop
+    #: began is the kill press and does set ``interrupted``.
+    stopped_to_correct: bool = False
 
 
 @dataclass
@@ -390,7 +414,7 @@ class _Choice:
 
     read_choice: Callable[[], str] | None = None
     on_choice: Callable[[str, str], object] | None = None
-    on_steer: Callable[[str], bool] | None = None
+    on_steer: Callable[[str], object] | None = None
     read_correction: Callable[..., object] | None = None
     steer_label: str = STEER_LABEL
     #: Whether the turn's terminal event is already queued (spec c36).
@@ -639,7 +663,7 @@ class Panel:
         force_stop: Callable[[], object] | None = None,
         on_busy: Callable[[AgentEvent], object] | None = None,
         on_choice: Callable[[str, str], object] | None = None,
-        on_steer: Callable[[str], bool] | None = None,
+        on_steer: Callable[[str], object] | None = None,
         steer_label: str = STEER_LABEL,
         stop_prompt: bool = True,
     ) -> StreamResult:
@@ -669,7 +693,13 @@ class Panel:
         this thread with the key watcher suspended. Its return value says
         whether the harness took the correction mid-turn (``True``) or the
         caller will send it as the next request (``False``); either way the
-        panel prints no verdict, cancels nothing and resumes rendering. An
+        panel prints no verdict, cancels nothing and resumes rendering.
+        :data:`STOP_BEGUN` is the third answer (t8): the caller wants this
+        turn stopped so the correction can be resent, and the panel then
+        prints :data:`STOPPING_TEXT`, calls ``cancel`` once, sets
+        :attr:`StreamResult.stopped_to_correct` (never ``interrupted``) and
+        treats the next press as the kill press. On a turn whose terminal
+        event is already queued nothing is cancelled at all. An
         empty line, a Ctrl+C or end of input at that prompt means "never
         mind": ``on_steer`` is not called, nothing is sent, and the prompt
         is reported as :data:`KEEP_GOING`/:data:`REASON_KEY`. With no
@@ -902,7 +932,11 @@ class Panel:
         if outcome == STEER and choice.read_correction is not None:
             # The correction line reports the outcome itself: a never-mind
             # there is a "keep going", not a steer.
-            choice.read_correction(choice.on_steer, choice.on_choice)
+            answer = choice.read_correction(choice.on_steer, choice.on_choice)
+            if answer == STOP_BEGUN and not result.not_running:
+                return self._stop_to_correct(stop, result, started_text)
+            # A turn that had already finished needs no stopping: the
+            # correction simply becomes the caller's next request (c36).
             self._arm_waiting()
             return started_text, False
         if choice.on_choice is not None:
@@ -932,12 +966,66 @@ class Panel:
         self._arm_waiting()
         return started_text, False
 
+    def _stop_to_correct(self, stop: _StopState, result: StreamResult, started_text: bool):
+        """The caller answered ``[t]`` with :data:`STOP_BEGUN` (t8, seam A).
+
+        Byte for byte the visible half of :meth:`_stop_press` -- the same
+        ``stopping…`` line, the same single ``cancel``, the same "every
+        further press is the kill press" -- with one deliberate difference:
+        ``interrupted`` stays clear and :attr:`StreamResult.stopped_to_correct`
+        is set, because the operator asked for a correction, not for the
+        agent to stop. Rendering continues until the cancelled turn produces
+        its terminal event; a harness that ignores the cancel is still
+        killable by the next press, which does mark the result interrupted.
+        """
+        result.stopped_to_correct = True
+        stop.stopping = True
+        self._pause_waiting()
+        started_text = self._end_text_run(started_text)
+        self.line(f"{self.style.yellow}{STOPPING_TEXT}{self.style.reset}")
+        stop.cancel_once()
+        self._arm_waiting()
+        return started_text, False
+
+    def confirm(self, question: str) -> bool:
+        """Ask one yes/no question on one line and read one key (t8, seam B).
+
+        Only ``y``/``Y`` is yes. ``n``, Esc, Ctrl+C, end of input and
+        :data:`STOP_PROMPT_TIMEOUT` seconds of silence are all no, so a
+        question nobody answers never acts on its own. Where no prompt can
+        be shown *and* answered (not a tty, ``TERM=dumb``, a stdin with no
+        fd) the answer is no without reading anything at all: off a terminal
+        this must never block, and "could not ask" can only mean "did not
+        agree".
+
+        Called from the main thread with the key watcher already suspended
+        (it is invoked from inside ``on_steer``), so it reads the fd the
+        same way the stop-choice prompt does, via
+        :func:`nvsh.promptkeys.read_choice`, which flushes typeahead,
+        drains escape sequences whole and restores termios on every path.
+        """
+        if not self._can_prompt():
+            return False
+        fd = _fileno(self.in_)
+        if fd is None:  # pragma: no cover - _can_prompt already refused
+            return False
+        s = self.style
+        self.line(f"{s.bold}{s.yellow}nvsh:{s.reset} {question} [y/N]")
+        try:
+            key = promptkeys.read_choice(fd, _CONFIRM_KEYS, STOP_PROMPT_TIMEOUT)
+        except OSError:  # pragma: no cover - the tty vanished mid-question
+            return False
+        return key == "y"
+
     def _correction_prompt(
         self,
-        on_steer: Callable[[str], bool] | None,
+        on_steer: Callable[[str], object] | None,
         on_choice: Callable[[str, str], object] | None,
-    ) -> bool:
-        """Read the ``[t]`` correction line and hand it over. ``True`` if sent.
+    ) -> object:
+        """Read the ``[t]`` correction line and hand it over.
+
+        Returns whatever ``on_steer`` answered (``True``, ``False`` or
+        :data:`STOP_BEGUN`), or ``False`` when nothing was handed over.
 
         :meth:`read_tell` returns ``""`` for all three never-mind cases (an
         empty line, Ctrl+C, end of input), which is exactly the rule spec
@@ -955,9 +1043,10 @@ class Panel:
             on_choice(STEER, REASON_KEY)
         # What the caller does with the text -- deliver it mid-turn, redact
         # it, keep it for the next request -- is the caller's business; the
-        # panel neither reads the answer nor prints a verdict about it.
-        on_steer(text)
-        return True
+        # panel prints no verdict about it. The one thing it *does* read
+        # back is :data:`STOP_BEGUN`, the caller saying it has begun
+        # stopping this turn (t8).
+        return on_steer(text)
 
     @staticmethod
     def _stop_legend(steer_label: str = STEER_LABEL) -> str:
