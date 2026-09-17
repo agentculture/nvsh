@@ -256,7 +256,8 @@ def test_a_failing_command_with_demo_as_default_streams_through_the_daemon(
         json=False,
     )
     try:
-        assert client_mod.handle_failure(args, panel=panel) == 0
+        # "q" ignores the demo proposal: declined, exit 3 (t17)
+        assert client_mod.handle_failure(args, panel=panel) == 3
     finally:
         daemon.shutdown()
 

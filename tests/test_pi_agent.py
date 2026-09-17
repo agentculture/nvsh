@@ -568,6 +568,91 @@ def test_close_is_idempotent(tmp_path):
     agent.close()
 
 
+# --- force_stop / kill_tree (task t12, reliable-agent-stop) ----------------
+
+
+def _pid_alive(pid: int) -> bool:
+    """True while *pid* is a live (non-zombie) process.
+
+    A zombie (state ``Z`` in ``/proc/<pid>/stat``) counts as dead: it has
+    already been signalled to death and is only waiting to be reaped, so
+    treating it as "still alive" would fail a passing force_stop().
+    """
+    try:
+        with open(f"/proc/{pid}/stat", encoding="utf-8") as handle:
+            stat = handle.read()
+    except OSError:
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            return False
+        return True
+    # The state field follows the parenthesised comm, which may contain spaces.
+    return stat.rsplit(")", 1)[1].split()[0] not in ("Z", "X")
+
+
+def _wait_all_dead(pids: list[int], within: float = 3.0) -> list[int]:
+    deadline = time.monotonic() + within
+    while time.monotonic() < deadline:
+        alive = [pid for pid in pids if _pid_alive(pid)]
+        if not alive:
+            return []
+        time.sleep(0.05)
+    return [pid for pid in pids if _pid_alive(pid)]
+
+
+def _wait_for_pid_file(path: Path, timeout: float = 5.0) -> dict:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if path.exists():
+            try:
+                return json.loads(path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                pass
+        time.sleep(0.05)
+    raise AssertionError(f"{path} was never written")
+
+
+def test_force_stop_leaves_no_harness_or_grandchild_pid_alive(tmp_path):
+    """fake pi ignoring abort: force_stop() kills the whole process tree."""
+    pid_file = tmp_path / "pids.json"
+    env = _env(
+        tmp_path,
+        NVSH_FAKE_IGNORE_CANCEL="1",
+        NVSH_FAKE_GRANDCHILD="1",
+        NVSH_FAKE_PID_FILE=str(pid_file),
+    )
+    agent = PiAgent(pi_path="pi", env=env)
+    agent.start()
+    try:
+        pids = _wait_for_pid_file(pid_file)
+        assert pids["harness"] == agent._proc.pid
+
+        agent.force_stop()
+
+        survivors = _wait_all_dead([pids["harness"], pids["grandchild"]])
+        assert survivors == [], f"still alive after force_stop(): {survivors}"
+    finally:
+        agent.close()
+
+
+def test_run_after_force_stop_respawns_with_new_session_status(tmp_path):
+    """The next run() after force_stop() succeeds and names the fresh session."""
+    env = _env(tmp_path, NVSH_FAKE_IGNORE_CANCEL="1")
+    agent = PiAgent(pi_path="pi", env=env)
+    agent.start()
+    agent.force_stop()
+
+    try:
+        events = list(agent.run(_request(), _context()))
+    finally:
+        agent.close()
+
+    status_texts = [event.text for event in events if event.kind == EventKind.STATUS]
+    assert any("new session" in text for text in status_texts), status_texts
+    assert events[-1].kind == EventKind.DONE
+
+
 # --- prompt builder ---------------------------------------------------------
 
 

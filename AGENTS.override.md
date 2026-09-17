@@ -43,6 +43,16 @@ fix without confirmation) is out of scope for v1, and machine-level undo
 beyond the approve/execute/verify loop is tracked as issue #7. When
 summarizing, don't describe those still-open items as implemented.
 
+Stopping the agent is reliable on every backend: while it works, the first
+Ctrl+C or Esc asks the harness to stop and the panel shows `stopping… press
+again to kill`; a second press kills the harness's process tree
+(`NvshAgent.force_stop()`, daemon `kill` control). A new request from a
+shell whose own turn is still running (or whose owner shell is gone) gets a
+busy prompt — steer, replace or exit; declining exits 3 (`EXIT_DECLINED`,
+visible in `--json` and the audit log, never as the prompt's `$?`); `nvsh
+overview` shows the active turn; `nvsh doctor --apply` clears a hung one.
+See `docs/shell-integration.md` "Stopping the agent".
+
 nvsh now registers nine harness adapters (`nvsh/agent/registry.py`'s
 `ADAPTERS`): `pi`, `qwen` (ACP, plan mode by default), `qwen-p`
 (stream-json print-mode, read-only fallback), `claude`, `codex`, `agy`

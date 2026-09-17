@@ -45,7 +45,7 @@ from pathlib import Path
 from typing import Any, Iterator, Mapping, Sequence
 
 from ._env import child_env
-from ._subprocess import escalate_close, redacted_tail
+from ._subprocess import escalate_close, kill_tree, redacted_tail
 from .base import (
     AgentContext,
     AgentEvent,
@@ -424,6 +424,12 @@ class AcpAgent(NvshAgent):
         self._closed = False
         self._cancelled = False
         self._held.clear()
+        # A fresh queue, not a cleared one: the old reader thread's final
+        # ``None`` (its EOF marker) can still be sitting in here after a
+        # force_stop()/close() re-run, and a stale EOF would make the next
+        # start()'s initialize look like the new child closed its output
+        # before ever answering.
+        self._queue = queue.Queue()
         self._stderr_tail.clear()
         self._sent_system_prompt = False
 
@@ -438,6 +444,11 @@ class AcpAgent(NvshAgent):
                 bufsize=1,
                 env=self._env,
                 cwd=self._cwd,
+                # Its own process group, so force_stop's kill_tree can reach
+                # every tool grandchild the harness started (task t6) --
+                # without this the child shares nvsh's own group and
+                # kill_tree refuses to signal it (see _own_group).
+                start_new_session=True,
             )
         except OSError as exc:
             raise AcpError(f"failed to start {argv[0]}: {exc}") from exc
@@ -905,6 +916,46 @@ class AcpAgent(NvshAgent):
                     "params": {"sessionId": self._session_id},
                 }
             )
+
+    def force_stop(self) -> None:
+        """Stop the turn for certain, even when the harness ignores cancel.
+
+        The default (:meth:`NvshAgent.force_stop`: ``cancel()`` then
+        ``close()``) is not enough here: :func:`escalate_close` closes stdin
+        and, when the child exits cleanly on that EOF within its wait
+        window, returns *without* ever calling :func:`kill_tree` -- a
+        harness that quits on EOF but leaves a background grandchild
+        running (a stray tool subprocess) would leak it. So this goes
+        straight to :func:`kill_tree` instead of routing through
+        :meth:`close`: every pending permission dialog is denied first (an
+        unanswered one would otherwise park the harness forever),
+        ``session/cancel`` is sent best-effort (a harness that honours it
+        exits sooner; one that ignores it is killed anyway), and then the
+        whole process group is signalled regardless of whether the leader
+        would have exited on its own. Internal state is reset the same way
+        :meth:`close` resets it, so the next :meth:`run` calls :meth:`start`
+        again and re-initialises (fresh ``initialize`` / ``session/new``).
+        """
+        self._cancelled = True
+        proc = self._proc
+        while self._pending:
+            request_id = next(iter(self._pending))
+            self.respond_ui(request_id, cancelled=True)
+        if proc is not None and proc.poll() is None and self._session_id:
+            self._send(
+                {
+                    "jsonrpc": "2.0",
+                    "method": "session/cancel",
+                    "params": {"sessionId": self._session_id},
+                }
+            )
+        self._closed = True
+        self._proc = None
+        self._session_id = ""
+        kill_tree(proc, grace=_CLOSE_WAIT_SECONDS)
+        for thread in (self._reader_thread, self._stderr_thread):
+            if thread is not None:
+                thread.join(timeout=_CLOSE_WAIT_SECONDS)
 
     def close(self) -> None:
         """Idempotent teardown through the shared escalation helper (d5)."""

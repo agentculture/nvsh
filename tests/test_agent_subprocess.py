@@ -26,7 +26,7 @@ from collections import deque
 import pytest
 
 from nvsh.agent._env import child_env
-from nvsh.agent._subprocess import SubprocessAgent, escalate_close, redacted_tail
+from nvsh.agent._subprocess import SubprocessAgent, escalate_close, kill_tree, redacted_tail
 from nvsh.agent.base import (
     AgentContext,
     AgentEvent,
@@ -289,3 +289,191 @@ def test_subprocess_agent_close_escalates_and_leaves_no_child():
     assert agent._proc.poll() is not None
     with pytest.raises(OSError):
         os.kill(pid, 0)
+
+
+# ---------------------------------------------------------------------------
+# nvsh/agent/_subprocess.py::kill_tree and NvshAgent.force_stop -- the
+# process-group stop (plan reliable-agent-stop, task t2; covers c27/h22/c14/h13)
+# ---------------------------------------------------------------------------
+
+#: Spawns a sleeping grandchild, reports its pid, then sleeps itself.
+_SPAWNS_GRANDCHILD = (
+    "import subprocess, sys, time\n"
+    "g = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(600)'])\n"
+    "print(g.pid, flush=True)\n"
+    "time.sleep(600)\n"
+)
+
+
+def _pid_alive(pid: int) -> bool:
+    """True while *pid* is a live (non-zombie) process."""
+    try:
+        with open(f"/proc/{pid}/stat", encoding="utf-8") as handle:
+            stat = handle.read()
+    except OSError:
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            return False
+        return True
+    # The state field follows the parenthesised comm, which may contain spaces.
+    return stat.rsplit(")", 1)[1].split()[0] not in ("Z", "X")
+
+
+def _wait_gone(pids: list[int], within: float = 3.0) -> list[int]:
+    import time
+
+    deadline = time.monotonic() + within
+    while time.monotonic() < deadline:
+        alive = [pid for pid in pids if _pid_alive(pid)]
+        if not alive:
+            return []
+        time.sleep(0.05)
+    return [pid for pid in pids if _pid_alive(pid)]
+
+
+def _spawn_tree() -> tuple[subprocess.Popen, int]:
+    proc = subprocess.Popen(  # nosec B603 - fixed argv, no shell
+        [sys.executable, "-u", "-c", _SPAWNS_GRANDCHILD],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+        start_new_session=True,
+    )
+    assert proc.stdout is not None
+    grandchild = int(proc.stdout.readline().strip())
+    assert _pid_alive(grandchild)
+    return proc, grandchild
+
+
+def test_kill_tree_kills_the_child_and_its_grandchild():
+    proc, grandchild = _spawn_tree()
+    kill_tree(proc, grace=2.0)
+    assert _wait_gone([proc.pid, grandchild]) == []
+
+
+def test_kill_tree_kills_a_tree_whose_leader_ignores_sigterm():
+    script = "import signal\nsignal.signal(signal.SIGTERM, signal.SIG_IGN)\n" + _SPAWNS_GRANDCHILD
+    proc = subprocess.Popen(  # nosec B603 - fixed argv, no shell
+        [sys.executable, "-u", "-c", script],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+        start_new_session=True,
+    )
+    assert proc.stdout is not None
+    grandchild = int(proc.stdout.readline().strip())
+    assert kill_tree(proc, grace=0.2) == -signal.SIGKILL
+    assert _wait_gone([proc.pid, grandchild]) == []
+
+
+def test_kill_tree_on_an_already_dead_process_does_not_raise():
+    proc = _spawn(_EOF_EXITS)
+    proc.kill()
+    proc.wait(timeout=5)
+    assert kill_tree(proc, grace=0.2) == -signal.SIGKILL
+    assert kill_tree(None) is None
+
+
+def test_kill_tree_never_signals_the_callers_own_process_group():
+    """A child that shares nvsh's group (pi, acp, agy today) is killed alone."""
+    proc = _spawn(_IGNORES_SIGTERM)
+    assert os.getpgid(proc.pid) == os.getpgrp()
+    assert kill_tree(proc, grace=0.2) == -signal.SIGKILL
+
+
+def test_subprocess_agent_spawns_its_child_in_a_new_session():
+    script = "import os\nprint(os.getsid(0) == os.getpid())\n"
+    events = _collect(_ScriptedAgent(script))
+    assert [e.text for e in events if e.kind is EventKind.TEXT_DELTA] == ["True"]
+
+
+def test_subprocess_agent_cancel_kills_the_whole_tree():
+    agent = _ScriptedAgent(_SPAWNS_GRANDCHILD)
+    agent.start()
+    events = agent.run(_request(), AgentContext())
+    first = next(events)
+    grandchild = int(first.text)
+    child = agent._proc.pid
+    agent.cancel()
+    events.close()
+    assert _wait_gone([child, grandchild]) == []
+
+
+def test_normal_exit_still_reaps_a_tool_grandchild_left_in_the_group():
+    """Qodo 6: a harness that exits normally (not cancelled) but leaves a
+    background tool running in its own process group must still lose that
+    grandchild. ``run()``'s ``_exit_event`` calls ``self._proc.wait()``
+    (reaping the leader) before the ``finally`` block's teardown runs, so
+    by then ``poll()`` is never ``None`` and a group looked up only there
+    would already be unreachable -- it has to be captured at spawn time."""
+    script = (
+        "import subprocess, sys\n"
+        "g = subprocess.Popen(\n"
+        "    [sys.executable, '-c', 'import time; time.sleep(600)'],\n"
+        "    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,\n"
+        ")\n"
+        "print(g.pid, flush=True)\n"
+    )
+    agent = _ScriptedAgent(script)
+    agent.start()
+    events = list(agent.run(_request(), AgentContext()))
+    grandchild = int(events[0].text)
+    assert events[-1].kind == EventKind.DONE
+    # The fix reaps it as part of run()'s own teardown, so by the time
+    # run() has returned it may already be gone -- the guarantee this test
+    # is proving is that it does not outlive run() at all, not that it is
+    # still alive right here.
+    assert _wait_gone([grandchild]) == []
+
+
+def test_force_stop_defaults_to_cancel_then_close():
+    calls: list[str] = []
+
+    class _Recorder(_ScriptedAgent):
+        def cancel(self) -> None:
+            calls.append("cancel")
+
+        def close(self) -> None:
+            calls.append("close")
+
+    _Recorder("").force_stop()
+    assert calls == ["cancel", "close"]
+
+
+def test_force_stop_kills_a_subprocess_agents_tree():
+    agent = _ScriptedAgent(_SPAWNS_GRANDCHILD)
+    agent.start()
+    agent._proc, grandchild = _spawn_tree()
+    agent.force_stop()
+    assert _wait_gone([agent._proc.pid, grandchild]) == []
+
+
+def test_stop_paths_never_open_harness_settings_files():
+    """Stops are signals and protocol messages only (c14/h13): no stop path
+    calls any file-opening API, so no harness settings/trust file is touched."""
+    import ast
+    import inspect
+    import textwrap
+
+    import nvsh.agent._subprocess as sp
+    from nvsh.agent.base import NvshAgent
+
+    file_apis = {"open", "read_text", "write_text", "read_bytes", "write_bytes", "unlink"}
+    for func in (
+        sp.kill_tree,
+        sp._own_group,
+        sp._signal,
+        sp.escalate_close,
+        SubprocessAgent.cancel,
+        SubprocessAgent.close,
+        SubprocessAgent._terminate_if_running,
+        NvshAgent.force_stop,
+    ):
+        tree = ast.parse(textwrap.dedent(inspect.getsource(func)))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                name = getattr(node.func, "id", None) or getattr(node.func, "attr", None)
+                assert name not in file_apis, (func.__qualname__, name)

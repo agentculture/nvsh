@@ -25,16 +25,53 @@ Optional, in either mode:
 ``NVSH_FAKE_UI_TIMEOUT`` seconds to wait for a control_response before giving
                          up with an error line (default 10) -- a broken host
                          fails the test quickly instead of hanging the suite.
+
+Two more knobs, for the reliable-agent-stop tests:
+
+``NVSH_FAKE_IGNORE_CANCEL``
+    ``1`` -- once the scripted events are done, the process does not exit:
+    it blocks reading stdin instead, silently dropping anything it reads,
+    including a host's ``{"type": "control_request", "request":
+    {"subtype": "interrupt"}}`` (the real CLI's stream-json cancel). This
+    is what a harness that has stopped honouring its own cancel protocol
+    looks like from the client's side.
+
+``NVSH_FAKE_GRANDCHILD``
+    ``1`` -- start a ``sleep 600`` child at launch and write
+    ``{"harness": <this pid>, "grandchild": <sleep's pid>}`` to
+    ``$NVSH_FAKE_PID_FILE``.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import subprocess  # nosec B404 - fixed argv below, test fixture only
 import sys
 import threading
+from pathlib import Path
 
 DEFAULT_UI_TIMEOUT = 10.0
+
+
+def spawn_grandchild_if_requested() -> None:
+    """``NVSH_FAKE_GRANDCHILD=1``: start a sleeping child and record both pids."""
+    if os.environ.get("NVSH_FAKE_GRANDCHILD") != "1":
+        return
+    pid_file = os.environ.get("NVSH_FAKE_PID_FILE")
+    child = subprocess.Popen(["sleep", "600"])  # nosec B603 B607 - fixed argv
+    if pid_file:
+        Path(pid_file).write_text(
+            json.dumps({"harness": os.getpid(), "grandchild": child.pid}), encoding="utf-8"
+        )
+
+
+def hang_if_ignoring_cancel() -> None:
+    """``NVSH_FAKE_IGNORE_CANCEL=1``: never let the turn end on its own."""
+    if os.environ.get("NVSH_FAKE_IGNORE_CANCEL") != "1":
+        return
+    while sys.stdin.readline():
+        pass
 
 
 def emit(obj: dict) -> None:
@@ -143,13 +180,15 @@ def replay_events(path: str) -> int:
 
 def main() -> int:
     record("NVSH_FAKE_ARGV", sys.argv)
+    spawn_grandchild_if_requested()
     transcript = os.environ.get("NVSH_FAKE_TRANSCRIPT")
     if transcript:
-        return replay_transcript(transcript)
-    events_path = os.environ.get("NVSH_FAKE_EVENTS")
-    if events_path:
-        return replay_events(events_path)
-    return 0
+        rc = replay_transcript(transcript)
+    else:
+        events_path = os.environ.get("NVSH_FAKE_EVENTS")
+        rc = replay_events(events_path) if events_path else 0
+    hang_if_ignoring_cancel()
+    return rc
 
 
 if __name__ == "__main__":

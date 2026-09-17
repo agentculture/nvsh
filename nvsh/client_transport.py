@@ -88,6 +88,11 @@ class Responder:
         self.shell_id = shell_id
         self.env = env
         self.agent: object | None = None
+        #: Set by the client's first stop press (t16). A one-shot adapter torn
+        #: down after a stop is force-stopped, not just closed: ``close()``
+        #: lets a harness that exits on stdin EOF leave its grandchildren
+        #: behind, and nothing outlives a one-shot client.
+        self.stopping = False
 
     def bind_agent(self, agent: object) -> None:
         """Point answers at ``agent`` -- the one-shot, in-process backend."""
@@ -312,6 +317,9 @@ def one_shot(
         yield AgentEvent(kind=EventKind.ERROR, error=f"agent error: {exc}")
         return
     finally:
+        if responder is not None and responder.stopping:
+            with contextlib.suppress(Exception):  # kill the whole tree, not just the leader
+                agent.force_stop()
         with contextlib.suppress(Exception):  # teardown must not mask the answer
             agent.close()
     if not saw_terminal:
@@ -559,6 +567,68 @@ def cancel(*, shell_id: str | int | None = None, env: Mapping[str, str] | None =
     return bool(control("cancel", shell_id=shell_id, env=env))
 
 
+def kill(*, shell_id: str | int | None = None, env: Mapping[str, str] | None = None) -> bool:
+    """Force-stop this shell's running turn (the second press).
+
+    ``True`` once the daemon has force-stopped a turn this shell owns;
+    ``False`` when no daemon is listening or this shell has no running turn.
+    The timeout outlasts the daemon's own wait for the killed turn to end.
+    """
+    events = control("kill", shell_id=shell_id, env=env, timeout=_daemon._KILL_WAIT + 5.0)
+    return any(event.kind is EventKind.STATUS for event in events)
+
+
+def kill_active(
+    *,
+    confirmed: bool = False,
+    expected: Mapping[str, object] | None = None,
+    env: Mapping[str, str] | None = None,
+) -> str:
+    """Force-stop the daemon's current active turn, whoever owns it (task t19).
+
+    Unlike :func:`kill`, this is not scoped to the caller's own shell -- it
+    backs ``nvsh doctor --apply``, which runs as its own process and is
+    never the turn's owner. The daemon decides for itself whether *confirmed*
+    is honored: a dead-owner turn is killed regardless, a live-owner turn
+    only when *confirmed* is ``True`` and *expected* -- the
+    ``{"shell", "started"}`` identity of the turn the operator approved,
+    taken from the status snapshot -- still names the active turn.
+    Returns ``"killed"``/``"stopping"`` on success, ``"idle"`` when nothing
+    was running, ``"changed"`` when a different turn is now active,
+    ``"refused"`` when a live owner needed confirmation that was not given,
+    or ``"no_daemon"`` when nothing is listening. Never raises.
+    """
+    extra: dict[str, object] = {"confirmed": confirmed}
+    if expected is not None:
+        extra["expected"] = dict(expected)
+    events = control("kill_active", env=env, timeout=_daemon._KILL_WAIT + 5.0, **extra)
+    for event in events:
+        if event.kind is EventKind.STATUS:
+            return event.text
+        if event.kind is EventKind.ERROR:
+            if "changed" in event.error:
+                return "changed"
+            return "refused" if "confirm" in event.error else "idle"
+    return "no_daemon"
+
+
+def busy_choice(
+    choice: str,
+    *,
+    shell_id: str | int | None = None,
+    env: Mapping[str, str] | None = None,
+) -> bool:
+    """Answer the daemon's ``busy`` prompt for this shell's pending request (t10).
+
+    *choice* is ``"steer"``, ``"replace"`` or ``"exit"``. ``True`` once the
+    daemon accepted it; ``False`` when no daemon is listening, this shell has
+    no busy prompt open, the choice is unknown, or ``steer`` was chosen for a
+    harness with no mid-turn channel.
+    """
+    events = control("busy_choice", shell_id=shell_id, env=env, choice=choice)
+    return any(event.kind is EventKind.STATUS for event in events)
+
+
 def respond_ui(
     request_id: str,
     fields: Mapping[str, object] | None = None,
@@ -599,9 +669,15 @@ def stop(*, env: Mapping[str, str] | None = None) -> bool:
     return bool(control("stop", env=env))
 
 
-def status(*, env: Mapping[str, str] | None = None) -> dict:
-    """Report the daemon's state, or ``{"running": False, ...}`` when it is down."""
-    events = control("status", env=env)
+def status(*, env: Mapping[str, str] | None = None, timeout: float = 5.0) -> dict:
+    """Report the daemon's state, or ``{"running": False, ...}`` when it is down.
+
+    ``timeout`` bounds the connect wait (``control`` never autostarts, so a
+    missing socket returns instantly regardless); callers on a fast,
+    always-on read path such as ``nvsh overview`` pass a short one so a
+    stale socket that never answers cannot make them hang.
+    """
+    events = control("status", env=env, timeout=timeout)
     for event in events:
         if event.kind is EventKind.STATUS:
             try:

@@ -83,6 +83,21 @@ full agent turn. Two independent guards stop that, and each works alone:
 - `nvsh slash`'s exit status above, which also covers an operator who types
   `nvsh slash "/doctor"` by hand (leading space or not).
 
+The verb's *own* result — including the `declined` status below — is still
+reported, just not as the process's exit status: it is `exit_code` in
+`nvsh slash --json`, and it is written to the audit log.
+
+| Result | Code | Where it shows |
+| --- | --- | --- |
+| ran | 0 | `nvsh slash` exit status; `--json` `exit_code` |
+| unhandled line | 1 | `nvsh slash` exit status |
+| stopped with Ctrl+C / Esc during work | 130 | `--json` `exit_code`; audit `cancel` / `force_kill` |
+| declined: Esc/ignore at a proposal, or exit at the busy prompt | 3 (`EXIT_DECLINED`) | `--json` `exit_code`; audit `declined` |
+
+`nvsh hook` returns the same 0/3/130, and `hook.bash` discards it with
+`|| return 0`, so the operator's `$?` and `PIPESTATUS` for the failing
+command are never changed (`tests/test_hook_bash.py`).
+
 ## What each key does
 
 ### Enter
@@ -329,8 +344,8 @@ the DGX Spark reported "I don't see proper indications things run"):
   next real event reaches the screen, and the ticker is paused for as long
   as the panel is handling an event — a proposal prompt is never painted
   over. One lock guards every write, so the ticker can never interleave
-  with the agent's text, and `Ctrl+C` still ends the stream within a second
-  while waiting.
+  with the agent's text, and `Ctrl+C` or `Esc` still says `stopping…`
+  within a second while waiting (see "Stopping the agent" below).
 - **Keypress acknowledgement.** The instant a key is pressed at a proposal,
   the panel prints `nvsh: running ...` (Enter),
   `nvsh: running; 'ssh orin *' approved for this session` (`s`/`S`),
@@ -349,6 +364,70 @@ the DGX Spark reported "I don't see proper indications things run"):
   `nvsh: falling back - <original text>` line, because it explains the
   slower turn that follows. Every other status stays a dim `... text` line,
   and a status with empty text prints nothing at all.
+
+### Stopping the agent (reliable-agent-stop)
+
+While the agent works — thinking, streaming text, or the waiting ticker —
+`Ctrl+C` and a lone `Esc` do the same thing:
+
+1. **First press:** nvsh asks the harness to stop through its own channel
+   (pi `abort`, codex `turn/interrupt`, ACP `session/cancel`, a signal for
+   agy; claude, qwen-p and openai-compat stop at once). The panel stays up
+   and prints `stopping… press again to kill` within a second, and keeps
+   rendering until the turn really ends.
+2. **Second press:** nvsh kills the harness's whole process tree — its tool
+   subprocesses too — and the prompt comes back. The next request starts a
+   fresh harness session (the panel says `new session`); the harness's
+   in-memory conversation is gone. There is no automatic kill timer: only
+   `$NVSH_TURN_TIMEOUT` bounds a turn on its own.
+
+Both the daemon path (`client_transport.cancel`, then `kill`) and the
+one-shot path (the in-process adapter's `cancel()`, then `force_stop()`)
+work this way. After a stop in a one-shot run, whatever tool processes the
+harness left behind are killed once the turn is over (deviation d8).
+
+Notes:
+
+- An `Esc` counts only when it arrives alone: arrow and function keys start
+  with the same byte, so nvsh waits 50 ms and drains a whole escape sequence
+  instead of reading it as `Esc` (`nvsh/keys.py`).
+- **Typeahead is dropped.** While the panel streams, stdin is held in cbreak
+  mode to see `Esc`; anything else typed is discarded, never executed.
+- The terminal is restored on every exit path, including `SIGHUP` (ssh drop)
+  and `SIGTERM`. `Esc` watching is off when stdin is not a tty, under
+  `TERM=dumb`, or with `NVSH_DISABLE` set.
+- A press while an approved command is running is acted on when that command
+  returns; the command itself still receives `SIGINT` from the terminal
+  (deviation d2).
+- On a hung-up terminal, end of input at a proposal means **ignore**, never
+  approve (deviation d1).
+
+### The busy prompt
+
+A new request from a shell whose own turn is still running — or from any
+shell when the shell that started the turn no longer exists (an ssh drop,
+then a reconnect) — does not queue silently. The panel asks:
+
+```text
+nvsh: busy -- 3422579 still running (42s)
+[t] steer [r] replace [Esc] exit
+```
+
+- `[t] steer` sends the new request into the running turn. It is offered only
+  for harnesses with a mid-turn channel (pi, codex). If nothing happens for
+  10 s after steering, the prompt comes back with replace/exit only.
+- `[r] replace` kills the running turn and runs the new request.
+- `[Esc] exit` (or any other key) leaves the running turn alone and returns
+  to the prompt with the declined status (3).
+
+A live *other* shell's turn is never touched: requests from other shells
+wait in the queue with the usual `waiting for the agent` notice. If the
+prompt is not answered within 60 s the request queues as before. `nvsh
+overview` shows the active turn (shell, target, elapsed) and the queue, and
+`nvsh doctor --apply` clears a hung turn (see `/doctor` below). Every stop,
+steer, replace, exit and decline is written to the audit log as an
+`event: "stop"` line with `kind`, `shell`, `target`, `elapsed` and
+`outcome`.
 
 ### Approving from the proposal keys (deviations d15, d24)
 

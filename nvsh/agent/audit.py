@@ -11,6 +11,23 @@ from typing import Mapping
 
 from .base import Target, target_to_dict
 
+# The stop-lifecycle kinds record_stop accepts (reliable-agent-stop spec):
+# Ctrl+C/Esc cancel, a second-press force kill, steering a running turn,
+# replacing it, exiting a busy prompt, declining the agent outright, and
+# nvsh doctor --apply clearing a hung turn. Any other kind is a programming
+# error in the caller, not a new stop path, so record_stop rejects it.
+STOP_KINDS = frozenset(
+    {
+        "cancel",
+        "force_kill",
+        "steer",
+        "replace",
+        "busy_exit",
+        "declined",
+        "doctor_apply",
+    }
+)
+
 
 def default_audit_path(env: Mapping[str, str] | None = None) -> Path:
     """Resolve ``$XDG_STATE_HOME/nvsh/audit.jsonl`` through an injectable env mapping.
@@ -39,6 +56,15 @@ def _to_jsonable(value: object) -> object:
     if isinstance(value, dict):
         return {key: _to_jsonable(v) for key, v in value.items()}
     return value
+
+
+def _encode_target(target: Target | Mapping[str, object] | None) -> object:
+    """Encode ``target`` the way every audit entry shares: dataclass, dict or None."""
+    if isinstance(target, Target):
+        return target_to_dict(target)
+    if target is not None:
+        return dict(target)
+    return None
 
 
 class AuditLog:
@@ -71,25 +97,53 @@ class AuditLog:
         :func:`~nvsh.agent.base.target_to_dict`; a caller that already has a
         plain dict (e.g. decoded off the wire) may pass that instead.
         """
-        if isinstance(target, Target):
-            target_data: object = target_to_dict(target)
-        elif target is not None:
-            target_data = dict(target)
-        else:
-            target_data = None
         entry = {
             "ts": time.time(),
             "event": event,
             "proposal": _to_jsonable(proposal),
             "decision": decision,
             "outcome": _to_jsonable(outcome),
-            "target": target_data,
+            "target": _encode_target(target),
         }
+        self._write_entry(entry)
+        return entry
+
+    def record_stop(
+        self,
+        kind: str,
+        shell: object,
+        target: Target | Mapping[str, object] | None,
+        elapsed: object,
+        outcome: object,
+    ) -> dict:
+        """Append one ``event='stop'`` line for the stop/cancel/steer/replace/
+
+        busy-exit/declined/doctor-apply lifecycle (t3, reliable-agent-stop).
+        ``kind`` must be one of :data:`STOP_KINDS`; anything else is a
+        programming error in the caller and raises ``ValueError`` rather than
+        silently recording an unrecognised stop path. ``target`` follows
+        :meth:`record`'s encoding: a :class:`~nvsh.agent.base.Target`
+        dataclass, a plain dict, or ``None``.
+        """
+        if kind not in STOP_KINDS:
+            raise ValueError(f"unknown stop kind: {kind!r} (expected one of {sorted(STOP_KINDS)})")
+        entry = {
+            "ts": time.time(),
+            "event": "stop",
+            "kind": kind,
+            "shell": shell,
+            "target": _encode_target(target),
+            "elapsed": elapsed,
+            "outcome": _to_jsonable(outcome),
+        }
+        self._write_entry(entry)
+        return entry
+
+    def _write_entry(self, entry: dict) -> None:
         line = json.dumps(entry, sort_keys=True)
         with open(self.path, "a", encoding="utf-8") as handle:
             handle.write(line + "\n")
         os.chmod(self.path, 0o600)
-        return entry
 
     def read_all(self) -> list[dict]:
         """Read back every recorded entry (test/debug convenience, not on the hot path)."""

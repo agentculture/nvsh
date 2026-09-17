@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/). This project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.13.0] - 2026-09-16
+
+### Added
+
+- Esc stops the agent mid-work exactly like Ctrl+C. The first press asks the harness to stop through its own channel and the panel stays up with `stopping… press again to kill`; a second press kills the harness's whole process tree (`NvshAgent.force_stop()` on every adapter, daemon `kill` control). Lone Esc is told apart from arrow/function keys (`nvsh/keys.py`); typeahead during streaming is dropped; the terminal is restored on SIGHUP/SIGTERM.
+- Busy prompt: a new request from a shell whose own turn is still running, or whose owner shell is gone, offers `[t] steer` (pi, codex), `[r] replace` or `[Esc] exit` instead of queueing silently (daemon `busy` event and `busy_choice` control). Other shells' turns are never touched.
+- Declined exit code `EXIT_DECLINED = 3` for exit at the busy prompt or Esc/ignore at a proposal, visible as `exit_code` in `nvsh slash --json` and in the audit log; `nvsh slash` still exits 0 and the operator's `$?` is unchanged.
+- `nvsh overview` shows the daemon's active turn (shell, target, elapsed) and queue without autostarting the daemon.
+- `nvsh doctor` check `agent_turn_not_hung`; `nvsh doctor --apply` force-stops a hung turn (a dead-owner turn directly, a live other shell's turn only after a confirm naming it; daemon `kill_active` control).
+- Audit `event: "stop"` lines for cancel, force_kill, steer, replace, busy_exit, declined and doctor_apply.
+
+### Changed
+
+- Harness children (claude, qwen-p, pi, codex app-server, ACP, agy warm and cold) start in their own session, and `close()` reaps the harness's process group after the graceful stdin-close wait, so tool subprocesses are never orphaned.
+- `/ask`, Ctrl+G and `@target` requests put proposals to the operator on the panel like an automatic failure does (deviation d11).
+- The panel's stream loop runs the event source on a worker thread so Esc and a second press are seen even while no event arrives.
+
+### Fixed
+
+- Ctrl+C did not stop a one-shot agent: the client only sent a socket cancel to the daemon and never called the in-process adapter's `cancel()`.
+- Harnesses that ignore their protocol cancel (pi, codex, ACP, warm agy) kept running and held the daemon's run lock for every shell until the 300 s turn cap; warm agy's cancel sent nothing to the child.
+- On a hung-up terminal, end of input at a proposal read as Enter (approve); it now ignores (deviation d1).
+- ACP adapter: a stale end-of-output marker in the reader queue made the next `initialize` fail after a stop.
+- openai-compat: stopping a stalled stream waited out the 5 s socket timeout; it now shuts the socket down at once.
+- PR review: Ctrl+C at a proposal or busy prompt stopped nothing and counted as a decline; it now stops the agent (exit 130).
+- PR review: `nvsh doctor --apply` exited unhealthy after a successful repair; a delayed kill could stop a later request; `kill_active` now carries the confirmed turn identity, accepts only JSON `true` as confirmation and survives oversized shell ids.
+- PR review: late output from a cancelled warm agy turn could leak into the next turn; claude/qwen-p left tool subprocesses running after a normal exit.
+
 ## [0.12.1] - 2026-09-14
 
 ### Fixed

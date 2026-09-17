@@ -252,7 +252,6 @@ def test_show_proposal_non_tty_reads_a_line():
         (b"e", "explain"),
         (b"d", "details"),
         (b"\x1b", "ignore"),
-        (b"\x03", "ignore"),
     ],
 )
 def test_show_proposal_reads_single_keys_on_a_tty(key, expected):
@@ -271,6 +270,26 @@ def test_show_proposal_reads_single_keys_on_a_tty(key, expected):
             p = panel_mod.Panel(out=io.StringIO(), in_=tty_in, env={}, isatty=True)
             proposal = Proposal("df -h", "disk", ProposalKind.INSPECT)
             assert p.show_proposal(proposal) == expected
+    finally:
+        typist.cancel()
+        os.close(master)
+
+
+def test_show_proposal_ctrl_c_on_a_tty_is_a_stop_press_not_ignore():
+    """Raw mode delivers Ctrl+C as 0x03; it must not answer the proposal.
+
+    It raises ``KeyboardInterrupt`` instead, which ``Panel.stream`` counts
+    as a stop press (PR #16 review, Qodo 4; see tests/test_panel_stop.py).
+    """
+    master, slave = pty.openpty()
+    typist = threading.Timer(0.2, lambda: os.write(master, b"\x03"))
+    typist.start()
+    try:
+        with os.fdopen(slave, "rb", buffering=0) as tty_in:
+            p = panel_mod.Panel(out=io.StringIO(), in_=tty_in, env={}, isatty=True)
+            proposal = Proposal("df -h", "disk", ProposalKind.INSPECT)
+            with pytest.raises(KeyboardInterrupt):
+                p.show_proposal(proposal)
     finally:
         typist.cancel()
         os.close(master)
@@ -317,7 +336,10 @@ def test_sigint_during_stream_cancels_and_reports_interrupted():
     assert signal.getsignal(signal.SIGINT) is not None
 
 
-def test_ctrl_c_returns_to_a_prompt_within_one_second(tmp_path):
+def test_ctrl_c_says_stopping_within_one_second_and_a_second_press_returns_the_prompt(tmp_path):
+    """c22 as amended by the reliable-agent-stop spec: the first Ctrl+C prints
+    the stopping line within 1s and the panel stays up; a second press ends
+    the stream (here the source ignores the cancel), again within 1s."""
     driver = tmp_path / "driver.py"
     driver.write_text(
         "import sys, time\n"
@@ -340,16 +362,24 @@ def test_ctrl_c_returns_to_a_prompt_within_one_second(tmp_path):
         encoding="utf-8",
     )
     marker = tmp_path / "marker"
-    env = dict(os.environ, PYTHONPATH=str(REPO_ROOT), PYTHONUNBUFFERED="1")
+    env = dict(
+        os.environ, PYTHONPATH=str(REPO_ROOT), PYTHONUNBUFFERED="1", PYTHONIOENCODING="utf-8"
+    )
     proc = subprocess.Popen(  # nosec B603 - fixed argv
         [sys.executable, str(driver), str(marker)],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         env=env,
         text=True,
+        encoding="utf-8",
     )
     try:
         assert proc.stdout.readline().strip() == "READY"
+        started = time.monotonic()
+        proc.send_signal(signal.SIGINT)
+        while "stopping" not in proc.stdout.readline():
+            assert proc.poll() is None, "stream ended on the first press"
+        stopping = time.monotonic() - started
         started = time.monotonic()
         proc.send_signal(signal.SIGINT)
         proc.wait(timeout=10)
@@ -358,6 +388,7 @@ def test_ctrl_c_returns_to_a_prompt_within_one_second(tmp_path):
         if proc.poll() is None:  # pragma: no cover - only on failure
             proc.kill()
     assert proc.returncode == 130
+    assert stopping < 1.0, f"stopping line took {stopping:.3f}s"
     assert elapsed < 1.0, f"took {elapsed:.3f}s"
     assert marker.read_text(encoding="utf-8") == "cancelled"
 

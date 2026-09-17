@@ -32,6 +32,10 @@ class EventKind(str, Enum):
     THINKING = "thinking"
     DONE = "done"
     ERROR = "error"
+    #: Daemon-only (t10): the agent is busy with a turn this request may
+    #: steer, replace or leave; ``args`` carries ``owner``, ``elapsed``,
+    #: ``steerable`` and ``choices``. Never yielded by an adapter.
+    BUSY = "busy"
 
 
 class ProposalKind(str, Enum):
@@ -334,6 +338,20 @@ class NvshAgent(abc.ABC):
     @abc.abstractmethod
     def cancel(self) -> None:
         """Ask the in-flight ``run()`` to stop yielding further events."""
+
+    def force_stop(self) -> None:
+        """Stop the in-flight turn for certain, even if the harness ignores it.
+
+        Deliberately *not* abstract: the default asks politely
+        (:meth:`cancel`) and then releases everything (:meth:`close`, which
+        for subprocess adapters ends in a process-group kill). Adapters with
+        a protocol-level interrupt override it. A stop only ever sends
+        signals and protocol messages; it never edits harness files.
+        """
+        try:
+            self.cancel()
+        finally:
+            self.close()
 
     @abc.abstractmethod
     def close(self) -> None:

@@ -57,6 +57,7 @@ from pathlib import Path
 from typing import Callable, Mapping, NamedTuple
 
 from nvsh import capture as capture_mod
+from nvsh import client_transport
 from nvsh import daemon as daemon_mod
 from nvsh.agent import registry as agent_registry
 from nvsh.agent.demo import FIXTURE_PATH as DEMO_FIXTURE_PATH
@@ -1324,6 +1325,79 @@ def check_daemon_status(
 
 
 # ---------------------------------------------------------------------------
+# agent_turn_not_hung
+# ---------------------------------------------------------------------------
+
+#: Connect timeout for the read-only status probe this check makes. Short,
+#: like ``overview.py``'s ``_ACTIVITY_CONNECT_TIMEOUT`` -- a stale socket
+#: file with nothing listening must not make plain ``nvsh doctor`` hang.
+_ACTIVE_TURN_CONNECT_TIMEOUT = 0.5
+
+
+def _default_active_turn(env: Mapping[str, str]) -> Mapping[str, object] | None:
+    """The daemon's current active turn, or ``None`` when idle/unreachable.
+
+    Read-only: goes through :func:`nvsh.client_transport.status`, which
+    sends a ``status`` control message and never autostarts a daemon or
+    mutates anything. This is the only network call
+    :func:`check_agent_turn_not_hung` makes, so plain ``nvsh doctor`` (no
+    ``--apply``) never sends a mutating control message.
+    """
+    state = client_transport.status(env=env, timeout=_ACTIVE_TURN_CONNECT_TIMEOUT)
+    if not state.get("running"):
+        return None
+    active = state.get("active_turn")
+    return active if isinstance(active, Mapping) else None
+
+
+def check_agent_turn_not_hung(
+    active_turn: Mapping[str, object] | None,
+    *,
+    threshold: float,
+    pid_gone: Callable[[str], bool] = daemon_mod.shell_pid_gone,
+) -> dict:
+    """Is the daemon's active turn (if any) still making progress?
+
+    Fails (``severity=warning``) when the turn's owner shell no longer
+    exists (its pid is gone -- the shell that started it exited or crashed
+    without ever ending the turn) or when its elapsed time exceeds
+    *threshold* (the daemon's own turn cap by default, so this flags a turn
+    the daemon's own watchdog should have already ended). Passes trivially
+    when there is no active turn at all. The remediation always names
+    ``nvsh doctor --apply``, which is the only thing that acts on this
+    check (task t19); this function itself only reports.
+    """
+    if not active_turn:
+        return _check("agent_turn_not_hung", True, "info", "no active agent turn", "")
+    shell = str(active_turn.get("shell", "") or "")
+    try:
+        elapsed = float(active_turn.get("elapsed", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        elapsed = 0.0
+    dead = pid_gone(shell)
+    if not dead and elapsed <= threshold:
+        return _check(
+            "agent_turn_not_hung",
+            True,
+            "info",
+            f"active turn for shell {shell}, {elapsed:.0f}s elapsed",
+            "",
+        )
+    reason = (
+        f"owner shell {shell} is gone"
+        if dead
+        else f"{elapsed:.0f}s elapsed exceeds the {threshold:.0f}s turn cap"
+    )
+    return _check(
+        "agent_turn_not_hung",
+        False,
+        "warning",
+        f"active turn for shell {shell} looks hung ({reason})",
+        "nvsh doctor --apply",
+    )
+
+
+# ---------------------------------------------------------------------------
 # terminfo_present
 # ---------------------------------------------------------------------------
 
@@ -1411,6 +1485,7 @@ class Probes:
     cli_run: CliRunner = _default_cli_run
     is_running: Callable[[Mapping[str, str]], bool] = daemon_mod.is_running
     socket_path: Callable[[Mapping[str, str]], Path] = daemon_mod.socket_path
+    active_turn: Callable[[Mapping[str, str]], Mapping[str, object] | None] = _default_active_turn
 
 
 _DEFAULT_PROBES = Probes()
@@ -1462,6 +1537,9 @@ def collect_checks(
     checks.append(check_capture_active(env))
     checks.append(
         check_daemon_status(env, is_running=probes.is_running, socket_path=probes.socket_path)
+    )
+    checks.append(
+        check_agent_turn_not_hung(probes.active_turn(env), threshold=daemon_mod.turn_timeout(env))
     )
     checks.append(check_terminfo_present(env, run=run))
     return checks

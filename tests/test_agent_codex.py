@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from pathlib import Path
 
 import pytest
@@ -456,3 +457,99 @@ def test_close_is_idempotent() -> None:
     list(agent.run(_request(), _context()))[:1]
     agent.close()
     agent.close()
+
+
+# ---------------------------------------------------------------------------
+# force_stop: kill_tree on an app-server that ignores turn/interrupt
+# (plan reliable-agent-stop, task t5)
+# ---------------------------------------------------------------------------
+
+
+def _pid_alive(pid: int) -> bool:
+    """True while *pid* is a live (non-zombie) process.
+
+    Mirrors ``tests/test_agent_subprocess.py``'s helper: a zombie still
+    answers ``os.kill(pid, 0)`` (the kernel keeps the pid entry until it is
+    reaped), so a "no pid alive" check reads ``/proc/<pid>/stat`` and treats
+    state ``Z``/``X`` as dead.
+    """
+    try:
+        with open(f"/proc/{pid}/stat", encoding="utf-8") as handle:
+            stat = handle.read()
+    except OSError:
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            return False
+        return True
+    return stat.rsplit(")", 1)[1].split()[0] not in ("Z", "X")
+
+
+def test_force_stop_kills_the_app_server_pid_when_it_ignores_interrupt(
+    tmp_path: Path,
+) -> None:
+    sent = tmp_path / "sent.jsonl"
+    env = _env(NVSH_FAKE_CODEX_COMMANDS=str(sent), NVSH_FAKE_IGNORE_CANCEL="1")
+    agent = _agent(env=env)
+    agent.start()
+    events = agent.run(_request(), _context())
+    # Drive far enough that the app-server is up, a thread/turn exist, and
+    # the turn is actually in flight -- exactly the moment an operator would
+    # hit "stop" on a hung turn.
+    for event in events:
+        if event.kind == EventKind.THINKING:
+            break
+
+    proc = agent._rpc
+    assert proc is not None
+    assert proc.poll() is None
+    pid = proc.pid
+
+    agent.force_stop()
+    events.close()
+
+    deadline = time.monotonic() + 3.0
+    while time.monotonic() < deadline and _pid_alive(pid):
+        time.sleep(0.05)
+    assert not _pid_alive(pid), "codex app-server pid survived force_stop() past 3s"
+
+    # The app-server handle and session are gone: the next run() must not
+    # write into a dead pipe or resume a thread that no longer exists.
+    assert agent._rpc is None
+    assert agent.thread_id is None
+
+
+def test_run_after_force_stop_starts_a_fresh_app_server_with_new_session_status(
+    tmp_path: Path,
+) -> None:
+    sent = tmp_path / "sent.jsonl"
+    env = _env(NVSH_FAKE_CODEX_COMMANDS=str(sent), NVSH_FAKE_IGNORE_CANCEL="1")
+    agent = _agent(env=env)
+    agent.start()
+    events = agent.run(_request(), _context())
+    for event in events:
+        if event.kind == EventKind.THINKING:
+            break
+    agent.force_stop()
+    events.close()
+
+    # A fresh run() must succeed end to end: new handshake, new thread, new
+    # turn, reported with a 'new session' status ahead of the turn's events.
+    second = _drive(agent, approve=True)
+    kinds = [event.kind for event in second]
+    assert kinds[0] == EventKind.STATUS
+    assert second[0].text == "new session"
+    assert kinds[-1] == EventKind.DONE
+
+    # initialize/thread/start/turn/start all ran twice -- once for the
+    # killed app-server, once for the fresh one force_stop() forced -- proof
+    # it is a genuinely new process and thread, not a resumed dead one.
+    # (NVSH_FAKE_CODEX_COMMANDS appends across both fake processes.)
+    methods = [line.get("method") for line in _sent(sent) if line.get("method")]
+    assert methods.count("initialize") == 2
+    assert methods.count("thread/start") == 2
+    assert methods.count("turn/start") == 2
+
+
+def test_force_stop_on_an_agent_that_never_started_does_not_raise() -> None:
+    _agent(env=_env()).force_stop()

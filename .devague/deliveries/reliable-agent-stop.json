@@ -1,0 +1,1158 @@
+{
+  "plan_slug": "reliable-agent-stop",
+  "schema_version": 2,
+  "created": "2026-09-16T18:23:52Z",
+  "updated": "2026-09-17T04:12:31Z",
+  "deviations": [
+    {
+      "id": "d1",
+      "what": "panel non-tty fallback _read_line_key treated EOF on a binary stream (b'') as Enter = approve; t14 changed EOF to ignore",
+      "task_ref": "t14",
+      "reason": "pre-existing safety bug found on a hung-up pty during t14; a hung-up terminal could approve a proposed command, violating propose-don't-run",
+      "affects": [
+        "c5"
+      ],
+      "origin": "llm",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 1
+    },
+    {
+      "id": "d2",
+      "what": "a Ctrl+C/Esc press while on_proposal runs (e.g. an approved command executing) is acted on after on_proposal returns instead of ending the stream immediately",
+      "task_ref": "t14",
+      "reason": "the SIGINT handler now records presses into a stop state handled by the main loop; the running command still receives SIGINT from the terminal",
+      "affects": [
+        "c4",
+        "c2"
+      ],
+      "origin": "llm",
+      "status": "approved",
+      "classification": "needs-follow-up",
+      "seq": 2
+    },
+    {
+      "id": "d3",
+      "what": "tests/test_panel.py::test_ctrl_c_returns_to_a_prompt_within_one_second replaced by test_ctrl_c_says_stopping_within_one_second_and_a_second_press_returns_the_prompt",
+      "task_ref": "t14",
+      "reason": "the old test asserted one Ctrl+C ends the stream, contradicting amended c22 (panel stays up while stopping)",
+      "affects": [
+        "c22"
+      ],
+      "origin": "llm",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 3
+    },
+    {
+      "id": "d4",
+      "what": "t8 edited tests/fakes/qwen (a t1 file outside t8's brief): hang_if_ignoring_cancel falls back to sleep when stdin is already at EOF (QwenAgent spawns with stdin=DEVNULL)",
+      "task_ref": "t8",
+      "reason": "under the real adapter the fake exited immediately and orphaned its grandchild, so t8's acceptance test could not exercise force_stop; 5-line test-fixture fix",
+      "affects": [
+        "t1"
+      ],
+      "origin": "llm",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 4
+    },
+    {
+      "id": "d5",
+      "what": "t7 extended tests/fakes/agy (a t1 file) with NVSH_FAKE_SIGNAL_LOG, NVSH_FAKE_READY_FILE and per-turn sleep_before, and fixed stale _cancelled/_closed flags in agy.py run()/_run_warm()",
+      "task_ref": "t7",
+      "reason": "asserting the warm child received a stop needed a signal log and a readiness handshake (signal raced interpreter startup); the stale flags made the respawned turn return no events",
+      "affects": [
+        "t1",
+        "c3"
+      ],
+      "origin": "llm",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 5
+    },
+    {
+      "id": "d6",
+      "what": "t13 acceptance criterion 2 holds only for pi, codex and acp; for claude, qwen-p, openai-compat and agy cancel() already escalates, so removing force_stop() does not fail their cases",
+      "task_ref": "t13",
+      "reason": "those adapters' cancel() already kills or closes; the stop-and-respawn contract (c3, c15) is still proven for all 8 variants; user accepted without code change",
+      "affects": [
+        "c3",
+        "c15"
+      ],
+      "origin": "llm",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 6
+    },
+    {
+      "id": "d7",
+      "what": "added task t22: agy cold mode spawns in its own process group and its terminate uses kill_tree",
+      "task_ref": "t22",
+      "reason": "t13 found agy cold spawn (agy.py:256) lacks start_new_session and _terminate kills a single pid, so c27 was unmet for agy cold; user chose to fix in wave 4",
+      "affects": [
+        "c27",
+        "t7"
+      ],
+      "origin": "llm",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 7
+    },
+    {
+      "id": "d8",
+      "what": "one-shot teardown force-stops the adapter (kills the process tree) after any stop press, before close(), even if only the first polite press was made",
+      "task_ref": "t16",
+      "reason": "with codex (and acp per its docstring) a polite cancel ends the turn and close() lets the harness exit on stdin EOF, orphaning tool grandchildren; the adapter drops its process handle in close(), so the tree kill must happen inside one_shot; only fires after a press",
+      "affects": [
+        "c4",
+        "h3",
+        "c2"
+      ],
+      "origin": "llm",
+      "status": "approved",
+      "classification": "risky",
+      "seq": 8
+    },
+    {
+      "id": "d9",
+      "what": "panel.stream gained an on_busy hook routing BUSY events through the key-watcher suspension (panel.py edited by t17)",
+      "task_ref": "t17",
+      "reason": "BUSY events arrive on the feeder thread while the main thread reads keys; client.py cannot call show_busy safely without a panel hook",
+      "affects": [
+        "c7",
+        "t15"
+      ],
+      "origin": "llm",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 9
+    },
+    {
+      "id": "d10",
+      "what": "there is no 'nvsh ask' CLI verb; the declined exit code is observable as the return of client.ask()/handle_failure and slash --json exit_code, not as a direct 'nvsh ask' exit status",
+      "task_ref": "t17",
+      "reason": "c9 named 'direct nvsh ask', which does not exist; t17 did not add a CLI verb",
+      "affects": [
+        "c9",
+        "h8"
+      ],
+      "origin": "llm",
+      "status": "approved",
+      "classification": "needs-follow-up",
+      "seq": 10
+    },
+    {
+      "id": "d11",
+      "what": "client.ask (/ask, Ctrl+G, @target) now puts proposals to the operator on the panel like the hook path, including auto-inspect and the steer follow-up turn; before, ask passed no approvals",
+      "task_ref": "t17",
+      "reason": "without it 'ignore at a proposal' could never happen on the ask path, so c9's declined code was unreachable there",
+      "affects": [
+        "c9",
+        "c23"
+      ],
+      "origin": "llm",
+      "status": "approved",
+      "classification": "risky",
+      "seq": 11
+    },
+    {
+      "id": "d12",
+      "what": "five existing tests (4 in tests/test_client.py, 1 in tests/test_agent_demo.py) now expect exit 3 instead of 0 after an ignored proposal; /fix and /explain (_on_last_failure) also return 3 when declined",
+      "task_ref": "t17",
+      "reason": "c9 makes proposal ignore a declined run; consistency across ask entry points",
+      "affects": [
+        "c9"
+      ],
+      "origin": "llm",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 12
+    },
+    {
+      "id": "d13",
+      "what": "t20 added NVSH_FAKE_STALL_TURN=1 to tests/fakes/pi, codex-app-server and acp (t1 files) so a turn stays open and silent without an approval prompt",
+      "task_ref": "t20",
+      "reason": "without it the fake turns finish or park on an approval, where Ctrl+C cancels the key read and the two-press stop path is never reached",
+      "affects": [
+        "t1",
+        "c22"
+      ],
+      "origin": "llm",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 13
+    },
+    {
+      "id": "d14",
+      "what": "added task t23: normal close() kills the harness process tree on pi/codex/acp/agy, and test teardown stops leaking fake grandchildren",
+      "task_ref": "t23",
+      "reason": "lapse l5: close() let persistent harnesses exit on stdin EOF and orphan their tool processes (tests leaked ~16 sleep 600 per run); user chose to fix adapters' close(), not only the tests",
+      "affects": [
+        "c27",
+        "t2"
+      ],
+      "origin": "llm",
+      "status": "approved",
+      "classification": "risky",
+      "seq": 14
+    }
+  ],
+  "evidence": [
+    {
+      "id": "e1",
+      "obligation_ref": "o1",
+      "test_ref": "tests/test_client_stop.py::test_one_shot_first_press_calls_in_process_cancel",
+      "behavior_text": "Ctrl+C stops a running agent on both paths (1 case(s), 0 failed, 0 skipped)",
+      "contract_text": "Ctrl+C reliably stops a running agent on every backend and both paths (daemon and one-shot); the operator reported Ctrl+C did not stop the agent earlier",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "named proving test (nvsh has no behavioral marker/folder; tests listed in PR #16's claim->test table) ran at 0fc7d24: 1 passed, 0 failed, 0 skipped",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T04:11:34Z",
+        "commit": "0fc7d24"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 15
+    },
+    {
+      "id": "e2",
+      "obligation_ref": "o1",
+      "test_ref": "tests/test_client_stop.py::test_one_shot_second_press_calls_in_process_force_stop",
+      "behavior_text": "Ctrl+C stops a running agent on both paths (1 case(s), 0 failed, 0 skipped)",
+      "contract_text": "Ctrl+C reliably stops a running agent on every backend and both paths (daemon and one-shot); the operator reported Ctrl+C did not stop the agent earlier",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "named proving test (nvsh has no behavioral marker/folder; tests listed in PR #16's claim->test table) ran at 0fc7d24: 1 passed, 0 failed, 0 skipped",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T04:11:34Z",
+        "commit": "0fc7d24"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 16
+    },
+    {
+      "id": "e3",
+      "obligation_ref": "o1",
+      "test_ref": "tests/test_client_stop.py::test_daemon_second_press_sends_kill_exactly_once",
+      "behavior_text": "Ctrl+C stops a running agent on both paths (1 case(s), 0 failed, 0 skipped)",
+      "contract_text": "Ctrl+C reliably stops a running agent on every backend and both paths (daemon and one-shot); the operator reported Ctrl+C did not stop the agent earlier",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "named proving test (nvsh has no behavioral marker/folder; tests listed in PR #16's claim->test table) ran at 0fc7d24: 1 passed, 0 failed, 0 skipped",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T04:11:34Z",
+        "commit": "0fc7d24"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 17
+    },
+    {
+      "id": "e4",
+      "obligation_ref": "o2",
+      "test_ref": "tests/test_agent_conformance.py::test_ignoring_harness_stop_and_respawn",
+      "behavior_text": "every adapter's stop ends the running turn and the next run works (8 case(s), 0 failed, 0 skipped)",
+      "contract_text": "every adapter's stop path ends the running turn: pi (abort), codex (turn/interrupt), acp (session/cancel) and warm agy (flag only, nothing sent) leave the harness running if it ignores cancel; the fix covers all adapters per the all-backends rule",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "named proving test (nvsh has no behavioral marker/folder; tests listed in PR #16's claim->test table) ran at 0fc7d24: 8 passed, 0 failed, 0 skipped",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T04:11:34Z",
+        "commit": "0fc7d24"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 18
+    },
+    {
+      "id": "e5",
+      "obligation_ref": "o3",
+      "test_ref": "tests/test_panel_stop.py::test_a_single_press_never_calls_force_stop",
+      "behavior_text": "first press is polite and keeps the panel up; second press force-kills once (2 case(s), 0 failed, 0 skipped)",
+      "contract_text": "escalation is operator-driven: the first Ctrl+C/Esc sends the polite protocol cancel and the panel stays up showing 'stopping\u2026 press again to kill' until the turn ends; a second press force-kills the harness process tree and the warm session is respawned on the next request; no automatic kill timer is added",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "named proving test (nvsh has no behavioral marker/folder; tests listed in PR #16's claim->test table) ran at 0fc7d24: 2 passed, 0 failed, 0 skipped",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T04:11:34Z",
+        "commit": "0fc7d24"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 19
+    },
+    {
+      "id": "e6",
+      "obligation_ref": "o3",
+      "test_ref": "tests/test_panel_stop.py::test_second_press_calls_force_stop_exactly_once",
+      "behavior_text": "first press is polite and keeps the panel up; second press force-kills once (3 case(s), 0 failed, 0 skipped)",
+      "contract_text": "escalation is operator-driven: the first Ctrl+C/Esc sends the polite protocol cancel and the panel stays up showing 'stopping\u2026 press again to kill' until the turn ends; a second press force-kills the harness process tree and the warm session is respawned on the next request; no automatic kill timer is added",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "named proving test (nvsh has no behavioral marker/folder; tests listed in PR #16's claim->test table) ran at 0fc7d24: 3 passed, 0 failed, 0 skipped",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T04:11:34Z",
+        "commit": "0fc7d24"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 20
+    },
+    {
+      "id": "e7",
+      "obligation_ref": "o4",
+      "test_ref": "tests/test_panel_stop.py::test_lone_esc_during_streaming_is_identical_to_sigint",
+      "behavior_text": "a lone Esc during work is identical to Ctrl+C (1 case(s), 0 failed, 0 skipped)",
+      "contract_text": "Esc during agent work (thinking, text, waiting ticker) is identical to Ctrl+C: same cancel path, second press kills, exit 130; Esc keeps meaning 'ignore' at the proposal legend",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "named proving test (nvsh has no behavioral marker/folder; tests listed in PR #16's claim->test table) ran at 0fc7d24: 1 passed, 0 failed, 0 skipped",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T04:11:34Z",
+        "commit": "0fc7d24"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 21
+    },
+    {
+      "id": "e8",
+      "obligation_ref": "o5",
+      "test_ref": "tests/test_keys.py::test_arrow_sequence_is_not_esc_and_is_drained",
+      "behavior_text": "arrow/function keys are drained and never read as Esc (1 case(s), 0 failed, 0 skipped)",
+      "contract_text": "a lone Esc is distinguished from multi-byte escape sequences (arrow/function keys) with a short read timeout, and the leftover sequence bytes are drained rather than leaked into the next read",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "named proving test (nvsh has no behavioral marker/folder; tests listed in PR #16's claim->test table) ran at 0fc7d24: 1 passed, 0 failed, 0 skipped",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T04:11:34Z",
+        "commit": "0fc7d24"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 22
+    },
+    {
+      "id": "e9",
+      "obligation_ref": "o5",
+      "test_ref": "tests/test_panel_stop.py::test_arrow_key_during_streaming_is_not_esc_and_leaves_no_bytes",
+      "behavior_text": "arrow/function keys are drained and never read as Esc (1 case(s), 0 failed, 0 skipped)",
+      "contract_text": "a lone Esc is distinguished from multi-byte escape sequences (arrow/function keys) with a short read timeout, and the leftover sequence bytes are drained rather than leaked into the next read",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "named proving test (nvsh has no behavioral marker/folder; tests listed in PR #16's claim->test table) ran at 0fc7d24: 1 passed, 0 failed, 0 skipped",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T04:11:34Z",
+        "commit": "0fc7d24"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 23
+    },
+    {
+      "id": "e10",
+      "obligation_ref": "o5",
+      "test_ref": "tests/test_panel_stop.py::test_arrow_key_at_the_proposal_is_not_esc_and_leaves_no_bytes",
+      "behavior_text": "arrow/function keys are drained and never read as Esc (1 case(s), 0 failed, 0 skipped)",
+      "contract_text": "a lone Esc is distinguished from multi-byte escape sequences (arrow/function keys) with a short read timeout, and the leftover sequence bytes are drained rather than leaked into the next read",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "named proving test (nvsh has no behavioral marker/folder; tests listed in PR #16's claim->test table) ran at 0fc7d24: 1 passed, 0 failed, 0 skipped",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T04:11:34Z",
+        "commit": "0fc7d24"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 24
+    },
+    {
+      "id": "e11",
+      "obligation_ref": "o6",
+      "test_ref": "tests/test_daemon_stop.py::test_owning_shell_gets_a_busy_event_and_exit_leaves_the_turn_running",
+      "behavior_text": "a request from the owning or dead-owner shell gets steer/replace/exit (2 case(s), 0 failed, 0 skipped)",
+      "contract_text": "a new request from the shell that owns a still-running turn \u2014 or from any shell when the owning shell pid is gone \u2014 opens a busy prompt: steer the running turn with the new request, replace the turn (stop it and run the new request), or exit back to the prompt leaving the turn alone",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "named proving test (nvsh has no behavioral marker/folder; tests listed in PR #16's claim->test table) ran at 0fc7d24: 2 passed, 0 failed, 0 skipped",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T04:11:34Z",
+        "commit": "0fc7d24"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 25
+    },
+    {
+      "id": "e12",
+      "obligation_ref": "o6",
+      "test_ref": "tests/test_daemon_stop.py::test_replace_from_the_owning_shell_kills_the_turn_and_runs_the_request",
+      "behavior_text": "a request from the owning or dead-owner shell gets steer/replace/exit (1 case(s), 0 failed, 0 skipped)",
+      "contract_text": "a new request from the shell that owns a still-running turn \u2014 or from any shell when the owning shell pid is gone \u2014 opens a busy prompt: steer the running turn with the new request, replace the turn (stop it and run the new request), or exit back to the prompt leaving the turn alone",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "named proving test (nvsh has no behavioral marker/folder; tests listed in PR #16's claim->test table) ran at 0fc7d24: 1 passed, 0 failed, 0 skipped",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T04:11:34Z",
+        "commit": "0fc7d24"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 26
+    },
+    {
+      "id": "e13",
+      "obligation_ref": "o6",
+      "test_ref": "tests/test_daemon_stop.py::test_a_dead_owner_turn_offers_busy_and_replace_runs_on_a_fresh_agent",
+      "behavior_text": "a request from the owning or dead-owner shell gets steer/replace/exit (1 case(s), 0 failed, 0 skipped)",
+      "contract_text": "a new request from the shell that owns a still-running turn \u2014 or from any shell when the owning shell pid is gone \u2014 opens a busy prompt: steer the running turn with the new request, replace the turn (stop it and run the new request), or exit back to the prompt leaving the turn alone",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "named proving test (nvsh has no behavioral marker/folder; tests listed in PR #16's claim->test table) ran at 0fc7d24: 1 passed, 0 failed, 0 skipped",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T04:11:34Z",
+        "commit": "0fc7d24"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 27
+    },
+    {
+      "id": "e14",
+      "obligation_ref": "o6",
+      "test_ref": "tests/test_client_stop.py::test_busy_steer_sends_the_steer_control_and_audits_it",
+      "behavior_text": "a request from the owning or dead-owner shell gets steer/replace/exit (1 case(s), 0 failed, 0 skipped)",
+      "contract_text": "a new request from the shell that owns a still-running turn \u2014 or from any shell when the owning shell pid is gone \u2014 opens a busy prompt: steer the running turn with the new request, replace the turn (stop it and run the new request), or exit back to the prompt leaving the turn alone",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "named proving test (nvsh has no behavioral marker/folder; tests listed in PR #16's claim->test table) ran at 0fc7d24: 1 passed, 0 failed, 0 skipped",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T04:11:34Z",
+        "commit": "0fc7d24"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 28
+    },
+    {
+      "id": "e15",
+      "obligation_ref": "o7",
+      "test_ref": "tests/test_daemon_stop.py::test_another_live_shell_queues_with_the_notice_and_never_sees_busy",
+      "behavior_text": "a live other shell's turn is never touched (1 case(s), 0 failed, 0 skipped)",
+      "contract_text": "replace/steer never touches a live other shell's turn: cancel_shell stays scoped to the calling shell (daemon.py:852-856); the only exceptions are a turn whose owning shell pid is gone (busy prompt applies) and doctor --apply after an explicit confirm naming the owning shell",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "named proving test (nvsh has no behavioral marker/folder; tests listed in PR #16's claim->test table) ran at 0fc7d24: 1 passed, 0 failed, 0 skipped",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T04:11:34Z",
+        "commit": "0fc7d24"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 29
+    },
+    {
+      "id": "e16",
+      "obligation_ref": "o7",
+      "test_ref": "tests/test_daemon_stop.py::test_kill_from_another_shell_does_nothing_to_this_shells_turn",
+      "behavior_text": "a live other shell's turn is never touched (1 case(s), 0 failed, 0 skipped)",
+      "contract_text": "replace/steer never touches a live other shell's turn: cancel_shell stays scoped to the calling shell (daemon.py:852-856); the only exceptions are a turn whose owning shell pid is gone (busy prompt applies) and doctor --apply after an explicit confirm naming the owning shell",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "named proving test (nvsh has no behavioral marker/folder; tests listed in PR #16's claim->test table) ran at 0fc7d24: 1 passed, 0 failed, 0 skipped",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T04:11:34Z",
+        "commit": "0fc7d24"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 30
+    },
+    {
+      "id": "e17",
+      "obligation_ref": "o8",
+      "test_ref": "tests/test_client_stop.py::test_busy_exit_makes_ask_exit_declined_and_audits_once",
+      "behavior_text": "declining yields exit code 3 via --json/audit while slash exits 0 (1 case(s), 0 failed, 0 skipped)",
+      "contract_text": "when the operator declines the agent \u2014 exit at the busy prompt, or Esc/ignore at a proposal \u2014 nvsh reports one dedicated 'declined' exit code (allocated from the reserved 3+ range, cli/_errors.py:20), distinct from 0, 1, 2 and 130, visible as --json exit_code, in the audit log, and as direct 'nvsh ask' exit status; slash dispatch still exits 0 (d5)",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "named proving test (nvsh has no behavioral marker/folder; tests listed in PR #16's claim->test table) ran at 0fc7d24: 1 passed, 0 failed, 0 skipped",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T04:11:34Z",
+        "commit": "0fc7d24"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 31
+    },
+    {
+      "id": "e18",
+      "obligation_ref": "o8",
+      "test_ref": "tests/test_client_stop.py::test_proposal_ignore_makes_ask_exit_declined_and_audits_once",
+      "behavior_text": "declining yields exit code 3 via --json/audit while slash exits 0 (1 case(s), 0 failed, 0 skipped)",
+      "contract_text": "when the operator declines the agent \u2014 exit at the busy prompt, or Esc/ignore at a proposal \u2014 nvsh reports one dedicated 'declined' exit code (allocated from the reserved 3+ range, cli/_errors.py:20), distinct from 0, 1, 2 and 130, visible as --json exit_code, in the audit log, and as direct 'nvsh ask' exit status; slash dispatch still exits 0 (d5)",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "named proving test (nvsh has no behavioral marker/folder; tests listed in PR #16's claim->test table) ran at 0fc7d24: 1 passed, 0 failed, 0 skipped",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T04:11:34Z",
+        "commit": "0fc7d24"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 32
+    },
+    {
+      "id": "e19",
+      "obligation_ref": "o8",
+      "test_ref": "tests/test_client_stop.py::test_slash_json_reports_declined_exit_code_but_exits_zero",
+      "behavior_text": "declining yields exit code 3 via --json/audit while slash exits 0 (1 case(s), 0 failed, 0 skipped)",
+      "contract_text": "when the operator declines the agent \u2014 exit at the busy prompt, or Esc/ignore at a proposal \u2014 nvsh reports one dedicated 'declined' exit code (allocated from the reserved 3+ range, cli/_errors.py:20), distinct from 0, 1, 2 and 130, visible as --json exit_code, in the audit log, and as direct 'nvsh ask' exit status; slash dispatch still exits 0 (d5)",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "named proving test (nvsh has no behavioral marker/folder; tests listed in PR #16's claim->test table) ran at 0fc7d24: 1 passed, 0 failed, 0 skipped",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T04:11:34Z",
+        "commit": "0fc7d24"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 33
+    },
+    {
+      "id": "e20",
+      "obligation_ref": "o9",
+      "test_ref": "tests/test_hook_bash.py::test_declined_or_stopped_client_leaves_operator_status_unchanged",
+      "behavior_text": "operator $? and PIPESTATUS unchanged after a declined or stopped run (2 case(s), 0 failed, 0 skipped)",
+      "contract_text": "the operator's original $? for the failing command is never changed by the declined status; the hook stays '|| return 0' so nvsh can never lock the prompt (CLAUDE.md Hook constraints)",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "named proving test (nvsh has no behavioral marker/folder; tests listed in PR #16's claim->test table) ran at 0fc7d24: 2 passed, 0 failed, 0 skipped",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T04:11:34Z",
+        "commit": "0fc7d24"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 34
+    },
+    {
+      "id": "e21",
+      "obligation_ref": "o9",
+      "test_ref": "tests/test_hook_bash.py::test_hook_client_call_is_followed_by_return_0",
+      "behavior_text": "operator $? and PIPESTATUS unchanged after a declined or stopped run (1 case(s), 0 failed, 0 skipped)",
+      "contract_text": "the operator's original $? for the failing command is never changed by the declined status; the hook stays '|| return 0' so nvsh can never lock the prompt (CLAUDE.md Hook constraints)",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "named proving test (nvsh has no behavioral marker/folder; tests listed in PR #16's claim->test table) ran at 0fc7d24: 1 passed, 0 failed, 0 skipped",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T04:11:34Z",
+        "commit": "0fc7d24"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 35
+    },
+    {
+      "id": "e22",
+      "obligation_ref": "o10",
+      "test_ref": "tests/test_overview_activity.py::test_overview_json_with_active_turn_includes_shell_target_elapsed_queued",
+      "behavior_text": "overview shows the active turn and queue (1 case(s), 0 failed, 0 skipped)",
+      "contract_text": "nvsh overview shows what the agent is doing now: active turn (shell, target, elapsed) and the queue, from the daemon's existing status",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "named proving test (nvsh has no behavioral marker/folder; tests listed in PR #16's claim->test table) ran at 0fc7d24: 1 passed, 0 failed, 0 skipped",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T04:11:34Z",
+        "commit": "0fc7d24"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 36
+    },
+    {
+      "id": "e23",
+      "obligation_ref": "o11",
+      "test_ref": "tests/test_cli_doctor_extensions.py::test_apply_then_recheck_passes_for_a_dead_owner_turn",
+      "behavior_text": "doctor detects a hung turn and --apply clears it with owner authority (1 case(s), 0 failed, 0 skipped)",
+      "contract_text": "nvsh doctor detects a hung agent turn and, with --apply, fixes it by cancelling then killing the stuck harness so the next request respawns the session; a dead-owner turn is fixed directly, a live other shell's turn only after an explicit confirm naming that shell",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "named proving test (nvsh has no behavioral marker/folder; tests listed in PR #16's claim->test table) ran at 0fc7d24: 1 passed, 0 failed, 0 skipped",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T04:11:34Z",
+        "commit": "0fc7d24"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 37
+    },
+    {
+      "id": "e24",
+      "obligation_ref": "o11",
+      "test_ref": "tests/test_cli_doctor_extensions.py::test_plain_doctor_never_sends_a_mutating_control_message",
+      "behavior_text": "doctor detects a hung turn and --apply clears it with owner authority (1 case(s), 0 failed, 0 skipped)",
+      "contract_text": "nvsh doctor detects a hung agent turn and, with --apply, fixes it by cancelling then killing the stuck harness so the next request respawns the session; a dead-owner turn is fixed directly, a live other shell's turn only after an explicit confirm naming that shell",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "named proving test (nvsh has no behavioral marker/folder; tests listed in PR #16's claim->test table) ran at 0fc7d24: 1 passed, 0 failed, 0 skipped",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T04:11:34Z",
+        "commit": "0fc7d24"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 38
+    },
+    {
+      "id": "e25",
+      "obligation_ref": "o11",
+      "test_ref": "tests/test_daemon_stop.py::test_kill_active_refuses_a_live_owner_without_confirmation",
+      "behavior_text": "doctor detects a hung turn and --apply clears it with owner authority (1 case(s), 0 failed, 0 skipped)",
+      "contract_text": "nvsh doctor detects a hung agent turn and, with --apply, fixes it by cancelling then killing the stuck harness so the next request respawns the session; a dead-owner turn is fixed directly, a live other shell's turn only after an explicit confirm naming that shell",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "named proving test (nvsh has no behavioral marker/folder; tests listed in PR #16's claim->test table) ran at 0fc7d24: 1 passed, 0 failed, 0 skipped",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T04:11:34Z",
+        "commit": "0fc7d24"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 39
+    },
+    {
+      "id": "e26",
+      "obligation_ref": "o11",
+      "test_ref": "tests/test_cli_doctor_extensions.py::test_cmd_doctor_apply_that_clears_the_turn_exits_healthy",
+      "behavior_text": "doctor detects a hung turn and --apply clears it with owner authority (4 case(s), 0 failed, 0 skipped)",
+      "contract_text": "nvsh doctor detects a hung agent turn and, with --apply, fixes it by cancelling then killing the stuck harness so the next request respawns the session; a dead-owner turn is fixed directly, a live other shell's turn only after an explicit confirm naming that shell",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "named proving test (nvsh has no behavioral marker/folder; tests listed in PR #16's claim->test table) ran at 0fc7d24: 4 passed, 0 failed, 0 skipped",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T04:11:34Z",
+        "commit": "0fc7d24"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 40
+    },
+    {
+      "id": "e27",
+      "obligation_ref": "o12",
+      "test_ref": "tests/test_agent_subprocess.py::test_stop_paths_never_open_harness_settings_files",
+      "behavior_text": "no stop path opens a harness settings or trust file (1 case(s), 0 failed, 0 skipped)",
+      "contract_text": "nvsh never edits a harness's own settings to make cancel work; stops use launch flags, protocol messages and process signals only (docs/specs/2026-09-14-first-class-multi-harness-with-aliases.md)",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "named proving test (nvsh has no behavioral marker/folder; tests listed in PR #16's claim->test table) ran at 0fc7d24: 1 passed, 0 failed, 0 skipped",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T04:11:34Z",
+        "commit": "0fc7d24"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 41
+    },
+    {
+      "id": "e28",
+      "obligation_ref": "o13",
+      "test_ref": "tests/test_fakes_ignore_cancel.py",
+      "behavior_text": "ignore-cancel fakes exist per family and stay alive after cancel (9 case(s), 0 failed, 0 skipped)",
+      "contract_text": "tests simulate a harness that ignores cancel for each adapter family (rpc, app-server, acp, stream-json warm) and assert the second press kills it and the next request respawns the session",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "named proving test (nvsh has no behavioral marker/folder; tests listed in PR #16's claim->test table) ran at 0fc7d24: 9 passed, 0 failed, 0 skipped",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T04:11:34Z",
+        "commit": "0fc7d24"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 42
+    },
+    {
+      "id": "e29",
+      "obligation_ref": "o14",
+      "test_ref": "tests/test_agent_stop.py::test_two_presses_stop_every_family_on_both_paths",
+      "behavior_text": "stopping line within 1s of first press; tree gone and prompt back within 3s of second press, every family and path (14 case(s), 0 failed, 0 skipped)",
+      "contract_text": "with a fake harness that ignores cancel, on every adapter family and on both daemon and one-shot paths, a 'stopping\u2026 press again to kill' line appears within 1s of the first Ctrl+C/Esc, and the harness process tree is gone and the prompt returned within 3s of the second press",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "named proving test (nvsh has no behavioral marker/folder; tests listed in PR #16's claim->test table) ran at 0fc7d24: 14 passed, 0 failed, 0 skipped",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T04:11:34Z",
+        "commit": "0fc7d24"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 43
+    },
+    {
+      "id": "e30",
+      "obligation_ref": "o15",
+      "test_ref": "tests/test_daemon_stop.py::test_kill_releases_the_run_lock_and_the_queued_request_runs_on_a_fresh_slot",
+      "behavior_text": "kill releases the run lock and the queued request runs on a fresh slot (1 case(s), 0 failed, 0 skipped)",
+      "contract_text": "a force-stop reaches the daemon as its own control message (not a repeat cancel): _abort_turn returns early once turn.aborted is set (daemon.py:883-886), and the run lock stays held while the thread is parked in a harness that ignores cancel, so the kill must close the slot's agent (escalate_close) and replace the slot so the lock is released",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "named proving test (nvsh has no behavioral marker/folder; tests listed in PR #16's claim->test table) ran at 0fc7d24: 1 passed, 0 failed, 0 skipped",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T04:11:34Z",
+        "commit": "0fc7d24"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 44
+    },
+    {
+      "id": "e31",
+      "obligation_ref": "o16",
+      "test_ref": "tests/test_agent_subprocess.py::test_kill_tree_kills_the_child_and_its_grandchild",
+      "behavior_text": "force-stop and close kill the harness's whole process tree (1 case(s), 0 failed, 0 skipped)",
+      "contract_text": "the force-stop kills the harness's whole process tree (its tool subprocesses too), not just the harness pid; harness children are spawned without start_new_session today (only the daemon uses it, daemon.py:241-253), so terminal SIGINT also hits one-shot harness children directly",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "named proving test (nvsh has no behavioral marker/folder; tests listed in PR #16's claim->test table) ran at 0fc7d24: 1 passed, 0 failed, 0 skipped",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T04:11:34Z",
+        "commit": "0fc7d24"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 45
+    },
+    {
+      "id": "e32",
+      "obligation_ref": "o16",
+      "test_ref": "tests/test_close_kills_tree.py::test_close_after_run_leaves_no_grandchild",
+      "behavior_text": "force-stop and close kill the harness's whole process tree (5 case(s), 0 failed, 0 skipped)",
+      "contract_text": "the force-stop kills the harness's whole process tree (its tool subprocesses too), not just the harness pid; harness children are spawned without start_new_session today (only the daemon uses it, daemon.py:241-253), so terminal SIGINT also hits one-shot harness children directly",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "named proving test (nvsh has no behavioral marker/folder; tests listed in PR #16's claim->test table) ran at 0fc7d24: 5 passed, 0 failed, 0 skipped",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T04:11:34Z",
+        "commit": "0fc7d24"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 46
+    },
+    {
+      "id": "e33",
+      "obligation_ref": "o16",
+      "test_ref": "tests/test_agent_subprocess.py::test_normal_exit_still_reaps_a_tool_grandchild_left_in_the_group",
+      "behavior_text": "force-stop and close kill the harness's whole process tree (1 case(s), 0 failed, 0 skipped)",
+      "contract_text": "the force-stop kills the harness's whole process tree (its tool subprocesses too), not just the harness pid; harness children are spawned without start_new_session today (only the daemon uses it, daemon.py:241-253), so terminal SIGINT also hits one-shot harness children directly",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "named proving test (nvsh has no behavioral marker/folder; tests listed in PR #16's claim->test table) ran at 0fc7d24: 1 passed, 0 failed, 0 skipped",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T04:11:34Z",
+        "commit": "0fc7d24"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 47
+    },
+    {
+      "id": "e34",
+      "obligation_ref": "o17",
+      "test_ref": "tests/test_keys.py::test_signal_kill_restores_icanon_echo",
+      "behavior_text": "terminal restored on SIGHUP/SIGTERM; watcher off when not a tty (2 case(s), 0 failed, 0 skipped)",
+      "contract_text": "holding stdin in cbreak mode to see Esc must never leave the terminal without echo or canonical mode: attributes are restored on every exit path, including SIGTERM and SSH hangup (SIGHUP), and Esc detection is off when stdin is not a tty, TERM=dumb or NVSH_DISABLE is set",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "named proving test (nvsh has no behavioral marker/folder; tests listed in PR #16's claim->test table) ran at 0fc7d24: 2 passed, 0 failed, 0 skipped",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T04:11:34Z",
+        "commit": "0fc7d24"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 48
+    },
+    {
+      "id": "e35",
+      "obligation_ref": "o17",
+      "test_ref": "tests/test_keys.py::test_noop_when_not_a_tty",
+      "behavior_text": "terminal restored on SIGHUP/SIGTERM; watcher off when not a tty (1 case(s), 0 failed, 0 skipped)",
+      "contract_text": "holding stdin in cbreak mode to see Esc must never leave the terminal without echo or canonical mode: attributes are restored on every exit path, including SIGTERM and SSH hangup (SIGHUP), and Esc detection is off when stdin is not a tty, TERM=dumb or NVSH_DISABLE is set",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "named proving test (nvsh has no behavioral marker/folder; tests listed in PR #16's claim->test table) ran at 0fc7d24: 1 passed, 0 failed, 0 skipped",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T04:11:34Z",
+        "commit": "0fc7d24"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 49
+    },
+    {
+      "id": "e36",
+      "obligation_ref": "o18",
+      "test_ref": "tests/test_panel_stop.py::test_esc_prints_the_stopping_line_within_1s_while_the_source_is_silent",
+      "behavior_text": "Esc stops within 1s while the event source is silent (1 case(s), 0 failed, 0 skipped)",
+      "contract_text": "Esc detection does not depend on the event source yielding: stream() iterates a generator that can block for up to the 120s daemon read timeout, so the stdin watch runs alongside it (select over tty + event source, or a reader thread) and a pressed Esc cancels within 1s even when no event arrives",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "named proving test (nvsh has no behavioral marker/folder; tests listed in PR #16's claim->test table) ran at 0fc7d24: 1 passed, 0 failed, 0 skipped",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T04:11:34Z",
+        "commit": "0fc7d24"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 50
+    },
+    {
+      "id": "e37",
+      "obligation_ref": "o19",
+      "test_ref": "tests/test_client_stop.py::test_ctrl_c_during_work_exits_130_and_audits_cancel_and_force_kill_once",
+      "behavior_text": "every stop kind appends exactly one audit event (1 case(s), 0 failed, 0 skipped)",
+      "contract_text": "every stop is audited: cancel (Ctrl+C/Esc), force-kill, steer, replace, busy-prompt exit, declined and doctor --apply each append an audit event with shell, target, turn elapsed and outcome; today audit records only proposal/decision/outcome/install (nvsh/agent/audit.py, loop.py:55-68, client.py:1071-1097)",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "named proving test (nvsh has no behavioral marker/folder; tests listed in PR #16's claim->test table) ran at 0fc7d24: 1 passed, 0 failed, 0 skipped",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T04:11:34Z",
+        "commit": "0fc7d24"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 51
+    },
+    {
+      "id": "e38",
+      "obligation_ref": "o19",
+      "test_ref": "tests/test_audit.py::test_record_stop_writes_one_json_line_with_the_stop_shape",
+      "behavior_text": "every stop kind appends exactly one audit event (1 case(s), 0 failed, 0 skipped)",
+      "contract_text": "every stop is audited: cancel (Ctrl+C/Esc), force-kill, steer, replace, busy-prompt exit, declined and doctor --apply each append an audit event with shell, target, turn elapsed and outcome; today audit records only proposal/decision/outcome/install (nvsh/agent/audit.py, loop.py:55-68, client.py:1071-1097)",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "named proving test (nvsh has no behavioral marker/folder; tests listed in PR #16's claim->test table) ran at 0fc7d24: 1 passed, 0 failed, 0 skipped",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T04:11:34Z",
+        "commit": "0fc7d24"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 52
+    },
+    {
+      "id": "e39",
+      "obligation_ref": "o20",
+      "test_ref": "tests/test_panel_stop.py::test_show_busy_non_steerable_t_is_not_accepted_as_steer",
+      "behavior_text": "steer offered only when steerable; silent steer re-offers replace/exit (1 case(s), 0 failed, 0 skipped)",
+      "contract_text": "the busy prompt tells the truth about steer: it is offered only when the adapter has a mid-turn channel (pi, codex steer; claude, acp, qwen, agy, openai-compat return False per base.py:322 and agy.py:419, openai_compat.py:172), and a steer accepted by a harness that stays silent is followed by the same stop/replace choice instead of an endless wait",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "named proving test (nvsh has no behavioral marker/folder; tests listed in PR #16's claim->test table) ran at 0fc7d24: 1 passed, 0 failed, 0 skipped",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T04:11:34Z",
+        "commit": "0fc7d24"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 53
+    },
+    {
+      "id": "e40",
+      "obligation_ref": "o20",
+      "test_ref": "tests/test_panel_stop.py::test_show_busy_steer_then_silence_reoffers_replace_and_exit",
+      "behavior_text": "steer offered only when steerable; silent steer re-offers replace/exit (1 case(s), 0 failed, 0 skipped)",
+      "contract_text": "the busy prompt tells the truth about steer: it is offered only when the adapter has a mid-turn channel (pi, codex steer; claude, acp, qwen, agy, openai-compat return False per base.py:322 and agy.py:419, openai_compat.py:172), and a steer accepted by a harness that stays silent is followed by the same stop/replace choice instead of an endless wait",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "named proving test (nvsh has no behavioral marker/folder; tests listed in PR #16's claim->test table) ran at 0fc7d24: 1 passed, 0 failed, 0 skipped",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T04:11:34Z",
+        "commit": "0fc7d24"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 54
+    },
+    {
+      "id": "e41",
+      "obligation_ref": "o21",
+      "test_ref": "tests/test_overview_activity.py::test_agent_activity_no_daemon_is_fast_and_spawns_nothing",
+      "behavior_text": "overview never autostarts the daemon and returns fast (1 case(s), 0 failed, 0 skipped)",
+      "contract_text": "overview's live agent section never autostarts the daemon and never blocks: it asks an existing socket with a short timeout and reports 'no daemon' otherwise; the static identity/verbs sections the teken rubric reads (cli/_commands/overview.py:36-53) stay unchanged",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "named proving test (nvsh has no behavioral marker/folder; tests listed in PR #16's claim->test table) ran at 0fc7d24: 1 passed, 0 failed, 0 skipped",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T04:11:34Z",
+        "commit": "0fc7d24"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 55
+    },
+    {
+      "id": "e42",
+      "obligation_ref": "o3",
+      "test_ref": "tests/test_client_stop.py::test_ctrl_c_at_a_raw_prompt_exits_130_cancels_once_and_never_declines",
+      "behavior_text": "Ctrl+C at a proposal or busy prompt in a real pty exits 130, cancels once and records no declined/busy_exit (2 cases)",
+      "contract_text": "escalation is operator-driven: the first Ctrl+C/Esc sends the polite protocol cancel and the panel stays up",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "named proving test for PR #16 review fix (Qodo 4) ran green at 0fc7d24",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T04:11:34Z",
+        "commit": "0fc7d24"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 56
+    },
+    {
+      "id": "e43",
+      "obligation_ref": "o2",
+      "test_ref": "tests/test_agent_agy.py::test_cancelled_warm_turn_does_not_contaminate_next_run",
+      "behavior_text": "late output from a cancelled warm agy turn does not appear in the next run",
+      "contract_text": "every adapter's stop path ends the running turn",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "named proving test for PR #16 review fix (Qodo 5) ran green at 0fc7d24",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T04:11:34Z",
+        "commit": "0fc7d24"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 57
+    }
+  ],
+  "deltas": [
+    {
+      "id": "b1",
+      "kind": "amended",
+      "behavior_text": "on a hung-up terminal, end of input at a proposal means ignore, never approve",
+      "caused_by": [
+        "d1"
+      ],
+      "evidence_refs": [],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    },
+    {
+      "id": "b2",
+      "kind": "amended",
+      "behavior_text": "a Ctrl+C/Esc press while an approved command runs is acted on after the command returns",
+      "caused_by": [
+        "d2"
+      ],
+      "evidence_refs": [],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    },
+    {
+      "id": "b3",
+      "kind": "added",
+      "behavior_text": "after any stop press in a one-shot run, the harness's leftover process tree is killed once the turn ends",
+      "caused_by": [
+        "d8"
+      ],
+      "evidence_refs": [
+        "e1"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    },
+    {
+      "id": "b4",
+      "kind": "added",
+      "behavior_text": "/ask, Ctrl+G and @target requests put proposals to the operator on the panel with the full approval legend",
+      "caused_by": [
+        "d11"
+      ],
+      "evidence_refs": [
+        "e18"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    },
+    {
+      "id": "b5",
+      "kind": "amended",
+      "behavior_text": "the declined exit code is observable via --json exit_code, the audit log and client.ask()'s return, not a 'nvsh ask' CLI exit status (no such verb)",
+      "caused_by": [
+        "d10"
+      ],
+      "evidence_refs": [
+        "e19"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    },
+    {
+      "id": "b6",
+      "kind": "added",
+      "behavior_text": "normal close() on pi, codex, acp and agy reaps the harness's process group, and claude/qwen-p reap it after a normal exit",
+      "caused_by": [
+        "d14"
+      ],
+      "evidence_refs": [
+        "e32",
+        "e33"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    },
+    {
+      "id": "b7",
+      "kind": "amended",
+      "behavior_text": "Ctrl+C at a proposal or busy prompt stops the agent (exit 130, cancel once, no declined record) instead of declining (PR #16 review, Qodo 4)",
+      "caused_by": [
+        "c4",
+        "c9"
+      ],
+      "evidence_refs": [],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    },
+    {
+      "id": "b8",
+      "kind": "amended",
+      "behavior_text": "kill_active carries the confirmed turn identity and the daemon refuses with 'changed' if the active turn differs; a confirmed live-owner kill without identity is refused (PR #16 review, Qodo 3)",
+      "caused_by": [
+        "c12"
+      ],
+      "evidence_refs": [
+        "e25"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    },
+    {
+      "id": "b9",
+      "kind": "amended",
+      "behavior_text": "nvsh doctor --apply exits healthy after it clears the only failing check (PR #16 review, Qodo 1)",
+      "caused_by": [
+        "c12"
+      ],
+      "evidence_refs": [
+        "e26"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    },
+    {
+      "id": "b10",
+      "kind": "amended",
+      "behavior_text": "a cancelled warm agy process is retired and the next turn respawns with a fresh queue (PR #16 review, Qodo 5)",
+      "caused_by": [
+        "c3",
+        "d5"
+      ],
+      "evidence_refs": [],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    }
+  ],
+  "supersessions": []
+}

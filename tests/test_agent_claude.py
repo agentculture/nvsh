@@ -32,6 +32,7 @@ from __future__ import annotations
 import json
 import os
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -406,3 +407,87 @@ def test_no_claude_code_acp_anywhere_in_the_nvsh_package_or_the_claude_fixtures(
     paths += [FAKES_DIR / "claude", TRANSCRIPT]
     for path in paths:
         assert needle not in path.read_text(encoding="utf-8"), path
+
+
+# ---------------------------------------------------------------------------
+# reliable-agent-stop (task t8): force_stop() kills a claude that ignores
+# its own stream-json interrupt, plus every grandchild it started
+# ---------------------------------------------------------------------------
+
+
+def _pid_alive(pid: int) -> bool:
+    """True while *pid* is a live (non-zombie) process."""
+    try:
+        with open(f"/proc/{pid}/stat", encoding="utf-8") as handle:
+            stat = handle.read()
+    except OSError:
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            return False
+        return True
+    # The state field follows the parenthesised comm, which may contain spaces.
+    return stat.rsplit(")", 1)[1].split()[0] not in ("Z", "X")
+
+
+def _wait_gone(pids: list[int], within: float = 3.0) -> list[int]:
+    deadline = time.monotonic() + within
+    while time.monotonic() < deadline:
+        alive = [pid for pid in pids if _pid_alive(pid)]
+        if not alive:
+            return []
+        time.sleep(0.05)
+    return [pid for pid in pids if _pid_alive(pid)]
+
+
+def _grandchild_env(tmp_path: Path) -> dict[str, str]:
+    env = dict(os.environ)
+    env["PATH"] = str(FAKES_DIR) + os.pathsep + env.get("PATH", "")
+    env["NVSH_FAKE_IGNORE_CANCEL"] = "1"
+    env["NVSH_FAKE_GRANDCHILD"] = "1"
+    env["NVSH_FAKE_PID_FILE"] = str(tmp_path / "pids.json")
+    return env
+
+
+def _wait_for_pid_file(path: Path, timeout: float = 5.0) -> dict:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if path.exists():
+            try:
+                return json.loads(path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                pass
+        time.sleep(0.05)
+    raise AssertionError(f"{path} was never written")
+
+
+def test_force_stop_leaves_no_pid_alive_when_claude_ignores_interrupt(tmp_path):
+    """Acceptance criterion 1: a fake claude that ignores its stream-json
+    interrupt and spawned a grandchild is fully gone -- harness and
+    grandchild both -- within 3s of force_stop()."""
+    env = _grandchild_env(tmp_path)
+    agent = ClaudeAgent({}, env=env)
+    agent.start()
+
+    events: list = []
+    errors: list[BaseException] = []
+
+    def work() -> None:
+        try:
+            for event in agent.run(_request(), _context()):
+                events.append(event)
+        except BaseException as exc:  # noqa: BLE001 - re-raised on the main thread
+            errors.append(exc)
+
+    thread = threading.Thread(target=work, daemon=True)
+    thread.start()
+
+    pids = _wait_for_pid_file(tmp_path / "pids.json")
+
+    agent.force_stop()
+    thread.join(timeout=10)
+    assert not thread.is_alive(), "run() did not return after force_stop()"
+    if errors:
+        raise errors[0]
+
+    assert _wait_gone([pids["harness"], pids["grandchild"]]) == []

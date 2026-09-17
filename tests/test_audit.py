@@ -7,12 +7,20 @@ keep working: they get ``"target": None`` rather than a KeyError or a
 required-argument failure. See ``tests/test_approval_loop.py`` and
 ``tests/test_installers.py`` for those call sites' own behavioral coverage,
 left untouched by this task.
+
+Also covers task t3 (reliable-agent-stop): the ``EXIT_DECLINED`` exit-code
+constant in ``nvsh/cli/_errors.py`` and ``AuditLog.record_stop`` -- the
+dedicated stop/cancel/steer/replace/busy-exit/declined/doctor-apply audit
+event that later tasks (t17, t18) call from the client and doctor paths.
 """
 
 from __future__ import annotations
 
+import pytest
+
 from nvsh.agent.audit import AuditLog
 from nvsh.agent.base import Target
+from nvsh.cli._errors import EXIT_DECLINED, EXIT_ENV_ERROR, EXIT_SUCCESS, EXIT_USER_ERROR
 
 
 def test_record_without_a_target_defaults_to_none(tmp_path):
@@ -69,3 +77,66 @@ def test_record_round_trips_through_json_on_disk(tmp_path):
     AuditLog(path=path).record(event="proposal", target=Target(backend="fake"))
     reloaded = AuditLog(path=path).read_all()
     assert reloaded[0]["target"] == {"backend": "fake"}
+
+
+def test_exit_declined_is_3_and_distinct_from_the_other_exit_codes():
+    """EXIT_DECLINED is the first of the reserved 3+ range (t3 criterion 1)."""
+    assert EXIT_DECLINED == 3
+    assert EXIT_DECLINED not in (EXIT_SUCCESS, EXIT_USER_ERROR, EXIT_ENV_ERROR, 130)
+
+
+def test_record_stop_writes_one_json_line_with_the_stop_shape(tmp_path):
+    """record_stop writes event='stop' plus kind, shell, target, elapsed, outcome."""
+    audit = AuditLog(path=tmp_path / "audit.jsonl")
+    target = Target(backend="pi", model="associate")
+    entry = audit.record_stop(
+        kind="cancel",
+        shell="12345",
+        target=target,
+        elapsed=1.5,
+        outcome="cancelled",
+    )
+    assert entry["event"] == "stop"
+    assert entry["kind"] == "cancel"
+    assert entry["shell"] == "12345"
+    assert entry["target"] == {"backend": "pi", "model": "associate"}
+    assert entry["elapsed"] == 1.5
+    assert entry["outcome"] == "cancelled"
+
+    entries = audit.read_all()
+    assert len(entries) == 1
+    assert entries[0] == entry
+
+
+@pytest.mark.parametrize(
+    "kind",
+    ["cancel", "force_kill", "steer", "replace", "busy_exit", "declined", "doctor_apply"],
+)
+def test_record_stop_accepts_every_documented_kind(tmp_path, kind):
+    audit = AuditLog(path=tmp_path / "audit.jsonl")
+    entry = audit.record_stop(kind=kind, shell="1", target=None, elapsed=0.1, outcome=None)
+    assert entry["kind"] == kind
+
+
+def test_record_stop_rejects_an_unknown_kind(tmp_path):
+    audit = AuditLog(path=tmp_path / "audit.jsonl")
+    with pytest.raises(ValueError):
+        audit.record_stop(kind="bogus", shell="1", target=None, elapsed=0.1, outcome=None)
+
+
+def test_record_stop_accepts_a_plain_dict_target(tmp_path):
+    audit = AuditLog(path=tmp_path / "audit.jsonl")
+    entry = audit.record_stop(
+        kind="force_kill",
+        shell="7",
+        target={"backend": "codex"},
+        elapsed=3.0,
+        outcome=1,
+    )
+    assert entry["target"] == {"backend": "codex"}
+
+
+def test_record_stop_defaults_target_to_none(tmp_path):
+    audit = AuditLog(path=tmp_path / "audit.jsonl")
+    entry = audit.record_stop(kind="declined", shell="7", target=None, elapsed=0.0, outcome=None)
+    assert entry["target"] is None

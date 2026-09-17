@@ -45,6 +45,22 @@ Two knobs model what the *real* pi does around commands (deviation d14):
 Like the real pi, this fake owns the name of its session file: it creates
 one under ``--session-dir`` on start and on every ``new_session``, and
 reports it as ``get_state``'s ``data.sessionFile``.
+
+Two more knobs model a *stuck* pi for the reliable-agent-stop tests:
+
+* ``NVSH_FAKE_IGNORE_CANCEL=1`` -- an ``abort`` command is received and
+  silently dropped: no ``response`` ack, no ``agent_end``. This is what a
+  harness that has stopped honouring its own cancel protocol looks like
+  from the client's side, so a test can prove ``force_stop()`` (kill_tree,
+  not the protocol) is what actually ends the turn.
+* ``NVSH_FAKE_GRANDCHILD=1`` -- start a ``sleep 600`` child at launch and
+  write ``{"harness": <this pid>, "grandchild": <sleep's pid>}`` to
+  ``$NVSH_FAKE_PID_FILE``, so a test can assert a whole process *tree* dies
+  under ``kill_tree``, not just the direct child nvsh spawned.
+* ``NVSH_FAKE_STALL_TURN=1`` -- a ``prompt`` is acked and then left open: no
+  ``message_update``, no ``agent_end``, so an end-to-end stop test
+  (tests/test_agent_stop.py) has a turn that is genuinely in flight, silent
+  and free of approval dialogs when the operator presses Ctrl+C.
 """
 
 from __future__ import annotations
@@ -53,10 +69,23 @@ import atexit
 import json
 import os
 import select
+import subprocess  # nosec B404 - fixed argv below, test fixture only
 import sys
 import time
 import uuid
 from pathlib import Path
+
+
+def spawn_grandchild_if_requested() -> None:
+    """``NVSH_FAKE_GRANDCHILD=1``: start a sleeping child and record both pids."""
+    if os.environ.get("NVSH_FAKE_GRANDCHILD") != "1":
+        return
+    pid_file = os.environ.get("NVSH_FAKE_PID_FILE")
+    child = subprocess.Popen(["sleep", "600"])  # nosec B603 B607 - fixed argv
+    if pid_file:
+        Path(pid_file).write_text(
+            json.dumps({"harness": os.getpid(), "grandchild": child.pid}), encoding="utf-8"
+        )
 
 
 def write_pidfile() -> None:
@@ -165,7 +194,7 @@ def ack(reader: "Reader", cmd: dict, command: str, **extra: object) -> None:
 def handle_prompt(reader: "Reader", cmd: dict) -> None:
     message = cmd.get("message", "")
     ack(reader, cmd, "prompt")
-    if STATE["mute"]:
+    if STATE["mute"] or os.environ.get("NVSH_FAKE_STALL_TURN") == "1":
         return
 
     emit(
@@ -243,6 +272,7 @@ def handle_unknown(cmd: dict) -> None:
 
 def main() -> None:
     write_pidfile()
+    spawn_grandchild_if_requested()
     new_session_file()
     reader = Reader()
     while True:
@@ -265,6 +295,8 @@ def main() -> None:
         if cmd_type == "prompt":
             handle_prompt(reader, cmd)
         elif cmd_type == "abort":
+            if os.environ.get("NVSH_FAKE_IGNORE_CANCEL") == "1":
+                continue  # ignore: no ack, no agent_end -- a stuck harness
             handle_abort(cmd)
         elif cmd_type in ("new_session", "switch_session"):
             if cmd_type == "new_session":

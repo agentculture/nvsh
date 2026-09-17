@@ -46,10 +46,15 @@ entry, and CLAUDE.md's headless-over-SSH constraint):
   ``nvsh: falling back - <original text>`` line rather than another dim
   ``...`` line. Every other status stays dim, and an empty one prints
   nothing at all.
-* **Ctrl+C always returns the prompt.** While streaming, SIGINT is handled
-  here: the caller's ``cancel`` callback runs (aborting the daemon/one-shot
-  run), the terminal's termios settings are restored in a ``finally``, one
-  line is printed, and the stream ends. The caller turns that into exit 130.
+* **Ctrl+C or Esc stops the agent; a second press kills it.** While
+  streaming, the event source is iterated on a worker thread that hands the
+  main thread one event at a time, so the main thread can watch SIGINT and
+  a lone Esc (:class:`nvsh.keys.KeyWatcher`) even while the source is
+  silent. The first press calls the caller's ``cancel`` once, prints
+  ``stopping… press again to kill`` and keeps rendering until the turn
+  really ends; a second press calls ``force_stop`` once and ends the
+  stream. Either way the result is ``interrupted`` (the caller's exit 130),
+  and the terminal's termios settings are restored in a ``finally``.
 
 Stdlib only; nothing here is imported at shell start (the bash hook only
 runs ``nvsh`` on a qualifying failure).
@@ -58,6 +63,7 @@ runs ``nvsh`` on a qualifying failure).
 from __future__ import annotations
 
 import os
+import queue
 import signal
 import sys
 import threading
@@ -65,6 +71,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Callable, Iterable, Mapping, Sequence, TextIO
 
+from . import keys
 from .agent.base import AgentEvent, EventKind, Proposal, Target
 from .approvals import parse_stages
 
@@ -79,6 +86,21 @@ _WAIT_TICK = 0.2
 
 #: The waiting line's text (the elapsed count is appended on a tty).
 _WAIT_TEXT = "waiting for the agent"
+
+#: What the panel prints on the first Ctrl+C/Esc while the agent works.
+STOPPING_TEXT = "stopping… press again to kill"
+
+#: How long the stream loop waits for an event before looking at the keys
+#: and signals again. Well under the 1s the stopping line is promised in.
+_KEY_POLL = 0.05
+
+#: A proposal key read that comes back empty this fast, this many times in
+#: a row, is a hung-up tty rather than an arrow key: stop reading.
+_EOF_WINDOW = 0.002
+_EOF_REPEATS = 8
+
+#: Ctrl+C as a raw-mode key read sees it: ISIG is off, so no SIGINT is sent.
+_CTRL_C = "\x03"
 
 #: Carriage return plus erase-to-end-of-line. Hard-coded CSI, never tput.
 _ERASE_LINE = "\r\x1b[2K"
@@ -117,6 +139,20 @@ IGNORE = "ignore"
 #: A scope key the caller's ``guard`` refused. The caller re-asks; run-once
 #: stays available.
 REFUSED = "refused"
+
+#: What :meth:`Panel.show_busy` can return (t15). A new request from the
+#: shell that owns a still-running turn -- or from any shell when the owning
+#: shell's pid is gone -- gets one of these three instead of silent queueing.
+STEER = "steer"
+REPLACE = "replace"
+BUSY_EXIT = "busy_exit"
+
+#: How long :meth:`Panel.show_busy` waits, after a steer choice, for some
+#: event to prove the harness actually reacted before re-offering
+#: replace/exit (a steerable adapter that accepted the steer and then said
+#: nothing must not leave the operator staring at a prompt that already
+#: resolved).
+STEER_SILENCE_TIMEOUT = 10.0
 
 #: The one-line key legend. Kept within 80 columns so it never wraps on a
 #: bare ssh into a Jetson, where a wrapped legend costs the panel a line and
@@ -523,17 +559,25 @@ class Panel:
         *,
         on_proposal: Callable[[Proposal, AgentEvent], object] | None = None,
         cancel: Callable[[], object] | None = None,
+        force_stop: Callable[[], object] | None = None,
+        on_busy: Callable[[AgentEvent], object] | None = None,
     ) -> StreamResult:
         """Render ``events`` as they arrive; return what happened.
 
-        SIGINT during the stream calls ``cancel`` and ends the stream with
-        ``interrupted=True``. Terminal attributes and the previous SIGINT
-        handler are always restored.
+        ``on_busy`` is called with each ``busy`` event (t17), with the key
+        watcher suspended like ``on_proposal``, so the busy prompt reads its
+        own keys on the main thread.
+
+        The first Ctrl+C or lone Esc calls ``cancel`` once, prints the
+        stopping line and keeps rendering until the source ends; a second
+        press calls ``force_stop`` once (when given) and ends the stream.
+        Both mark the result ``interrupted``. Terminal attributes and the
+        previous SIGINT handler are always restored.
         """
         result = StreamResult()
         if self._target is not None:
             self.line(self._target_header_line())
-        cancelled: list[bool] = []  # plain list: no lock for a nested Ctrl+C to deadlock on
+        stop = _StopState(cancel, force_stop)
         saved_attrs = None
         previous = None
         started_text = False
@@ -544,6 +588,9 @@ class Panel:
         ticker = threading.Thread(
             target=self._wait_ticker, args=(stop_waiting,), daemon=True, name="nvsh-wait"
         )
+        fd = _fileno(self.in_)
+        watcher = keys.KeyWatcher(fd=-1 if fd is None else fd, env=self.env)
+        feeder = _Feeder(events)
         try:
             # All setup happens inside the try: a SIGINT that lands before
             # the handler is in place (Python's default handler raises
@@ -554,31 +601,31 @@ class Panel:
             # SIGINT landing between the install and the store of
             # ``previous`` cannot leave the panel handler stuck.
             previous = _current_sigint()
-            _install_sigint(self._on_sigint(cancel, cancelled))
+            _install_sigint(stop.on_sigint)
+            watcher.__enter__()
             ticker.start()
+            feeder.start()
             self._arm_waiting()
-            for event in events:
-                # Everything below prints; the ticker must be off and its
-                # line erased first, and stay off until the event is handled
-                # (``on_proposal`` blocks on a keypress).
-                self._pause_waiting()
-                started_text, last = self._render_event(
-                    event, result, started_text, on_proposal=on_proposal
-                )
-                if last:
-                    break
-                self._arm_waiting()
+            started_text = self._stream_loop(
+                feeder,
+                watcher,
+                stop,
+                result,
+                started_text,
+                self._suspending(watcher, on_proposal),
+                self._suspending(watcher, on_busy),
+            )
         except KeyboardInterrupt:
             result.interrupted = True
             # Raised by Python's default handler, before ours was installed:
             # the operator still pressed Ctrl+C, so the agent is still told.
-            if cancel is not None and not cancelled:
-                cancelled.append(True)
-                _quiet(cancel)
+            stop.cancel_once()
         finally:
             # Handler first: a second Ctrl+C during the ticker join below
             # must not escape stream() with our handler still installed.
             _restore_sigint(previous)
+            feeder.halt()
+            _quiet(watcher.__exit__, None, None, None)
             stop_waiting.set()
             if ticker.ident is not None:
                 _quiet(ticker.join, 2.0)
@@ -590,6 +637,108 @@ class Panel:
             if result.interrupted:
                 self.line(f"{self.style.dim}nvsh: interrupted{self.style.reset}")
         return result
+
+    def _stream_loop(
+        self,
+        feeder: _Feeder,
+        watcher: keys.KeyWatcher,
+        stop: _StopState,
+        result: StreamResult,
+        started_text: bool,
+        on_proposal: Callable[[Proposal, AgentEvent], object] | None,
+        on_busy: Callable[[AgentEvent], object] | None = None,
+    ) -> bool:
+        """Render events and act on presses until the stream ends.
+
+        Returns whether a run of text is still open on the current line.
+        """
+        while True:
+            item = self._next_item(feeder, watcher, stop)
+            if item is None:
+                started_text, ended = self._on_press(stop, result, started_text)
+                if ended:
+                    return started_text
+                continue
+            tag, payload = item
+            if tag is _END:
+                return started_text
+            if tag is _RAISED:
+                raise payload  # type: ignore[misc]
+            # Everything below prints; the ticker must be off and its line
+            # erased first, and stay off until the event is handled
+            # (``on_proposal`` blocks on a keypress).
+            self._pause_waiting()
+            try:
+                started_text, last = self._render_event(
+                    payload, result, started_text, on_proposal=on_proposal, on_busy=on_busy
+                )
+            except KeyboardInterrupt:
+                # Ctrl+C typed at a raw-mode prompt (the proposal or busy
+                # key read) arrives as a byte, not a signal: it is still a
+                # press, and it decided nothing at that prompt.
+                stop.press()
+                last = False
+            if last:
+                return started_text
+            self._arm_waiting()
+            feeder.ack()
+
+    @staticmethod
+    def _next_item(feeder: _Feeder, watcher: keys.KeyWatcher, stop: _StopState):
+        """The next queued event, or ``None`` once a press is waiting to be handled."""
+        while True:
+            if stop.unhandled():
+                return None
+            try:
+                return feeder.queue.get_nowait()
+            except queue.Empty:
+                pass
+            if watcher.active:
+                if watcher.poll(_KEY_POLL) == keys.ESC:
+                    stop.press()
+                continue
+            try:
+                return feeder.queue.get(timeout=_KEY_POLL)
+            except queue.Empty:
+                continue
+
+    def _on_press(self, stop: _StopState, result: StreamResult, started_text: bool):
+        """Act on one Ctrl+C/Esc. Returns ``(started_text, stream_ended)``."""
+        result.interrupted = True
+        if stop.handle() == 1:
+            self._pause_waiting()
+            self._close_thinking()
+            started_text = self._end_text_run(started_text)
+            self.line(f"{self.style.yellow}{STOPPING_TEXT}{self.style.reset}")
+            stop.cancel_once()
+            self._arm_waiting()
+            return started_text, False
+        stop.force_stop_once()
+        return started_text, True
+
+    @staticmethod
+    def _suspending(
+        watcher: keys.KeyWatcher, on_proposal: Callable[..., object] | None
+    ) -> Callable[..., object] | None:
+        """Wrap ``on_proposal`` so the key watcher lets go of stdin meanwhile.
+
+        The proposal reads its own keys (raw) and the tell prompt reads a
+        cooked line; neither may lose bytes to the watcher or run in cbreak.
+        """
+        if on_proposal is None:
+            return None
+
+        def call(*args: object) -> object:
+            armed = watcher.active
+            if armed:
+                watcher.__exit__(None, None, None)
+            try:
+                return on_proposal(*args)
+            finally:
+                if armed:
+                    watcher.__enter__()
+
+        return call
 
     def _end_text_run(self, started_text: bool) -> bool:
         """Close an open run of ``text_delta`` output with a newline.
@@ -637,6 +786,7 @@ class Panel:
         started_text: bool,
         *,
         on_proposal: Callable[[Proposal, AgentEvent], object] | None,
+        on_busy: Callable[[AgentEvent], object] | None = None,
     ) -> tuple[bool, bool]:
         """Render one streamed event onto the panel and record it.
 
@@ -658,24 +808,10 @@ class Panel:
             result.text += event.text
             self.write(event.text)
             return True, False
-        if kind is EventKind.STATUS:
-            if event.text:
-                started_text = self._end_text_run(started_text)
-                self.status(event.text)
-            return started_text, False
-        if kind is EventKind.TOOL_CALL:
-            self.tool_call(event.tool, (event.args or {}).get("command"))
-            return started_text, False
-        if kind is EventKind.TOOL_RESULT:
-            self.tool_result(event.tool, tool_exit_code(event.result))
-            return started_text, False
-        if kind is EventKind.PROPOSAL and event.proposal is not None:
-            started_text = self._end_text_run(started_text)
-            result.proposals.append(event.proposal)
-            if on_proposal is not None:
-                # Blocks on a keypress; the ticker stays paused throughout.
-                on_proposal(event.proposal, event)
-            return started_text, False
+        if kind in (EventKind.STATUS, EventKind.TOOL_CALL, EventKind.TOOL_RESULT):
+            return self._render_progress(event, started_text), False
+        if kind in (EventKind.PROPOSAL, EventKind.BUSY):
+            return self._render_prompt(event, result, started_text, on_proposal, on_busy), False
         if kind is EventKind.ERROR:
             result.error = event.error
             started_text = self._end_text_run(started_text)
@@ -686,19 +822,43 @@ class Panel:
             return started_text, True
         return started_text, False
 
-    def _on_sigint(
-        self, cancel: Callable[[], object] | None, cancelled: list[bool]
-    ) -> Callable[[int, object], None]:
-        def handler(_signum: int, _frame: object) -> None:
-            if cancel is not None and not cancelled:
-                cancelled.append(True)
-                _quiet(cancel)
-            # KeyboardInterrupt, like the one _interrupt_handler raises: a
-            # BaseException is what breaks a blocking read without any of
-            # the ``except Exception`` guards on the way out swallowing it.
-            raise KeyboardInterrupt()
+    def _render_progress(self, event: AgentEvent, started_text: bool) -> bool:
+        """A STATUS, TOOL_CALL or TOOL_RESULT line; returns the new ``started_text``."""
+        if event.kind is EventKind.TOOL_CALL:
+            self.tool_call(event.tool, (event.args or {}).get("command"))
+        elif event.kind is EventKind.TOOL_RESULT:
+            self.tool_result(event.tool, tool_exit_code(event.result))
+        elif event.text:
+            started_text = self._end_text_run(started_text)
+            self.status(event.text)
+        return started_text
 
-        return handler
+    def _render_prompt(
+        self,
+        event: AgentEvent,
+        result: StreamResult,
+        started_text: bool,
+        on_proposal: Callable[[Proposal, AgentEvent], object] | None,
+        on_busy: Callable[[AgentEvent], object] | None,
+    ) -> bool:
+        """A PROPOSAL or BUSY event; returns the new ``started_text``.
+
+        Both block on a keypress through their callback, with the ticker
+        paused throughout. A PROPOSAL event carrying no proposal renders
+        nothing.
+        """
+        if event.kind is EventKind.BUSY:
+            started_text = self._end_text_run(started_text)
+            if on_busy is not None:
+                on_busy(event)
+            return started_text
+        if event.proposal is None:
+            return started_text
+        started_text = self._end_text_run(started_text)
+        result.proposals.append(event.proposal)
+        if on_proposal is not None:
+            on_proposal(event.proposal, event)
+        return started_text
 
     # -- proposals ---------------------------------------------------------
 
@@ -842,7 +1002,9 @@ class Panel:
         pre-typed anywhere: the operator sees it and presses a key. Enter
         runs it once, ``s`` runs it and approves it for this login session,
         ``u`` runs it and approves it for this user, ``e`` explains, ``d``
-        shows details, Esc (or Ctrl+C, or anything else) ignores.
+        shows details, Esc (or anything else) ignores. Ctrl+C decides
+        nothing here: it raises :class:`KeyboardInterrupt`, which
+        :meth:`stream` treats as a stop press.
 
         ``guard`` is consulted only for ``s``/``u`` -- the panel does not
         know the approval policy, the caller does. It is handed the scope
@@ -981,11 +1143,69 @@ class Panel:
             return raw.decode("utf-8", errors="replace")
         return str(raw or "")
 
-    def _read_choice(self) -> str:
+    # -- the busy prompt (t15) ----------------------------------------------
+
+    def show_busy(
+        self,
+        owner: str,
+        elapsed: float,
+        steerable: bool,
+        *,
+        await_event: Callable[[float], bool] | None = None,
+    ) -> str:
+        """Show the busy prompt for a turn already running for ``owner``.
+
+        Returns :data:`STEER`, :data:`REPLACE` or :data:`BUSY_EXIT`. ``[t]``
+        steer is only offered -- and only ever read as steer -- when
+        ``steerable`` is true; a harness with no mid-turn channel must never
+        let a stray ``t`` keypress be mistaken for one, so it falls through
+        to :data:`BUSY_EXIT` exactly like any other key the legend does not
+        list (matching how an unrecognised proposal key ignores, above).
+
+        ``await_event`` is the caller's hook for "did the harness actually
+        react": after a steer choice, it is called once with
+        :data:`STEER_SILENCE_TIMEOUT` seconds and must return ``True`` the
+        moment some event proves the steer landed, or ``False`` once that
+        long has passed with nothing. On ``False`` the prompt is shown again
+        -- steer is not re-offered, since the operator already tried it and
+        it produced nothing to steer with; only replace/exit remain. Passing
+        no ``await_event`` (the default, and every caller before t17 wires
+        the daemon's event source) keeps steer's old immediate return.
+        """
+        choice = self._read_busy_choice(owner, elapsed, steerable)
+        if choice == STEER and await_event is not None and not await_event(STEER_SILENCE_TIMEOUT):
+            self.note(f"nvsh: {owner} stayed silent after steer")
+            return self._read_busy_choice(owner, elapsed, False)
+        return choice
+
+    def _busy_legend(self, steerable: bool) -> str:
+        parts = []
+        if steerable:
+            parts.append("[t] steer")
+        parts.append("[r] replace")
+        parts.append("[Esc] exit")
+        return " ".join(parts)
+
+    def _read_busy_choice(self, owner: str, elapsed: float, steerable: bool) -> str:
+        s = self.style
+        self.line(
+            f"{s.bold}{s.yellow}nvsh:{s.reset} busy -- {owner} still running ({int(elapsed)}s)"
+        )
+        self.line(self._busy_legend(steerable))
+        key = self._read_choice_key()
+        if steerable and key in ("t", "T"):
+            return STEER
+        if key in ("r", "R"):
+            return REPLACE
+        return BUSY_EXIT
+
+    def _read_choice_key(self) -> str:
         if self.isatty:
-            key = _read_key(self.in_)
-        else:
-            key = _read_line_key(self.in_)
+            return _read_key(self.in_)
+        return _read_line_key(self.in_)
+
+    def _read_choice(self) -> str:
+        key = self._read_choice_key()
         if key in ("\r", "\n"):
             return APPROVE
         if key == "s":
@@ -1003,6 +1223,108 @@ class Panel:
         if key in ("t", "T"):
             return TELL
         return IGNORE
+
+
+_END = "end"
+_EVENT = "event"
+_RAISED = "raised"
+
+
+class _Feeder:
+    """Iterates the event source on a worker thread, one event per render.
+
+    The worker pulls the next event only after the main thread has rendered
+    the previous one (:meth:`ack`), so the source's own side effects (a
+    proposal answered, a socket read) happen in the same order as when the
+    main thread iterated it directly. What the worker raises is handed to
+    the main thread and re-raised there.
+    """
+
+    def __init__(self, events: Iterable[AgentEvent]) -> None:
+        self._events = events
+        self.queue: queue.Queue = queue.Queue()
+        self._ack = threading.Event()
+        self._halted = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True, name="nvsh-events")
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def ack(self) -> None:
+        self._ack.set()
+
+    def halt(self) -> None:
+        """The stream is over: pull nothing more (a blocked pull is abandoned)."""
+        self._halted.set()
+        self._ack.set()
+
+    def _run(self) -> None:
+        iterator = None
+        try:
+            iterator = iter(self._events)
+            while not self._halted.is_set():
+                try:
+                    event = next(iterator)
+                except StopIteration:
+                    break
+                self._ack.clear()
+                self.queue.put((_EVENT, event))
+                self._ack.wait()
+        except Exception as exc:  # noqa: BLE001 - handed to the main thread
+            self.queue.put((_RAISED, exc))
+            return
+        except BaseException as exc:
+            # SystemExit and the like: the main thread still re-raises it,
+            # and this thread does not pretend it was handled.
+            self.queue.put((_RAISED, exc))
+            raise
+        finally:
+            close = getattr(iterator, "close", None)
+            if self._halted.is_set() and callable(close):
+                _quiet(close)
+        self.queue.put((_END, None))
+
+
+class _StopState:
+    """Ctrl+C/Esc presses during one stream, and the once-only stop calls.
+
+    The SIGINT handler only records the press (a list append, no lock for a
+    nested Ctrl+C to deadlock on); the stream loop acts on it.
+    """
+
+    def __init__(
+        self, cancel: Callable[[], object] | None, force_stop: Callable[[], object] | None
+    ) -> None:
+        self._cancel = cancel
+        self._force_stop = force_stop
+        self._presses: list[bool] = []
+        self._handled = 0
+        self._cancelled: list[bool] = []
+        self._killed: list[bool] = []
+
+    def on_sigint(self, _signum: int, _frame: object) -> None:
+        self.press()
+
+    def press(self) -> None:
+        self._presses.append(True)
+
+    def unhandled(self) -> bool:
+        return self._handled < len(self._presses)
+
+    def handle(self) -> int:
+        """Mark one press handled; return which press it was (1, 2, ...)."""
+        self._handled += 1
+        return self._handled
+
+    def cancel_once(self) -> None:
+        if self._cancel is not None and not self._cancelled:
+            self._cancelled.append(True)
+            _quiet(self._cancel)
+
+    def force_stop_once(self) -> None:
+        if self._force_stop is not None and not self._killed:
+            self._killed.append(True)
+            _quiet(self._force_stop)
 
 
 # ---------------------------------------------------------------------------
@@ -1099,12 +1421,41 @@ def _read_key(stream) -> str:
         return _read_line_key(stream)
     try:
         tty.setraw(fd)
-        data = os.read(fd, 1)
+        return _read_raw_key(fd)
     except Exception:  # noqa: BLE001
         return IGNORE
     finally:
         _quiet(termios.tcsetattr, fd, termios.TCSADRAIN, saved)
-    return data.decode("utf-8", errors="replace") if data else ""
+
+
+def _read_raw_key(fd: int) -> str:
+    """One keypress on a raw ``fd``; arrow/function keys are skipped whole.
+
+    A lone Esc comes back as ``"\\x1b"`` (it ignores, as before); Ctrl+C,
+    which raw mode delivers as the byte ``0x03`` instead of a SIGINT, raises
+    :class:`KeyboardInterrupt` so it stops the agent rather than answering
+    the prompt (:meth:`Panel.stream` counts it as a press); an escape
+    sequence is drained by :func:`nvsh.keys.read_choice_key` and the read
+    goes on, so an arrow key neither ignores the proposal nor leaves bytes
+    behind. EOF (a hung-up tty) comes back as ``""`` -- told apart from a
+    sequence by returning at once, repeatedly, without anyone typing.
+    """
+    fast_empties = 0
+    while True:
+        started = time.monotonic()
+        key = keys.read_choice_key(fd)
+        if key == keys.ESC:
+            return "\x1b"
+        if key == _CTRL_C:
+            raise KeyboardInterrupt()
+        if key:
+            return key
+        if time.monotonic() - started >= _EOF_WINDOW:
+            fast_empties = 0
+            continue
+        fast_empties += 1
+        if fast_empties >= _EOF_REPEATS:
+            return ""
 
 
 def _read_line_key(stream) -> str:
@@ -1113,7 +1464,9 @@ def _read_line_key(stream) -> str:
         raw = stream.readline()
     except Exception:  # noqa: BLE001
         return ""
-    if raw == "":
-        return ""  # EOF -> ignore
+    if not raw:
+        return ""  # EOF (b"" from a binary stream too) -> ignore, never Enter
+    if isinstance(raw, bytes):
+        raw = raw.decode("utf-8", errors="replace")
     stripped = raw.strip()
     return stripped[:1] if stripped else "\n"

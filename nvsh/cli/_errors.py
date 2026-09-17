@@ -21,6 +21,10 @@ from dataclasses import dataclass
 EXIT_SUCCESS = 0
 EXIT_USER_ERROR = 1
 EXIT_ENV_ERROR = 2
+# 3 = declined: the operator declined the agent (exit at a busy prompt, or
+# Esc/ignore at a proposal). First allocation from the reserved 3+ range,
+# distinct from 0/1/2 and from the shell's own 130 (SIGINT).
+EXIT_DECLINED = 3
 
 
 @dataclass

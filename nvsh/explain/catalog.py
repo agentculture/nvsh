@@ -135,15 +135,33 @@ not):
   `script: <path>` or `tmux: <path>`, or a warning when capture is off.
 - `daemon_status` — `nvsh.daemon.is_running()`; always `severity=info`,
   since "not running" is the normal idle state.
+- `agent_turn_not_hung` — reads the daemon's `active_turn` via a read-only
+  `status` control message (never mutating, never autostarts the daemon).
+  `severity=info` and passes when there is no active turn, or the owner
+  shell is alive and elapsed time is within the daemon's own turn cap.
+  `severity=warning` and fails when the owner shell's pid is gone, or
+  elapsed exceeds that cap — either way the remediation is
+  `nvsh doctor --apply`.
 - `terminfo_present` — `infocmp $TERM` (or a `TERMINFO`/`TERMINFO_DIRS`/
   `~/.terminfo`/system search); missing gives the
   `infocmp -x <TERM> | ssh <host> -- tic -x -` remediation, run from the
   machine that has the terminfo entry.
 
+## `--apply`
+
+The one exception to "read-only": when `agent_turn_not_hung` has failed,
+`--apply` fixes exactly that turn, nothing else. A dead-owner turn (its
+shell no longer exists) is killed with owner authority the daemon grants
+doctor for this case alone. A live-owner turn is killed only after an
+interactive `[y/N]` prompt naming the owning shell; off a tty it refuses
+without prompting and changes nothing. Every attempt — killed, refused, or
+nothing to do — is recorded to the audit log as `kind="doctor_apply"`.
+
 ## Usage
 
     nvsh doctor
     nvsh doctor --json
+    nvsh doctor --apply
     nvsh doctor --json --prompt-command "$(declare -p PROMPT_COMMAND)" \\
         --bind-p "$(bind -p)" --keymap "$(bind -V | grep keymap | awk '{print $2}')"
 """

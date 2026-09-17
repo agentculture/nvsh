@@ -743,3 +743,74 @@ def test_disable_zero_keeps_the_hook_working(tmp_path, fake_nvsh):
     env = fake_nvsh.env(tmp_path, NVSH_DISABLE="0")
     _run_bash([_source(), "ls /definitely-not-here"], env)
     assert fake_nvsh.count >= 1
+
+
+# --------------------------------------------------------------------------
+# t18: the client's own exit status (declined = 3, stopped = 130) must never
+# leak into the operator's $?/PIPESTATUS at the next prompt.
+# --------------------------------------------------------------------------
+
+
+@pytest.fixture
+def stub_nvsh_exit(tmp_path):
+    """A fake ``nvsh`` whose ``hook`` subcommand exits with a chosen code.
+
+    Distinct from ``fake_nvsh`` (which always exits 0): this fixture is for
+    asserting that the *client's* exit status - 3 (declined) or 130
+    (stopped), per t17 - never reaches the operator's ``$?``/``PIPESTATUS``.
+    """
+
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    script = bindir / "nvsh"
+
+    class Stub:
+        def env(self, tmp, exit_code, **extra):
+            script.write_text(f"#!/bin/sh\nexit {exit_code}\n")
+            script.chmod(0o755)
+            return _base_env(
+                tmp,
+                PATH=f"{bindir}:{os.environ.get('PATH', '')}",
+                **extra,
+            )
+
+    return Stub()
+
+
+@pytest.mark.parametrize("client_exit", [3, 130])
+def test_declined_or_stopped_client_leaves_operator_status_unchanged(
+    tmp_path, stub_nvsh_exit, client_exit
+):
+    """A declined (3) or stopped (130) `nvsh hook` run must not overwrite
+    the failing command's own `$?`/PIPESTATUS at the next prompt."""
+
+    env = stub_nvsh_exit.env(tmp_path, client_exit)
+    out = _run_bash(
+        [
+            _source(),
+            "ls /nvsh-no-such-dir",
+            # $? and PIPESTATUS must be captured by one simple command (no
+            # separate command word), or the capture itself resets
+            # PIPESTATUS before it can be read - the same reason hook.bash's
+            # own `local __nvsh_status=$? __nvsh_pipe=(...)` is one command.
+            'declare __s=$? __p=("${PIPESTATUS[@]}")',
+            'echo "AFTER_STATUS=${__s}"',
+            'echo "AFTER_PIPE=${__p[*]}"',
+        ],
+        env,
+    )
+    # `ls` on a missing directory exits 2 (pinned by
+    # test_failure_calls_the_python_entrypoint_with_the_argv_contract above).
+    assert "AFTER_STATUS=2" in out, out
+    assert "AFTER_PIPE=2" in out, out
+
+
+def test_hook_client_call_is_followed_by_return_0():
+    """Pins that hook.bash's `nvsh hook` invocation ends with `|| return 0`,
+    which is what stops a non-zero client exit (declined/stopped) from
+    aborting the hook function or propagating to the operator's shell."""
+
+    text = HOOK.read_text()
+    idx = text.index('"${__nvsh_bin}" hook \\')
+    tail = text[idx : idx + 400]
+    assert re.search(r'--log\s+"\$\{NVSH_LOG:-\}"\s*\|\|\s*return 0', tail), tail

@@ -10,8 +10,11 @@ idempotent close) so each concrete adapter only supplies ``_argv`` and
 
 from __future__ import annotations
 
+import os
+import signal
 import subprocess  # nosec B404 - fixed argv lists below, no shell=True
 import threading
+import time
 from collections import deque
 from typing import IO, Iterator
 
@@ -69,6 +72,11 @@ def escalate_close(
     2. **Wait** up to ``wait`` seconds for that clean exit.
     3. **``terminate()``**, then wait up to ``grace`` seconds.
     4. **``kill()``**, then wait up to ``grace`` seconds.
+    5. **Reap the group.** Whichever rung ended the leader, any member of
+       the process group it led that is still alive -- a tool grandchild
+       the harness started and did not wait for -- gets SIGTERM, a grace
+       period, then SIGKILL (task t23, deviation d14). A harness exiting
+       cleanly on EOF is exactly the case that used to orphan them.
 
     Returns the child's exit status, or ``None`` when it survived even
     ``kill()`` (a process stuck in uninterruptible sleep, or one already
@@ -82,23 +90,181 @@ def escalate_close(
     # is read at call time (a default argument would freeze it at import).
     wait = CLOSE_WAIT_SECONDS if wait is None else wait
     grace = wait if grace is None else grace
+    # Recorded before stdin closes: the EOF wait below reaps a leader that
+    # exits cleanly, after which _own_group can no longer ask it.
+    pgid = child_group(proc)
     stdin = getattr(proc, "stdin", None)
     if stdin is not None:
         try:
             stdin.close()
         except (OSError, ValueError):  # OSError covers BrokenPipeError
             pass
-    for escalate, timeout in ((None, wait), (proc.terminate, grace), (proc.kill, grace)):
-        if escalate is not None:
-            try:
-                escalate()
-            except (OSError, ValueError):  # already gone, or already reaped
-                return proc.poll()
+    try:
+        rc = proc.wait(timeout=wait)
+    except subprocess.TimeoutExpired:
+        # Terminate and kill through the process group when the child leads
+        # its own (task t2), so tool grandchildren the harness started go
+        # with it.
+        rc = kill_tree(proc, grace=grace)
+    except Exception:  # noqa: BLE001
+        rc = getattr(proc, "returncode", None)
+    reap_group(pgid, grace=grace)
+    return rc
+
+
+def child_group(proc: subprocess.Popen | None) -> int | None:
+    """The process group *proc* leads, live or already reaped; ``None`` if unsafe.
+
+    Call it before anything that may reap *proc*, and hand the result to
+    :func:`reap_group` afterwards. Never raises.
+    """
+    if proc is None:
+        return None
+    try:
+        return _own_group(proc) or _reaped_leader_group(proc)
+    except Exception:  # noqa: BLE001 - teardown on the failure path must never raise
+        return None
+
+
+def _reaped_leader_group(proc: subprocess.Popen) -> int | None:
+    """The group an *already reaped* leader led, when that is still provably it.
+
+    ``kill_tree`` refuses to signal a reaped child's pid, because the pid may
+    have been reused. A *group* id is different: Linux will not hand out a
+    pid that is still in use as a process-group id, so while any member of
+    group ``proc.pid`` lives, the group is the one our child created and its
+    members are the child's own descendants. The one way ``proc.pid`` names
+    somebody else's group is that every member died, the pid was
+    reallocated, and the new process leads a group of its own -- in which
+    case a process with that pid is alive again. So: no live process with
+    ``proc.pid``, never nvsh's own group, and the group still has members.
+    The remaining window (the last member dying and the pid being reused and
+    made a group leader between this check and the signal) needs a full pid
+    wrap-around in microseconds; ``killpg`` on an empty group is a harmless
+    ESRCH.
+    """
+    if proc.returncode is None:
+        return None
+    pgid = proc.pid
+    if pgid <= 1 or pgid == os.getpgrp():
+        return None
+    try:
+        os.kill(pgid, 0)
+    except ProcessLookupError:
+        pass  # the leader's pid is free: nobody has reused it
+    except OSError:
+        return None  # EPERM: a live process (someone else's) holds the pid
+    else:
+        return None  # a live process holds the pid -- possibly reused
+    return pgid if _group_alive(pgid) else None
+
+
+def _group_alive(pgid: int) -> bool:
+    """True while process group *pgid* has at least one member. Never raises."""
+    try:
+        os.killpg(pgid, 0)
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def reap_group(pgid: int | None, grace: float = CLOSE_WAIT_SECONDS) -> None:
+    """SIGTERM, wait up to *grace*, then SIGKILL whatever is left of *pgid*.
+
+    For a group whose leader is already gone (a harness that exited on EOF
+    and left a tool grandchild running). *pgid* must come from
+    :func:`_own_group` / :func:`_reaped_leader_group` -- a group this process
+    spawned into its own session -- and nvsh's own group is refused here
+    too, belt and braces. Members are not our children, so there is nothing
+    to ``wait()`` on: the group is polled until it empties. Never raises.
+    """
+    if pgid is None or pgid <= 1 or pgid == os.getpgrp():
+        return
+    # Every call below either cannot raise or catches OSError itself.
+    if not _group_alive(pgid):
+        return
+    try:
+        os.killpg(pgid, signal.SIGTERM)
+    except OSError:
+        return
+    deadline = time.monotonic() + grace
+    while time.monotonic() < deadline:
+        if not _group_alive(pgid):
+            return
+        time.sleep(0.02)
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+    except OSError:
+        return
+
+
+def _own_group(proc: subprocess.Popen) -> int | None:
+    """The process group *proc* leads, or ``None`` when signalling one is unsafe.
+
+    Only a live (or not-yet-reaped zombie) child is asked: until it is
+    reaped its pid cannot be reused, so the group id is really its group.
+    A child sharing nvsh's own group (spawned without
+    ``start_new_session``) returns ``None`` -- signalling that group would
+    signal nvsh itself.
+    """
+    if proc.returncode is not None:
+        return None
+    try:
+        pgid = os.getpgid(proc.pid)
+    except OSError:
+        return None
+    if pgid != proc.pid or pgid == os.getpgrp():
+        return None
+    return pgid
+
+
+def _signal(proc: subprocess.Popen, pgid: int | None, sig: int) -> None:
+    """Send *sig* to *pgid* when known, else to *proc* alone. Never raises."""
+    try:
+        if pgid is not None:
+            os.killpg(pgid, sig)
+        elif proc.poll() is None:
+            proc.send_signal(sig)
+    except (OSError, ValueError):  # already gone, or already reaped
+        pass
+
+
+def kill_tree(proc: subprocess.Popen | None, grace: float = 2.0) -> int | None:
+    """Stop *proc* and everything in its process group: SIGTERM, wait, SIGKILL.
+
+    Adapter children are spawned with ``start_new_session=True``, so the
+    child leads a process group holding every tool grandchild it started;
+    signalling the group is what keeps a stop from orphaning them. A child
+    that does not lead its own group (or already shares nvsh's) is
+    signalled alone, exactly like ``terminate()``/``kill()``.
+
+    The group gets SIGKILL after the grace period even when the leader
+    already exited on SIGTERM, because a grandchild that ignores SIGTERM
+    outlives its parent. Only signals are sent -- no harness settings or
+    trust file is ever read or written. Returns the child's exit status, or
+    ``None`` when it could not be reaped. Never raises.
+    """
+    if proc is None:
+        return None
+    try:
+        pgid = _own_group(proc)
+        _signal(proc, pgid, signal.SIGTERM)
         try:
-            return proc.wait(timeout=timeout)
+            proc.wait(timeout=grace)
         except subprocess.TimeoutExpired:
-            continue
-    return proc.poll()
+            pass
+        # Reaping the leader does not free the group id while any member
+        # lives, so the group SIGKILL still reaches surviving grandchildren.
+        _signal(proc, pgid, signal.SIGKILL)
+        try:
+            proc.wait(timeout=grace)
+        except subprocess.TimeoutExpired:
+            pass
+        return proc.poll()
+    except Exception:  # noqa: BLE001 - a stop on the failure path must never raise
+        return getattr(proc, "returncode", None)
 
 
 def _drain(stream: IO[str], sink: deque[str]) -> None:
@@ -166,6 +332,15 @@ class SubprocessAgent(NvshAgent):
         self._proc: subprocess.Popen | None = None
         self._cancelled = False
         self._closed = False
+        #: The leader's process group, captured at spawn time (Qodo 6).
+        #: ``run()``'s own ``_exit_event`` waits out the leader before the
+        #: ``finally`` block runs teardown, so by then ``poll()`` is never
+        #: ``None`` and a group captured only there would already be gone
+        #: (``_own_group`` refuses a reaped leader). Capturing it here,
+        #: before that wait, keeps it reapable either way --
+        #: ``child_group`` falls back to ``_reaped_leader_group`` once the
+        #: leader is gone.
+        self._pgid: int | None = None
 
     def start(self) -> None:
         self._cancelled = False
@@ -188,10 +363,19 @@ class SubprocessAgent(NvshAgent):
                 stderr=subprocess.PIPE,
                 text=True,
                 env=child_env(self._env),
+                # Its own process group, so a stop can kill the whole tree
+                # (kill_tree) and the terminal's SIGINT never reaches it.
+                start_new_session=True,
             )
         except OSError as exc:
             yield AgentEvent(kind=EventKind.ERROR, error=f"failed to start {argv[0]}: {exc}")
             return
+
+        # Recorded before anything can reap the leader (``_exit_event``'s
+        # own ``wait()`` included, Qodo 6) -- a tool grandchild left in this
+        # group must still be reapable in the ``finally`` below even after
+        # the leader has already exited normally.
+        self._pgid = child_group(self._proc)
 
         # Drain stderr concurrently. Reading it only once stdout hits EOF
         # deadlocks any backend that writes more than a pipe buffer's worth
@@ -250,11 +434,14 @@ class SubprocessAgent(NvshAgent):
 
     def _terminate_if_running(self) -> None:
         if self._proc is not None and self._proc.poll() is None:
-            self._proc.terminate()
-            try:
-                self._proc.wait(timeout=2)
-            except subprocess.TimeoutExpired:
-                self._proc.kill()
+            kill_tree(self._proc, grace=CLOSE_WAIT_SECONDS)
+        # Reaps a tool grandchild left in the leader's group even when the
+        # leader itself already exited normally -- ``kill_tree`` above only
+        # fires while the leader still polls as running, and by the time
+        # this runs after ``_exit_event``'s own wait(), it never does
+        # (Qodo 6). ``self._pgid`` was captured at spawn time, before that
+        # wait could reap the leader out from under ``child_group``.
+        reap_group(self._pgid, grace=CLOSE_WAIT_SECONDS)
 
     def close(self) -> None:
         # Close, not cancel: the stdin rung matters here and must not run
