@@ -249,7 +249,11 @@ def test_kill_without_a_daemon_returns_false(tmp_path: Path) -> None:
 
 
 class SteerableAgent(StubbornAgent):
-    """A stubborn harness with a mid-turn channel (like pi or codex)."""
+    """A stubborn harness with a mid-turn channel (like pi or codex).
+
+    Declares ``Capabilities.steer=True`` honestly -- the daemon's busy
+    prompt reads this, not whether ``steer()`` is overridden (t4).
+    """
 
     def __init__(self, name: str) -> None:
         super().__init__(name)
@@ -259,10 +263,36 @@ class SteerableAgent(StubbornAgent):
         self.steered.append(text)
         return True
 
+    def capabilities(self) -> Capabilities:
+        return Capabilities(persistent_session=True, steer=True)
+
 
 def _steerable_factory(agents: list[StubbornAgent]):
     def build() -> StubbornAgent:
         agent = SteerableAgent(f"agent{len(agents)}")
+        agents.append(agent)
+        return agent
+
+    return build
+
+
+class OverridesStopButNotCapableAgent(StubbornAgent):
+    """An openai-compat-like fake: it *has* a ``steer()`` override, but its
+    ``Capabilities`` honestly say it cannot really steer mid-turn (there is
+    no protocol channel for it -- the override would just be a no-op).  The
+    busy prompt must trust ``capabilities().steer``, not the override.
+    """
+
+    def steer(self, text: str) -> bool:
+        return True
+
+    def capabilities(self) -> Capabilities:
+        return Capabilities(persistent_session=True, steer=False)
+
+
+def _overriding_not_capable_factory(agents: list[StubbornAgent]):
+    def build() -> StubbornAgent:
+        agent = OverridesStopButNotCapableAgent(f"agent{len(agents)}")
         agents.append(agent)
         return agent
 
@@ -759,3 +789,58 @@ def test_a_cancelled_warm_turn_does_not_silence_the_next_request(tmp_path: Path)
     finally:
         daemon.shutdown()
         server.shutdown()
+
+
+def test_overrides_steer_is_gone_from_the_daemon_module() -> None:
+    """t4 AC1: the busy prompt reads ``Capabilities.steer``, not a method-override check."""
+    assert not hasattr(daemon_mod, "_overrides_steer")
+
+
+def test_busy_choices_follow_capabilities_steer_not_the_steer_override(tmp_path: Path) -> None:
+    """t4 AC2: an adapter that overrides ``steer()`` but declares ``steer=False``
+    (like openai-compat might) must not be offered the steer choice; one that
+    declares ``steer=True`` must be.
+    """
+    # Overrides steer() but Capabilities says it cannot really steer.
+    not_capable_dir = tmp_path / "n"
+    not_capable_dir.mkdir()
+    env = _env(not_capable_dir)
+    agents: list[StubbornAgent] = []
+    daemon = daemon_mod.Daemon(
+        Config(), env=env, agent_factory=_overriding_not_capable_factory(agents)
+    )
+    _start(daemon)
+    try:
+        _hang(env, agents, "A")
+        second, events = _collect_in_background(env, "A", "A again")
+        assert _wait_for(lambda: bool(_busy(events))), "no busy event for the owning shell"
+        busy = _busy(events)[0]
+        assert busy.args["steerable"] is False
+        assert "steer" not in busy.args["choices"]
+        assert client_transport.busy_choice("exit", shell_id="A", env=env) is True
+        second.join(5.0)
+    finally:
+        for agent in agents:
+            agent.killed.set()
+        daemon.shutdown()
+
+    # Declares steer=True honestly -> the choice is offered.
+    capable_dir = tmp_path / "c"
+    capable_dir.mkdir()
+    env2 = _env(capable_dir)
+    agents2: list[StubbornAgent] = []
+    daemon2 = daemon_mod.Daemon(Config(), env=env2, agent_factory=_steerable_factory(agents2))
+    _start(daemon2)
+    try:
+        _hang(env2, agents2, "A")
+        second2, events2 = _collect_in_background(env2, "A", "A again")
+        assert _wait_for(lambda: bool(_busy(events2))), "no busy event for the owning shell"
+        busy2 = _busy(events2)[0]
+        assert busy2.args["steerable"] is True
+        assert "steer" in busy2.args["choices"]
+        assert client_transport.busy_choice("exit", shell_id="A", env=env2) is True
+        second2.join(5.0)
+    finally:
+        for agent in agents2:
+            agent.killed.set()
+        daemon2.shutdown()
