@@ -1,0 +1,42 @@
+{
+  "plan_slug": "stop-choice-prompt",
+  "schema_version": 2,
+  "created": "2026-09-17T18:23:45Z",
+  "updated": "2026-09-17T18:23:45Z",
+  "deviations": [
+    {
+      "id": "d1",
+      "what": "The rewrite of tests/test_agent_stop.py::test_two_presses_stop_every_family_on_both_paths (press, s, press) is pulled forward from t9 (wave 5) and lands together with t5 in wave 1, as its own small task on its own branch; t9 keeps the end-to-end pty test, the paused-client test and the no-deleted-test check.",
+      "task_ref": "t9",
+      "reason": "t5 changes the first press on a pty, so all 14 parametrizations of that test fail the moment t5 merges (verified by the main agent on the t5 branch: 14 failed, 2106 passed); the plan only rewrote it four waves later, which would have left the branch red through waves 2-5 and hidden any real regression among known failures. Operator approved 2026-09-17.",
+      "affects": [
+        "t5",
+        "c12",
+        "h12"
+      ],
+      "origin": "user",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 1
+    },
+    {
+      "id": "d2",
+      "what": "t5's criterion 4 is only partly met: nvsh/panel.py has no notion of JSON mode, so the prompt is gated on tty and TERM only. t6 adds an optional stop_prompt=True argument to Panel.stream (no prompt when False), and t7 has the client pass False under --json, so 'nvsh slash --json' on a real terminal stops at once as spec claim c9 requires.",
+      "task_ref": "t5",
+      "reason": "The t5 agent found that neither nvsh/panel.py nor the Panel constructor calls in nvsh/slash.py and nvsh/client.py carry a JSON-mode flag, and was correctly forbidden from inventing one in files it does not own. Operator approved the panel-switch route on 2026-09-17 over amending c9.",
+      "affects": [
+        "t6",
+        "t7",
+        "c9",
+        "h9"
+      ],
+      "origin": "user",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 2
+    }
+  ],
+  "evidence": [],
+  "deltas": [],
+  "supersessions": []
+}
