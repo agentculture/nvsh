@@ -215,7 +215,7 @@ class ClaudeAgent(SubprocessAgent):
 
     # -- run --------------------------------------------------------------
 
-    def run(self, request: AgentRequest, context: AgentContext) -> Iterator[AgentEvent]:
+    def _turn(self, request: AgentRequest, context: AgentContext) -> Iterator[AgentEvent]:
         """Stream one turn. Unlike the shared base, stdin stays a live pipe:
         the prompt goes in as a stream-json user message and a permission
         prompt is answered on the same channel."""

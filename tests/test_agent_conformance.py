@@ -842,3 +842,27 @@ def test_ignoring_harness_stop_and_respawn(stop_case, tmp_path):
     """
     _name, check = stop_case
     check(tmp_path)
+
+
+def test_fake_agent_runs_again_after_a_cancel_without_a_second_start():
+    """The fixture backend must model the contract the daemon relies on:
+    ``start()`` once per warm session, and a cancel that ends one turn only."""
+    agent = FakeAgent(
+        [AgentEvent(kind=EventKind.TEXT_DELTA, text="hi"), AgentEvent(kind=EventKind.DONE)]
+    )
+    agent.start()
+    agent.cancel()
+    events = list(
+        agent.run(_fake_adapters.conformance_request(), _fake_adapters.conformance_context())
+    )
+    assert [e.kind for e in events] == [EventKind.TEXT_DELTA, EventKind.DONE]
+
+
+def test_fake_agent_honours_a_cancel_that_lands_before_the_first_step():
+    agent = FakeAgent(
+        [AgentEvent(kind=EventKind.TEXT_DELTA, text="hi"), AgentEvent(kind=EventKind.DONE)]
+    )
+    agent.start()
+    stream = agent.run(_fake_adapters.conformance_request(), _fake_adapters.conformance_context())
+    agent.cancel()
+    assert list(stream) == []

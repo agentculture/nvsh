@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/). This project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.13.1] - 2026-09-17
+
+### Changed
+
+- Records: the operator confirmed the reliable-agent-stop records (lapses l1-l5, obligations o1-o21, evidence e1-e43, deltas b1-b10 are now approved), `docs/current-spec.md` is regenerated from the approved ledger with `devague today`, plan risks r6 (accepted as a known limitation) and r8 (follow-up, #17) are resolved, and the delivery summary gains an adjudication section; the `nvsh ask` verb question (deviation d10) is tracked as #18.
+- Regression tests drive a second `run()` after `cancel()` without a second `start()` (the conformance cases restarted the adapter and only asserted a trailing DONE, which the bug also produced), plus a daemon-level test that cancels a warm `openai-compat` turn and asks again.
+
+### Fixed
+
+- A polite stop (first Ctrl+C/Esc) no longer silences the warm session. The `openai-compat`, `claude`, `qwen-p`, `codex exec`, cold `agy` and `fake` adapters kept their cancelled flag set after a stop; the daemon calls `start()` once per warm session, not once per turn, so every later request printed its header and then nothing (exit 0) until the daemon restarted. `run()` now clears the flag itself. Found on thor on 2026-09-17.
+- `@default <question>` is labelled `warm` in the panel header instead of `one-shot`: it names a target but still rides the daemon's warm session.
+- Retyping the same failed line now reaches nvsh again. The hook told a new command from a redrawn prompt by comparing `HISTCMD`, but under `HISTCONTROL=ignoredups`/`ignoreboth` (the Ubuntu default) a line identical to the previous one is never recorded, so `HISTCMD` did not move and the retry was dropped without a word — no agent call, no held-back note. The hook now counts executed commands with a `PS0` token (expanded once per command that runs, never for an empty Enter; pure bash, no fork, no DEBUG trap), composes with an existing `PS0` (Ghostty, OSC 133), falls back to `HISTCMD` if `PS0` is replaced, and `nvsh off` takes the token back out. Found on thor on 2026-09-17.
+- Review fixes on the two items above: `run()` clears the cancelled flag eagerly and hands the stream to a `_turn` generator, so a stop that lands between `run()` and the first step still ends that turn (a generator body would have erased it); the hook matches the whole `PS0` counter token rather than the variable name, does not trust a counter that was off `PS0` while the command ran (that prompt is decided by `HISTCMD`), and `nvsh off` no longer fails under `set -u` when `PS0` is unset.
+
 ## [0.13.0] - 2026-09-16
 
 ### Added

@@ -156,3 +156,15 @@ pending approval (not yet evidence): `l1`, `l2`, `l3`, `l4`, `l5`
 - Adjudicate lapses `l1`–`l5`, and confirm or reject the proposed obligations `o1`–`o21`, evidence `e1`–`e43` and deltas `b1`–`b10` — human owner.
 - Regenerate `docs/current-spec.md` with `devague today` once the evidence and deltas are adjudicated.
 - CI and SonarCloud re-run on the review-fix commits; PR #16 awaits human merge (gate 3).
+
+## Adjudication (2026-09-17)
+
+Recorded after PR #16 was squash-merged to `main` as `d94f0ca` (0.13.0). The sections above are left as written on 2026-09-16; this section supersedes their "proposed" / "pending" wording.
+
+- The operator confirmed every record: lapses `l1`–`l5`, obligations `o1`–`o21`, evidence `e1`–`e43` and deltas `b1`–`b10` are now `approved`. The lapses are evidence, so the confidence caps they impose on c3, c7/c8 and c14/c15 stand.
+- `docs/current-spec.md` was regenerated with `devague today` from the approved ledger.
+- Risk `r6` — accepted as a known limitation of 0.13.0: `kill`, the turn cap and the client-gone watch reach default-target turns only. No follow-up issue was requested.
+- Risk `r8` — accepted as a follow-up, tracked as [#17](https://github.com/agentculture/nvsh/issues/17).
+- Deviation `d2` — accepted as the intended behaviour: a press while an approved command runs is acted on when the command returns; the command itself still receives the terminal's SIGINT.
+- Deviation `d10` — tracked as [#18](https://github.com/agentculture/nvsh/issues/18) (decide on a first-class `nvsh ask` verb).
+- Still open: the fleet check on thor, orin and spark (risks `r3`, `r4`, lapse `l3`) — the operator will run and review it. The two `unverified` delivery claims stay unverified until then.

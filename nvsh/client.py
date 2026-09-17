@@ -1541,7 +1541,9 @@ def _stream_request(
     # ``target=None`` means the operator named nothing, so the request goes
     # to whatever ``default`` resolves to -- which is also what the warm
     # daemon session holds (decision c25).
-    warm = not one_shot and target is None
+    # ``@default`` names a target and still rides the warm session: the label
+    # follows where the request actually goes, not whether a target was named.
+    warm = not one_shot
     resolved = target if target is not None else default_target(config)
     if resolved is not None:
         panel.set_target(resolved, _target_path(resolved), warm)

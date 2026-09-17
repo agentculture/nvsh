@@ -166,6 +166,25 @@ __nvsh_osc133_init() {
     return 0
 }
 
+# Count the commands bash actually runs, on PS0 too. PS0 is expanded once per
+# command line that is about to execute -- never for an empty Enter, a
+# Ctrl+C at the prompt or a redraw -- and an array subscript is an arithmetic
+# context evaluated in this shell, so the token below bumps the counter and
+# expands to nothing: no fork, no DEBUG trap, no output. The hook needs this
+# because HISTCMD is not a command counter: under HISTCONTROL=ignoredups (the
+# Ubuntu default is ignoreboth) a line identical to the previous one is not
+# recorded, so retyping a failed command looked like a redrawn prompt and
+# was silently dropped.
+#
+# Presence is always tested against the *whole* token, quoted so it matches
+# literally: a PS0 that merely mentions the variable name does not count.
+__nvsh_cmdseq_init() {
+    local __nvsh_tok='${__NVSH_SEQ_SINK[__NVSH_CMD_SEQ++]-}'
+    __NVSH_CMD_SEQ=${__NVSH_CMD_SEQ:-0}
+    [[ ${PS0-} == *"${__nvsh_tok}"* ]] || PS0=${__nvsh_tok}${PS0-}
+    return 0
+}
+
 __nvsh_ghostty_init() {
     if [[ ${TERM_PROGRAM:-} == ghostty ]] && ! declare -F __ghostty_hook >/dev/null 2>&1; then
         local __nvsh_res=${GHOSTTY_RESOURCES_DIR:-}
@@ -192,6 +211,17 @@ __nvsh_hook() {
     # read-only scalar) must still stop working when NVSH_DISABLE is set.
     # One string test, no fork - the success path stays free.
     [[ -n ${NVSH_DISABLE:-} && ${NVSH_DISABLE} != 0 ]] && return 0
+
+    # Was the command counter on PS0 while the command that just finished
+    # ran? An integration that assigns PS0 outright takes it off; then the
+    # counter did not tick and must not be compared for this prompt (HISTCMD
+    # decides instead). Put it back for the next one. Two string tests, no
+    # fork.
+    local __nvsh_tok='${__NVSH_SEQ_SINK[__NVSH_CMD_SEQ++]-}' __nvsh_seq_ok=1
+    if [[ ${PS0-} != *"${__nvsh_tok}"* ]]; then
+        __nvsh_seq_ok=0
+        __nvsh_cmdseq_init
+    fi
 
     # bash-preexec (loaded by Ghostty's own integration on bash < 5.3, and by
     # kiro-cli / fig / amazon-q on any bash) rewrites PROMPT_COMMAND on its first prompt so that its
@@ -251,10 +281,19 @@ __nvsh_hook() {
     ((${#BASH_SOURCE[@]} <= 1)) || return 0
     ((BASH_SUBSHELL == 0)) || return 0
 
-    # Re-drawing the prompt must not re-fire for the same command.
-    local __nvsh_hc=${HISTCMD:-0}
-    [[ ${__nvsh_hc} == "${__NVSH_LAST_HISTCMD:-}" ]] && return 0
+    # Re-drawing the prompt must not re-fire for the same command. The PS0
+    # counter is the real "a command ran" signal; HISTCMD is only the
+    # fallback for a shell whose PS0 was replaced after the hook loaded.
+    # Both are recorded every time, so switching between them never compares
+    # a counter value with a history number.
+    local __nvsh_hc=${HISTCMD:-0} __nvsh_seq=${__NVSH_CMD_SEQ:-0}
+    if ((__nvsh_seq_ok)); then
+        [[ ${__nvsh_seq} == "${__NVSH_LAST_SEQ:-}" ]] && return 0
+    else
+        [[ ${__nvsh_hc} == "${__NVSH_LAST_HISTCMD:-}" ]] && return 0
+    fi
     __NVSH_LAST_HISTCMD=${__nvsh_hc}
+    __NVSH_LAST_SEQ=${__nvsh_seq}
 
     local __nvsh_line
     __nvsh_line=$(HISTTIMEFORMAT= builtin history 1 2>/dev/null)
@@ -326,6 +365,7 @@ __nvsh_prompt_command_install() {
 
 __nvsh_hook_install() {
     __nvsh_ghostty_init
+    __nvsh_cmdseq_init
     __nvsh_prompt_command_install
     __NVSH_HOOK_LOADED=1
     return 0
@@ -352,7 +392,12 @@ __nvsh_hook_unload() {
             PROMPT_COMMAND=${__NVSH_STRIPPED}
         fi
     fi
+    # PS0 may have been unset by another integration, and the operator may
+    # run with `set -u`: a failed expansion here would skip the cleanup below.
+    local __nvsh_tok='${__NVSH_SEQ_SINK[__NVSH_CMD_SEQ++]-}'
+    [[ -n ${PS0+x} ]] && PS0=${PS0//"${__nvsh_tok}"/}
     unset __NVSH_HOOK_LOADED __NVSH_OSC133_OWNED __NVSH_LAST_HISTCMD __NVSH_SLASH_DISPATCH
+    unset __NVSH_CMD_SEQ __NVSH_LAST_SEQ
     return 0
 }
 

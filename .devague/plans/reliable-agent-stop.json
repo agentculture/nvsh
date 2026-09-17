@@ -5,7 +5,7 @@
   "schema_version": 5,
   "status": "exported",
   "created": "2026-09-16T17:16:29Z",
-  "updated": "2026-09-17T03:23:20Z",
+  "updated": "2026-09-17T05:49:23Z",
   "targets": [
     {
       "id": "c1",
@@ -839,8 +839,8 @@
       "text": "daemon targeted runs (_run_targeted, non-default harness) hold the run lock without registering an _ActiveTurn, so kill, the turn cap and the client-gone watch cannot reach them (reported by t9); c26/c7 are only met for default-target turns until this is covered",
       "kind": "unknown_nonblocking",
       "task_id": "t10",
-      "resolved": false,
-      "resolution": ""
+      "resolved": true,
+      "resolution": "Accepted by the operator on 2026-09-17 as a known limitation of 0.13.0: kill, the turn cap and the client-gone watch cover default-target turns only; targeted (non-default harness) daemon runs stay outside _ActiveTurn. No follow-up issue requested; the gap stays documented in docs/deliveries/2026-09-16-reliable-agent-stop.md."
     },
     {
       "id": "r7",
@@ -855,8 +855,8 @@
       "text": "a persistent harness (pi, codex, acp, agy warm) that died and is respawned by the next run() before close() never has its old process group reaped (reported by t23)",
       "kind": "follow_up",
       "task_id": "t23",
-      "resolved": false,
-      "resolution": ""
+      "resolved": true,
+      "resolution": "Accepted by the operator on 2026-09-17 as a follow-up, tracked as https://github.com/agentculture/nvsh/issues/17."
     }
   ],
   "obligations": []

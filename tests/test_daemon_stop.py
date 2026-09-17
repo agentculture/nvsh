@@ -17,6 +17,7 @@ import subprocess  # nosec B404 - fixed argv
 import sys
 import threading
 import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Iterator
 
@@ -695,3 +696,66 @@ def test_kill_active_with_an_oversized_owner_pid_is_refused_not_broken(tmp_path:
     assert events[-1].kind is EventKind.ERROR
     assert "confirm" in events[-1].error
     assert agent.force_stops == 0
+
+
+# ---------------------------------------------------------------------------
+# A polite cancel ends one turn, not the warm session (thor, 2026-09-17)
+# ---------------------------------------------------------------------------
+
+
+class _SlowThenServe(BaseHTTPRequestHandler):
+    """First request stalls mid-stream until cancelled; later ones answer at once."""
+
+    def log_message(self, *args: object) -> None:
+        pass
+
+    def do_POST(self) -> None:  # noqa: N802 - http.server's naming
+        self.rfile.read(int(self.headers.get("Content-Length", 0)))
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.end_headers()
+        first = not self.server.seen  # type: ignore[attr-defined]
+        self.server.seen.append(1)  # type: ignore[attr-defined]
+        if first:
+            self.server.streaming.set()  # type: ignore[attr-defined]
+            try:
+                for _ in range(300):
+                    self.wfile.write(b'data: {"choices": [{"delta": {"reasoning": "hm"}}]}\n\n')
+                    self.wfile.flush()
+                    time.sleep(0.05)
+            except OSError:
+                pass
+            return
+        self.wfile.write(b'data: {"choices": [{"delta": {"content": "second answer"}}]}\n\n')
+        self.wfile.write(b"data: [DONE]\n\n")
+        self.wfile.flush()
+
+
+def test_a_cancelled_warm_turn_does_not_silence_the_next_request(tmp_path: Path) -> None:
+    from nvsh.agent.openai_compat import OpenAICompatAgent
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _SlowThenServe)
+    server.seen = []  # type: ignore[attr-defined]
+    server.streaming = threading.Event()  # type: ignore[attr-defined]
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    env = _env(tmp_path)
+    base_url = f"http://127.0.0.1:{server.server_port}"
+    daemon = daemon_mod.Daemon(
+        Config(), env=env, agent_factory=lambda: OpenAICompatAgent({"base_url": base_url})
+    )
+    _start(daemon)
+    try:
+        first, _first_events, _ = _send_in_background(env, "A", "what is wrong?")
+        assert server.streaming.wait(5), "the first turn never reached the model"
+        assert client_transport.cancel(shell_id="A", env=env)
+        first.join(10)
+        assert not first.is_alive(), "the cancelled turn never ended"
+
+        second, second_events, _ = _send_in_background(env, "A", "and now?")
+        second.join(10)
+        assert not second.is_alive()
+        text = "".join(e.text for e in second_events if e.kind == EventKind.TEXT_DELTA)
+        assert text == "second answer", second_events
+    finally:
+        daemon.shutdown()
+        server.shutdown()

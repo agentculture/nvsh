@@ -491,3 +491,21 @@ def test_force_stop_leaves_no_pid_alive_when_claude_ignores_interrupt(tmp_path):
         raise errors[0]
 
     assert _wait_gone([pids["harness"], pids["grandchild"]]) == []
+
+
+def test_a_cancelled_turn_does_not_silence_the_next_run(tmp_path):
+    """``start()`` runs once per warm session; ``run()`` clears the cancel flag itself."""
+    agent = ClaudeAgent({}, env=_transcript_env(tmp_path), session_id="sess-cancel")
+    agent.start()
+    try:
+        agent.cancel()
+        # Not ``_drive``: it calls start() again, which is exactly what hid this.
+        events = []
+        for event in agent.run(_request(), _context()):
+            events.append(event)
+            if event.kind is EventKind.PROPOSAL:
+                agent.respond_ui(str(event.args.get("request_id", "")), confirmed=True)
+    finally:
+        agent.close()
+    assert any(event.kind == EventKind.TEXT_DELTA for event in events)
+    assert events[-1].kind == EventKind.DONE

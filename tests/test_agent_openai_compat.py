@@ -388,3 +388,35 @@ def test_force_stop_on_a_stalled_stream_returns_within_one_second(fake_server):
     assert elapsed < 1.0, f"force_stop() took {elapsed:.3f}s, budget is 1s"
     if errors:
         raise errors[0]
+
+
+def test_a_cancelled_turn_does_not_silence_the_next_run(fake_server):
+    """The daemon calls ``start()`` once per warm session, not once per turn.
+
+    A cancel left ``_cancelled`` set, so every later ``run()`` on the same
+    adapter dropped the whole stream and ended in a bare DONE: the operator
+    saw the header and then nothing (thor, 2026-09-17).
+    """
+    agent = OpenAICompatAgent({"base_url": f"http://127.0.0.1:{fake_server.server_port}"})
+    agent.start()
+    try:
+        agent.cancel()
+        events = list(agent.run(_request(), _context()))
+    finally:
+        agent.close()
+    assert [e.text for e in events if e.kind == EventKind.TEXT_DELTA] == ["hello ", "world"]
+    assert events[-1].kind == EventKind.DONE
+
+
+def test_a_cancel_between_run_and_the_first_step_still_stops_that_turn(fake_server):
+    """``run()`` clears the flag eagerly; a generator body would clear it at the
+    first ``next()`` and erase a cancel that was meant for this very turn."""
+    agent = OpenAICompatAgent({"base_url": f"http://127.0.0.1:{fake_server.server_port}"})
+    agent.start()
+    try:
+        stream = agent.run(_request(), _context())
+        agent.cancel()
+        events = list(stream)
+    finally:
+        agent.close()
+    assert [e for e in events if e.kind == EventKind.TEXT_DELTA] == []

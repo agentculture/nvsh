@@ -492,7 +492,8 @@ class CodexAgent(SubprocessAgent):
 
     def run(self, request: AgentRequest, context: AgentContext) -> Iterator[AgentEvent]:
         if not self.ensure_app_server():
-            yield from super().run(request, context)
+            self._cancelled = False
+            yield from super()._turn(request, context)
             return
 
         self._cancelled = False

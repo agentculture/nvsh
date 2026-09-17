@@ -33,6 +33,13 @@ class FakeAgent(NvshAgent):
         self._cancelled = False
 
     def run(self, request: AgentRequest, context: AgentContext) -> Iterator[AgentEvent]:
+        # A cancel ends one turn, like the real adapters; cleared eagerly so
+        # one that lands before the first next() still stops this turn.
+        self._cancelled = False
+        return self._replay()
+
+    def _replay(self) -> Iterator[AgentEvent]:
+        """Yield the script; the request is irrelevant to a scripted backend."""
         for item in self._script:
             if self._cancelled:
                 return

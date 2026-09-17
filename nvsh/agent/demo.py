@@ -199,6 +199,12 @@ class DemoAgent(FakeAgent):
         self._fixture_path = Path(str(fixture)) if fixture else FIXTURE_PATH
 
     def run(self, request: AgentRequest, context: AgentContext) -> Iterator[AgentEvent]:
+        # Eager, like FakeAgent.run: a generator body would only clear the
+        # flag at the first next() and erase a cancel meant for this turn.
+        self._cancelled = False
+        return self._fixture_turn(request, context)
+
+    def _fixture_turn(self, request: AgentRequest, context: AgentContext) -> Iterator[AgentEvent]:
         try:
             self._script = list(load_events(self._fixture_path, request.command, context.platform))
         except (OSError, ValueError, TypeError, KeyError) as exc:
@@ -207,4 +213,4 @@ class DemoAgent(FakeAgent):
                 error=f"demo fixture unusable ({self._fixture_path}): {exc}",
             )
             return
-        yield from super().run(request, context)
+        yield from self._replay()

@@ -354,6 +354,15 @@ class SubprocessAgent(NvshAgent):
         raise NotImplementedError
 
     def run(self, request: AgentRequest, context: AgentContext) -> Iterator[AgentEvent]:
+        # A cancel ends one turn, not the adapter (start() runs once per
+        # warm daemon session, not once per turn). Cleared here rather than
+        # in the generator, whose body only runs at the first next(): a
+        # cancel landing in between belongs to this turn and must survive.
+        self._cancelled = False
+        return self._turn(request, context)
+
+    def _turn(self, request: AgentRequest, context: AgentContext) -> Iterator[AgentEvent]:
+        """One turn's event stream; subclasses override this, not :meth:`run`."""
         argv = self._argv(request, context)
         try:
             self._proc = subprocess.Popen(  # nosec B603 - argv is a fixed list, no shell
