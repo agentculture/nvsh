@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-09-17T16:13:08Z",
-  "updated": "2026-09-17T17:50:14Z",
+  "updated": "2026-09-17T20:43:46Z",
   "claims": [
     {
       "id": "c1",
@@ -919,6 +919,18 @@
       "refs": [
         "t1",
         "2e9e0ff"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l3",
+      "code": "provenance-missing",
+      "what": "At the t11 gate the main agent ran the full suite with only the last output line kept ('tail -1'); that run reported '1 failed, 2192 passed', so the failing test's name and error were discarded. 12 further full runs were clean and the failure could not be reproduced, so the test is unidentified. The main agent had committed (plan risk r6) to naming any test that fails on an idle machine.",
+      "skipped_check": "capture pytest's FAILED lines at every gate run, not just the summary line",
+      "refs": [
+        "t11",
+        "r6"
       ],
       "origin": "llm",
       "status": "proposed"
