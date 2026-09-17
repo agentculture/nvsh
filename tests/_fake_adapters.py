@@ -720,17 +720,16 @@ RAISE_ON_START = frozenset({"pi", "qwen", "kiro"})
 #: xfail into a failure and the entry gets removed with it.
 UNDECLARED_FILE_ACCESS: frozenset[str] = frozenset()
 
-#: Adapters that sometimes report a dead child as "no stderr" even though
-#: the CLI did write one. ``AcpAgent`` drains stderr on its own thread and
-#: formats the launch failure as soon as it notices the process is gone, so
-#: for a CLI that fails instantly the two race and the CLI's own words are
-#: dropped roughly one run in ten (measured, 2026-09-14). ``nvsh/agent/agy.py``
-#: handles the same race deliberately ("give the concurrent stderr drain a
-#: beat"); acp has no such wait. Filed as a deviation rather than patched
-#: here -- this task owns tests, not adapters -- and pinned so that any
-#: *other* adapter developing the same race fails loudly instead of
-#: flickering.
-STDERR_TAIL_RACE = frozenset({"qwen", "kiro"})
+#: Adapters tolerated to report a dead child as "no stderr" even though the
+#: CLI did write one. Empty since 0.14.3: pi, AcpAgent (qwen, kiro) and the
+#: codex app-server all drain stderr on their own thread and used to format
+#: the launch failure as soon as they noticed the process was gone, so the
+#: CLI's own words were dropped roughly one run in ten for acp (measured,
+#: 2026-09-14) and about one whole-suite run in a dozen for pi (issue 27).
+#: They now wait for the reader via ``_subprocess.settle_stderr``. The set is
+#: kept so that a future adapter with the same race has somewhere to be
+#: pinned deliberately, rather than the check being weakened for everyone.
+STDERR_TAIL_RACE: frozenset[str] = frozenset()
 
 CASES: list[AdapterCase] = [
     AdapterCase(

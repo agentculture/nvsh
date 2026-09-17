@@ -342,6 +342,37 @@ def test_a_rejected_effort_surfaces_the_cli_stderr_tail(adapter_case):
     ), f"{adapter_case.name} reported neither the stderr tail nor the exit status: {surfaced!r}"
 
 
+def test_a_slow_stderr_reader_never_loses_the_reason_the_cli_died(adapter_case, monkeypatch):
+    """The same check with the race made certain instead of rare.
+
+    Adapters that drain stderr on their own thread can notice a dead child
+    before its last words were read. Delaying the reader by 0.3 s makes that
+    happen every time, so an adapter that quotes the tail without waiting for
+    the reader fails here deterministically rather than once in a dozen
+    whole-suite runs (issue 27).
+    """
+    agent = adapter_case.build_rejecting()
+    loop = getattr(type(agent), "_stderr_loop", None)
+    if loop is None:
+        pytest.skip(f"{adapter_case.name} has no separate stderr reader thread")
+
+    def late(self):
+        time.sleep(0.3)
+        loop(self)
+
+    monkeypatch.setattr(type(agent), "_stderr_loop", late)
+    raised = ""
+    events = []
+    try:
+        events = drive(agent)
+    except Exception as exc:  # noqa: BLE001 - the start()-time path, on purpose
+        raised = str(exc)
+    surfaced = raised or " ".join(e.error or "" for e in events if e.kind == EventKind.ERROR)
+    assert (
+        _fake_adapters.REJECTED_EFFORT_TAIL in surfaced
+    ), f"{adapter_case.name} lost the CLI's stderr tail: {surfaced!r}"
+
+
 def test_approval_and_unmediated_file_access_are_declared(adapter_case):
     """Both fields are stated by every adapter, never left to the default.
 
