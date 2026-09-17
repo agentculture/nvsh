@@ -426,3 +426,69 @@ def test_show_busy_without_await_event_returns_steer_immediately():
     # once, no waiting.
     choice = _busy_panel("t\n").show_busy("shell-a", 3.0, True)
     assert choice == panel_mod.STEER
+
+
+# --- Ctrl+C typed at a raw-mode prompt (PR #16 review, Qodo 4) --------------
+#
+# The proposal and busy prompts read their key in raw mode, where the tty
+# driver does not turn Ctrl+C into SIGINT: it arrives as the byte 0x03. That
+# byte must reach the stream's stop path -- cancel once, stream interrupted --
+# and must never be read as a prompt choice (ignore / busy exit).
+
+
+def _ctrl_c_at_prompt(pty_pair, prompt: str):
+    master, tty_in = pty_pair
+    out = io.StringIO()
+    p = _panel(tty_in, out)
+    choices: list[str] = []
+    cancelled: list[int] = []
+    killed: list[int] = []
+    stopped = threading.Event()
+
+    def cancel():
+        cancelled.append(1)
+        stopped.set()
+
+    def on_prompt(*_args):
+        # After raw mode is entered (tty.setraw flushes earlier input).
+        threading.Timer(0.3, lambda: os.write(master, b"\x03")).start()
+        if prompt == "proposal":
+            choices.append(p.show_proposal(_args[0]))
+        else:
+            choices.append(p.show_busy("4242", 3.0, True))
+
+    def events():
+        if prompt == "proposal":
+            yield AgentEvent(
+                kind=EventKind.PROPOSAL, proposal=Proposal("df -h", "d", ProposalKind.FIX)
+            )
+        else:
+            yield AgentEvent(kind=EventKind.BUSY, args={"owner": "4242", "steerable": True})
+        stopped.wait(5)
+        yield AgentEvent(kind=EventKind.DONE)
+
+    handler = {"on_proposal": on_prompt} if prompt == "proposal" else {"on_busy": on_prompt}
+    result = p.stream(events(), cancel=cancel, force_stop=lambda: killed.append(1), **handler)
+    return result, out.getvalue(), choices, cancelled, killed
+
+
+@pytest.mark.parametrize("prompt", ["proposal", "busy"])
+def test_ctrl_c_byte_at_a_raw_prompt_stops_the_agent_not_the_prompt(pty_pair, prompt):
+    result, out, choices, cancelled, killed = _ctrl_c_at_prompt(pty_pair, prompt)
+    assert choices == []  # no ignore, no busy exit
+    assert cancelled == [1]
+    assert killed == []
+    assert result.interrupted is True
+    assert STOPPING in out
+    assert "nvsh: interrupted" in out
+
+
+def test_ctrl_c_byte_raw_key_read_raises_keyboard_interrupt():
+    read_end, write_end = os.pipe()
+    try:
+        os.write(write_end, b"\x03")
+        with pytest.raises(KeyboardInterrupt):
+            panel_mod._read_raw_key(read_end)
+    finally:
+        os.close(read_end)
+        os.close(write_end)

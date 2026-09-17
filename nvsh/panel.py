@@ -99,6 +99,9 @@ _KEY_POLL = 0.05
 _EOF_WINDOW = 0.002
 _EOF_REPEATS = 8
 
+#: Ctrl+C as a raw-mode key read sees it: ISIG is off, so no SIGINT is sent.
+_CTRL_C = "\x03"
+
 #: Carriage return plus erase-to-end-of-line. Hard-coded CSI, never tput.
 _ERASE_LINE = "\r\x1b[2K"
 
@@ -665,9 +668,16 @@ class Panel:
             # erased first, and stay off until the event is handled
             # (``on_proposal`` blocks on a keypress).
             self._pause_waiting()
-            started_text, last = self._render_event(
-                payload, result, started_text, on_proposal=on_proposal, on_busy=on_busy
-            )
+            try:
+                started_text, last = self._render_event(
+                    payload, result, started_text, on_proposal=on_proposal, on_busy=on_busy
+                )
+            except KeyboardInterrupt:
+                # Ctrl+C typed at a raw-mode prompt (the proposal or busy
+                # key read) arrives as a byte, not a signal: it is still a
+                # press, and it decided nothing at that prompt.
+                stop.press()
+                last = False
             if last:
                 return started_text
             self._arm_waiting()
@@ -798,30 +808,10 @@ class Panel:
             result.text += event.text
             self.write(event.text)
             return True, False
-        if kind is EventKind.STATUS:
-            if event.text:
-                started_text = self._end_text_run(started_text)
-                self.status(event.text)
-            return started_text, False
-        if kind is EventKind.TOOL_CALL:
-            self.tool_call(event.tool, (event.args or {}).get("command"))
-            return started_text, False
-        if kind is EventKind.TOOL_RESULT:
-            self.tool_result(event.tool, tool_exit_code(event.result))
-            return started_text, False
-        if kind is EventKind.PROPOSAL and event.proposal is not None:
-            started_text = self._end_text_run(started_text)
-            result.proposals.append(event.proposal)
-            if on_proposal is not None:
-                # Blocks on a keypress; the ticker stays paused throughout.
-                on_proposal(event.proposal, event)
-            return started_text, False
-        if kind is EventKind.BUSY:
-            started_text = self._end_text_run(started_text)
-            if on_busy is not None:
-                # Blocks on a keypress, exactly like a proposal.
-                on_busy(event)
-            return started_text, False
+        if kind in (EventKind.STATUS, EventKind.TOOL_CALL, EventKind.TOOL_RESULT):
+            return self._render_progress(event, started_text), False
+        if kind in (EventKind.PROPOSAL, EventKind.BUSY):
+            return self._render_prompt(event, result, started_text, on_proposal, on_busy), False
         if kind is EventKind.ERROR:
             result.error = event.error
             started_text = self._end_text_run(started_text)
@@ -831,6 +821,44 @@ class Panel:
             result.done = True
             return started_text, True
         return started_text, False
+
+    def _render_progress(self, event: AgentEvent, started_text: bool) -> bool:
+        """A STATUS, TOOL_CALL or TOOL_RESULT line; returns the new ``started_text``."""
+        if event.kind is EventKind.TOOL_CALL:
+            self.tool_call(event.tool, (event.args or {}).get("command"))
+        elif event.kind is EventKind.TOOL_RESULT:
+            self.tool_result(event.tool, tool_exit_code(event.result))
+        elif event.text:
+            started_text = self._end_text_run(started_text)
+            self.status(event.text)
+        return started_text
+
+    def _render_prompt(
+        self,
+        event: AgentEvent,
+        result: StreamResult,
+        started_text: bool,
+        on_proposal: Callable[[Proposal, AgentEvent], object] | None,
+        on_busy: Callable[[AgentEvent], object] | None,
+    ) -> bool:
+        """A PROPOSAL or BUSY event; returns the new ``started_text``.
+
+        Both block on a keypress through their callback, with the ticker
+        paused throughout. A PROPOSAL event carrying no proposal renders
+        nothing.
+        """
+        if event.kind is EventKind.BUSY:
+            started_text = self._end_text_run(started_text)
+            if on_busy is not None:
+                on_busy(event)
+            return started_text
+        if event.proposal is None:
+            return started_text
+        started_text = self._end_text_run(started_text)
+        result.proposals.append(event.proposal)
+        if on_proposal is not None:
+            on_proposal(event.proposal, event)
+        return started_text
 
     # -- proposals ---------------------------------------------------------
 
@@ -974,7 +1002,9 @@ class Panel:
         pre-typed anywhere: the operator sees it and presses a key. Enter
         runs it once, ``s`` runs it and approves it for this login session,
         ``u`` runs it and approves it for this user, ``e`` explains, ``d``
-        shows details, Esc (or Ctrl+C, or anything else) ignores.
+        shows details, Esc (or anything else) ignores. Ctrl+C decides
+        nothing here: it raises :class:`KeyboardInterrupt`, which
+        :meth:`stream` treats as a stop press.
 
         ``guard`` is consulted only for ``s``/``u`` -- the panel does not
         know the approval policy, the caller does. It is handed the scope
@@ -1240,9 +1270,14 @@ class _Feeder:
                 self._ack.clear()
                 self.queue.put((_EVENT, event))
                 self._ack.wait()
-        except BaseException as exc:  # noqa: BLE001 - handed to the main thread
+        except Exception as exc:  # noqa: BLE001 - handed to the main thread
             self.queue.put((_RAISED, exc))
             return
+        except BaseException as exc:
+            # SystemExit and the like: the main thread still re-raises it,
+            # and this thread does not pretend it was handled.
+            self.queue.put((_RAISED, exc))
+            raise
         finally:
             close = getattr(iterator, "close", None)
             if self._halted.is_set() and callable(close):
@@ -1396,7 +1431,10 @@ def _read_key(stream) -> str:
 def _read_raw_key(fd: int) -> str:
     """One keypress on a raw ``fd``; arrow/function keys are skipped whole.
 
-    A lone Esc comes back as ``"\\x1b"`` (it ignores, as before); an escape
+    A lone Esc comes back as ``"\\x1b"`` (it ignores, as before); Ctrl+C,
+    which raw mode delivers as the byte ``0x03`` instead of a SIGINT, raises
+    :class:`KeyboardInterrupt` so it stops the agent rather than answering
+    the prompt (:meth:`Panel.stream` counts it as a press); an escape
     sequence is drained by :func:`nvsh.keys.read_choice_key` and the read
     goes on, so an arrow key neither ignores the proposal nor leaves bytes
     behind. EOF (a hung-up tty) comes back as ``""`` -- told apart from a
@@ -1408,6 +1446,8 @@ def _read_raw_key(fd: int) -> str:
         key = keys.read_choice_key(fd)
         if key == keys.ESC:
             return "\x1b"
+        if key == _CTRL_C:
+            raise KeyboardInterrupt()
         if key:
             return key
         if time.monotonic() - started >= _EOF_WINDOW:

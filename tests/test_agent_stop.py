@@ -426,7 +426,8 @@ def test_two_presses_stop_every_family_on_both_paths(family: Family, path: str, 
     assert stopped_after <= STOPPED_WITHIN
     assert "nvsh: interrupted" in term.buffer
     if path == "daemon":  # the warm session really served it: no one-shot fallback
-        assert "falling back" not in term.buffer and "one-shot" not in term.buffer, term.buffer
+        assert "falling back" not in term.buffer, term.buffer
+        assert "one-shot" not in term.buffer, term.buffer
     else:
         assert f"one-shot {family.adapter}" in term.buffer, term.buffer
     if rig.server is not None:
