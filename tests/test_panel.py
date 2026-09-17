@@ -287,8 +287,9 @@ def test_show_proposal_ctrl_c_on_a_tty_is_a_stop_press_not_ignore():
     try:
         with os.fdopen(slave, "rb", buffering=0) as tty_in:
             p = panel_mod.Panel(out=io.StringIO(), in_=tty_in, env={}, isatty=True)
+            proposal = Proposal("df -h", "disk", ProposalKind.INSPECT)
             with pytest.raises(KeyboardInterrupt):
-                p.show_proposal(Proposal("df -h", "disk", ProposalKind.INSPECT))
+                p.show_proposal(proposal)
     finally:
         typist.cancel()
         os.close(master)

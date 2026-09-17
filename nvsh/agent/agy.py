@@ -272,31 +272,35 @@ class AgyAgent(NvshAgent):
         if cwd and not os.path.isdir(cwd):
             cwd = None  # a vanished directory falls back to the inherited one
         if self._warm:
-            if self._warm_unusable:
-                # The previous turn was cancelled: agy has no protocol-level
-                # cancel, so late output from that turn can still be sitting
-                # in (or still arriving in) the shared queue. Retire this
-                # child for good -- same escalation force_stop() uses -- so
-                # the respawn below starts a fresh process with a fresh
-                # queue instead of this run() reading anything left over
-                # from the cancelled one (Qodo 5).
-                if self._proc is not None and self._proc.poll() is None:
-                    self.close()
-                    self._closed = False
-                self._warm_unusable = False
-            if cwd and self._cwd != cwd:
-                # A warm process is bound to one working tree: rebind by
-                # respawning when a request comes from a different directory.
-                self._cwd = cwd
-                if self._proc is not None and self._proc.poll() is None:
-                    self.close()
-                    self._closed = False
-                    self._cancelled = False
-                self._spawn_warm()
+            self._prepare_warm(cwd)
             yield from self._run_warm(prompt)
         else:
             self._cwd = cwd
             yield from self._run_cold(prompt)
+
+    def _prepare_warm(self, cwd: str | None) -> None:
+        """Make the warm child fit for this turn before a prompt is written."""
+        if self._warm_unusable:
+            # The previous turn was cancelled: agy has no protocol-level
+            # cancel, so late output from that turn can still be sitting
+            # in (or still arriving in) the shared queue. Retire this
+            # child for good -- same escalation force_stop() uses -- so
+            # the respawn starts a fresh process with a fresh queue
+            # instead of this run() reading anything left over from the
+            # cancelled one (Qodo 5).
+            if self._proc is not None and self._proc.poll() is None:
+                self.close()
+                self._closed = False
+            self._warm_unusable = False
+        if cwd and self._cwd != cwd:
+            # A warm process is bound to one working tree: rebind by
+            # respawning when a request comes from a different directory.
+            self._cwd = cwd
+            if self._proc is not None and self._proc.poll() is None:
+                self.close()
+                self._closed = False
+                self._cancelled = False
+            self._spawn_warm()
 
     def _run_cold(self, prompt: str) -> Iterator[AgentEvent]:
         argv = self._cold_argv(prompt)
