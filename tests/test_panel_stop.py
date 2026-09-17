@@ -1,12 +1,19 @@
-"""Tests for the panel's stop state (task t14).
+"""Tests for the panel's stop state (tasks t14 and t5).
 
-Covers the acceptance criteria: a lone Esc on a pty during streaming ends
-exactly like SIGINT (``StreamResult(interrupted=True)``); the first press
-only calls ``cancel`` and prints the stopping line while the panel stays
-up, and a second press calls ``force_stop`` exactly once; Esc is seen even
-while the event source yields nothing; and an arrow key -- during streaming
-or at the proposal -- neither interrupts nor counts as Esc and leaves no
-stray bytes behind.
+Since t5 the *first* Ctrl+C or lone Esc no longer stops anything: it opens
+the stop-choice prompt (``nvsh: paused -- [t] steer  [s] stop  [Esc] keep
+going``) and nothing reaches the harness until the operator picks. ``[s]``
+(or a Ctrl+C typed at the prompt) is the old first press -- the stopping
+line, one polite ``cancel``, ``interrupted`` -- and the press after that
+still calls ``force_stop`` exactly once. ``[Esc]`` and the
+:data:`nvsh.panel.STOP_PROMPT_TIMEOUT` timeout resume rendering with the
+turn untouched.
+
+Also covered, unchanged since t14: Esc is seen even while the event source
+yields nothing; an arrow key -- during streaming or at the proposal --
+neither interrupts nor counts as Esc and leaves no stray bytes behind; and
+a terminal that cannot show the prompt (not a tty, ``TERM=dumb``) stops
+immediately as before.
 """
 
 from __future__ import annotations
@@ -25,7 +32,10 @@ from nvsh import panel as panel_mod
 from nvsh.agent.base import AgentEvent, EventKind, Proposal, ProposalKind
 
 TTY_ENV = {"TERM": "xterm-256color", "NO_COLOR": "1"}
+STYLED_ENV = {"TERM": "xterm-256color"}
 STOPPING = "stopping… press again to kill"
+PAUSED_LEGEND = "[t] steer  [s] stop  [Esc] keep going"
+PAUSED = f"nvsh: paused -- {PAUSED_LEGEND}"
 
 
 @pytest.fixture
@@ -42,9 +52,12 @@ def pty_pair():
             pass
 
 
-def _panel(tty_in, out=None):
+def _panel(tty_in, out=None, env=None):
     return panel_mod.Panel(
-        out=out if out is not None else io.StringIO(), in_=tty_in, env=TTY_ENV, isatty=True
+        out=out if out is not None else io.StringIO(),
+        in_=tty_in,
+        env=TTY_ENV if env is None else env,
+        isatty=True,
     )
 
 
@@ -59,7 +72,7 @@ def _press(kind: str, master: int) -> None:
         os.kill(os.getpid(), signal.SIGINT)
 
 
-def _wait_for(predicate, timeout: float = 5.0) -> bool:
+def _wait_for(predicate, timeout: float = 15.0) -> bool:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if predicate():
@@ -68,11 +81,265 @@ def _wait_for(predicate, timeout: float = 5.0) -> bool:
     return predicate()
 
 
-# --- one press: polite stop, panel stays up -------------------------------
+def _answer(master: int, key: bytes, reacted, tty_in=None, timeout: float = 15.0) -> bool:
+    """Type ``key`` at the choice prompt until ``reacted()`` is true.
+
+    The prompt discards typeahead as it opens (c33), so a key written in the
+    microseconds between the legend appearing and that flush would be
+    dropped. The settle below makes that window practically unreachable, and
+    the retry -- not the settle -- is what makes the helper correct: a lost
+    key is typed again rather than hanging the test. One write per attempt
+    (never a stream of them), so a *late* copy cannot be read as a fresh
+    press once the prompt has closed; anything still queued when the panel
+    reacts is flushed.
+    """
+    time.sleep(0.15)
+    deadline = time.monotonic() + timeout
+    answered = False
+    try:
+        while not answered and time.monotonic() < deadline:
+            try:
+                os.write(master, key)
+            except OSError:  # pragma: no cover - the pty went away
+                break
+            answered = _wait_for(reacted, 2.0)
+        return answered or reacted()
+    finally:
+        _drain(tty_in)
+
+
+def _drain(tty_in) -> None:
+    """Drop anything still queued on the slave side of the pty."""
+    if tty_in is None:
+        return
+    try:
+        import termios
+
+        termios.tcflush(tty_in.fileno(), termios.TCIFLUSH)
+    except Exception:  # noqa: BLE001 - nothing queued is just as good
+        return
+
+
+# --- t5 criterion 1: the first press only opens the prompt ------------------
+
+
+def _prompt_run(kind: str, master: int, tty_in, *, env=None, lead=None):
+    """Press once, wait for the prompt, and report what was called by then."""
+    out = io.StringIO()
+    p = _panel(tty_in, out, env=env)
+    calls: dict[str, list] = {"cancel": [], "kill": [], "choice": []}
+    at_prompt: dict[str, object] = {}
+
+    def events():
+        if lead is None:
+            yield AgentEvent(kind=EventKind.TEXT_DELTA, text="working")
+        else:
+            yield lead
+        pressed = time.monotonic()
+        _press(kind, master)
+        assert _wait_for(lambda: PAUSED_LEGEND in out.getvalue()), out.getvalue()
+        at_prompt["delay"] = time.monotonic() - pressed
+        # Nothing may have been sent to the harness while the prompt is open.
+        at_prompt["calls"] = {name: list(seen) for name, seen in calls.items()}
+        assert _answer(master, b"\x1b", lambda: calls["choice"], tty_in), out.getvalue()
+        yield AgentEvent(kind=EventKind.TEXT_DELTA, text=" winding down")
+        yield AgentEvent(kind=EventKind.DONE)
+
+    result = p.stream(
+        events(),
+        cancel=lambda: calls["cancel"].append(1),
+        force_stop=lambda: calls["kill"].append(1),
+        on_choice=lambda outcome, reason: calls["choice"].append((outcome, reason)),
+    )
+    return result, out.getvalue(), calls, at_prompt
+
+
+@pytest.mark.parametrize("kind", ["esc", "sigint"])
+def test_first_press_opens_the_prompt_within_1s_and_calls_nothing(pty_pair, kind):
+    master, tty_in = pty_pair
+    result, text, calls, at_prompt = _prompt_run(kind, master, tty_in)
+    assert at_prompt["delay"] < 1.0, at_prompt
+    assert at_prompt["calls"] == {"cancel": [], "kill": [], "choice": []}
+    assert calls["cancel"] == [] and calls["kill"] == []
+    assert PAUSED in text
+    assert STOPPING not in text
+    # The open run of text was closed before the prompt line.
+    assert "working\n" in text
+    assert text.index("working\n") < text.index(PAUSED)
+    assert result.done is True
+    assert result.interrupted is False
+
+
+def test_first_press_closes_an_open_thinking_run_before_the_prompt(pty_pair):
+    master, tty_in = pty_pair
+    _result, text, _calls, _at = _prompt_run(
+        "esc",
+        master,
+        tty_in,
+        env=STYLED_ENV,
+        lead=AgentEvent(kind=EventKind.THINKING, text="pondering"),
+    )
+    # The dim run is reset and broken before the legend reaches the screen.
+    assert "\x1b[0m\n" in text
+    assert text.index("\x1b[0m\n") < text.index(PAUSED_LEGEND)
+
+
+# --- t5 criterion 2: [Esc] and the timeout keep going -----------------------
+
+
+def _keep_going_run(pty_pair, answer: bytes | None):
+    master, tty_in = pty_pair
+    out = io.StringIO()
+    p = _panel(tty_in, out)
+    cancelled: list[int] = []
+    killed: list[int] = []
+    choices: list[tuple[str, str]] = []
+
+    def events():
+        for word in ("one ", "two "):
+            yield AgentEvent(kind=EventKind.TEXT_DELTA, text=word)
+        _press("esc", master)
+        assert _wait_for(lambda: PAUSED_LEGEND in out.getvalue()), out.getvalue()
+        if answer is None:
+            assert _wait_for(lambda: choices, timeout=30), "the prompt never timed out"
+        else:
+            assert _answer(master, answer, lambda: choices, tty_in), out.getvalue()
+        for word in ("three ", "four ", "five"):
+            yield AgentEvent(kind=EventKind.TEXT_DELTA, text=word)
+        yield AgentEvent(kind=EventKind.DONE)
+
+    started = time.monotonic()
+    result = p.stream(
+        events(),
+        cancel=lambda: cancelled.append(1),
+        force_stop=lambda: killed.append(1),
+        on_choice=lambda outcome, reason: choices.append((outcome, reason)),
+    )
+    return result, out.getvalue(), cancelled, killed, choices, time.monotonic() - started
+
+
+def test_esc_at_the_prompt_keeps_going_with_no_events_lost(pty_pair):
+    result, out, cancelled, killed, choices, _elapsed = _keep_going_run(pty_pair, b"\x1b")
+    assert choices == [("keep_going", "key")]
+    assert result.interrupted is False
+    assert result.done is True
+    assert result.text == "one two three four five"
+    assert cancelled == [] and killed == []
+    assert STOPPING not in out
+    assert "nvsh: interrupted" not in out
+
+
+def test_timeout_at_the_prompt_keeps_going(pty_pair, monkeypatch):
+    monkeypatch.setattr(panel_mod, "STOP_PROMPT_TIMEOUT", 0.5)
+    result, out, cancelled, killed, choices, elapsed = _keep_going_run(pty_pair, None)
+    assert choices == [("keep_going", "timeout")]
+    # The timeout was honoured (not answered instantly); the upper bound is
+    # only a "the stream ended" guard, generous for a loaded machine.
+    assert 0.4 < elapsed < 30.0, elapsed
+    assert result.interrupted is False
+    assert result.done is True
+    assert result.text == "one two three four five"
+    assert cancelled == [] and killed == []
+    assert STOPPING not in out
+
+
+# --- t5 criterion 5: the [t] label, and what [t] reports ---------------------
+
+
+@pytest.mark.parametrize("label", ["steer", "stop & correct"])
+def test_steer_label_is_used_verbatim_and_t_reports_steer(pty_pair, label):
+    master, tty_in = pty_pair
+    out = io.StringIO()
+    p = _panel(tty_in, out)
+    cancelled: list[int] = []
+    killed: list[int] = []
+    choices: list[tuple[str, str]] = []
+
+    def events():
+        yield AgentEvent(kind=EventKind.TEXT_DELTA, text="working")
+        _press("esc", master)
+        assert _wait_for(lambda: f"[t] {label}" in out.getvalue()), out.getvalue()
+        assert _answer(master, b"t", lambda: choices, tty_in), out.getvalue()
+        yield AgentEvent(kind=EventKind.DONE)
+
+    result = p.stream(
+        events(),
+        cancel=lambda: cancelled.append(1),
+        force_stop=lambda: killed.append(1),
+        on_choice=lambda outcome, reason: choices.append((outcome, reason)),
+        steer_label=label,
+    )
+    text = out.getvalue()
+    assert f"nvsh: paused -- [t] {label}  [s] stop  [Esc] keep going" in text
+    assert choices == [("steer", "key")]
+    assert cancelled == [] and killed == []
+    assert result.interrupted is False
+    assert result.done is True
+    # t5 reads no correction line yet: no ``nvsh> `` prompt was shown.
+    assert "nvsh> " not in text
+
+
+# --- t5 criterion 4: no prompt where it cannot be shown ---------------------
+
+
+def test_non_tty_first_sigint_cancels_at_once_without_a_prompt(capsys):
+    out = io.StringIO()
+    p = panel_mod.Panel(out=out, in_=io.StringIO(""), env={}, isatty=False)
+    cancelled: list[int] = []
+    stopped = threading.Event()
+
+    def events():
+        yield AgentEvent(kind=EventKind.TEXT_DELTA, text="working")
+        os.kill(os.getpid(), signal.SIGINT)
+        assert stopped.wait(5)
+        yield AgentEvent(kind=EventKind.DONE)
+
+    result = p.stream(
+        events(),
+        cancel=lambda: (cancelled.append(1), stopped.set()),
+        force_stop=lambda: None,
+    )
+    text = out.getvalue()
+    assert cancelled == [1]
+    assert result.interrupted is True
+    assert STOPPING in text
+    assert "paused" not in text
+    assert PAUSED_LEGEND not in text
+    captured = capsys.readouterr()
+    assert "paused" not in captured.out
+    assert "paused" not in captured.err
+
+
+def test_term_dumb_first_press_cancels_at_once_without_a_prompt(pty_pair):
+    master, tty_in = pty_pair
+    out = io.StringIO()
+    p = _panel(tty_in, out, env={"TERM": "dumb"})
+    cancelled: list[int] = []
+    stopped = threading.Event()
+
+    def events():
+        yield AgentEvent(kind=EventKind.TEXT_DELTA, text="working")
+        _press("sigint", master)
+        assert stopped.wait(5)
+        yield AgentEvent(kind=EventKind.DONE)
+
+    result = p.stream(
+        events(),
+        cancel=lambda: (cancelled.append(1), stopped.set()),
+        force_stop=lambda: None,
+    )
+    text = out.getvalue()
+    assert cancelled == [1]
+    assert result.interrupted is True
+    assert STOPPING in text
+    assert "paused" not in text
+
+
+# --- t5 criterion 3: [s] is today's first press ----------------------------
 
 
 def _one_press_run(
-    kind: str, master: int, tty_in
+    kind: str, master: int, tty_in, answer: bytes = b"s"
 ) -> tuple[panel_mod.StreamResult, str, list, list]:
     out = io.StringIO()
     p = _panel(tty_in, out)
@@ -87,8 +354,9 @@ def _one_press_run(
     def events():
         yield AgentEvent(kind=EventKind.TEXT_DELTA, text="working")
         _press(kind, master)
-        assert stopped.wait(5)
-        # The panel stays up after the first press: this still renders.
+        assert _wait_for(lambda: PAUSED_LEGEND in out.getvalue()), out.getvalue()
+        assert _answer(master, answer, stopped.is_set, tty_in), out.getvalue()
+        # The panel stays up after the stop: this still renders.
         yield AgentEvent(kind=EventKind.TEXT_DELTA, text=" winding down")
 
     result = p.stream(events(), cancel=cancel, force_stop=lambda: killed.append(1))
@@ -105,19 +373,29 @@ def test_lone_esc_during_streaming_is_identical_to_sigint(pty_pair):
     assert esc_cancel == int_cancel == [1]
     assert esc_kill == int_kill == []
     for text in (esc_out, int_out):
+        assert PAUSED in text
         assert STOPPING in text
         assert "nvsh: interrupted" in text
-        assert text.index(STOPPING) < text.index("winding down")
+        assert text.index(PAUSED) < text.index(STOPPING) < text.index("winding down")
     assert esc_out == int_out
 
 
 @pytest.mark.parametrize("kind", ["esc", "sigint"])
 def test_a_single_press_never_calls_force_stop(pty_pair, kind):
     master, tty_in = pty_pair
-    result, _out, cancelled, killed = _one_press_run(kind, master, tty_in)
+    result, out, cancelled, killed = _one_press_run(kind, master, tty_in)
     assert result.interrupted is True
     assert cancelled == [1]
     assert killed == []
+    assert out.count(STOPPING) == 1
+
+
+def test_ctrl_c_typed_at_the_choice_prompt_stops_like_s(pty_pair):
+    result, out, cancelled, killed = _one_press_run("esc", pty_pair[0], pty_pair[1], b"\x03")
+    assert result.interrupted is True
+    assert cancelled == [1]
+    assert killed == []
+    assert out.count(STOPPING) == 1
 
 
 # --- second press: kill ----------------------------------------------------
@@ -131,39 +409,50 @@ def test_second_press_calls_force_stop_exactly_once(pty_pair, first, second):
     cancelled: list[int] = []
     killed: list[int] = []
     gone = threading.Event()
+    timing: dict[str, float] = {}
 
     def force_stop():
+        # Timed here, on the thread that does the killing: the stream ends
+        # the moment this returns, so the source thread may never be
+        # scheduled again to record anything.
+        timing["kill"] = time.monotonic() - timing["pressed"]
         killed.append(1)
         gone.set()
 
     def events():
         yield AgentEvent(kind=EventKind.TEXT_DELTA, text="working")
         _press(first, master)
-        assert _wait_for(lambda: cancelled)
+        assert _wait_for(lambda: PAUSED_LEGEND in out.getvalue()), out.getvalue()
+        assert _answer(master, b"s", lambda: cancelled, tty_in), out.getvalue()
         time.sleep(0.15)  # a separate keypress, not one ESC ESC burst
+        timing["pressed"] = time.monotonic()
         _press(second, master)
         # A harness that ignores the polite cancel: silent until killed.
         gone.wait(10)
 
     started = time.monotonic()
     result = p.stream(events(), cancel=lambda: cancelled.append(1), force_stop=force_stop)
-    assert time.monotonic() - started < 5
+    assert time.monotonic() - started < 30
+    assert timing["kill"] < 3.0, timing
     assert result.interrupted is True
     assert cancelled == [1]
     assert killed == [1]
     assert out.getvalue().count(STOPPING) == 1
+    assert out.getvalue().count(PAUSED) == 1
 
 
 def test_second_press_without_force_stop_still_ends_the_stream(pty_pair):
     master, tty_in = pty_pair
-    p = _panel(tty_in)
+    out = io.StringIO()
+    p = _panel(tty_in, out)
     cancelled: list[int] = []
     release = threading.Event()
 
     def events():
         yield AgentEvent(kind=EventKind.TEXT_DELTA, text="working")
         _press("esc", master)
-        assert _wait_for(lambda: cancelled)
+        assert _wait_for(lambda: PAUSED_LEGEND in out.getvalue()), out.getvalue()
+        assert _answer(master, b"s", lambda: cancelled, tty_in), out.getvalue()
         time.sleep(0.15)
         _press("esc", master)
         release.wait(10)
@@ -173,7 +462,7 @@ def test_second_press_without_force_stop_still_ends_the_stream(pty_pair):
         result = p.stream(events(), cancel=lambda: cancelled.append(1))
     finally:
         release.set()
-    assert time.monotonic() - started < 5
+    assert time.monotonic() - started < 30
     assert result.interrupted is True
     assert cancelled == [1]
 
@@ -181,7 +470,7 @@ def test_second_press_without_force_stop_still_ends_the_stream(pty_pair):
 # --- silent source ---------------------------------------------------------
 
 
-def test_esc_prints_the_stopping_line_within_1s_while_the_source_is_silent(pty_pair):
+def test_esc_prompts_then_stops_within_1s_each_while_the_source_is_silent(pty_pair):
     master, tty_in = pty_pair
     out = io.StringIO()
     p = _panel(tty_in, out)
@@ -198,8 +487,11 @@ def test_esc_prints_the_stopping_line_within_1s_while_the_source_is_silent(pty_p
         time.sleep(0.3)
         os.write(master, b"\x1b")
         pressed = time.monotonic()
-        if _wait_for(lambda: STOPPING in out.getvalue(), timeout=5):
-            timing["stopping"] = time.monotonic() - pressed
+        if _wait_for(lambda: PAUSED_LEGEND in out.getvalue(), timeout=5):
+            timing["paused"] = time.monotonic() - pressed
+        chose = time.monotonic()
+        if _answer(master, b"s", lambda: STOPPING in out.getvalue(), tty_in):
+            timing["stopping"] = time.monotonic() - chose
         time.sleep(0.15)
         os.write(master, b"\x1b")
 
@@ -211,10 +503,12 @@ def test_esc_prints_the_stopping_line_within_1s_while_the_source_is_silent(pty_p
     finally:
         killed.set()
         thread.join(5)
+    assert "paused" in timing, out.getvalue()
+    assert timing["paused"] < 1.0, timing
     assert "stopping" in timing, out.getvalue()
     assert timing["stopping"] < 1.0, timing
     assert result.interrupted is True
-    assert time.monotonic() - started < 10
+    assert time.monotonic() - started < 30
 
 
 # --- arrow keys ------------------------------------------------------------

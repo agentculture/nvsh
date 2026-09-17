@@ -46,15 +46,22 @@ entry, and CLAUDE.md's headless-over-SSH constraint):
   ``nvsh: falling back - <original text>`` line rather than another dim
   ``...`` line. Every other status stays dim, and an empty one prints
   nothing at all.
-* **Ctrl+C or Esc stops the agent; a second press kills it.** While
-  streaming, the event source is iterated on a worker thread that hands the
-  main thread one event at a time, so the main thread can watch SIGINT and
-  a lone Esc (:class:`nvsh.keys.KeyWatcher`) even while the source is
-  silent. The first press calls the caller's ``cancel`` once, prints
-  ``stopping… press again to kill`` and keeps rendering until the turn
-  really ends; a second press calls ``force_stop`` once and ends the
-  stream. Either way the result is ``interrupted`` (the caller's exit 130),
-  and the terminal's termios settings are restored in a ``finally``.
+* **Ctrl+C or Esc asks before it stops the agent.** While streaming, the
+  event source is iterated on a worker thread that hands the main thread
+  one event at a time, so the main thread can watch SIGINT and a lone Esc
+  (:class:`nvsh.keys.KeyWatcher`) even while the source is silent. The
+  first press sends nothing to the harness: it pauses the panel and offers
+  a choice -- ``nvsh: paused -- [t] steer  [s] stop  [Esc] keep going``.
+  ``[Esc]``, end of input, or :data:`STOP_PROMPT_TIMEOUT` seconds of
+  silence resume rendering with the turn untouched (the result is *not*
+  ``interrupted``); ``[s]`` -- or a Ctrl+C typed at the prompt -- is the
+  old first press, calling the caller's ``cancel`` once, printing
+  ``stopping… press again to kill`` and rendering on until the turn really
+  ends; the press after that calls ``force_stop`` once and ends the
+  stream. Whichever it is, the outcome is reported through ``on_choice``.
+  A terminal that cannot show or answer the prompt (stdout or stdin is not
+  a tty, ``TERM=dumb``) keeps the pre-t5 behaviour: the first press stops
+  at once. The terminal's termios settings are restored in a ``finally``.
 
 Stdlib only; nothing here is imported at shell start (the bash hook only
 runs ``nvsh`` on a qualifying failure).
@@ -71,7 +78,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Callable, Iterable, Mapping, Sequence, TextIO
 
-from . import keys
+from . import keys, promptkeys
 from .agent.base import AgentEvent, EventKind, Proposal, Target
 from .approvals import parse_stages
 
@@ -146,6 +153,43 @@ REFUSED = "refused"
 STEER = "steer"
 REPLACE = "replace"
 BUSY_EXIT = "busy_exit"
+
+#: What the stop-choice prompt reports through ``stream(on_choice=...)``,
+#: alongside :data:`STEER` above (the same token the busy prompt uses, so an
+#: audit reader sees one steer kind whichever prompt it came from).
+KEEP_GOING = "keep_going"
+STOP = "stop"
+
+#: Why the prompt ended: the operator pressed a key, nobody answered in
+#: time, or the terminal hung up (``""`` -- end of input means keep going
+#: locally and nothing is sent, spec c34).
+REASON_KEY = "key"
+REASON_TIMEOUT = "timeout"
+REASON_NONE = ""
+
+#: How long the stop-choice prompt waits before dismissing itself as "keep
+#: going" (spec: 30 s +/- 1 s). Patched short in tests.
+STOP_PROMPT_TIMEOUT = 30.0
+
+#: The default word for the ``[t]`` key. The caller passes
+#: ``steer_label="stop & correct"`` for a harness with no mid-turn channel;
+#: whatever it passes is used verbatim in the legend.
+STEER_LABEL = "steer"
+
+#: The keys the stop-choice prompt answers to (Esc and Ctrl+C are handled by
+#: :func:`nvsh.promptkeys.read_choice` itself).
+_STOP_PROMPT_KEYS = ("t", "s")
+
+#: Each answer's ``(outcome, reason)``. Anything unlisted keeps going, which
+#: is the outcome that sends nothing and changes nothing.
+_STOP_PROMPT_OUTCOMES = {
+    "t": (STEER, REASON_KEY),
+    "s": (STOP, REASON_KEY),
+    promptkeys.INTERRUPT: (STOP, REASON_KEY),
+    promptkeys.ESC: (KEEP_GOING, REASON_KEY),
+    promptkeys.TIMEOUT: (KEEP_GOING, REASON_TIMEOUT),
+    promptkeys.EOF: (KEEP_GOING, REASON_NONE),
+}
 
 #: How long :meth:`Panel.show_busy` waits, after a steer choice, for some
 #: event to prove the harness actually reacted before re-offering
@@ -561,6 +605,8 @@ class Panel:
         cancel: Callable[[], object] | None = None,
         force_stop: Callable[[], object] | None = None,
         on_busy: Callable[[AgentEvent], object] | None = None,
+        on_choice: Callable[[str, str], object] | None = None,
+        steer_label: str = STEER_LABEL,
     ) -> StreamResult:
         """Render ``events`` as they arrive; return what happened.
 
@@ -568,11 +614,25 @@ class Panel:
         watcher suspended like ``on_proposal``, so the busy prompt reads its
         own keys on the main thread.
 
-        The first Ctrl+C or lone Esc calls ``cancel`` once, prints the
-        stopping line and keeps rendering until the source ends; a second
-        press calls ``force_stop`` once (when given) and ends the stream.
-        Both mark the result ``interrupted``. Terminal attributes and the
-        previous SIGINT handler are always restored.
+        The first Ctrl+C or lone Esc opens the stop-choice prompt and sends
+        nothing to the harness until the operator answers it (t5). ``[s]``,
+        or a Ctrl+C typed at the prompt, calls ``cancel`` once, prints the
+        stopping line and keeps rendering until the source ends, and marks
+        the result ``interrupted``; the press after that calls
+        ``force_stop`` once (when given) and ends the stream. ``[Esc]``, end
+        of input and the :data:`STOP_PROMPT_TIMEOUT` timeout resume
+        rendering with nothing sent and ``interrupted`` left clear.
+
+        ``on_choice(outcome, reason)`` is called once per answered prompt --
+        ``outcome`` is :data:`KEEP_GOING`, :data:`STOP` or :data:`STEER`,
+        ``reason`` is :data:`REASON_KEY`, :data:`REASON_TIMEOUT` or ``""``
+        (end of input). ``steer_label`` is the word the ``[t]`` key is
+        offered under, used verbatim. Where the prompt cannot be shown or
+        answered (stdout or stdin is not a tty, ``TERM`` is ``dumb`` or
+        empty) the first press stops at once, exactly as before t5.
+
+        Terminal attributes and the previous SIGINT handler are always
+        restored.
         """
         result = StreamResult()
         if self._target is not None:
@@ -614,11 +674,16 @@ class Panel:
                 started_text,
                 self._suspending(watcher, on_proposal),
                 self._suspending(watcher, on_busy),
+                read_choice=self._suspending(watcher, self._read_stop_choice),
+                on_choice=on_choice,
+                steer_label=steer_label,
             )
         except KeyboardInterrupt:
             result.interrupted = True
             # Raised by Python's default handler, before ours was installed:
             # the operator still pressed Ctrl+C, so the agent is still told.
+            # There is no panel left to offer a choice on.
+            stop.stopping = True
             stop.cancel_once()
         finally:
             # Handler first: a second Ctrl+C during the ticker join below
@@ -647,6 +712,10 @@ class Panel:
         started_text: bool,
         on_proposal: Callable[[Proposal, AgentEvent], object] | None,
         on_busy: Callable[[AgentEvent], object] | None = None,
+        *,
+        read_choice: Callable[[], str] | None = None,
+        on_choice: Callable[[str, str], object] | None = None,
+        steer_label: str = STEER_LABEL,
     ) -> bool:
         """Render events and act on presses until the stream ends.
 
@@ -655,7 +724,14 @@ class Panel:
         while True:
             item = self._next_item(feeder, watcher, stop)
             if item is None:
-                started_text, ended = self._on_press(stop, result, started_text)
+                started_text, ended = self._on_press(
+                    stop,
+                    result,
+                    started_text,
+                    read_choice=read_choice,
+                    on_choice=on_choice,
+                    steer_label=steer_label,
+                )
                 if ended:
                     return started_text
                 continue
@@ -675,9 +751,13 @@ class Panel:
             except KeyboardInterrupt:
                 # Ctrl+C typed at a raw-mode prompt (the proposal or busy
                 # key read) arrives as a byte, not a signal: it is still a
-                # press, and it decided nothing at that prompt.
+                # press, and it decided nothing at that prompt. A press made
+                # while another nvsh prompt is open goes straight to stop --
+                # the choice prompt opens only for a press made while the
+                # panel is streaming (spec decision).
                 stop.press()
-                last = False
+                stop.handle()
+                started_text, last = self._stop_press(stop, result, started_text)
             if last:
                 return started_text
             self._arm_waiting()
@@ -702,10 +782,33 @@ class Panel:
             except queue.Empty:
                 continue
 
-    def _on_press(self, stop: _StopState, result: StreamResult, started_text: bool):
-        """Act on one Ctrl+C/Esc. Returns ``(started_text, stream_ended)``."""
+    def _on_press(
+        self,
+        stop: _StopState,
+        result: StreamResult,
+        started_text: bool,
+        *,
+        read_choice: Callable[[], str] | None = None,
+        on_choice: Callable[[str, str], object] | None = None,
+        steer_label: str = STEER_LABEL,
+    ):
+        """Act on one Ctrl+C/Esc. Returns ``(started_text, stream_ended)``.
+
+        The press that finds the panel merely streaming opens the stop-choice
+        prompt (t5) and decides nothing by itself; every press after a stop
+        has begun is the kill press, exactly as before. A terminal that
+        cannot show the prompt keeps the pre-t5 behaviour.
+        """
+        stop.handle()
+        if stop.stopping or read_choice is None or not self._can_prompt():
+            return self._stop_press(stop, result, started_text)
+        return self._choice_press(stop, result, started_text, read_choice, on_choice, steer_label)
+
+    def _stop_press(self, stop: _StopState, result: StreamResult, started_text: bool):
+        """The pre-t5 press: polite cancel, then kill. ``(started_text, ended)``."""
         result.interrupted = True
-        if stop.handle() == 1:
+        if not stop.stopping:
+            stop.stopping = True
             self._pause_waiting()
             self._close_thinking()
             started_text = self._end_text_run(started_text)
@@ -715,6 +818,75 @@ class Panel:
             return started_text, False
         stop.force_stop_once()
         return started_text, True
+
+    def _choice_press(
+        self,
+        stop: _StopState,
+        result: StreamResult,
+        started_text: bool,
+        read_choice: Callable[[], str],
+        on_choice: Callable[[str, str], object] | None,
+        steer_label: str,
+    ):
+        """Open the stop-choice prompt and act on the answer.
+
+        Nothing reaches the harness until a key is read: the ticker is
+        paused and any open thinking/text run closed, the one-line legend is
+        printed, and only then is a key waited for. Presses recorded while
+        the prompt was open (a SIGINT already pending when it opened) are
+        dropped rather than opening a second prompt -- they cannot answer
+        this one either, since the reader discards typeahead (c33).
+        """
+        self._pause_waiting()
+        self._close_thinking()
+        started_text = self._end_text_run(started_text)
+        s = self.style
+        self.line(f"{s.bold}{s.yellow}nvsh:{s.reset} paused -- {self._stop_legend(steer_label)}")
+        key = read_choice()
+        stop.drain()
+        outcome, reason = _STOP_PROMPT_OUTCOMES.get(key, (KEEP_GOING, REASON_NONE))
+        if on_choice is not None:
+            on_choice(outcome, reason)
+        if outcome == STOP:
+            return self._stop_press(stop, result, started_text)
+        # keep going, and (for now) steer too: t6 reads the correction line.
+        # Nothing was sent, so the turn is not interrupted -- rendering just
+        # resumes where it paused.
+        self._arm_waiting()
+        return started_text, False
+
+    @staticmethod
+    def _stop_legend(steer_label: str = STEER_LABEL) -> str:
+        """``[t] steer  [s] stop  [Esc] keep going`` -- the label as given."""
+        return f"[t] {steer_label}  [s] stop  [Esc] keep going"
+
+    def _can_prompt(self) -> bool:
+        """Whether the stop-choice prompt can be shown *and* answered (c9).
+
+        Both ends have to be a terminal: the legend goes to ``out`` and the
+        key comes from ``in_``. ``TERM=dumb`` (or unset) is the same rule
+        :func:`nvsh.keys._enabled` applies to the watcher, so a terminal
+        that cannot be held in cbreak never sees a prompt it could not
+        answer.
+        """
+        if not self.isatty:
+            return False
+        if self.env.get("TERM", "") in ("", "dumb"):
+            return False
+        fd = _fileno(self.in_)
+        if fd is None:
+            return False
+        try:
+            return os.isatty(fd)
+        except OSError:
+            return False
+
+    def _read_stop_choice(self) -> str:
+        """One key at the stop-choice prompt, or a timeout/EOF token."""
+        fd = _fileno(self.in_)
+        if fd is None:  # pragma: no cover - _can_prompt already refused
+            return promptkeys.EOF
+        return promptkeys.read_choice(fd, _STOP_PROMPT_KEYS, STOP_PROMPT_TIMEOUT)
 
     @staticmethod
     def _suspending(
@@ -1301,6 +1473,11 @@ class _StopState:
         self._handled = 0
         self._cancelled: list[bool] = []
         self._killed: list[bool] = []
+        #: Whether a stop has begun. Until it has, a press opens the choice
+        #: prompt (t5); after it, every press is the kill press. This is not
+        #: the press count: a press the operator answered with "keep going"
+        #: leaves the turn untouched, so the next one asks again.
+        self.stopping = False
 
     def on_sigint(self, _signum: int, _frame: object) -> None:
         self.press()
@@ -1315,6 +1492,15 @@ class _StopState:
         """Mark one press handled; return which press it was (1, 2, ...)."""
         self._handled += 1
         return self._handled
+
+    def drain(self) -> None:
+        """Mark every press recorded so far as handled.
+
+        A SIGINT already pending when the choice prompt opened must neither
+        be lost in a queue nor open a second prompt behind the first: the
+        prompt the operator answered stands for all of them.
+        """
+        self._handled = len(self._presses)
 
     def cancel_once(self) -> None:
         if self._cancel is not None and not self._cancelled:
