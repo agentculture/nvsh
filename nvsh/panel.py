@@ -1761,13 +1761,16 @@ class _Feeder:
         paused. A raised exception is deliberately *not* counted -- that is
         the stream breaking, not the turn ending.
 
-        The ``list()`` is not redundant: ``queue.queue`` is the deque the
-        worker thread is still appending to, and iterating it directly would
-        raise "deque mutated during iteration" the moment an event lands
-        while a prompt is open -- exactly the case this answers. The copy is
-        a snapshot taken under no lock, which is all the honesty this needs.
+        The copy is not redundant: ``queue.queue`` is the deque the worker
+        thread is still appending to, and iterating it directly would raise
+        "deque mutated during iteration" the moment an event lands while a
+        prompt is open -- exactly the case this answers. It is taken under
+        the queue's own mutex, so the snapshot is consistent on any
+        interpreter, not only where the GIL happens to make it atomic.
         """
-        for tag, payload in list(self.queue.queue):
+        with self.queue.mutex:
+            waiting = list(self.queue.queue)
+        for tag, payload in waiting:
             if tag is _END:
                 return True
             if getattr(payload, "kind", None) in (EventKind.DONE, EventKind.ERROR):
