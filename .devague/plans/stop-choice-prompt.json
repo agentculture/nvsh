@@ -3,9 +3,9 @@
   "title": "stop choice prompt",
   "frame_slug": "stop-choice-prompt",
   "schema_version": 5,
-  "status": "drafting",
+  "status": "exported",
   "created": "2026-09-17T17:03:56Z",
-  "updated": "2026-09-17T17:05:30Z",
+  "updated": "2026-09-17T17:07:09Z",
   "targets": [
     {
       "id": "c1",
@@ -391,7 +391,7 @@
       "id": "t1",
       "summary": "Declare Capabilities.steer on every adapter and expose a client-side lookup",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "acceptance_criteria": [
         "nvsh/agent/base.py Capabilities gains a bool field steer defaulting to False; pi and codex declare steer=True; acp, claude, qwen (both modes), agy, openai-compat, fake and demo declare False",
         "a conformance test iterates registry.ADAPTERS and asserts exactly {pi, codex} declare steer=True, and test_capability_report checks the new field is a bool",
@@ -410,7 +410,7 @@
       "id": "t2",
       "summary": "Add a timed single-key reader for prompts in a new module",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "acceptance_criteria": [
         "new module nvsh/promptkeys.py exposes read_choice(fd, keys, timeout) returning one of the allowed keys, ESC, INTERRUPT (Ctrl+C byte 0x03), EOF or TIMEOUT, using select() with a monotonic deadline; escape sequences (CSI, SS3) are drained whole and neither answer nor leave bytes behind",
         "pending input is discarded (termios.tcflush TCIFLUSH) before the read starts, so two Esc bytes written within 20 ms leave the read unanswered -- asserted on a pty",
@@ -432,7 +432,7 @@
       "id": "t3",
       "summary": "Add the keep_going stop kind and an origin field to the audit log",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "acceptance_criteria": [
         "nvsh/agent/audit.py STOP_KINDS gains keep_going; the stop writer accepts an optional origin ('stop_prompt' or 'busy_prompt') and an optional reason ('key' or 'timeout'), written only when given",
         "a stop line for a correction records its length as correction_chars and never the text; passing text is a TypeError or is ignored, asserted by a test that greps the written file for the token",
@@ -449,7 +449,7 @@
       "id": "t4",
       "summary": "Daemon busy prompt reads Capabilities.steer instead of _overrides_steer",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "acceptance_criteria": [
         "nvsh/daemon.py no longer defines _overrides_steer; _BusyPrompt.steerable comes from slot.agent.capabilities().steer",
         "a daemon test with an openai-compat-like fake (overrides steer(), declares steer=False) gets a busy event whose choices omit 'steer'; with a steer=True fake the choice is offered",
@@ -468,7 +468,7 @@
       "id": "t5",
       "summary": "Panel: first press opens the choice prompt (keep going, stop, timeout, non-tty)",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "acceptance_criteria": [
         "on a tty the first Ctrl+C or lone Esc during Panel.stream() prints 'nvsh: paused -- [t] steer  [s] stop  [Esc] keep going' within 1 s (ticker paused, thinking/text run closed first) and calls neither cancel nor force_stop nor on_steer until a key is read -- asserted with recording callables",
         "Esc or a 30 s timeout (constant STOP_PROMPT_TIMEOUT, patched short in tests) resumes rendering with no events lost or reordered and leaves StreamResult.interrupted False; the outcome is reported through a new on_choice callback as 'keep_going' with reason key or timeout",
@@ -499,7 +499,7 @@
       "id": "t6",
       "summary": "Panel: correction line, never-mind rules, press at another prompt, turn finished during the prompt",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "acceptance_criteria": [
         "after t the panel reads one line with the existing Panel.read_tell; an empty line, Ctrl+C or EOF there means never mind: no callback fires, the turn keeps going and interrupted stays False",
         "EOF at the choice prompt itself means keep going and never cancel, force_stop or steer",
@@ -521,7 +521,7 @@
       "id": "t7",
       "summary": "Client: wire the prompt -- label from the capability, redacted steer delivery, audit lines",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "acceptance_criteria": [
         "_stream_request resolves the target's capability with registry.steer_capable and passes steer_label to panel.stream on both the daemon and one-shot paths, against a stub daemon that sends no capability information",
         "the typed correction is passed through nvsh.redact before Responder.steer; a line containing HF_TOKEN=abc123 reaches the adapter redacted and appears nowhere in audit.jsonl",
@@ -545,7 +545,7 @@
       "id": "t8",
       "summary": "Client: stop-and-correct sequencing, self-contained correction request, runtime fallback, exit codes",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "acceptance_criteria": [
         "on a steer=False target, t then a typed line cancels the turn once, waits for it to end (a further press still kills), then streams a second request; handle_failure, ask and the slash path no longer return 130 before that follow-up",
         "the follow-up AgentRequest.prompt contains the original request text, a statement that the previous attempt was stopped, and the redacted correction, built without reading any harness session state -- asserted for every adapter family fake",
@@ -569,7 +569,7 @@
       "id": "t9",
       "summary": "Rewrite the cross-family stop test and add an end-to-end pty test of all four outcomes",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "acceptance_criteria": [
         "tests/test_agent_stop.py::test_two_presses_stop_every_family_on_both_paths is rewritten as press, s, press and still passes for every adapter family on the daemon and one-shot paths",
         "a new pty test drives one turn per outcome -- steer, stop, keep going, timeout -- from a single first press and asserts no adapter call happens before the key",
@@ -591,7 +591,7 @@
       "id": "t10",
       "summary": "Update every written description of the first press, and record the amendment",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "acceptance_criteria": [
         "docs/shell-integration.md 'Stopping the agent' and its exit-code table, docs/daemon.md control table, README.md:54 and the stop paragraph in CLAUDE.md, AGENTS.override.md, .pi/SYSTEM.md, AGENTS.colleague.md and QWEN.md all describe the choice prompt, its three keys, the 30 s timeout, stop & correct, and that a session without a terminal stops at once",
         "grep for 'press again to kill' finds it only as the line shown after s; scripts/harness-smoke.py --stage config passes; markdownlint-cli2 passes",
@@ -616,7 +616,7 @@
       "id": "t11",
       "summary": "Integrate: full suite, lint gates, version bump and changelog",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "acceptance_criteria": [
         "uv run pytest -n auto passes; black, isort, flake8, bandit, markdownlint, scripts/scan-secrets.py, teken cli doctor --strict and harness-smoke --stage config all pass",
         "git diff main -- nvsh/keys.py is empty and the functional diff of cancel_shell/kill_shell/_force_stop_turn is empty",
