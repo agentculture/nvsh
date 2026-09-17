@@ -29,6 +29,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - On a hung-up terminal, end of input at a proposal read as Enter (approve); it now ignores (deviation d1).
 - ACP adapter: a stale end-of-output marker in the reader queue made the next `initialize` fail after a stop.
 - openai-compat: stopping a stalled stream waited out the 5 s socket timeout; it now shuts the socket down at once.
+- PR review: Ctrl+C at a proposal or busy prompt stopped nothing and counted as a decline; it now stops the agent (exit 130).
+- PR review: `nvsh doctor --apply` exited unhealthy after a successful repair; a delayed kill could stop a later request; `kill_active` now carries the confirmed turn identity, accepts only JSON `true` as confirmation and survives oversized shell ids.
+- PR review: late output from a cancelled warm agy turn could leak into the next turn; claude/qwen-p left tool subprocesses running after a normal exit.
 
 ## [0.12.1] - 2026-09-14
 
