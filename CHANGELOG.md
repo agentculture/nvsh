@@ -10,6 +10,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Changed
 
 - Records only, no code change: the operator confirmed the reliable-agent-stop records (lapses l1-l5, obligations o1-o21, evidence e1-e43, deltas b1-b10 are now approved), `docs/current-spec.md` is regenerated from the approved ledger with `devague today`, plan risks r6 (accepted as a known limitation) and r8 (follow-up, #17) are resolved, and the delivery summary gains an adjudication section; the `nvsh ask` verb question (deviation d10) is tracked as #18.
+- Regression tests drive a second `run()` after `cancel()` without a second `start()` (the conformance cases restarted the adapter and only asserted a trailing DONE, which the bug also produced), plus a daemon-level test that cancels a warm `openai-compat` turn and asks again.
+
+### Fixed
+
+- A polite stop (first Ctrl+C/Esc) no longer silences the warm session. The `openai-compat`, `claude`, `qwen-p`, `codex exec`, cold `agy` and `fake` adapters kept their cancelled flag set after a stop; the daemon calls `start()` once per warm session, not once per turn, so every later request printed its header and then nothing (exit 0) until the daemon restarted. `run()` now clears the flag itself. Found on thor on 2026-09-17.
+- `@default <question>` is labelled `warm` in the panel header instead of `one-shot`: it names a target but still rides the daemon's warm session.
 
 ## [0.13.0] - 2026-09-16
 

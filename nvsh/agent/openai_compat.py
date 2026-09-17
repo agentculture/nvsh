@@ -61,6 +61,10 @@ class OpenAICompatAgent(NvshAgent):
         return headers, outcome.diagnostic
 
     def run(self, request: AgentRequest, context: AgentContext) -> Iterator[AgentEvent]:
+        # A cancel ends one turn, not the adapter: the daemon calls start()
+        # once per warm session, so the flag has to be cleared per run or
+        # every turn after the first stop streams nothing and ends in DONE.
+        self._cancelled = False
         url = f"{self._base_url}/chat/completions"
         scheme = urlsplit(url).scheme
         if scheme not in ("http", "https"):

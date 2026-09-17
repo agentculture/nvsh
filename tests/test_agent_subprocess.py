@@ -477,3 +477,16 @@ def test_stop_paths_never_open_harness_settings_files():
             if isinstance(node, ast.Call):
                 name = getattr(node.func, "id", None) or getattr(node.func, "attr", None)
                 assert name not in file_apis, (func.__qualname__, name)
+
+
+def test_a_cancelled_turn_does_not_silence_the_next_run():
+    """``start()`` runs once per warm session, so ``run()`` must clear the flag itself."""
+    agent = _ScriptedAgent("print('hi')\nprint('__DONE__')\n")
+    agent.start()
+    try:
+        agent.cancel()
+        events = list(agent.run(_request(), AgentContext()))
+    finally:
+        agent.close()
+    assert [e.text for e in events if e.kind is EventKind.TEXT_DELTA] == ["hi"]
+    assert events[-1].kind is EventKind.DONE
