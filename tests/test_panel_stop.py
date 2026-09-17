@@ -82,28 +82,22 @@ def _wait_for(predicate, timeout: float = 15.0) -> bool:
 
 
 def _answer(master: int, key: bytes, reacted, tty_in=None, timeout: float = 15.0) -> bool:
-    """Type ``key`` at the choice prompt until ``reacted()`` is true.
+    """Type ``key`` once at the choice prompt and wait for ``reacted()``.
 
-    The prompt discards typeahead as it opens (c33), so a key written in the
-    microseconds between the legend appearing and that flush would be
-    dropped. The settle below makes that window practically unreachable, and
-    the retry -- not the settle -- is what makes the helper correct: a lost
-    key is typed again rather than hanging the test. One write per attempt
-    (never a stream of them), so a *late* copy cannot be read as a fresh
-    press once the prompt has closed; anything still queued when the panel
-    reacts is flushed.
+    One write is enough and always was meant to be: the prompt discards
+    typeahead *before* it draws its legend, so every caller here -- which
+    only writes once the legend is in the panel's output -- is writing into
+    a prompt that is already reading. (It used to be the other way round,
+    and this helper used to re-type a key the flush could still eat.)
+    Anything still queued when the panel reacts is flushed, so a key that
+    arrives late cannot be read as a fresh press at the next prompt.
     """
-    time.sleep(0.15)
-    deadline = time.monotonic() + timeout
-    answered = False
     try:
-        while not answered and time.monotonic() < deadline:
-            try:
-                os.write(master, key)
-            except OSError:  # pragma: no cover - the pty went away
-                break
-            answered = _wait_for(reacted, 2.0)
-        return answered or reacted()
+        os.write(master, key)
+    except OSError:  # pragma: no cover - the pty went away
+        return reacted()
+    try:
+        return _wait_for(reacted, timeout)
     finally:
         _drain(tty_in)
 
@@ -1432,3 +1426,69 @@ def test_repeated_presses_during_teardown_are_all_absorbed(monkeypatch, pty_pair
     assert calls["cancel"] == [] and calls["kill"] == []
     assert handlers[1] is handlers[0]
     assert attrs[1] == attrs[0]
+
+
+# --- an answer typed the instant the legend appears is never lost -----------
+
+
+class _TypingOut(io.StringIO):
+    """A panel ``out`` that types ``key`` the instant the legend is written.
+
+    No polling, so there is no window to be lucky in: the key is on its way
+    to the pty before ``write()`` has even returned to the panel. That is the
+    fastest an operator could possibly answer, and it is what review finding
+    1 says must never be discarded.
+    """
+
+    def __init__(self, master: int, key: bytes) -> None:
+        super().__init__()
+        self._master = master
+        self._key = key
+        self.typed = 0
+
+    def write(self, text: str) -> int:
+        written = super().write(text)
+        if PAUSED_LEGEND in text:
+            os.write(self._master, self._key)
+            self.typed += 1
+        return written
+
+
+def _instant_answer_run(master: int, tty_in, key: bytes) -> list:
+    """One press, one legend, one key typed as it appears. Returns the choices."""
+    out = _TypingOut(master, key)
+    p = _panel(tty_in, out)
+    choices: list[tuple[str, str]] = []
+
+    def events():
+        yield AgentEvent(kind=EventKind.TEXT_DELTA, text="working")
+        _press("esc", master)
+        assert _wait_for(lambda: choices, timeout=20), out.getvalue()
+        yield AgentEvent(kind=EventKind.DONE)
+
+    try:
+        p.stream(
+            events(),
+            cancel=lambda: None,
+            force_stop=lambda: None,
+            on_choice=lambda outcome, reason: choices.append((outcome, reason)),
+        )
+    finally:
+        _drain(tty_in)
+    assert out.typed == 1, out.getvalue()
+    return choices
+
+
+def test_a_key_typed_the_instant_the_legend_appears_always_answers(monkeypatch, pty_pair):
+    """20 prompts, one write each, answered by the key every time.
+
+    The prompt used to print its legend and only then discard typeahead, so
+    an answer this fast could be thrown away and the prompt would sit there
+    until the 30 s timeout dismissed it as "keep going". The short timeout
+    here is what makes that failure visible in seconds instead of minutes:
+    a lost key shows up as ``timeout``, never as ``key``.
+    """
+    monkeypatch.setattr(panel_mod, "STOP_PROMPT_TIMEOUT", 2.0)
+    master, tty_in = pty_pair
+    for _ in range(20):
+        assert _instant_answer_run(master, tty_in, b"\x1b") == [("keep_going", "key")]

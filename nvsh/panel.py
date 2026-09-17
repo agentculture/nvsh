@@ -410,9 +410,15 @@ class _Choice:
     that passed ``stop_prompt=False``); ``read_correction`` is ``None`` when
     the caller wired no ``on_steer``, and ``[t]`` then reports ``steer``
     without reading a line, exactly as it did before t6.
+
+    ``read_choice`` takes one argument: the callable that draws the legend.
+    It is the reader, not the press path, that decides when the legend is
+    printed -- after the typeahead flush, so a key typed the instant the
+    legend appears answers this prompt instead of being discarded with the
+    typeahead that preceded it.
     """
 
-    read_choice: Callable[[], str] | None = None
+    read_choice: Callable[[Callable[[], object]], str] | None = None
     on_choice: Callable[[str, str], object] | None = None
     on_steer: Callable[[str], object] | None = None
     read_correction: Callable[..., object] | None = None
@@ -995,14 +1001,22 @@ class Panel:
         the prompt was open (a SIGINT already pending when it opened) are
         dropped rather than opening a second prompt -- they cannot answer
         this one either, since the reader discards typeahead (c33).
+
+        The legend is *handed to* the reader rather than printed here, so
+        that discard lands before it reaches the screen: everything typed
+        before the prompt was visible is dropped (c33), everything typed
+        after it was visible is kept.
         """
         self._pause_waiting()
         self._close_thinking()
         started_text = self._end_text_run(started_text)
         s = self.style
         legend = self._stop_legend(choice.steer_label)
-        self.line(f"{s.bold}{s.yellow}nvsh:{s.reset} paused -- {legend}")
-        key = choice.read_choice()  # type: ignore[misc] - never None here
+
+        def show() -> None:
+            self.line(f"{s.bold}{s.yellow}nvsh:{s.reset} paused -- {legend}")
+
+        key = choice.read_choice(show)  # type: ignore[misc] - never None here
         stop.drain()
         outcome, reason = _STOP_PROMPT_OUTCOMES.get(key, (KEEP_GOING, REASON_NONE))
         if choice.finished is not None and choice.finished():
@@ -1082,7 +1096,11 @@ class Panel:
         (it is invoked from inside ``on_steer``), so it reads the fd the
         same way the stop-choice prompt does, via
         :func:`nvsh.promptkeys.read_choice`, which flushes typeahead,
-        drains escape sequences whole and restores termios on every path.
+        drains escape sequences whole and restores termios on every path,
+        SIGHUP and SIGTERM included. The question itself is printed by the
+        reader, for the same reason the stop-choice legend is: a ``y`` typed
+        the moment it appears must answer it, not be flushed with the
+        typeahead that came before it.
         """
         if not self._can_prompt():
             return False
@@ -1090,9 +1108,12 @@ class Panel:
         if fd is None:  # pragma: no cover - _can_prompt already refused
             return False
         s = self.style
-        self.line(f"{s.bold}{s.yellow}nvsh:{s.reset} {question} [y/N]")
+
+        def show() -> None:
+            self.line(f"{s.bold}{s.yellow}nvsh:{s.reset} {question} [y/N]")
+
         try:
-            key = promptkeys.read_choice(fd, _CONFIRM_KEYS, STOP_PROMPT_TIMEOUT)
+            key = promptkeys.read_choice(fd, _CONFIRM_KEYS, STOP_PROMPT_TIMEOUT, show)
         except OSError:  # pragma: no cover - the tty vanished mid-question
             return False
         return key == "y"
@@ -1154,12 +1175,16 @@ class Panel:
         except OSError:
             return False
 
-    def _read_stop_choice(self) -> str:
-        """One key at the stop-choice prompt, or a timeout/EOF token."""
+    def _read_stop_choice(self, show: Callable[[], object]) -> str:
+        """One key at the stop-choice prompt, or a timeout/EOF token.
+
+        ``show`` draws the legend and is called by the reader once the
+        typeahead flush is done, so no key typed at a visible prompt is lost.
+        """
         fd = _fileno(self.in_)
         if fd is None:  # pragma: no cover - _can_prompt already refused
             return promptkeys.EOF
-        return promptkeys.read_choice(fd, _STOP_PROMPT_KEYS, STOP_PROMPT_TIMEOUT)
+        return promptkeys.read_choice(fd, _STOP_PROMPT_KEYS, STOP_PROMPT_TIMEOUT, show)
 
     @staticmethod
     def _suspending(
@@ -1707,6 +1732,12 @@ class _Feeder:
         exhausted source, means the harness finished and only rendering was
         paused. A raised exception is deliberately *not* counted -- that is
         the stream breaking, not the turn ending.
+
+        The ``list()`` is not redundant: ``queue.queue`` is the deque the
+        worker thread is still appending to, and iterating it directly would
+        raise "deque mutated during iteration" the moment an event lands
+        while a prompt is open -- exactly the case this answers. The copy is
+        a snapshot taken under no lock, which is all the honesty this needs.
         """
         for tag, payload in list(self.queue.queue):
             if tag is _END:
