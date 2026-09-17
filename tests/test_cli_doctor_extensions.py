@@ -10,6 +10,8 @@ task must not disturb.
 
 from __future__ import annotations
 
+import pytest
+
 from nvsh import doctor_checks
 from nvsh.cli._commands import doctor as doctor_mod
 
@@ -257,7 +259,7 @@ class _RecordingTransport:
         self.calls.append(("status", {"timeout": timeout}))
         return {"running": self.running, "active_turn": self.active_turn, "target": self.target}
 
-    def kill_active(self, *, confirmed=False, env=None):
+    def kill_active(self, *, confirmed=False, expected=None, env=None):
         self.calls.append(("kill_active", {"confirmed": confirmed}))
         return "killed"
 
@@ -299,7 +301,7 @@ def test_apply_agent_turn_not_hung_kills_dead_owner_without_confirmation(tmp_pat
     def fake_status(*, env, timeout):
         return {"active_turn": {"shell": "999", "elapsed": 400.0}, "target": {"backend": "demo"}}
 
-    def fake_kill_active(*, confirmed, env):
+    def fake_kill_active(*, confirmed, env, expected=None):
         calls.append(("kill_active", confirmed))
         return "killed"
 
@@ -333,7 +335,7 @@ def test_apply_agent_turn_not_hung_refuses_live_owner_without_confirmation(tmp_p
     def fake_status(*, env, timeout):
         return {"active_turn": {"shell": "A", "elapsed": 10.0}, "target": None}
 
-    def fake_kill_active(*, confirmed, env):
+    def fake_kill_active(*, confirmed, env, expected=None):
         raise AssertionError("kill_active must never be sent when confirmation was refused")
 
     audit = AuditLog(path=tmp_path / "audit.jsonl")
@@ -362,7 +364,7 @@ def test_apply_agent_turn_not_hung_kills_live_owner_once_confirmed(tmp_path):
     def fake_status(*, env, timeout):
         return {"active_turn": {"shell": "A", "elapsed": 10.0}, "target": None}
 
-    def fake_kill_active(*, confirmed, env):
+    def fake_kill_active(*, confirmed, env, expected=None):
         calls.append(confirmed)
         return "killed"
 
@@ -413,7 +415,7 @@ def test_apply_then_recheck_passes_for_a_dead_owner_turn(tmp_path):
     def fake_status(*, env, timeout):
         return {"active_turn": state["active"], "target": None}
 
-    def fake_kill_active(*, confirmed, env):
+    def fake_kill_active(*, confirmed, env, expected=None):
         state["active"] = None
         return "killed"
 
@@ -544,3 +546,127 @@ def test_cmd_doctor_apply_is_a_noop_when_the_check_already_passes(monkeypatch, t
     args = argparse.Namespace(json=False, prompt_command=None, bind_p=None, keymap=None, apply=True)
     doctor_mod.cmd_doctor(args)
     capsys.readouterr()
+
+
+# --- review fixes (PR #16) ---------------------------------------------------
+
+
+def _hung_turn_stub(monkeypatch, tmp_path, *, others_pass=True):
+    monkeypatch.setattr(doctor_mod, "find_culture_yaml", lambda: None)
+    monkeypatch.setattr(
+        doctor_mod,
+        "doctor_checks",
+        _StubChecks(
+            [
+                {
+                    "id": "daemon_running",
+                    "passed": others_pass,
+                    "severity": "warning",
+                    "message": "daemon",
+                    "remediation": "" if others_pass else "start it",
+                },
+                {
+                    "id": "agent_turn_not_hung",
+                    "passed": False,
+                    "severity": "warning",
+                    "message": "hung",
+                    "remediation": "nvsh doctor --apply",
+                },
+            ]
+        ),
+    )
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+
+
+@pytest.mark.parametrize("json_mode", [True, False])
+@pytest.mark.parametrize("outcome", ["killed", "stopping"])
+def test_cmd_doctor_apply_that_clears_the_turn_exits_healthy(
+    monkeypatch, tmp_path, capsys, outcome, json_mode
+):
+    """Qodo 1: a successful repair must not exit from the stale pre-repair report."""
+    import argparse
+    import json
+
+    _hung_turn_stub(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        doctor_mod,
+        "_apply_agent_turn_not_hung",
+        lambda *, env: {"outcome": outcome, "message": f"shell 1's turn: {outcome}"},
+    )
+    args = argparse.Namespace(
+        json=json_mode, prompt_command=None, bind_p=None, keymap=None, apply=True
+    )
+    assert doctor_mod.cmd_doctor(args) == 0
+    out = capsys.readouterr().out
+    if json_mode:
+        payload = json.loads(out)
+        assert payload["healthy"] is True
+        turn = next(c for c in payload["checks"] if c["id"] == "agent_turn_not_hung")
+        assert turn["passed"] is True
+    else:
+        assert out.startswith("nvsh doctor: healthy")
+
+
+@pytest.mark.parametrize("outcome", ["refused", "idle", "changed", "no_daemon", "failed"])
+def test_cmd_doctor_apply_that_did_not_clear_the_turn_stays_unhealthy(
+    monkeypatch, tmp_path, capsys, outcome
+):
+    import argparse
+
+    _hung_turn_stub(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        doctor_mod,
+        "_apply_agent_turn_not_hung",
+        lambda *, env: {"outcome": outcome, "message": outcome},
+    )
+    args = argparse.Namespace(json=True, prompt_command=None, bind_p=None, keymap=None, apply=True)
+    assert doctor_mod.cmd_doctor(args) == 1
+    capsys.readouterr()
+
+
+def test_cmd_doctor_apply_success_keeps_other_failures_unhealthy(monkeypatch, tmp_path, capsys):
+    import argparse
+
+    _hung_turn_stub(monkeypatch, tmp_path, others_pass=False)
+    monkeypatch.setattr(
+        doctor_mod,
+        "_apply_agent_turn_not_hung",
+        lambda *, env: {"outcome": "killed", "message": "killed"},
+    )
+    args = argparse.Namespace(json=True, prompt_command=None, bind_p=None, keymap=None, apply=True)
+    assert doctor_mod.cmd_doctor(args) == 1
+    capsys.readouterr()
+
+
+@pytest.mark.parametrize("dead", [True, False])
+def test_apply_sends_the_approved_turn_identity_and_audits_a_changed_turn(tmp_path, dead):
+    """Qodo 3: kill_active carries the snapshot's owner + start; a changed turn is not killed."""
+    from nvsh.agent.audit import AuditLog
+
+    sent = []
+
+    def fake_status(*, env, timeout):
+        return {
+            "active_turn": {"shell": "A", "started": 1234.5, "elapsed": 400.0},
+            "target": None,
+        }
+
+    def fake_kill_active(*, confirmed, env, expected=None):
+        sent.append((confirmed, expected))
+        return "changed"
+
+    audit = AuditLog(path=tmp_path / "audit.jsonl")
+    result = doctor_mod._apply_agent_turn_not_hung(
+        env={},
+        status=fake_status,
+        kill_active=fake_kill_active,
+        pid_gone=lambda shell: dead,
+        confirm=lambda owner, elapsed: True,
+        audit=audit,
+    )
+
+    assert sent == [(True, {"shell": "A", "started": 1234.5})]
+    assert result["outcome"] == "changed"
+    entries = audit.read_all()
+    assert entries[-1]["kind"] == "doctor_apply"
+    assert entries[-1]["outcome"] == "changed"

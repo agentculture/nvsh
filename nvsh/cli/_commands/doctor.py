@@ -345,9 +345,53 @@ def _apply_agent_turn_not_hung(
             "message": f"shell {owner}'s turn is alive; not killed without confirmation",
         }
 
-    outcome = kill_active(confirmed=confirmed, env=env)
+    # The identity of the turn the operator approved travels with the kill,
+    # so the daemon refuses ("changed") if another turn took its place since
+    # this status snapshot. A killed/stopping outcome therefore means the
+    # daemon confirmed *this* owner's turn, which is what gets audited.
+    expected = {"shell": owner, "started": active.get("started")}
+    outcome = kill_active(confirmed=confirmed, expected=expected, env=env)
     _record_doctor_apply(log, owner=owner, target=target, elapsed=elapsed, outcome=outcome)
     return {"outcome": outcome, "message": f"shell {owner}'s turn: {outcome}"}
+
+
+#: ``--apply`` outcomes after which the hung turn is gone (or going).
+_CLEARED_OUTCOMES = ("killed", "stopping")
+
+
+def _run_apply(report: dict[str, object]) -> dict[str, object] | None:
+    """Run ``--apply`` when ``agent_turn_not_hung`` failed, and fold a fix back in.
+
+    A ``killed``/``stopping`` outcome marks that check passed and recomputes
+    ``healthy`` with :func:`_diagnose`'s rule, so a successful repair does not
+    exit from the stale pre-repair report. Every other outcome (refused,
+    changed, idle, no daemon, failure) leaves the report unhealthy.
+    """
+    checks = report["checks"]
+    turn_check = next((c for c in checks if c["id"] == "agent_turn_not_hung"), None)
+    if turn_check is None or turn_check["passed"]:
+        return None
+    result = _apply_agent_turn_not_hung(env=dict(os.environ))
+    if result.get("outcome") in _CLEARED_OUTCOMES:
+        turn_check["passed"] = True
+        turn_check["message"] = f"fixed by --apply: {result['message']}"
+        turn_check["remediation"] = ""
+        report["healthy"] = all(c["passed"] for c in checks if c["severity"] != "info")
+    return result
+
+
+def _render_text(report: dict[str, object], apply_result: dict[str, object] | None) -> str:
+    status_text = "healthy" if report["healthy"] else "unhealthy"
+    lines = [f"nvsh doctor: {status_text}", ""]
+    for check in report["checks"]:
+        mark = "ok" if check["passed"] else _failure_mark(check)
+        lines.append(f"[{mark}] {check['id']}: {check['message']}")
+        if not check["passed"] and check["remediation"]:
+            lines.append(f"  hint: {check['remediation']}")
+    if apply_result is not None:
+        lines.append("")
+        lines.append(f"--apply: {apply_result['message']}")
+    return "\n".join(lines)
 
 
 def cmd_doctor(args: argparse.Namespace) -> int:
@@ -357,30 +401,15 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         keymap=getattr(args, "keymap", None),
     )
 
-    apply_result: dict[str, object] | None = None
-    if getattr(args, "apply", False):
-        turn_check = next((c for c in report["checks"] if c["id"] == "agent_turn_not_hung"), None)
-        if turn_check is not None and not turn_check["passed"]:
-            apply_result = _apply_agent_turn_not_hung(env=dict(os.environ))
+    apply_result = _run_apply(report) if getattr(args, "apply", False) else None
 
-    json_mode = bool(getattr(args, "json", False))
-    if json_mode:
+    if getattr(args, "json", False):
         payload: dict[str, object] = dict(report)
         if apply_result is not None:
             payload["apply"] = apply_result
         emit_result(payload, json_mode=True)
     else:
-        status_text = "healthy" if report["healthy"] else "unhealthy"
-        lines = [f"nvsh doctor: {status_text}", ""]
-        for check in report["checks"]:
-            mark = "ok" if check["passed"] else _failure_mark(check)
-            lines.append(f"[{mark}] {check['id']}: {check['message']}")
-            if not check["passed"] and check["remediation"]:
-                lines.append(f"  hint: {check['remediation']}")
-        if apply_result is not None:
-            lines.append("")
-            lines.append(f"--apply: {apply_result['message']}")
-        emit_result("\n".join(lines), json_mode=False)
+        emit_result(_render_text(report, apply_result), json_mode=False)
     return 0 if report["healthy"] else 1
 
 

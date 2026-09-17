@@ -417,7 +417,7 @@ def _shell_pid_gone(shell: str) -> bool:
     """
     try:
         pid = int(shell)
-    except ValueError:
+    except (TypeError, ValueError):  # ValueError also covers int's digit limit
         return False
     if pid <= 0:
         return False
@@ -425,9 +425,19 @@ def _shell_pid_gone(shell: str) -> bool:
         os.kill(pid, 0)
     except ProcessLookupError:
         return True
-    except OSError:
+    except (OSError, OverflowError, ValueError):
+        # OverflowError: a numeric id too large for a C pid_t cannot be
+        # probed at all, so it counts as alive like any other unprobeable id.
         return False
     return False
+
+
+def _turn_matches(turn: _ActiveTurn, expected: Mapping[str, object]) -> bool:
+    """Is *turn* the one *expected* (``{"shell", "started"}``) names?"""
+    started = expected.get("started")
+    if isinstance(started, bool) or not isinstance(started, (int, float)):
+        return False
+    return expected.get("shell") == turn.shell and float(started) == turn.started
 
 
 def shell_pid_gone(shell: str) -> bool:
@@ -955,8 +965,16 @@ class Daemon:
 
         :meth:`kill_shell` allows only the owner; a ``replace`` answer to a
         busy prompt also allows any shell once the owner's pid is gone.
+
+        Every caller captured *turn* under the lock and then let go of it, so
+        by now the turn may have ended and its slot may serve later work.
+        The identity is re-checked under the lock: a turn that is no longer
+        the active one, or has already finished, is left alone and
+        ``"idle"`` is returned without signalling anything.
         """
         with self._lock:
+            if self._active is not turn or turn.finished.is_set():
+                return "idle"
             if not turn.aborted:
                 turn.aborted = "killed"
             slot = turn.slot
@@ -975,7 +993,13 @@ class Daemon:
             slot.agent.close()
         return "killed" if turn.finished.wait(max(0.0, wait)) else "stopping"
 
-    def kill_active_turn(self, *, confirmed: bool, wait: float = _KILL_WAIT) -> str:
+    def kill_active_turn(
+        self,
+        *,
+        confirmed: bool,
+        expected: Mapping[str, object] | None = None,
+        wait: float = _KILL_WAIT,
+    ) -> str:
         """Force-stop the active turn whoever owns it, for ``nvsh doctor --apply`` (t19).
 
         Unlike :meth:`kill_shell`, the caller here (``nvsh doctor``, running
@@ -985,16 +1009,27 @@ class Daemon:
         that started it no longer exists) is killed outright regardless of
         *confirmed*; a turn with a live owner is killed only when *confirmed*
         is ``True`` -- the caller's signal that the operator was shown that
-        shell's id and agreed. Returns ``"idle"`` (nothing running),
-        ``"refused"`` (live owner, not confirmed) or :meth:`_force_stop_turn`'s
-        ``"killed"``/``"stopping"``. Never raises.
+        shell's id and agreed -- *and* *expected* names that very turn.
+
+        *expected* is the ``{"shell", "started"}`` identity from the status
+        snapshot the operator approved. When given, it is compared with the
+        active turn under the lock, and a different turn is never killed
+        (``"changed"``): an approval naming one shell's turn must not end
+        whatever turn happens to be running by the time it arrives.
+
+        Returns ``"idle"`` (nothing running), ``"changed"`` (the active turn is
+        not the expected one), ``"refused"`` (live owner, not confirmed for
+        this turn) or :meth:`_force_stop_turn`'s ``"killed"``/``"stopping"``.
+        Never raises.
         """
         with self._lock:
             turn = self._active
             if turn is None:
                 return "idle"
+            if expected is not None and not _turn_matches(turn, expected):
+                return "changed"
             owner = turn.shell
-        if not confirmed and not _shell_pid_gone(owner):
+        if not (confirmed and expected is not None) and not _shell_pid_gone(owner):
             return "refused"
         return self._force_stop_turn(turn, wait=wait)
 
@@ -1184,70 +1219,63 @@ class Daemon:
     def _handle_control(
         self, kind: str, shell: str, message: Mapping[str, object]
     ) -> Iterator[AgentEvent]:
-        if kind == "register":
-            yield from self._handle_register(shell)
-            return
-
-        if kind == "unregister":
-            yield from self._handle_unregister(shell)
-            return
-
-        if kind == "cancel":
-            self.cancel_shell(shell)
-            yield AgentEvent(kind=EventKind.STATUS, text=f"cancelled {shell}")
-            yield AgentEvent(kind=EventKind.DONE)
-            return
-
-        if kind == "kill":
-            outcome = self.kill_shell(shell)
-            if outcome == "idle":
-                yield AgentEvent(kind=EventKind.ERROR, error=f"no running turn to kill for {shell}")
-                return
-            yield AgentEvent(kind=EventKind.STATUS, text=f"{outcome} {shell}")
-            yield AgentEvent(kind=EventKind.DONE)
-            return
-
-        if kind == "kill_active":
-            confirmed = bool(message.get("confirmed", False))
-            outcome = self.kill_active_turn(confirmed=confirmed)
-            if outcome == "idle":
-                yield AgentEvent(kind=EventKind.ERROR, error="no active turn to kill")
-                return
-            if outcome == "refused":
-                yield AgentEvent(
-                    kind=EventKind.ERROR,
-                    error="active turn has a live owner; confirm required",
-                )
-                return
-            yield AgentEvent(kind=EventKind.STATUS, text=outcome)
-            yield AgentEvent(kind=EventKind.DONE)
-            return
-
-        if kind == "busy_choice":
-            yield from self._handle_busy_choice(shell, message)
-            return
-
-        if kind == "undo":
-            yield from self._handle_undo(shell)
-            return
-
-        if kind == "ui_response":
-            yield from self._handle_ui_response(shell, message)
-            return
-
-        if kind == "steer":
-            yield from self._handle_steer(shell, message)
-            return
-
-        if kind in ("status", "ping"):
-            yield AgentEvent(kind=EventKind.STATUS, text=json.dumps(self.state()))
-            yield AgentEvent(kind=EventKind.DONE)
+        handlers: dict[str, Callable[[str, Mapping[str, object]], Iterator[AgentEvent]]] = {
+            "register": lambda sh, _msg: self._handle_register(sh),
+            "unregister": lambda sh, _msg: self._handle_unregister(sh),
+            "cancel": lambda sh, _msg: self._handle_cancel(sh),
+            "kill": lambda sh, _msg: self._handle_kill(sh),
+            "kill_active": lambda _sh, msg: self._handle_kill_active(msg),
+            "busy_choice": self._handle_busy_choice,
+            "undo": lambda sh, _msg: self._handle_undo(sh),
+            "ui_response": self._handle_ui_response,
+            "steer": self._handle_steer,
+            "status": lambda _sh, _msg: self._handle_status(),
+            "ping": lambda _sh, _msg: self._handle_status(),
+        }
+        handler = handlers.get(kind)
+        if handler is not None:
+            yield from handler(shell, message)
             return
 
         # kind == "stop"
         yield AgentEvent(kind=EventKind.STATUS, text="stopping")
         yield AgentEvent(kind=EventKind.DONE)
         self.shutdown()
+
+    def _handle_cancel(self, shell: str) -> Iterator[AgentEvent]:
+        self.cancel_shell(shell)
+        yield AgentEvent(kind=EventKind.STATUS, text=f"cancelled {shell}")
+        yield AgentEvent(kind=EventKind.DONE)
+
+    def _handle_kill(self, shell: str) -> Iterator[AgentEvent]:
+        outcome = self.kill_shell(shell)
+        if outcome == "idle":
+            yield AgentEvent(kind=EventKind.ERROR, error=f"no running turn to kill for {shell}")
+            return
+        yield AgentEvent(kind=EventKind.STATUS, text=f"{outcome} {shell}")
+        yield AgentEvent(kind=EventKind.DONE)
+
+    def _handle_kill_active(self, message: Mapping[str, object]) -> Iterator[AgentEvent]:
+        # Only JSON ``true`` confirms: bool("false") is truthy, and a value
+        # that merely looks confirming must never authorize a live-owner kill.
+        confirmed = message.get("confirmed", False) is True
+        raw_expected = message.get("expected")
+        expected = raw_expected if isinstance(raw_expected, Mapping) else None
+        outcome = self.kill_active_turn(confirmed=confirmed, expected=expected)
+        errors = {
+            "idle": "no active turn to kill",
+            "changed": "active turn changed since it was confirmed; re-run nvsh doctor",
+            "refused": "active turn has a live owner; confirm required",
+        }
+        if outcome in errors:
+            yield AgentEvent(kind=EventKind.ERROR, error=errors[outcome])
+            return
+        yield AgentEvent(kind=EventKind.STATUS, text=outcome)
+        yield AgentEvent(kind=EventKind.DONE)
+
+    def _handle_status(self) -> Iterator[AgentEvent]:
+        yield AgentEvent(kind=EventKind.STATUS, text=json.dumps(self.state()))
+        yield AgentEvent(kind=EventKind.DONE)
 
     def _handle_busy_choice(
         self, shell: str, message: Mapping[str, object]
