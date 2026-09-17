@@ -204,7 +204,7 @@ def _one_shot_stream(tmp_path: Path):
         env={"XDG_RUNTIME_DIR": str(tmp_path), "XDG_STATE_HOME": str(tmp_path)},
         shell_id=os.getpid(),
         config=Config(),
-        one_shot=True,
+        routing=client._Routing(one_shot=True),
     )
 
 
@@ -761,7 +761,7 @@ def test_steer_label_resolved_from_capability_on_daemon_path(monkeypatch, tmp_pa
         env={"XDG_RUNTIME_DIR": str(tmp_path)},
         shell_id=4242,
         config=Config(),
-        target=Target(backend="pi"),
+        routing=client._Routing(target=Target(backend="pi")),
     )
     assert captured["steer_label"] == "steer"
     assert captured["stop_prompt"] is True
@@ -776,7 +776,7 @@ def test_steer_label_resolved_from_capability_on_daemon_path(monkeypatch, tmp_pa
         env={"XDG_RUNTIME_DIR": str(tmp_path)},
         shell_id=4242,
         config=Config(),
-        target=Target(backend="claude"),
+        routing=client._Routing(target=Target(backend="claude")),
     )
     assert captured["steer_label"] == "stop & correct"
 
@@ -792,8 +792,7 @@ def test_steer_label_resolved_from_capability_on_one_shot_path(monkeypatch, tmp_
         env={"XDG_RUNTIME_DIR": str(tmp_path)},
         shell_id=4242,
         config=Config(),
-        target=Target(backend="codex"),
-        one_shot=True,
+        routing=client._Routing(target=Target(backend="codex"), one_shot=True),
     )
     assert captured["steer_label"] == "steer"
 
@@ -805,8 +804,7 @@ def test_steer_label_resolved_from_capability_on_one_shot_path(monkeypatch, tmp_
         env={"XDG_RUNTIME_DIR": str(tmp_path)},
         shell_id=4242,
         config=Config(),
-        target=Target(backend="openai-compat"),
-        one_shot=True,
+        routing=client._Routing(target=Target(backend="openai-compat"), one_shot=True),
     )
     assert captured["steer_label"] == "stop & correct"
 
@@ -836,7 +834,7 @@ def test_correction_is_redacted_before_delivery_and_never_reaches_the_audit_log(
         env=stop_env,
         shell_id=4242,
         config=Config(),
-        target=Target(backend="pi"),
+        routing=client._Routing(target=Target(backend="pi")),
         audit=client._audit(stop_env),
     )
 
@@ -882,7 +880,7 @@ def test_steer_not_delivered_queues_onto_the_turns_steers_list(stop_env, monkeyp
         env=stop_env,
         shell_id=4242,
         config=Config(),
-        target=Target(backend="claude"),
+        routing=client._Routing(target=Target(backend="claude")),
         steers=steers,
         audit=client._audit(stop_env),
     )
@@ -909,7 +907,7 @@ def test_keep_going_writes_exactly_one_audit_line_with_its_reason(stop_env, monk
         env=stop_env,
         shell_id=4242,
         config=Config(),
-        target=Target(backend="pi"),
+        routing=client._Routing(target=Target(backend="pi")),
         audit=client._audit(stop_env),
     )
     stops = _stops(stop_env)
@@ -936,7 +934,7 @@ def test_keep_going_at_eof_omits_the_reason_field(stop_env, monkeypatch):
         env=stop_env,
         shell_id=4242,
         config=Config(),
-        target=Target(backend="pi"),
+        routing=client._Routing(target=Target(backend="pi")),
         audit=client._audit(stop_env),
     )
     stops = _stops(stop_env)
@@ -967,7 +965,7 @@ def test_stop_outcome_writes_no_extra_audit_line_beyond_the_existing_cancel(stop
         env=stop_env,
         shell_id=4242,
         config=Config(),
-        target=Target(backend="pi"),
+        routing=client._Routing(target=Target(backend="pi")),
         audit=client._audit(stop_env),
     )
     stops = _stops(stop_env)
@@ -988,8 +986,7 @@ def test_stream_request_json_mode_disables_the_stop_prompt(monkeypatch, tmp_path
         env={"XDG_RUNTIME_DIR": str(tmp_path)},
         shell_id=4242,
         config=Config(),
-        target=Target(backend="pi"),
-        json_mode=True,
+        routing=client._Routing(target=Target(backend="pi"), json_mode=True),
     )
     assert captured["stop_prompt"] is False
 
@@ -1273,6 +1270,151 @@ def test_not_running_correction_is_a_plain_next_request(stop_env, monkeypatch, c
     assert sent[1].prompt == CORRECTION
     assert client.STOPPED_NOTICE not in sent[1].prompt
     assert [e["kind"] for e in _stops(stop_env)] == ["steer"]
+
+
+# -- c36, both moments: the turn finishes while the prompt is open -----------
+#
+# The turn can end (a) before the choice prompt is answered and (b) while
+# the correction line is still being typed, which can take many seconds. In
+# both cases the panel hands the text over with ``finished=True`` and the
+# client must queue it as the plain next request: no ``Responder.steer``, no
+# extra question, no cancel and no ``STOPPED_NOTICE``. This holds on a
+# steer-capable target as much as on a stop-and-correct one -- the review
+# finding was exactly that a steer-capable target took the c30 refusal path
+# here and could discard the correction.
+
+
+def _finished_turn(monkeypatch):
+    """Nothing may reach a turn that is already over."""
+    monkeypatch.setattr(client_transport, "cancel", _forbidden("cancel"))
+    monkeypatch.setattr(client_transport, "kill", _forbidden("kill"))
+    monkeypatch.setattr(client_transport, "steer", _forbidden("steer"))
+
+    def confirm(self, question: str) -> bool:
+        raise AssertionError("a finished turn asked the operator to stop it")
+
+    monkeypatch.setattr(Panel, "confirm", confirm)
+
+
+def _handed_over_finished(text: str = CORRECTION):
+    """Moment (a): the panel already knew the turn was over (``not_running``)."""
+
+    def step(_panel, kwargs) -> StreamResult:
+        assert kwargs["on_steer"](text, finished=True) is False
+        return StreamResult(done=True, not_running=True)
+
+    return step
+
+
+class _TypedWhileFinishing(io.StringIO):
+    """A tty whose read of the correction line is when the turn ends.
+
+    The flag flips *inside* ``readline`` -- i.e. while the operator is
+    typing -- so the panel's ``finished`` callable answers False when the
+    choice prompt closed and True when the text is handed over.
+    """
+
+    def __init__(self, text: str, state: dict) -> None:
+        super().__init__(text)
+        self._state = state
+
+    def readline(self, *args, **kwargs):
+        line = super().readline(*args, **kwargs)
+        self._state["finished"] = True
+        return line
+
+
+def _finishes_while_typing(text: str = CORRECTION):
+    """Moment (b): the turn ends between the ``[t]`` press and the line.
+
+    This drives the panel's *real* ``_correction_prompt`` -- the seam that
+    reads ``finished`` at the handover -- rather than calling ``on_steer``
+    directly, because when it is read is the whole point.
+    """
+    state = {"finished": False}
+
+    def step(panel, kwargs) -> StreamResult:
+        panel.in_ = _TypedWhileFinishing(f"{text}\n", state)
+        assert state["finished"] is False, "the prompt closed on a live turn"
+        answer = panel._correction_prompt(
+            kwargs["on_steer"], kwargs["on_choice"], lambda: state["finished"]
+        )
+        assert state["finished"] is True, "the turn ended while the line was typed"
+        assert answer is False, answer
+        return StreamResult(done=True, not_running=True)
+
+    return step
+
+
+def _panel_scripted_stream(monkeypatch, *steps):
+    """:func:`_scripted_stream`, with the panel handed to each step."""
+    calls: list[dict] = []
+
+    def fake_stream(self, events, **kwargs):
+        calls.append(kwargs)
+        _drained(events)
+        index = len(calls) - 1
+        if index < len(steps):
+            return steps[index](self, kwargs) or StreamResult(done=True)
+        return StreamResult(done=True)
+
+    monkeypatch.setattr(Panel, "stream", fake_stream)
+    return calls
+
+
+@pytest.mark.parametrize("moment", ["prompt_open", "while_typing"])
+def test_a_finished_turn_queues_the_correction_on_a_steer_capable_target(
+    pi_installed, stop_env, monkeypatch, moment
+):
+    """The review finding: ``pi`` finished while the prompt was open, so its
+    ``steer()`` would refuse -- and the refusal path could discard the
+    operator's correction instead of sending it as the next request."""
+    _finished_turn(monkeypatch)
+    sent = _requests(monkeypatch)
+    step = _handed_over_finished() if moment == "prompt_open" else _finishes_while_typing()
+    _panel_scripted_stream(monkeypatch, step)
+    panel = _typed_panel("")
+
+    code = client.ask("why did it fail?", panel=panel, env=stop_env, agent="pi")
+
+    assert code == 0
+    assert len(sent) == 2
+    assert sent[1].prompt == CORRECTION
+    assert client.STOPPED_NOTICE not in sent[1].prompt
+    text = panel.out.getvalue()
+    assert client.COULD_NOT_STEER_NOTE not in text
+    assert client.CORRECTION_DISCARDED_NOTE not in text
+    assert client.STOP_AND_CORRECT_NOTE not in text
+    assert client.TURN_FINISHED_NOTE in text
+    stops = _stops(stop_env)
+    assert [e["kind"] for e in stops] == ["steer"]
+    assert stops[0]["outcome"] == "queued"
+    assert stops[0]["origin"] == "stop_prompt"
+
+
+@pytest.mark.parametrize("moment", ["prompt_open", "while_typing"])
+def test_a_finished_turn_queues_the_correction_on_a_stop_and_correct_target(
+    stop_env, monkeypatch, claude_default, moment
+):
+    """The same rule on a target that cannot steer at all: nothing is
+    cancelled and the follow-up claims no stop."""
+    _finished_turn(monkeypatch)
+    sent = _requests(monkeypatch)
+    step = _handed_over_finished() if moment == "prompt_open" else _finishes_while_typing()
+    _panel_scripted_stream(monkeypatch, step)
+    panel = _typed_panel("")
+
+    code = client.ask("why did it fail?", panel=panel, env=stop_env)
+
+    assert code == 0
+    assert len(sent) == 2
+    assert sent[1].prompt == CORRECTION
+    assert client.STOPPED_NOTICE not in sent[1].prompt
+    assert client.STOP_AND_CORRECT_NOTE not in panel.out.getvalue()
+    assert client.TURN_FINISHED_NOTE in panel.out.getvalue()
+    stops = _stops(stop_env)
+    assert [e["kind"] for e in stops] == ["steer"]
+    assert stops[0]["outcome"] == "queued"
 
 
 @pytest.fixture

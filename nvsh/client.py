@@ -144,6 +144,13 @@ STOP_AND_CORRECT_QUESTION = "stop the agent and send your correction as a new re
 CORRECTION_DISCARDED_NOTE = "nvsh: correction discarded; the agent keeps going"
 STOP_AND_CORRECT_NOTE = "nvsh: stopping, then asking again with your correction ..."
 
+#: The turn had already produced its terminal event when the correction was
+#: handed over (spec c36) -- whether it finished before the prompt was
+#: answered or while the line was still being typed. There is nothing left
+#: to steer and nothing left to stop, so the correction is simply the next
+#: request, and the panel says that rather than claiming a stop.
+TURN_FINISHED_NOTE = "nvsh: the agent had already finished; asking again with your correction ..."
+
 #: The sentence that makes a stop-and-correct follow-up self-contained
 #: (spec c23): the harness may have no memory of the cancelled turn at all
 #: (a one-shot run has no session; warm agy respawns after a cancel), so
@@ -1655,6 +1662,11 @@ def _stop_prompt_steer(
     reaches the agent as part of the next request, exactly as the proposal
     prompt's ``[t]`` already does when ``responder.steer`` returns ``False``.
 
+    The panel passes ``finished`` -- the turn's state at the moment it
+    handed the text over, not when the prompt opened (spec c36). A finished
+    turn takes the queue-and-return-``False`` path below without touching
+    ``Responder.steer`` at all.
+
     Three answers go back to the panel (t8):
 
     ``True``
@@ -1676,8 +1688,22 @@ def _stop_prompt_steer(
             steers.append(redacted)
         turn.record("steer", outcome, origin=_STOP_PROMPT_ORIGIN, correction=redacted)
 
-    def on_steer(text: str) -> object:
+    def on_steer(text: str, *, finished: bool = False) -> object:
         redacted = _redact(text)
+        if finished:
+            # c36: the turn's terminal event was already queued when the
+            # panel handed the text over -- it finished either before the
+            # prompt was answered or while the line was being typed. There
+            # is no live turn to steer (``steer()`` would refuse, and that
+            # refusal would mean "the operator may lose this text", which is
+            # the one thing it must not mean here) and none to stop, so the
+            # correction simply becomes the next request. No ``steer()``, no
+            # extra question, no cancel, and no ``STOPPED_NOTICE`` in the
+            # follow-up, on a steer-capable and a stop-and-correct target
+            # alike.
+            queue(redacted, "queued")
+            panel.note(TURN_FINISHED_NOTE)
+            return False
         delivered = bool(responder.steer(redacted))
         if delivered:
             # The harness took it mid-turn: nothing is stopped, whatever the
@@ -1722,6 +1748,29 @@ def _agreed_to_correct(panel: Panel) -> bool:
         return False
 
 
+@dataclass(frozen=True)
+class _Routing:
+    """Where one request goes, and how its answer is rendered.
+
+    The three travel together everywhere: an entry point decides them once
+    for the whole invocation (``ask``, ``handle_failure`` and the slash
+    path each build one) and passes the same object to its first turn and
+    to the follow-up, so a correction cannot quietly be answered by a
+    different harness -- or, under ``--json``, grow a prompt nobody can
+    answer -- than the turn it corrects.
+    """
+
+    #: The request does not ride the warm daemon session (an ``@name``
+    #: target; decision c25).
+    one_shot: bool = False
+    #: The harness this request names, or ``None`` for whatever ``default``
+    #: resolves to.
+    target: Target | None = None
+    #: ``nvsh slash --json`` (d2): no stop-choice prompt, because there is
+    #: no panel for the operator to answer one on.
+    json_mode: bool = False
+
+
 def _stream_request(
     panel: Panel,
     request: AgentRequest,
@@ -1734,10 +1783,8 @@ def _stream_request(
     inspections: list[tuple[str, RunResult]] | None = None,
     audit=None,
     steers: list[str] | None = None,
-    one_shot: bool = False,
-    target: Target | None = None,
     declined: list[str] | None = None,
-    json_mode: bool = False,
+    routing: _Routing = _Routing(),
 ) -> StreamResult:
     # One resolution, used three ways: the adapter routes on it, the panel
     # header names it, and every audit line is stamped with it (t16/t18).
@@ -1746,6 +1793,8 @@ def _stream_request(
     # daemon session holds (decision c25).
     # ``@default`` names a target and still rides the warm session: the label
     # follows where the request actually goes, not whether a target was named.
+    one_shot = routing.one_shot
+    target = routing.target
     warm = not one_shot
     resolved = target if target is not None else default_target(config)
     if resolved is not None:
@@ -1790,7 +1839,7 @@ def _stream_request(
         on_choice=_stop_choice_recorder(turn),
         on_steer=_stop_prompt_steer(panel, responder, steers, turn, steer_label),
         steer_label=steer_label,
-        stop_prompt=not json_mode,
+        stop_prompt=not routing.json_mode,
     )
 
 
@@ -1966,7 +2015,7 @@ def handle_failure(
     # c25: a named target never rides the warm daemon session -- that
     # session belongs to ``default``, and answering `@claude/opus` out of it
     # would quietly answer from the default model instead.
-    one_shot = _is_one_shot(target)
+    routing = _Routing(one_shot=_is_one_shot(target), target=target, json_mode=json_mode)
 
     shell_id = _shell_pid(resolved)
     context = build_context(args, resolved)
@@ -1988,10 +2037,8 @@ def handle_failure(
         inspections=inspections,
         audit=audit,
         steers=steers,
-        one_shot=one_shot,
-        target=target,
         declined=declined,
-        json_mode=json_mode,
+        routing=routing,
     )
     if result.interrupted:
         return 130
@@ -2008,10 +2055,8 @@ def handle_failure(
             approvals=approvals,
             inspections=[],
             audit=audit,
-            one_shot=one_shot,
-            target=target,
             declined=declined,
-            json_mode=json_mode,
+            routing=routing,
         )
         if follow.interrupted:
             return 130
@@ -2065,6 +2110,7 @@ def ask(
         # reads the same whichever route carried it.
         panel.header("", 0, backend_label=backend_label(config), ask=request.ask)
     context = build_context(_args_from_state(state or {"cwd": os.getcwd()}), resolved)
+    routing = _Routing(one_shot=_is_one_shot(target), target=target, json_mode=json_mode)
     shell_id = _shell_pid(resolved)
     approvals = _load_approvals()
     inspections: list[tuple[str, RunResult]] = []
@@ -2082,10 +2128,8 @@ def ask(
         inspections=inspections,
         audit=audit,
         steers=steers,
-        one_shot=_is_one_shot(target),
-        target=target,
         declined=declined,
-        json_mode=json_mode,
+        routing=routing,
     )
     if result.interrupted:
         return 130
@@ -2101,10 +2145,8 @@ def ask(
             approvals=approvals,
             inspections=[],
             audit=audit,
-            one_shot=_is_one_shot(target),
-            target=target,
             declined=declined,
-            json_mode=json_mode,
+            routing=routing,
         )
         if follow.interrupted:
             return 130
@@ -2173,7 +2215,7 @@ def _on_last_failure(
         audit=audit,
         steers=steers,
         declined=declined,
-        json_mode=json_mode,
+        routing=_Routing(json_mode=json_mode),
     )
     if result.interrupted:
         return 130
@@ -2190,7 +2232,7 @@ def _on_last_failure(
             inspections=[],
             audit=audit,
             declined=declined,
-            json_mode=json_mode,
+            routing=_Routing(json_mode=json_mode),
         )
         if follow.interrupted:
             return 130
