@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-09-16T17:00:45Z",
-  "updated": "2026-09-17T04:12:01Z",
+  "updated": "2026-09-17T05:48:14Z",
   "claims": [
     {
       "id": "c1",
@@ -997,7 +997,7 @@
         "c3"
       ],
       "origin": "llm",
-      "status": "proposed"
+      "status": "approved"
     },
     {
       "id": "l2",
@@ -1009,7 +1009,7 @@
         "t8"
       ],
       "origin": "llm",
-      "status": "proposed"
+      "status": "approved"
     },
     {
       "id": "l3",
@@ -1021,7 +1021,7 @@
         "c3"
       ],
       "origin": "llm",
-      "status": "proposed"
+      "status": "approved"
     },
     {
       "id": "l4",
@@ -1034,7 +1034,7 @@
         "h6"
       ],
       "origin": "llm",
-      "status": "proposed"
+      "status": "approved"
     },
     {
       "id": "l5",
@@ -1048,7 +1048,7 @@
         "t7"
       ],
       "origin": "llm",
-      "status": "proposed"
+      "status": "approved"
     }
   ],
   "obligations": [
@@ -1059,7 +1059,7 @@
       "behavior": "Ctrl+C stops a running agent on both paths",
       "source_text": "Ctrl+C reliably stops a running agent on every backend and both paths (daemon and one-shot); the operator reported Ctrl+C did not stop the agent earlier",
       "origin": "llm",
-      "status": "proposed"
+      "status": "approved"
     },
     {
       "id": "o2",
@@ -1068,7 +1068,7 @@
       "behavior": "every adapter's stop ends the running turn and the next run works",
       "source_text": "every adapter's stop path ends the running turn: pi (abort), codex (turn/interrupt), acp (session/cancel) and warm agy (flag only, nothing sent) leave the harness running if it ignores cancel; the fix covers all adapters per the all-backends rule",
       "origin": "llm",
-      "status": "proposed"
+      "status": "approved"
     },
     {
       "id": "o3",
@@ -1077,7 +1077,7 @@
       "behavior": "first press is polite and keeps the panel up; second press force-kills once",
       "source_text": "escalation is operator-driven: the first Ctrl+C/Esc sends the polite protocol cancel and the panel stays up showing 'stopping\u2026 press again to kill' until the turn ends; a second press force-kills the harness process tree and the warm session is respawned on the next request; no automatic kill timer is added",
       "origin": "llm",
-      "status": "proposed"
+      "status": "approved"
     },
     {
       "id": "o4",
@@ -1086,7 +1086,7 @@
       "behavior": "a lone Esc during work is identical to Ctrl+C",
       "source_text": "Esc during agent work (thinking, text, waiting ticker) is identical to Ctrl+C: same cancel path, second press kills, exit 130; Esc keeps meaning 'ignore' at the proposal legend",
       "origin": "llm",
-      "status": "proposed"
+      "status": "approved"
     },
     {
       "id": "o5",
@@ -1095,7 +1095,7 @@
       "behavior": "arrow/function keys are drained and never read as Esc",
       "source_text": "a lone Esc is distinguished from multi-byte escape sequences (arrow/function keys) with a short read timeout, and the leftover sequence bytes are drained rather than leaked into the next read",
       "origin": "llm",
-      "status": "proposed"
+      "status": "approved"
     },
     {
       "id": "o6",
@@ -1104,7 +1104,7 @@
       "behavior": "a request from the owning or dead-owner shell gets steer/replace/exit",
       "source_text": "a new request from the shell that owns a still-running turn \u2014 or from any shell when the owning shell pid is gone \u2014 opens a busy prompt: steer the running turn with the new request, replace the turn (stop it and run the new request), or exit back to the prompt leaving the turn alone",
       "origin": "llm",
-      "status": "proposed"
+      "status": "approved"
     },
     {
       "id": "o7",
@@ -1113,7 +1113,7 @@
       "behavior": "a live other shell's turn is never touched",
       "source_text": "replace/steer never touches a live other shell's turn: cancel_shell stays scoped to the calling shell (daemon.py:852-856); the only exceptions are a turn whose owning shell pid is gone (busy prompt applies) and doctor --apply after an explicit confirm naming the owning shell",
       "origin": "llm",
-      "status": "proposed"
+      "status": "approved"
     },
     {
       "id": "o8",
@@ -1122,7 +1122,7 @@
       "behavior": "declining yields exit code 3 via --json/audit while slash exits 0",
       "source_text": "when the operator declines the agent \u2014 exit at the busy prompt, or Esc/ignore at a proposal \u2014 nvsh reports one dedicated 'declined' exit code (allocated from the reserved 3+ range, cli/_errors.py:20), distinct from 0, 1, 2 and 130, visible as --json exit_code, in the audit log, and as direct 'nvsh ask' exit status; slash dispatch still exits 0 (d5)",
       "origin": "llm",
-      "status": "proposed"
+      "status": "approved"
     },
     {
       "id": "o9",
@@ -1131,7 +1131,7 @@
       "behavior": "operator $? and PIPESTATUS unchanged after a declined or stopped run",
       "source_text": "the operator's original $? for the failing command is never changed by the declined status; the hook stays '|| return 0' so nvsh can never lock the prompt (CLAUDE.md Hook constraints)",
       "origin": "llm",
-      "status": "proposed"
+      "status": "approved"
     },
     {
       "id": "o10",
@@ -1140,7 +1140,7 @@
       "behavior": "overview shows the active turn and queue",
       "source_text": "nvsh overview shows what the agent is doing now: active turn (shell, target, elapsed) and the queue, from the daemon's existing status",
       "origin": "llm",
-      "status": "proposed"
+      "status": "approved"
     },
     {
       "id": "o11",
@@ -1149,7 +1149,7 @@
       "behavior": "doctor detects a hung turn and --apply clears it with owner authority",
       "source_text": "nvsh doctor detects a hung agent turn and, with --apply, fixes it by cancelling then killing the stuck harness so the next request respawns the session; a dead-owner turn is fixed directly, a live other shell's turn only after an explicit confirm naming that shell",
       "origin": "llm",
-      "status": "proposed"
+      "status": "approved"
     },
     {
       "id": "o12",
@@ -1158,7 +1158,7 @@
       "behavior": "no stop path opens a harness settings or trust file",
       "source_text": "nvsh never edits a harness's own settings to make cancel work; stops use launch flags, protocol messages and process signals only (docs/specs/2026-09-14-first-class-multi-harness-with-aliases.md)",
       "origin": "llm",
-      "status": "proposed"
+      "status": "approved"
     },
     {
       "id": "o13",
@@ -1167,7 +1167,7 @@
       "behavior": "ignore-cancel fakes exist per family and stay alive after cancel",
       "source_text": "tests simulate a harness that ignores cancel for each adapter family (rpc, app-server, acp, stream-json warm) and assert the second press kills it and the next request respawns the session",
       "origin": "llm",
-      "status": "proposed"
+      "status": "approved"
     },
     {
       "id": "o14",
@@ -1176,7 +1176,7 @@
       "behavior": "stopping line within 1s of first press; tree gone and prompt back within 3s of second press, every family and path",
       "source_text": "with a fake harness that ignores cancel, on every adapter family and on both daemon and one-shot paths, a 'stopping\u2026 press again to kill' line appears within 1s of the first Ctrl+C/Esc, and the harness process tree is gone and the prompt returned within 3s of the second press",
       "origin": "llm",
-      "status": "proposed"
+      "status": "approved"
     },
     {
       "id": "o15",
@@ -1185,7 +1185,7 @@
       "behavior": "kill releases the run lock and the queued request runs on a fresh slot",
       "source_text": "a force-stop reaches the daemon as its own control message (not a repeat cancel): _abort_turn returns early once turn.aborted is set (daemon.py:883-886), and the run lock stays held while the thread is parked in a harness that ignores cancel, so the kill must close the slot's agent (escalate_close) and replace the slot so the lock is released",
       "origin": "llm",
-      "status": "proposed"
+      "status": "approved"
     },
     {
       "id": "o16",
@@ -1194,7 +1194,7 @@
       "behavior": "force-stop and close kill the harness's whole process tree",
       "source_text": "the force-stop kills the harness's whole process tree (its tool subprocesses too), not just the harness pid; harness children are spawned without start_new_session today (only the daemon uses it, daemon.py:241-253), so terminal SIGINT also hits one-shot harness children directly",
       "origin": "llm",
-      "status": "proposed"
+      "status": "approved"
     },
     {
       "id": "o17",
@@ -1203,7 +1203,7 @@
       "behavior": "terminal restored on SIGHUP/SIGTERM; watcher off when not a tty",
       "source_text": "holding stdin in cbreak mode to see Esc must never leave the terminal without echo or canonical mode: attributes are restored on every exit path, including SIGTERM and SSH hangup (SIGHUP), and Esc detection is off when stdin is not a tty, TERM=dumb or NVSH_DISABLE is set",
       "origin": "llm",
-      "status": "proposed"
+      "status": "approved"
     },
     {
       "id": "o18",
@@ -1212,7 +1212,7 @@
       "behavior": "Esc stops within 1s while the event source is silent",
       "source_text": "Esc detection does not depend on the event source yielding: stream() iterates a generator that can block for up to the 120s daemon read timeout, so the stdin watch runs alongside it (select over tty + event source, or a reader thread) and a pressed Esc cancels within 1s even when no event arrives",
       "origin": "llm",
-      "status": "proposed"
+      "status": "approved"
     },
     {
       "id": "o19",
@@ -1221,7 +1221,7 @@
       "behavior": "every stop kind appends exactly one audit event",
       "source_text": "every stop is audited: cancel (Ctrl+C/Esc), force-kill, steer, replace, busy-prompt exit, declined and doctor --apply each append an audit event with shell, target, turn elapsed and outcome; today audit records only proposal/decision/outcome/install (nvsh/agent/audit.py, loop.py:55-68, client.py:1071-1097)",
       "origin": "llm",
-      "status": "proposed"
+      "status": "approved"
     },
     {
       "id": "o20",
@@ -1230,7 +1230,7 @@
       "behavior": "steer offered only when steerable; silent steer re-offers replace/exit",
       "source_text": "the busy prompt tells the truth about steer: it is offered only when the adapter has a mid-turn channel (pi, codex steer; claude, acp, qwen, agy, openai-compat return False per base.py:322 and agy.py:419, openai_compat.py:172), and a steer accepted by a harness that stays silent is followed by the same stop/replace choice instead of an endless wait",
       "origin": "llm",
-      "status": "proposed"
+      "status": "approved"
     },
     {
       "id": "o21",
@@ -1239,7 +1239,7 @@
       "behavior": "overview never autostarts the daemon and returns fast",
       "source_text": "overview's live agent section never autostarts the daemon and never blocks: it asks an existing socket with a short timeout and reports 'no daemon' otherwise; the static identity/verbs sections the teken rubric reads (cli/_commands/overview.py:36-53) stay unchanged",
       "origin": "llm",
-      "status": "proposed"
+      "status": "approved"
     }
   ]
 }

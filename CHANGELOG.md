@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/). This project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.13.1] - 2026-09-17
+
+### Changed
+
+- Records only, no code change: the operator confirmed the reliable-agent-stop records (lapses l1-l5, obligations o1-o21, evidence e1-e43, deltas b1-b10 are now approved), `docs/current-spec.md` is regenerated from the approved ledger with `devague today`, plan risks r6 (accepted as a known limitation) and r8 (follow-up, #17) are resolved, and the delivery summary gains an adjudication section; the `nvsh ask` verb question (deviation d10) is tracked as #18.
+
 ## [0.13.0] - 2026-09-16
 
 ### Added
