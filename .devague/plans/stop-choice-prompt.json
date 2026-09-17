@@ -5,7 +5,7 @@
   "schema_version": 5,
   "status": "exported",
   "created": "2026-09-17T17:03:56Z",
-  "updated": "2026-09-17T18:03:56Z",
+  "updated": "2026-09-17T18:44:43Z",
   "targets": [
     {
       "id": "c1",
@@ -672,14 +672,22 @@
       "text": "tests/test_agent_stop.py::test_two_presses_stop_every_family_on_both_paths[openai-compat-one-shot] failed once under pytest -n auto in the t3 agent's full run and passed in isolation and on re-run; a second unidentified one-off failure was seen earlier on 2026-09-17 in a partial local run. Pre-existing timing flake in the test t9 rewrites: t9 must make the rewritten case robust under parallel load rather than inherit it.",
       "kind": "unknown_nonblocking",
       "task_id": "t9",
-      "resolved": false,
-      "resolution": ""
+      "resolved": true,
+      "resolution": "Root cause found by t9a by measurement (30-run loops under load): 3/30 failures on pre-t5 code, 0/30 after the rewrite. The flake was a real product bug, not test timing -- see r7. The rewritten test types the kill press only where a turn remains (the 6 families whose cancel() is not already a kill) and retypes 's' if it raced the prompt's tcflush; no spec timing budget was widened."
     },
     {
       "id": "r6",
       "text": "Under pytest -n auto with two task agents sharing this machine, the t4 agent saw one different unrelated failure per full run (test_agent_conformance.py::test_a_rejected_effort_surfaces_the_cli_stderr_tail[pi], then test_agent_agy.py::test_warm_cancel_signals_the_child_not_just_a_flag); both pass alone. Together with r5 this points to load-sensitive timing in the subprocess-backed adapter tests, not to this plan's changes. t11 must run the full suite on an otherwise idle machine and name any test that fails there.",
       "kind": "unknown_nonblocking",
       "task_id": "t11",
+      "resolved": false,
+      "resolution": ""
+    },
+    {
+      "id": "r7",
+      "text": "Product bug found by t9a, confirmed by the main agent in nvsh/panel.py Panel.stream's finally block: the previous SIGINT handler is restored BEFORE the ticker join (up to 2 s), termios restore and the 'nvsh: interrupted' line, so a Ctrl+C landing during teardown raises KeyboardInterrupt from Python's default handler and the operator gets a traceback. Most exposed on harnesses whose cancel() already ends the turn (openai-compat, the fleet default), where a double Ctrl+C lands in that window. Pre-existing since 0.13.0; not in this plan's scope unless the operator adds it.",
+      "kind": "unknown_nonblocking",
+      "task_id": "t6",
       "resolved": false,
       "resolution": ""
     }
