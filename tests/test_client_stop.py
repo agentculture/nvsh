@@ -32,10 +32,10 @@ import pytest
 
 from nvsh import client, client_transport
 from nvsh.agent import registry
-from nvsh.agent.base import AgentContext, AgentEvent, AgentRequest, EventKind, RequestKind
+from nvsh.agent.base import AgentContext, AgentEvent, AgentRequest, EventKind, RequestKind, Target
 from nvsh.agent.codex import CodexAgent
 from nvsh.config import Config
-from nvsh.panel import Panel
+from nvsh.panel import Panel, StreamResult
 
 FAKES_DIR = Path(__file__).parent / "fakes"
 
@@ -676,6 +676,314 @@ def test_ctrl_c_at_a_raw_prompt_exits_130_cancels_once_and_never_declines(
     assert [entry["kind"] for entry in _stops(stop_env)] == ["cancel"]
     events = [entry["event"] for entry in AuditLog(env=stop_env).read_all()]
     assert "decision" not in events
+
+
+# -- t7: the stop-choice prompt's [t] label, redaction and audit -------------
+
+
+def _drained(events) -> None:
+    for _ in events:
+        pass
+
+
+def _stub_stream(monkeypatch, *, drive=None):
+    """Replace ``Panel.stream`` with a spy that records the kwargs the client
+    passed it and, optionally, drives ``on_choice``/``on_steer`` itself --
+    the pattern the task brief asks for instead of a pty."""
+    captured: dict = {}
+
+    def fake_stream(self, events, **kwargs):
+        captured.update(kwargs)
+        _drained(events)
+        if drive is not None:
+            drive(captured)
+        return StreamResult()
+
+    monkeypatch.setattr(Panel, "stream", fake_stream)
+    return captured
+
+
+def _done_send(request, context, **kwargs):
+    yield AgentEvent(kind=EventKind.DONE)
+
+
+def test_steer_label_resolved_from_capability_on_daemon_path(monkeypatch, tmp_path):
+    """c31/c57: no daemon message carries the capability -- the client reads
+    it itself via ``registry.steer_capable``, against a stub daemon
+    (``fake_send``) that never sends anything capability-shaped."""
+    captured = _stub_stream(monkeypatch)
+    monkeypatch.setattr(client_transport, "send", _done_send)
+
+    client._stream_request(
+        _panel(),
+        _request(),
+        AgentContext(),
+        env={"XDG_RUNTIME_DIR": str(tmp_path)},
+        shell_id=4242,
+        config=Config(),
+        target=Target(backend="pi"),
+    )
+    assert captured["steer_label"] == "steer"
+    assert captured["stop_prompt"] is True
+    assert callable(captured["on_choice"])
+    assert callable(captured["on_steer"])
+
+    captured.clear()
+    client._stream_request(
+        _panel(),
+        _request(),
+        AgentContext(),
+        env={"XDG_RUNTIME_DIR": str(tmp_path)},
+        shell_id=4242,
+        config=Config(),
+        target=Target(backend="claude"),
+    )
+    assert captured["steer_label"] == "stop & correct"
+
+
+def test_steer_label_resolved_from_capability_on_one_shot_path(monkeypatch, tmp_path):
+    captured = _stub_stream(monkeypatch)
+    monkeypatch.setattr(client_transport, "one_shot", _done_send)
+
+    client._stream_request(
+        _panel(),
+        _request(),
+        AgentContext(),
+        env={"XDG_RUNTIME_DIR": str(tmp_path)},
+        shell_id=4242,
+        config=Config(),
+        target=Target(backend="codex"),
+        one_shot=True,
+    )
+    assert captured["steer_label"] == "steer"
+
+    captured.clear()
+    client._stream_request(
+        _panel(),
+        _request(),
+        AgentContext(),
+        env={"XDG_RUNTIME_DIR": str(tmp_path)},
+        shell_id=4242,
+        config=Config(),
+        target=Target(backend="openai-compat"),
+        one_shot=True,
+    )
+    assert captured["steer_label"] == "stop & correct"
+
+
+def test_correction_is_redacted_before_delivery_and_never_reaches_the_audit_log(
+    stop_env, monkeypatch
+):
+    """c29/c52: a token typed at the stop prompt reaches the adapter
+    redacted and never appears in audit.jsonl, only its length does."""
+    delivered: list[str] = []
+
+    def fake_steer(text, *, shell_id=None, env=None):
+        delivered.append(text)
+        return True
+
+    def note(*, captured):
+        assert captured["on_steer"]("HF_TOKEN=abc123secret\nretry with that") is True
+
+    _stub_stream(monkeypatch, drive=lambda c: note(captured=c))
+    monkeypatch.setattr(client_transport, "send", _done_send)
+    monkeypatch.setattr(client_transport, "steer", fake_steer)
+
+    client._stream_request(
+        _panel(),
+        _request(),
+        AgentContext(),
+        env=stop_env,
+        shell_id=4242,
+        config=Config(),
+        target=Target(backend="pi"),
+        audit=client._audit(stop_env),
+    )
+
+    assert delivered, "Responder.steer was never reached"
+    assert "abc123secret" not in delivered[0]
+    assert "HF_TOKEN" in delivered[0]  # the key name survives redaction; the value doesn't
+
+    from nvsh.agent.audit import AuditLog
+
+    raw = Path(AuditLog(env=stop_env).path).read_text(encoding="utf-8")
+    assert "abc123secret" not in raw
+
+    stops = _stops(stop_env)
+    assert [entry["kind"] for entry in stops] == ["steer"]
+    assert stops[0]["origin"] == "stop_prompt"
+    assert stops[0]["correction_chars"] == len(delivered[0])
+    assert "correction" not in stops[0]
+
+
+def test_steer_not_delivered_queues_onto_the_turns_steers_list(stop_env, monkeypatch):
+    """A harness with no mid-turn channel (Capabilities.steer False) queues
+    the redacted text onto the same ``steers`` list ``_injector`` uses,
+    rather than losing it."""
+
+    def fake_steer(text, *, shell_id=None, env=None):
+        return False
+
+    def drive(captured):
+        assert captured["on_steer"]("do the other thing") is False
+
+    _stub_stream(monkeypatch, drive=drive)
+    monkeypatch.setattr(client_transport, "send", _done_send)
+    monkeypatch.setattr(client_transport, "steer", fake_steer)
+
+    steers: list[str] = []
+    client._stream_request(
+        _panel(),
+        _request(),
+        AgentContext(),
+        env=stop_env,
+        shell_id=4242,
+        config=Config(),
+        target=Target(backend="claude"),
+        steers=steers,
+        audit=client._audit(stop_env),
+    )
+    assert steers == ["do the other thing"]
+    stops = _stops(stop_env)
+    assert [entry["kind"] for entry in stops] == ["steer"]
+    assert stops[0]["outcome"] == "queued"
+
+
+@pytest.mark.parametrize("reason", ["key", "timeout"])
+def test_keep_going_writes_exactly_one_audit_line_with_its_reason(stop_env, monkeypatch, reason):
+    from nvsh.panel import KEEP_GOING
+
+    def drive(captured):
+        captured["on_choice"](KEEP_GOING, reason)
+
+    _stub_stream(monkeypatch, drive=drive)
+    monkeypatch.setattr(client_transport, "send", _done_send)
+
+    client._stream_request(
+        _panel(),
+        _request(),
+        AgentContext(),
+        env=stop_env,
+        shell_id=4242,
+        config=Config(),
+        target=Target(backend="pi"),
+        audit=client._audit(stop_env),
+    )
+    stops = _stops(stop_env)
+    assert [entry["kind"] for entry in stops] == ["keep_going"]
+    assert stops[0]["origin"] == "stop_prompt"
+    assert stops[0]["reason"] == reason
+
+
+def test_keep_going_at_eof_omits_the_reason_field(stop_env, monkeypatch):
+    """The panel's EOF reason is ``""`` (spec c34); it maps to no ``reason``
+    field rather than an empty string, per the task's mapping rule."""
+    from nvsh.panel import KEEP_GOING, REASON_NONE
+
+    def drive(captured):
+        captured["on_choice"](KEEP_GOING, REASON_NONE)
+
+    _stub_stream(monkeypatch, drive=drive)
+    monkeypatch.setattr(client_transport, "send", _done_send)
+
+    client._stream_request(
+        _panel(),
+        _request(),
+        AgentContext(),
+        env=stop_env,
+        shell_id=4242,
+        config=Config(),
+        target=Target(backend="pi"),
+        audit=client._audit(stop_env),
+    )
+    stops = _stops(stop_env)
+    assert [entry["kind"] for entry in stops] == ["keep_going"]
+    assert "reason" not in stops[0]
+
+
+def test_stop_outcome_writes_no_extra_audit_line_beyond_the_existing_cancel(stop_env, monkeypatch):
+    """[s] at the choice prompt takes the same cancel path as the plain first
+    press: the choice prompt must not add a second 'stop' audit line."""
+    from nvsh.panel import STOP
+
+    def drive(captured):
+        captured["on_choice"](STOP, "key")
+        # The panel itself is what would call ``cancel`` on a real [s]
+        # press; here we call it directly, exactly as the panel does, to
+        # prove the client's ``on_choice`` alone writes nothing.
+        captured["cancel"]()
+
+    _stub_stream(monkeypatch, drive=drive)
+    monkeypatch.setattr(client_transport, "send", _done_send)
+    monkeypatch.setattr(client_transport, "cancel", lambda *, shell_id=None, env=None: True)
+
+    client._stream_request(
+        _panel(),
+        _request(),
+        AgentContext(),
+        env=stop_env,
+        shell_id=4242,
+        config=Config(),
+        target=Target(backend="pi"),
+        audit=client._audit(stop_env),
+    )
+    stops = _stops(stop_env)
+    assert [entry["kind"] for entry in stops] == ["cancel"]
+
+
+# -- d2: --json disables the stop-choice prompt -------------------------------
+
+
+def test_stream_request_json_mode_disables_the_stop_prompt(monkeypatch, tmp_path):
+    captured = _stub_stream(monkeypatch)
+    monkeypatch.setattr(client_transport, "send", _done_send)
+
+    client._stream_request(
+        _panel(),
+        _request(),
+        AgentContext(),
+        env={"XDG_RUNTIME_DIR": str(tmp_path)},
+        shell_id=4242,
+        config=Config(),
+        target=Target(backend="pi"),
+        json_mode=True,
+    )
+    assert captured["stop_prompt"] is False
+
+
+def test_slash_json_disables_the_stop_prompt_on_ask(stop_env, monkeypatch):
+    """'nvsh slash --json /ask ...' reaches _stream_request with
+    stop_prompt=False -- the whole point of deviation d2."""
+    from nvsh.cli import main
+
+    captured = _stub_stream(monkeypatch)
+    monkeypatch.setattr(client_transport, "send", _done_send)
+
+    code = main(["slash", "--json", "--platform", "generic", "/ask why?"])
+
+    assert code == 0
+    assert captured["stop_prompt"] is False
+
+
+def test_hook_json_disables_the_stop_prompt(stop_env, monkeypatch, tmp_path):
+    """'nvsh hook --json ...' reaches handle_failure's args.json and turns
+    off the stop-choice prompt the same way (d2)."""
+    import types
+
+    captured = _stub_stream(monkeypatch)
+    monkeypatch.setattr(client_transport, "send", _done_send)
+
+    args = types.SimpleNamespace(
+        exit=1,
+        pipestatus="1",
+        line="ls /nope",
+        cwd=str(tmp_path),
+        log="",
+        json=True,
+        failure_id="",
+    )
+    client.handle_failure(args, panel=_typed_panel(""), env=stop_env)
+    assert captured["stop_prompt"] is False
 
 
 def test_with_prompt_keeps_every_field_but_the_prompt():

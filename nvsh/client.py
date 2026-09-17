@@ -76,9 +76,11 @@ from .panel import (
     DETAILS,
     EXPLAIN,
     IGNORE,
+    KEEP_GOING,
     REFUSED,
     REPLACE,
     STEER,
+    STEER_LABEL,
     TELL,
     Panel,
     StreamResult,
@@ -118,6 +120,13 @@ _MAX_PROPOSAL_ROUNDS = 4
 #: instead of deciding: nothing runs, nothing is denied twice, and the
 #: conversation carries on with the operator's text in it (deviation d16).
 STEERED = "steered"
+
+#: The stop-choice prompt's ``[t]`` label when the resolved target cannot
+#: take a mid-turn correction (``registry.steer_capable`` is ``False``):
+#: nvsh will stop the turn and resend, rather than deliver the text live
+#: (spec decision, task t7/t8 split -- t7 wires the label and the redacted
+#: delivery, t8 the stop-and-resend sequencing).
+STOP_AND_CORRECT_LABEL = "stop & correct"
 
 #: What ``[e]`` asks the agent when the proposal came with no rationale and
 #: there is a conversation to ask in (deviation d17). Two sentences, because
@@ -1393,8 +1402,23 @@ class _Turn:
     def elapsed(self) -> float:
         return round(time.monotonic() - self._started, 3)
 
-    def record(self, kind: str, outcome: object, elapsed: float | None = None) -> None:
-        """Append one ``stop`` audit line; an unwritable log never breaks the stop."""
+    def record(
+        self,
+        kind: str,
+        outcome: object,
+        elapsed: float | None = None,
+        *,
+        origin: str | None = None,
+        reason: str | None = None,
+        correction: str | None = None,
+    ) -> None:
+        """Append one ``stop`` audit line; an unwritable log never breaks the stop.
+
+        ``origin``/``reason``/``correction`` are the stop-choice prompt's own
+        fields (t7): where the outcome came from, an explicit key versus the
+        30s timeout, and -- for a steer -- the redacted text, of which only
+        its length is ever persisted (``AuditLog.record_stop``).
+        """
         if self._audit is None:
             return
         try:
@@ -1404,6 +1428,9 @@ class _Turn:
                 self._target,
                 self.elapsed() if elapsed is None else elapsed,
                 outcome,
+                origin=origin,
+                reason=reason,
+                correction=correction,
             )
         except OSError:  # pragma: no cover - state dir vanished mid-turn
             pass
@@ -1520,6 +1547,90 @@ def _send_busy_choice(
         turn.ended = True
 
 
+def _resolved_steer_label(config, target: Target | None) -> tuple[bool, str]:
+    """``(steer_capable, label)`` for the stop-choice prompt's ``[t]`` key.
+
+    Reads the capability the same way ``registry._tool_calling`` already
+    does (t7/c31): construct the adapter and read ``.capabilities().steer``,
+    without asking the daemon and without starting anything. ``target`` is
+    ``None`` when nothing was resolved (an unreachable edge -- ``ask``/
+    ``handle_failure`` always resolve one via :func:`default_target` first),
+    and then the prompt reads as if the harness could not steer.
+    """
+    if target is None or not target.backend:
+        return False, STOP_AND_CORRECT_LABEL
+    try:
+        from .agent import registry
+
+        capable = bool(registry.steer_capable(target.backend, config))
+    except Exception:  # noqa: BLE001 - an unregistered/broken backend cannot steer
+        capable = False
+    return capable, (STEER_LABEL if capable else STOP_AND_CORRECT_LABEL)
+
+
+def _stop_choice_recorder(turn: "_Turn"):
+    """Build ``on_choice`` for :meth:`Panel.stream` (t7, spec c13).
+
+    Only ``keep_going`` writes its own audit line here: ``stop`` reuses the
+    existing ``cancel`` line already written by ``turn.audited("cancel",
+    ...)`` -- the very callable the panel calls when the prompt answers
+    ``[s]`` -- so a stop chosen at the prompt is not audited twice; ``steer``
+    is recorded by :func:`_stop_prompt_steer` instead, once the correction
+    text (and so its length) is known.
+    """
+
+    def on_choice(outcome: str, reason: str) -> None:
+        if outcome != KEEP_GOING:
+            return
+        turn.record("keep_going", "resumed", origin="stop_prompt", reason=reason or None)
+
+    return on_choice
+
+
+def _stop_prompt_steer(
+    panel: Panel,
+    responder,
+    steers: list[str] | None,
+    turn: "_Turn",
+    steer_label: str,
+):
+    """Build ``on_steer`` for :meth:`Panel.stream` (t7, spec c4/c29).
+
+    The typed correction is redacted before it goes anywhere -- into
+    ``Responder.steer`` (the same mid-turn path ``_injector`` uses) or into
+    the audit line, which only ever keeps its length. On a harness with no
+    mid-turn channel, or when the prompt was offered as "stop & correct"
+    rather than "steer", the redacted text is queued onto the turn's own
+    ``steers`` list -- the same list ``_injector`` feeds -- so it still
+    reaches the agent as part of the next request, exactly as the proposal
+    prompt's ``[t]`` already does when ``responder.steer`` returns ``False``.
+    """
+
+    def on_steer(text: str) -> bool:
+        redacted = _redact(text)
+        delivered = bool(responder.steer(redacted))
+        if delivered and steer_label == STEER_LABEL:
+            panel.note("nvsh: steering the agent ...")
+        else:
+            if steers is not None:
+                steers.append(redacted)
+            panel.note("nvsh: no mid-turn channel; asking next instead ...")
+        turn.record(
+            "steer",
+            "delivered" if delivered else "queued",
+            origin="stop_prompt",
+            correction=redacted,
+        )
+        # t8: stop-and-correct sequencing (cancel, wait for the turn to end,
+        # resend the correction as a self-contained follow-up request) and
+        # the runtime fallback when a steer-capable harness's steer() still
+        # returns False both extend from here. This task never cancels the
+        # turn and never changes the 130 exit-code logic.
+        return delivered
+
+    return on_steer
+
+
 def _stream_request(
     panel: Panel,
     request: AgentRequest,
@@ -1535,6 +1646,7 @@ def _stream_request(
     one_shot: bool = False,
     target: Target | None = None,
     declined: list[str] | None = None,
+    json_mode: bool = False,
 ) -> StreamResult:
     # One resolution, used three ways: the adapter routes on it, the panel
     # header names it, and every audit line is stamped with it (t16/t18).
@@ -1567,6 +1679,7 @@ def _stream_request(
             turn=turn,
         )
     stop = _StopTarget(responder, shell_id=shell_id, env=env)
+    _capable, steer_label = _resolved_steer_label(config, resolved)
     return panel.stream(
         turn.until_ended(
             _send(
@@ -1583,6 +1696,10 @@ def _stream_request(
         cancel=turn.audited("cancel", stop.cancel),
         force_stop=turn.audited("force_kill", stop.force_stop),
         on_busy=_busy_handler(panel, turn, shell_id=shell_id, env=env),
+        on_choice=_stop_choice_recorder(turn),
+        on_steer=_stop_prompt_steer(panel, responder, steers, turn, steer_label),
+        steer_label=steer_label,
+        stop_prompt=not json_mode,
     )
 
 
@@ -1684,6 +1801,10 @@ def handle_failure(
     resolved = dict(os.environ if env is None else env)
     panel = _panel_for(panel, resolved)
     config = _load_config()
+    # d2: ``nvsh hook --json`` carries ``--json`` on ``args`` like every CLI
+    # verb; a JSON-mode invocation has no panel to answer the stop-choice
+    # prompt on, so the first Ctrl+C stops at once, as it did before t5/t6.
+    json_mode = bool(getattr(args, "json", False))
 
     state = save_last_failure(args, env=resolved)
 
@@ -1735,6 +1856,7 @@ def handle_failure(
         one_shot=one_shot,
         target=target,
         declined=declined,
+        json_mode=json_mode,
     )
     if result.interrupted:
         return 130
@@ -1754,6 +1876,7 @@ def handle_failure(
             one_shot=one_shot,
             target=target,
             declined=declined,
+            json_mode=json_mode,
         )
         if follow.interrupted:
             return 130
@@ -1768,6 +1891,7 @@ def ask(
     env: Mapping[str, str] | None = None,
     kind: RequestKind = RequestKind.EXPLICIT,
     agent: str | None = None,
+    json_mode: bool = False,
 ) -> int:
     """``/ask`` and ``Ctrl+G``: a free-form question with the machine's context.
 
@@ -1780,6 +1904,11 @@ def ask(
     qwen ...``, which is what the ``@qwen`` mark is rewritten to). An
     unavailable one is a single refusal line and exit 1 -- never a silent
     fall back to the default (deviation d23).
+
+    ``json_mode`` (d2) is ``nvsh slash --json``'s flag, threaded down from
+    :mod:`nvsh.slash`: it disables the stop-choice prompt (spec c9) the same
+    way a non-tty invocation already does, since ``--json`` has no panel for
+    the operator to answer it on.
 
     Returns ``130`` after Ctrl+C/Esc and :data:`~nvsh.cli._errors.EXIT_DECLINED`
     when the operator declined the agent (t17). A proposal is answered on
@@ -1821,6 +1950,7 @@ def ask(
         one_shot=_is_one_shot(target),
         target=target,
         declined=declined,
+        json_mode=json_mode,
     )
     if result.interrupted:
         return 130
@@ -1838,6 +1968,7 @@ def ask(
             one_shot=_is_one_shot(target),
             target=target,
             declined=declined,
+            json_mode=json_mode,
         )
         if follow.interrupted:
             return 130
@@ -1873,7 +2004,13 @@ def _with_prompt(request: AgentRequest, prompt: str) -> AgentRequest:
     )
 
 
-def _on_last_failure(prompt: str, panel: Panel | None, env: Mapping[str, str] | None) -> int:
+def _on_last_failure(
+    prompt: str,
+    panel: Panel | None,
+    env: Mapping[str, str] | None,
+    *,
+    json_mode: bool = False,
+) -> int:
     resolved = dict(os.environ if env is None else env)
     panel = _panel_for(panel, resolved)
     state = load_last_failure(resolved)
@@ -1899,6 +2036,7 @@ def _on_last_failure(prompt: str, panel: Panel | None, env: Mapping[str, str] | 
         audit=audit,
         steers=steers,
         declined=declined,
+        json_mode=json_mode,
     )
     if result.interrupted:
         return 130
@@ -1914,13 +2052,20 @@ def _on_last_failure(prompt: str, panel: Panel | None, env: Mapping[str, str] | 
             inspections=[],
             audit=audit,
             declined=declined,
+            json_mode=json_mode,
         )
         if follow.interrupted:
             return 130
     return EXIT_DECLINED if declined else 0
 
 
-def steer(text: str, *, panel: Panel | None = None, env: Mapping[str, str] | None = None) -> int:
+def steer(
+    text: str,
+    *,
+    panel: Panel | None = None,
+    env: Mapping[str, str] | None = None,
+    json_mode: bool = False,
+) -> int:
     """``/steer <text>``: tell the agent something without a proposal on screen.
 
     The same move the proposal prompt's ``[t]`` makes, from the shell
@@ -1939,17 +2084,21 @@ def steer(text: str, *, panel: Panel | None = None, env: Mapping[str, str] | Non
     if client_transport.steer(message, shell_id=_shell_pid(resolved), env=resolved):
         panel.note("nvsh: steered the running turn")
         return 0
-    return _on_last_failure(message, panel, resolved)
+    return _on_last_failure(message, panel, resolved, json_mode=json_mode)
 
 
-def fix(*, panel: Panel | None = None, env: Mapping[str, str] | None = None) -> int:
+def fix(
+    *, panel: Panel | None = None, env: Mapping[str, str] | None = None, json_mode: bool = False
+) -> int:
     """``/fix``: ask for the smallest fix for the last recorded failure."""
-    return _on_last_failure(FIX_PROMPT, panel, env)
+    return _on_last_failure(FIX_PROMPT, panel, env, json_mode=json_mode)
 
 
-def explain(*, panel: Panel | None = None, env: Mapping[str, str] | None = None) -> int:
+def explain(
+    *, panel: Panel | None = None, env: Mapping[str, str] | None = None, json_mode: bool = False
+) -> int:
     """``/explain``: ask what the last failure means on this machine."""
-    return _on_last_failure(EXPLAIN_PROMPT, panel, env)
+    return _on_last_failure(EXPLAIN_PROMPT, panel, env, json_mode=json_mode)
 
 
 def verify(command: str, exit_code: int, panel: Panel) -> int:
@@ -2089,11 +2238,14 @@ def handle_slash(
     *,
     panel: Panel | None = None,
     env: Mapping[str, str] | None = None,
+    json_mode: bool = False,
 ) -> int:
     """Route one ``/verb ...`` line to the right entry point.
 
     ``nvsh slash`` (task t14's registry) calls this with the operator's
-    original line, ``/`` included.
+    original line, ``/`` included. ``json_mode`` (d2) disables the
+    stop-choice prompt for the verbs that stream, exactly like a non-tty
+    invocation.
     """
     resolved = dict(os.environ if env is None else env)
     text = (line or "").strip()
@@ -2104,15 +2256,15 @@ def handle_slash(
     verb = verb.lower()
 
     if verb == "ask":
-        return ask(rest, draft=draft, panel=panel, env=resolved)
+        return ask(rest, draft=draft, panel=panel, env=resolved, json_mode=json_mode)
     if verb == "fix":
-        return fix(panel=panel, env=resolved)
+        return fix(panel=panel, env=resolved, json_mode=json_mode)
     if verb == "explain":
-        return explain(panel=panel, env=resolved)
+        return explain(panel=panel, env=resolved, json_mode=json_mode)
     if verb == "retry":
         return retry(panel=panel, env=resolved)
     if verb == "steer":
-        return steer(rest, panel=panel, env=resolved)
+        return steer(rest, panel=panel, env=resolved, json_mode=json_mode)
     if verb == "context":
         return context_show(json_mode=False, env=resolved)
 

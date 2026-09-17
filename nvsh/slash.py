@@ -68,6 +68,11 @@ class SlashInvocation:
     env: Mapping[str, str]
     panel: Panel | None
     platform_kind: str
+    #: d2 (stop-choice-prompt): ``nvsh slash --json``'s flag. A handler that
+    #: streams a request passes this to ``nvsh.client`` so the stop-choice
+    #: prompt is never offered under ``--json`` -- there is no panel for the
+    #: operator to answer it on, so the first Ctrl+C stops at once (spec c9).
+    json_mode: bool = False
 
     def panel_or(self) -> Panel:
         return self.panel if self.panel is not None else Panel(env=self.env)
@@ -138,19 +143,20 @@ def _handle_ask(inv: SlashInvocation) -> int:
         env=inv.env,
         kind=RequestKind.SLASH,
         agent=agent,
+        json_mode=inv.json_mode,
     )
 
 
 def _handle_fix(inv: SlashInvocation) -> int:
     from .client import fix
 
-    return fix(panel=inv.panel, env=inv.env)
+    return fix(panel=inv.panel, env=inv.env, json_mode=inv.json_mode)
 
 
 def _handle_explain(inv: SlashInvocation) -> int:
     from .client import explain
 
-    return explain(panel=inv.panel, env=inv.env)
+    return explain(panel=inv.panel, env=inv.env, json_mode=inv.json_mode)
 
 
 def _handle_retry(inv: SlashInvocation) -> int:
@@ -162,7 +168,7 @@ def _handle_retry(inv: SlashInvocation) -> int:
 def _handle_steer(inv: SlashInvocation) -> int:
     from .client import steer
 
-    return steer(inv.rest, panel=inv.panel, env=inv.env)
+    return steer(inv.rest, panel=inv.panel, env=inv.env, json_mode=inv.json_mode)
 
 
 def _handle_context(inv: SlashInvocation) -> int:
@@ -607,12 +613,18 @@ def dispatch_result(
     *,
     draft: str | None = None,
     panel: Panel | None = None,
+    json_mode: bool = False,
 ) -> DispatchResult:
     """Route one ``/verb ...`` line (``nvsh slash <line>``).
 
     Parses with :mod:`shlex` so quoted arguments survive; an unknown or
     platform-hidden command (and anything that fails to parse) reports a
     user error, never guesses, and comes back ``handled=False``.
+
+    ``json_mode`` (d2, stop-choice-prompt) is ``nvsh slash --json``'s flag:
+    it rides on the :class:`SlashInvocation` handed to the command's
+    handler, which passes it on to :mod:`nvsh.client` for the verbs that
+    stream a request.
     """
     resolved = dict(os.environ if env is None else env)
     kind = platform_kind if platform_kind is not None else _detect_platform_kind()
@@ -650,6 +662,7 @@ def dispatch_result(
         env=resolved,
         panel=panel,
         platform_kind=kind,
+        json_mode=json_mode,
     )
     return DispatchResult(handled=True, exit_code=cmd.handler(invocation))
 
@@ -661,6 +674,9 @@ def dispatch(
     *,
     draft: str | None = None,
     panel: Panel | None = None,
+    json_mode: bool = False,
 ) -> int:
     """:func:`dispatch_result`'s exit code alone (the long-standing API)."""
-    return dispatch_result(line, env, platform_kind, draft=draft, panel=panel).exit_code
+    return dispatch_result(
+        line, env, platform_kind, draft=draft, panel=panel, json_mode=json_mode
+    ).exit_code
