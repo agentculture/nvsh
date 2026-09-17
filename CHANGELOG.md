@@ -9,7 +9,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
-- Records only, no code change: the operator confirmed the reliable-agent-stop records (lapses l1-l5, obligations o1-o21, evidence e1-e43, deltas b1-b10 are now approved), `docs/current-spec.md` is regenerated from the approved ledger with `devague today`, plan risks r6 (accepted as a known limitation) and r8 (follow-up, #17) are resolved, and the delivery summary gains an adjudication section; the `nvsh ask` verb question (deviation d10) is tracked as #18.
+- Records: the operator confirmed the reliable-agent-stop records (lapses l1-l5, obligations o1-o21, evidence e1-e43, deltas b1-b10 are now approved), `docs/current-spec.md` is regenerated from the approved ledger with `devague today`, plan risks r6 (accepted as a known limitation) and r8 (follow-up, #17) are resolved, and the delivery summary gains an adjudication section; the `nvsh ask` verb question (deviation d10) is tracked as #18.
 - Regression tests drive a second `run()` after `cancel()` without a second `start()` (the conformance cases restarted the adapter and only asserted a trailing DONE, which the bug also produced), plus a daemon-level test that cancels a warm `openai-compat` turn and asks again.
 
 ### Fixed
