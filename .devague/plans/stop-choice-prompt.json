@@ -5,7 +5,7 @@
   "schema_version": 5,
   "status": "exported",
   "created": "2026-09-17T17:03:56Z",
-  "updated": "2026-09-17T17:48:50Z",
+  "updated": "2026-09-17T18:03:56Z",
   "targets": [
     {
       "id": "c1",
@@ -672,6 +672,14 @@
       "text": "tests/test_agent_stop.py::test_two_presses_stop_every_family_on_both_paths[openai-compat-one-shot] failed once under pytest -n auto in the t3 agent's full run and passed in isolation and on re-run; a second unidentified one-off failure was seen earlier on 2026-09-17 in a partial local run. Pre-existing timing flake in the test t9 rewrites: t9 must make the rewritten case robust under parallel load rather than inherit it.",
       "kind": "unknown_nonblocking",
       "task_id": "t9",
+      "resolved": false,
+      "resolution": ""
+    },
+    {
+      "id": "r6",
+      "text": "Under pytest -n auto with two task agents sharing this machine, the t4 agent saw one different unrelated failure per full run (test_agent_conformance.py::test_a_rejected_effort_surfaces_the_cli_stderr_tail[pi], then test_agent_agy.py::test_warm_cancel_signals_the_child_not_just_a_flag); both pass alone. Together with r5 this points to load-sensitive timing in the subprocess-backed adapter tests, not to this plan's changes. t11 must run the full suite on an otherwise idle machine and name any test that fails there.",
+      "kind": "unknown_nonblocking",
+      "task_id": "t11",
       "resolved": false,
       "resolution": ""
     }
