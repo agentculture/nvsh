@@ -390,38 +390,23 @@ def _legend_in(text: str) -> bool:
     return head != -1 and PAUSED_TAIL in text[head:]
 
 
-#: How long to wait before re-typing a choice key that may have been
-#: discarded, and how many times. See :func:`_type_choice`.
-CHOICE_RETRY_EVERY = 0.04
-CHOICE_RETRIES = 3
-
-
 def _type_choice(term: Terminal, key: str, answered, budget: float = STOPPING_WITHIN) -> float:
-    """Type ``key`` at the choice prompt. Returns the time of the *first* write.
+    """Type ``key`` once at the choice prompt. Returns the time of the write.
 
-    ``read_choice`` discards typeahead (c33) between printing the legend and
-    its first read, so a key written in the microseconds after the legend
-    reaches the pty master can still be thrown away -- a race that only a
-    test can lose, and one that plan risk r5 asks be handled without a bare
-    sleep or a wider budget. The key is therefore re-typed a few times,
-    ``CHOICE_RETRY_EVERY`` apart, until the prompt is answered.
+    One write, no retry: the prompt discards typeahead *before* it draws its
+    legend, and every caller here types only once the legend is in the
+    terminal's buffer, so the key always reaches a prompt that is already
+    reading. (Until that ordering was fixed the flush came after the legend
+    and could still eat a key written in the microseconds behind it -- the
+    race plan risk r5 asked be handled without a bare sleep, and which the
+    retry this replaces papered over.)
 
-    The returned instant is the *first* write, never the accepted one, so a
-    retry can only make the caller's measurement longer than the truth. The
-    budget is never widened: a retried press still has to land inside the
-    same window counted from the press the operator made.
+    The budget is never widened: the press has to land inside the same window
+    counted from the press the operator made.
     """
     started = time.monotonic()
-    deadline = started + budget
-    for attempt in range(CHOICE_RETRIES + 1):
-        term.type(key)
-        wait_until = (
-            deadline if attempt == CHOICE_RETRIES else time.monotonic() + CHOICE_RETRY_EVERY
-        )
-        if term.wait_for(answered, min(wait_until, deadline)):
-            return started
-        if time.monotonic() >= deadline:
-            break
+    term.type(key)
+    term.wait_for(answered, started + budget)
     return started
 
 

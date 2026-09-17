@@ -11,9 +11,9 @@ terminal, the way tests/test_agent_stop.py proves the two-press stop.
 
 The rig is tests/test_agent_stop.py's: the same :class:`Terminal` (an
 interactive ``bash`` whose controlling tty is a pty), the same
-``PROMPT``/legend matchers and the same :func:`_type_choice` retry, which
-re-types a key that lost the race against
-:func:`nvsh.promptkeys.read_choice`'s typeahead flush. Only the *harnesses*
+``PROMPT``/legend matchers and the same single-write :func:`_type_choice`,
+which needs no retry because :func:`nvsh.promptkeys.read_choice` discards
+typeahead *before* it draws the legend. Only the *harnesses*
 differ, because that test's fakes deliberately stall a turn forever and
 these cases need a turn that also **ends**:
 
