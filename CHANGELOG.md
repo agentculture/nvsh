@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/). This project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.14.0] - 2026-09-17
+
+### Added
+
+- Stopping the agent now asks first. While the agent works on a terminal, the first Ctrl+C or lone Esc pauses the panel with `nvsh: paused -- [t] steer  [s] stop  [Esc] keep going` instead of cancelling at once, so an accidental press costs nothing. `[Esc]`, or 30 s without an answer, keeps going and leaves the exit status alone; `[s]` stops exactly as before (`stopping… press again to kill`, a further press kills the process tree); `[t]` takes one line. A Ctrl+C typed at the prompt, or while a proposal or busy prompt is open, goes straight to stop. Sessions without a terminal, `TERM=dumb` and `--json` still stop at once.
+- `[t]` steers the running turn on `pi` and `codex`. On every other harness it reads `[t] stop & correct`: nvsh cancels the turn, waits for it to end, and sends the correction as a self-contained follow-up request (original request, a note that the previous attempt was stopped, and the correction). If a steer-capable harness refuses the steer at runtime, nvsh says so and asks once whether to stop and correct; the text is never dropped silently.
+- `Capabilities.steer`: every adapter now declares whether it can take a correction mid-turn (true only for `pi` and `codex`); it shows in `nvsh agent list --json`, and `registry.steer_capable()` reads it without starting a harness.
+- `nvsh/promptkeys.py`: a timed single-key reader for prompts (select-based, discards typeahead, restores the terminal on every exit path).
+- Audit log: new stop kind `keep_going`, optional `origin` (`stop_prompt` / `busy_prompt`) and `reason` (`key` / `timeout`) fields, and `correction_chars` — the length of a typed correction, never its text.
+
+### Changed
+
+- The correction typed at the stop prompt is redacted before it leaves the process.
+- Exit status: 0 after keep going or a delivered steer; the follow-up turn's own status after stop & correct; 130 only for `[s]` on a running turn and for a kill.
+- `nvsh slash --json` and `nvsh hook --json` now tell the panel they are in JSON mode, so the prompt is never shown there.
+- Docs, README and all five harness prompt files describe the new behaviour; `docs/shell-integration.md` records the amendment to the reliable-agent-stop spec (claims c1, c4, c5, c17, c20, c21, c22, c34).
+
+### Fixed
+
+- The busy prompt no longer offers `[t] steer` on harnesses that cannot steer mid-turn: the daemon decided steerability from whether an adapter overrode `steer()`, which `openai-compat` and `agy` do only to return False. It now reads `Capabilities.steer`.
+- A Ctrl+C landing while the panel is shutting down no longer raises a Python traceback. `Panel.stream` restored the previous SIGINT handler before joining its ticker thread and restoring the terminal, so a late press — typical after a double Ctrl+C on a harness whose cancel ends the turn at once, such as `openai-compat` — hit the default handler. The panel's handler now covers the whole teardown and records the press as an interrupt. Present since 0.13.0; found while tracing a flaky test.
+
 ## [0.13.1] - 2026-09-17
 
 ### Changed

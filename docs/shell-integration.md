@@ -414,8 +414,34 @@ one-shot path (the in-process adapter's `cancel()`, then `force_stop()`)
 work this way. After a stop in a one-shot run, whatever tool processes the
 harness left behind are killed once the turn is over (deviation d8).
 
+At the correction line (the `nvsh>` prompt) an empty line or `Ctrl+C` means never
+mind: nothing is sent, nothing is cancelled and the turn keeps going. The
+typed line is redacted (`nvsh/redact.py`) before it goes anywhere, and the
+audit log keeps only its length (`correction_chars`), never the text.
+
+If `pi` or `codex` cannot take the correction after all — codex fell back
+to `exec` mode, or the turn has no id yet — nvsh says `nvsh: could not
+steer the running turn` and asks once whether to stop and correct instead.
+`y` does that; any other key discards the text, which is written to the
+audit log as `steer` / `discarded`, and the turn keeps going. The text is
+never dropped silently.
+
+After a stop & correct the first turn is cancelled politely and nvsh waits
+for it to end before sending the follow-up; a harness that ignores the
+cancel can still be killed with a further press, and then no follow-up is
+sent. If the turn had already finished while the prompt was open, the
+correction simply becomes the next request and `[s]` stops nothing.
+
 Exit status: 0 after keep going or after a delivered steer whose turn ends
-normally; 130 is reserved for `[s]` stop (and the kill that may follow it).
+normally; the follow-up turn's own status after a stop & correct; 130 is
+reserved for `[s]` stop on a running turn and for a kill (including a kill
+during stop & correct). `[s]` on a turn that had already finished exits 0.
+
+Every outcome writes one `event: "stop"` audit line: `keep_going` (with
+`reason` `key` or `timeout`), `cancel`, `force_kill`, or `steer` with
+outcome `delivered`, `queued` or `discarded`. Lines written from this
+prompt carry `origin: "stop_prompt"`; a stop & correct is a `steer` /
+`queued` line followed by a `cancel` line with that origin.
 
 Notes:
 
@@ -432,6 +458,10 @@ Notes:
 - A press while an approved command is running is acted on when that command
   returns; the command itself still receives `SIGINT` from the terminal
   (deviation d2).
+- A `Ctrl+C` that lands while the panel is already shutting down (the turn
+  is over, typical after a double press on a harness whose cancel ends the
+  turn at once) is recorded as an interrupt and nothing more: no traceback,
+  the terminal is restored, and nothing is sent to the harness.
 - On a hung-up terminal, end of input at a proposal means **ignore**, never
   approve (deviation d1); end of input at the choice prompt, or at the
   correction line after `[t]`, means the same thing — keep going, nothing

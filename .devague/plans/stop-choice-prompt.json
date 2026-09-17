@@ -5,7 +5,7 @@
   "schema_version": 5,
   "status": "exported",
   "created": "2026-09-17T17:03:56Z",
-  "updated": "2026-09-17T20:00:23Z",
+  "updated": "2026-09-17T20:29:31Z",
   "targets": [
     {
       "id": "c1",
@@ -680,8 +680,8 @@
       "text": "Under pytest -n auto with two task agents sharing this machine, the t4 agent saw one different unrelated failure per full run (test_agent_conformance.py::test_a_rejected_effort_surfaces_the_cli_stderr_tail[pi], then test_agent_agy.py::test_warm_cancel_signals_the_child_not_just_a_flag); both pass alone. Together with r5 this points to load-sensitive timing in the subprocess-backed adapter tests, not to this plan's changes. t11 must run the full suite on an otherwise idle machine and name any test that fails there.",
       "kind": "unknown_nonblocking",
       "task_id": "t11",
-      "resolved": false,
-      "resolution": ""
+      "resolved": true,
+      "resolution": "t11 ran the full suite twice on an otherwise idle machine after all merges: 2193 passed, 5 skipped both times, no failures. The earlier one-off failures were seen only while task agents shared the machine; they were not reproduced and their tests were not changed by this plan."
     },
     {
       "id": "r7",
@@ -690,6 +690,14 @@
       "task_id": "t6",
       "resolved": true,
       "resolution": "Fixed by task t8b (deviation d4), merged: Panel.stream's teardown now runs with the panel's own SIGINT handler installed and restores the previous handler in a nested finally; a press during teardown is recorded as an interrupt and nothing is sent to the harness. Proven deterministically at panel level (three pty tests firing SIGINT from inside patched teardown steps, plus a repeated-press test); confirmed by the main agent that those tests abort pytest with a raw KeyboardInterrupt against the unfixed panel. The cross-family test types the kill press for every family again. NOT reproduced at system level: t8b measured 0/30 failures both before and after the fix on this box (t9a had measured 3/30), so the system-level flake rate is unverified. One residual window remains by construction: a press between the last unhandled() check and the handler restore cannot raise but may not flip 'interrupted'."
+    },
+    {
+      "id": "r8",
+      "text": "Observed by t9's end-to-end steer test: after a steer is delivered and the turn finishes normally, PiAgent still sends a late {'type':'abort'} when the finished turn's generator is closed. No audit cancel line is written and the fake ignores it; whether a real pi treats an abort with no running turn as harmless was not checked, and whether this predates this plan was not established. Check on the fleet together with r1.",
+      "kind": "follow_up",
+      "task_id": null,
+      "resolved": false,
+      "resolution": ""
     }
   ],
   "obligations": []
