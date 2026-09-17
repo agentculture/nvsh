@@ -763,7 +763,7 @@ def _ctrl_c_at_prompt(pty_pair, prompt: str):
         cancel=cancel,
         force_stop=lambda: killed.append(1),
         on_choice=lambda outcome, reason: outcomes.append((outcome, reason)),
-        on_steer=lambda text: steers.append(text) or True,
+        on_steer=lambda text, **_: steers.append(text) or True,
         **handler,
     )
     return result, out.getvalue(), choices, cancelled, killed, outcomes, steers
@@ -838,7 +838,7 @@ def _correction_run(pty_pair, type_line, *, taken: bool = True):
     p = _panel(tty_in, out)
     calls: dict[str, list] = {"cancel": [], "kill": [], "choice": [], "steer": []}
 
-    def on_steer(text: str) -> bool:
+    def on_steer(text: str, **_) -> bool:
         calls["steer"].append(text)
         return taken
 
@@ -955,7 +955,7 @@ def test_eof_at_the_choice_prompt_keeps_going_and_sends_nothing(pty_pair):
         cancel=lambda: calls["cancel"].append(1),
         force_stop=lambda: calls["kill"].append(1),
         on_choice=lambda outcome, reason: calls["choice"].append((outcome, reason)),
-        on_steer=lambda text: calls["steer"].append(text) or True,
+        on_steer=lambda text, **_: calls["steer"].append(text) or True,
     )
     text = out.getvalue()
     assert calls["choice"] == [("keep_going", "")]
@@ -1011,7 +1011,7 @@ def _finished_run(pty_pair, answers: list[bytes], *, on_steer_taken: bool = Fals
             cancel=lambda: calls["cancel"].append(1),
             force_stop=lambda: calls["kill"].append(1),
             on_choice=lambda outcome, reason: calls["choice"].append((outcome, reason)),
-            on_steer=lambda text: (calls["steer"].append(text), on_steer_taken)[1],
+            on_steer=lambda text, **_: (calls["steer"].append(text), on_steer_taken)[1],
         )
     finally:
         thread.join(15)
@@ -1114,7 +1114,7 @@ def _stop_to_correct_run(pty_pair, *, second_press: str | None = None):
         calls["cancel"].append(1)
         cancelled.set()
 
-    def on_steer(text: str) -> object:
+    def on_steer(text: str, **_) -> object:
         calls["steer"].append(text)
         return panel_mod.STOP_BEGUN
 
@@ -1206,13 +1206,90 @@ def test_stop_begun_on_an_already_finished_turn_cancels_nothing(pty_pair):
             cancel=lambda: calls["cancel"].append(1),
             force_stop=lambda: calls["kill"].append(1),
             on_choice=lambda outcome, reason: calls["choice"].append((outcome, reason)),
-            on_steer=lambda text: (calls["steer"].append(text), panel_mod.STOP_BEGUN)[1],
+            on_steer=lambda text, **_: (calls["steer"].append(text), panel_mod.STOP_BEGUN)[1],
             steer_label=STOP_AND_CORRECT_LABEL,
         )
     finally:
         thread.join(15)
     out = out.getvalue()
     assert calls["steer"] == ["look at nvpmodel instead"]
+    assert calls["cancel"] == [] and calls["kill"] == []
+    assert result.not_running is True
+    assert result.stopped_to_correct is False
+    assert result.interrupted is False
+    assert result.text == "working"
+    assert STOPPING not in out
+
+
+def _watched_feeders(monkeypatch) -> list:
+    """Every ``_Feeder`` the next ``stream()`` builds, for the test to poll.
+
+    The one thing a test has to wait for here is "the turn's terminal event
+    is on the feeder's queue", which is exactly what ``terminal_queued``
+    answers -- so the test polls that, rather than sleeping and hoping.
+    """
+    made: list = []
+    real = panel_mod._Feeder
+
+    class _Watched(real):  # type: ignore[valid-type,misc]
+        def __init__(self, events) -> None:
+            super().__init__(events)
+            made.append(self)
+
+    monkeypatch.setattr(panel_mod, "_Feeder", _Watched)
+    return made
+
+
+def test_a_turn_that_finishes_while_the_correction_is_typed_cancels_nothing(pty_pair, monkeypatch):
+    """c36 at the *second* moment: the prompt closed on a live turn and the
+    turn ends while the operator is still typing the correction line.
+
+    ``finished`` therefore has to be read when the text is handed over, not
+    when the prompt was answered: the caller is told the turn is over, and
+    the panel cancels nothing even though ``on_steer`` still answers
+    ``STOP_BEGUN`` (which is what a caller that ignored ``finished`` would
+    say).
+    """
+    made = _watched_feeders(monkeypatch)
+    master, tty_in = pty_pair
+    out = io.StringIO()
+    p = _panel(tty_in, out)
+    calls: dict[str, list] = {"cancel": [], "kill": [], "choice": [], "steer": []}
+    typing = threading.Event()
+
+    def events():
+        yield AgentEvent(kind=EventKind.TEXT_DELTA, text="working")
+        _press("esc", master)
+        assert _wait_for(lambda: CORRECT_LEGEND in out.getvalue()), out.getvalue()
+        assert _answer(master, b"t", lambda: TELL_PROMPT in out.getvalue(), tty_in), out.getvalue()
+        typing.set()
+        # ... and the turn ends here, with the line still being typed.
+        yield AgentEvent(kind=EventKind.DONE)
+
+    def typist():
+        assert typing.wait(15)
+        assert _wait_for(lambda: bool(made) and made[0].terminal_queued()), out.getvalue()
+        os.write(master, CORRECTION)
+
+    thread = threading.Thread(target=typist, daemon=True)
+    thread.start()
+    try:
+        result = p.stream(
+            events(),
+            cancel=lambda: calls["cancel"].append(1),
+            force_stop=lambda: calls["kill"].append(1),
+            on_choice=lambda outcome, reason: calls["choice"].append((outcome, reason)),
+            on_steer=lambda text, **kw: (
+                calls["steer"].append((text, kw.get("finished"))),
+                panel_mod.STOP_BEGUN,
+            )[1],
+            steer_label=STOP_AND_CORRECT_LABEL,
+        )
+    finally:
+        thread.join(15)
+    out = out.getvalue()
+    assert calls["steer"] == [("look at nvpmodel instead", True)]
+    assert calls["choice"] == [("steer", "key")]
     assert calls["cancel"] == [] and calls["kill"] == []
     assert result.not_running is True
     assert result.stopped_to_correct is False

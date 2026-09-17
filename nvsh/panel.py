@@ -420,11 +420,24 @@ class _Choice:
 
     read_choice: Callable[[Callable[[], object]], str] | None = None
     on_choice: Callable[[str, str], object] | None = None
-    on_steer: Callable[[str], object] | None = None
+    #: Called as ``on_steer(text, finished=...)``: the keyword says whether
+    #: the turn had already finished *at the moment the text was handed
+    #: over* (c36), which is not the same as its state when the prompt
+    #: opened -- typing a correction can take many seconds.
+    on_steer: Callable[..., object] | None = None
     read_correction: Callable[..., object] | None = None
     steer_label: str = STEER_LABEL
     #: Whether the turn's terminal event is already queued (spec c36).
     finished: Callable[[], bool] | None = None
+
+    def is_finished(self) -> bool:
+        """Whether the turn's terminal event is queued *right now* (c36).
+
+        Read afresh wherever it is acted on, because the turn can end both
+        while the choice prompt is open and while the correction line is
+        still being typed.
+        """
+        return self.finished is not None and bool(self.finished())
 
 
 class Panel:
@@ -669,7 +682,7 @@ class Panel:
         force_stop: Callable[[], object] | None = None,
         on_busy: Callable[[AgentEvent], object] | None = None,
         on_choice: Callable[[str, str], object] | None = None,
-        on_steer: Callable[[str], object] | None = None,
+        on_steer: Callable[..., object] | None = None,
         steer_label: str = STEER_LABEL,
         stop_prompt: bool = True,
     ) -> StreamResult:
@@ -695,8 +708,13 @@ class Panel:
         offered under, used verbatim.
 
         ``on_steer`` makes ``[t]`` read one line at the ``nvsh> `` prompt
-        (:meth:`read_tell`) and hands it over, stripped and non-empty, from
-        this thread with the key watcher suspended. Its return value says
+        (:meth:`read_tell`) and hands it over as
+        ``on_steer(text, finished=...)``, stripped and non-empty, from this
+        thread with the key watcher suspended. ``finished`` is the turn's
+        state read at that moment -- true when its terminal event is already
+        queued, including when it only became so while the line was being
+        typed (c36) -- so the caller can tell a live turn from a finished
+        one before it tries to steer or stop it. Its return value says
         whether the harness took the correction mid-turn (``True``) or the
         caller will send it as the next request (``False``); either way the
         panel prints no verdict, cancels nothing and resumes rendering.
@@ -771,7 +789,7 @@ class Panel:
         on_proposal: Callable[[Proposal, AgentEvent], object] | None,
         on_busy: Callable[[AgentEvent], object] | None,
         on_choice: Callable[[str, str], object] | None,
-        on_steer: Callable[[str], object] | None,
+        on_steer: Callable[..., object] | None,
         steer_label: str,
         stop_prompt: bool,
     ) -> None:
@@ -1019,14 +1037,18 @@ class Panel:
         key = choice.read_choice(show)  # type: ignore[misc] - never None here
         stop.drain()
         outcome, reason = _STOP_PROMPT_OUTCOMES.get(key, (KEEP_GOING, REASON_NONE))
-        if choice.finished is not None and choice.finished():
+        if choice.is_finished():
             # The turn ended while only rendering was paused (c36): what is
             # left is an answer to print, not a turn to stop.
             result.not_running = True
         if outcome == STEER and choice.read_correction is not None:
             # The correction line reports the outcome itself: a never-mind
             # there is a "keep going", not a steer.
-            answer = choice.read_correction(choice.on_steer, choice.on_choice)
+            answer = choice.read_correction(choice.on_steer, choice.on_choice, choice.finished)
+            if choice.is_finished():
+                # It can also have ended *while the line was being typed*
+                # (c36), which is the state the handover was made in.
+                result.not_running = True
             if answer == STOP_BEGUN and not result.not_running:
                 return self._stop_to_correct(stop, result, started_text)
             # A turn that had already finished needs no stopping: the
@@ -1120,13 +1142,19 @@ class Panel:
 
     def _correction_prompt(
         self,
-        on_steer: Callable[[str], object] | None,
+        on_steer: Callable[..., object] | None,
         on_choice: Callable[[str, str], object] | None,
+        finished: Callable[[], bool] | None = None,
     ) -> object:
         """Read the ``[t]`` correction line and hand it over.
 
         Returns whatever ``on_steer`` answered (``True``, ``False`` or
         :data:`STOP_BEGUN`), or ``False`` when nothing was handed over.
+
+        ``finished`` is read *after* the line has been typed, not before it,
+        and travels to ``on_steer`` as its ``finished`` keyword (c36): the
+        turn can end at any point while the operator types, and a caller
+        that knows the turn is over must not try to steer or stop it.
 
         :meth:`read_tell` returns ``""`` for all three never-mind cases (an
         empty line, Ctrl+C, end of input), which is exactly the rule spec
@@ -1147,7 +1175,7 @@ class Panel:
         # panel prints no verdict about it. The one thing it *does* read
         # back is :data:`STOP_BEGUN`, the caller saying it has begun
         # stopping this turn (t8).
-        return on_steer(text)
+        return on_steer(text, finished=finished is not None and bool(finished()))
 
     @staticmethod
     def _stop_legend(steer_label: str = STEER_LABEL) -> str:
