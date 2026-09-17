@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "drafting",
   "created": "2026-09-17T16:13:08Z",
-  "updated": "2026-09-17T16:52:28Z",
+  "updated": "2026-09-17T17:03:08Z",
   "claims": [
     {
       "id": "c1",
@@ -631,6 +631,30 @@
       "hard_questions": [],
       "links": [],
       "instruction": "Test: a fake that emits DONE while the prompt is open; choose s; assert the full text is rendered and the exit status is 0.",
+      "revisions": []
+    },
+    {
+      "id": "c37",
+      "kind": "decision",
+      "text": "A Ctrl+C typed while another nvsh prompt is already open (a proposal's keys or the busy prompt) goes straight to stop, exactly as it does today; the choice prompt opens only for a press made while the panel is streaming.",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c38",
+      "kind": "decision",
+      "text": "There is no configuration switch to restore the instant stop: one behaviour is documented and tested, and sessions without a terminal already stop instantly.",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
       "revisions": []
     }
   ],
