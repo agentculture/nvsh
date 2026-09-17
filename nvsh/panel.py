@@ -59,9 +59,15 @@ entry, and CLAUDE.md's headless-over-SSH constraint):
   ``stopping… press again to kill`` and rendering on until the turn really
   ends; the press after that calls ``force_stop`` once and ends the
   stream. Whichever it is, the outcome is reported through ``on_choice``.
-  A terminal that cannot show or answer the prompt (stdout or stdin is not
-  a tty, ``TERM=dumb``) keeps the pre-t5 behaviour: the first press stops
-  at once. The terminal's termios settings are restored in a ``finally``.
+  ``[t]`` reads one free-text line at the usual ``nvsh> `` prompt and hands
+  it to ``on_steer``; an empty line, a Ctrl+C or end of input there means
+  "never mind" and the turn keeps going untouched. The panel neither
+  interprets, redacts nor delivers that text -- the caller does. A terminal
+  that cannot show or answer the prompt (stdout or stdin is not a tty,
+  ``TERM=dumb``), and a caller that passes ``stop_prompt=False`` (``--json``
+  has a terminal but no panel to answer on), keep the pre-t5 behaviour: the
+  first press stops at once. The terminal's termios settings are restored
+  in a ``finally``.
 
 Stdlib only; nothing here is imported at shell start (the bash hook only
 runs ``nvsh`` on a qualifying failure).
@@ -362,6 +368,33 @@ class StreamResult:
     done: bool = False
     interrupted: bool = False
     proposals: list[Proposal] = field(default_factory=list)
+    #: The turn had already produced its terminal event (``done``/``error``,
+    #: or an exhausted source) when the operator answered the stop-choice
+    #: prompt: only rendering was paused, the harness had finished (spec
+    #: c36). The panel cannot know what the daemon thinks; it knows what is
+    #: queued. A ``[s]`` answered in that state is *not* reported as an
+    #: interruption -- the caller uses this to say "not running" rather than
+    #: exit 130, and to send a correction as a plain next request.
+    not_running: bool = False
+
+
+@dataclass
+class _Choice:
+    """What the stop-choice prompt needs, bundled so the press path stays narrow.
+
+    ``read_choice`` is ``None`` when no prompt may be shown at all (a caller
+    that passed ``stop_prompt=False``); ``read_correction`` is ``None`` when
+    the caller wired no ``on_steer``, and ``[t]`` then reports ``steer``
+    without reading a line, exactly as it did before t6.
+    """
+
+    read_choice: Callable[[], str] | None = None
+    on_choice: Callable[[str, str], object] | None = None
+    on_steer: Callable[[str], bool] | None = None
+    read_correction: Callable[..., object] | None = None
+    steer_label: str = STEER_LABEL
+    #: Whether the turn's terminal event is already queued (spec c36).
+    finished: Callable[[], bool] | None = None
 
 
 class Panel:
@@ -606,7 +639,9 @@ class Panel:
         force_stop: Callable[[], object] | None = None,
         on_busy: Callable[[AgentEvent], object] | None = None,
         on_choice: Callable[[str, str], object] | None = None,
+        on_steer: Callable[[str], bool] | None = None,
         steer_label: str = STEER_LABEL,
+        stop_prompt: bool = True,
     ) -> StreamResult:
         """Render ``events`` as they arrive; return what happened.
 
@@ -627,9 +662,23 @@ class Panel:
         ``outcome`` is :data:`KEEP_GOING`, :data:`STOP` or :data:`STEER`,
         ``reason`` is :data:`REASON_KEY`, :data:`REASON_TIMEOUT` or ``""``
         (end of input). ``steer_label`` is the word the ``[t]`` key is
-        offered under, used verbatim. Where the prompt cannot be shown or
-        answered (stdout or stdin is not a tty, ``TERM`` is ``dumb`` or
-        empty) the first press stops at once, exactly as before t5.
+        offered under, used verbatim.
+
+        ``on_steer`` makes ``[t]`` read one line at the ``nvsh> `` prompt
+        (:meth:`read_tell`) and hands it over, stripped and non-empty, from
+        this thread with the key watcher suspended. Its return value says
+        whether the harness took the correction mid-turn (``True``) or the
+        caller will send it as the next request (``False``); either way the
+        panel prints no verdict, cancels nothing and resumes rendering. An
+        empty line, a Ctrl+C or end of input at that prompt means "never
+        mind": ``on_steer`` is not called, nothing is sent, and the prompt
+        is reported as :data:`KEEP_GOING`/:data:`REASON_KEY`. With no
+        ``on_steer``, ``[t]`` reports :data:`STEER` and reads no line.
+
+        Where the prompt cannot be shown or answered (stdout or stdin is not
+        a tty, ``TERM`` is ``dumb`` or empty), or the caller passes
+        ``stop_prompt=False`` (``--json``: a terminal, but no panel to
+        answer on), the first press stops at once, exactly as before t5.
 
         Terminal attributes and the previous SIGINT handler are always
         restored.
@@ -674,9 +723,20 @@ class Panel:
                 started_text,
                 self._suspending(watcher, on_proposal),
                 self._suspending(watcher, on_busy),
-                read_choice=self._suspending(watcher, self._read_stop_choice),
-                on_choice=on_choice,
-                steer_label=steer_label,
+                choice=_Choice(
+                    read_choice=(
+                        self._suspending(watcher, self._read_stop_choice) if stop_prompt else None
+                    ),
+                    on_choice=on_choice,
+                    on_steer=on_steer,
+                    read_correction=(
+                        self._suspending(watcher, self._correction_prompt)
+                        if on_steer is not None
+                        else None
+                    ),
+                    steer_label=steer_label,
+                    finished=feeder.terminal_queued,
+                ),
             )
         except KeyboardInterrupt:
             result.interrupted = True
@@ -713,25 +773,17 @@ class Panel:
         on_proposal: Callable[[Proposal, AgentEvent], object] | None,
         on_busy: Callable[[AgentEvent], object] | None = None,
         *,
-        read_choice: Callable[[], str] | None = None,
-        on_choice: Callable[[str, str], object] | None = None,
-        steer_label: str = STEER_LABEL,
+        choice: _Choice | None = None,
     ) -> bool:
         """Render events and act on presses until the stream ends.
 
         Returns whether a run of text is still open on the current line.
         """
+        choice = _Choice() if choice is None else choice
         while True:
             item = self._next_item(feeder, watcher, stop)
             if item is None:
-                started_text, ended = self._on_press(
-                    stop,
-                    result,
-                    started_text,
-                    read_choice=read_choice,
-                    on_choice=on_choice,
-                    steer_label=steer_label,
-                )
+                started_text, ended = self._on_press(stop, result, started_text, choice)
                 if ended:
                     return started_text
                 continue
@@ -787,22 +839,21 @@ class Panel:
         stop: _StopState,
         result: StreamResult,
         started_text: bool,
-        *,
-        read_choice: Callable[[], str] | None = None,
-        on_choice: Callable[[str, str], object] | None = None,
-        steer_label: str = STEER_LABEL,
+        choice: _Choice | None = None,
     ):
         """Act on one Ctrl+C/Esc. Returns ``(started_text, stream_ended)``.
 
         The press that finds the panel merely streaming opens the stop-choice
         prompt (t5) and decides nothing by itself; every press after a stop
         has begun is the kill press, exactly as before. A terminal that
-        cannot show the prompt keeps the pre-t5 behaviour.
+        cannot show the prompt -- or a caller that asked for no prompt --
+        keeps the pre-t5 behaviour.
         """
+        choice = _Choice() if choice is None else choice
         stop.handle()
-        if stop.stopping or read_choice is None or not self._can_prompt():
+        if stop.stopping or choice.read_choice is None or not self._can_prompt():
             return self._stop_press(stop, result, started_text)
-        return self._choice_press(stop, result, started_text, read_choice, on_choice, steer_label)
+        return self._choice_press(stop, result, started_text, choice)
 
     def _stop_press(self, stop: _StopState, result: StreamResult, started_text: bool):
         """The pre-t5 press: polite cancel, then kill. ``(started_text, ended)``."""
@@ -824,9 +875,7 @@ class Panel:
         stop: _StopState,
         result: StreamResult,
         started_text: bool,
-        read_choice: Callable[[], str],
-        on_choice: Callable[[str, str], object] | None,
-        steer_label: str,
+        choice: _Choice,
     ):
         """Open the stop-choice prompt and act on the answer.
 
@@ -841,19 +890,74 @@ class Panel:
         self._close_thinking()
         started_text = self._end_text_run(started_text)
         s = self.style
-        self.line(f"{s.bold}{s.yellow}nvsh:{s.reset} paused -- {self._stop_legend(steer_label)}")
-        key = read_choice()
+        legend = self._stop_legend(choice.steer_label)
+        self.line(f"{s.bold}{s.yellow}nvsh:{s.reset} paused -- {legend}")
+        key = choice.read_choice()  # type: ignore[misc] - never None here
         stop.drain()
         outcome, reason = _STOP_PROMPT_OUTCOMES.get(key, (KEEP_GOING, REASON_NONE))
-        if on_choice is not None:
-            on_choice(outcome, reason)
+        if choice.finished is not None and choice.finished():
+            # The turn ended while only rendering was paused (c36): what is
+            # left is an answer to print, not a turn to stop.
+            result.not_running = True
+        if outcome == STEER and choice.read_correction is not None:
+            # The correction line reports the outcome itself: a never-mind
+            # there is a "keep going", not a steer.
+            choice.read_correction(choice.on_steer, choice.on_choice)
+            self._arm_waiting()
+            return started_text, False
+        if choice.on_choice is not None:
+            choice.on_choice(outcome, reason)
         if outcome == STOP:
+            if result.not_running:
+                return self._finished_stop(stop, started_text)
             return self._stop_press(stop, result, started_text)
-        # keep going, and (for now) steer too: t6 reads the correction line.
-        # Nothing was sent, so the turn is not interrupted -- rendering just
-        # resumes where it paused.
+        # Keep going -- and a [t] with no ``on_steer`` wired, which reports
+        # the choice and reads nothing. Nothing was sent, so the turn is not
+        # interrupted: rendering resumes where it paused.
         self._arm_waiting()
         return started_text, False
+
+    def _finished_stop(self, stop: _StopState, started_text: bool):
+        """``[s]`` for a turn whose terminal event is already queued (c36).
+
+        The harness is done; only the panel was paused. The polite cancel is
+        still sent -- it is harmless on a finished turn and the panel cannot
+        know what the daemon thinks -- but nothing here may claim a turn was
+        stopped: no ``stopping…`` line and no ``interrupted``, so the queued
+        answer still renders in full and the caller does not exit 130. A
+        further press is still the kill press.
+        """
+        stop.stopping = True
+        stop.cancel_once()
+        self._arm_waiting()
+        return started_text, False
+
+    def _correction_prompt(
+        self,
+        on_steer: Callable[[str], bool] | None,
+        on_choice: Callable[[str, str], object] | None,
+    ) -> bool:
+        """Read the ``[t]`` correction line and hand it over. ``True`` if sent.
+
+        :meth:`read_tell` returns ``""`` for all three never-mind cases (an
+        empty line, Ctrl+C, end of input), which is exactly the rule spec
+        c34 asks for: nothing is handed over, nothing is cancelled and the
+        turn keeps going. The prompt is then reported as :data:`KEEP_GOING`
+        with :data:`REASON_KEY` -- the operator did answer it with a key,
+        and only the correction was abandoned.
+        """
+        text = self.read_tell()
+        if not text or on_steer is None:
+            if on_choice is not None:
+                on_choice(KEEP_GOING, REASON_KEY)
+            return False
+        if on_choice is not None:
+            on_choice(STEER, REASON_KEY)
+        # What the caller does with the text -- deliver it mid-turn, redact
+        # it, keep it for the next request -- is the caller's business; the
+        # panel neither reads the answer nor prints a verdict about it.
+        on_steer(text)
+        return True
 
     @staticmethod
     def _stop_legend(steer_label: str = STEER_LABEL) -> str:
@@ -1424,6 +1528,23 @@ class _Feeder:
 
     def ack(self) -> None:
         self._ack.set()
+
+    def terminal_queued(self) -> bool:
+        """Whether the turn's last item is already waiting to be rendered.
+
+        The worker holds at most one un-acked item, so while a prompt is
+        open this is all the panel can honestly know about whether the turn
+        is still running (spec c36): a queued ``done``/``error``, or an
+        exhausted source, means the harness finished and only rendering was
+        paused. A raised exception is deliberately *not* counted -- that is
+        the stream breaking, not the turn ending.
+        """
+        for tag, payload in list(self.queue.queue):
+            if tag is _END:
+                return True
+            if getattr(payload, "kind", None) in (EventKind.DONE, EventKind.ERROR):
+                return True
+        return False
 
     def halt(self) -> None:
         """The stream is over: pull nothing more (a blocked pull is abandoned)."""
