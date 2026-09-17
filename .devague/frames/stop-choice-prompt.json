@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "drafting",
   "created": "2026-09-17T16:13:08Z",
-  "updated": "2026-09-17T16:14:39Z",
+  "updated": "2026-09-17T16:30:24Z",
   "claims": [
     {
       "id": "c1",
@@ -12,7 +12,14 @@
       "text": "nvsh asks before it stops the agent. While the agent is working, the first Ctrl+C or Esc no longer cancels the turn straight away: the panel pauses and offers a choice -- [t] steer, [s] stop, [Esc] keep going -- so an accidental press costs nothing and the operator can correct the agent instead of killing it. Stopping is still always two keys away, and a terminal that cannot show the prompt stops immediately as before.",
       "origin": "user",
       "status": "confirmed",
-      "honesty_conditions": [],
+      "honesty_conditions": [
+        {
+          "id": "h1",
+          "text": "Every one of the four outcomes (steer, stop, keep going, timeout) is reachable from a single first press on a pty, and no code path cancels the harness before the operator has picked.",
+          "status": "proposed",
+          "instruction": ""
+        }
+      ],
       "hard_questions": [],
       "links": [],
       "instruction": "",
@@ -24,7 +31,14 @@
       "text": "While the agent works on a terminal, the first Ctrl+C or lone Esc opens a one-line choice prompt -- [t] steer  [s] stop  [Esc] keep going -- instead of cancelling; nothing is sent to the harness until the operator picks. The change is confined to Panel._on_press (nvsh/panel.py:705-717), the one place the first press is decided today.",
       "origin": "llm",
       "status": "proposed",
-      "honesty_conditions": [],
+      "honesty_conditions": [
+        {
+          "id": "h2",
+          "text": "Between the first press and the operator's key, neither cancel nor force_stop nor steer is called on the adapter -- asserted with a recording fake, not inferred from output.",
+          "status": "proposed",
+          "instruction": ""
+        }
+      ],
       "hard_questions": [],
       "links": [],
       "instruction": "",
@@ -36,7 +50,14 @@
       "text": "[s] stop does exactly what the first press does today: polite cancel through _StopTarget.cancel, the 'stopping\u2026 press again to kill' line, and a further Ctrl+C/Esc still force-kills the process tree. Stopping is never more than two keys away, and a Ctrl+C typed at the choice prompt itself means stop.",
       "origin": "llm",
       "status": "proposed",
-      "honesty_conditions": [],
+      "honesty_conditions": [
+        {
+          "id": "h3",
+          "text": "After [s], behaviour is byte-for-byte today's first press: same STOPPING_TEXT, same single cancel, and a further Ctrl+C or Esc calls force_stop exactly once; Ctrl+C typed at the choice prompt takes the [s] path.",
+          "status": "proposed",
+          "instruction": ""
+        }
+      ],
       "hard_questions": [],
       "links": [],
       "instruction": "",
@@ -48,7 +69,14 @@
       "text": "[t] steer reads one free-text line with the existing tell reader (Panel.read_tell, panel.py:1108-1133) and delivers it through the existing Responder.steer path (client_transport.py:101-121), the same move as the proposal prompt's [t] and /steer; no new daemon control message is added.",
       "origin": "llm",
       "status": "proposed",
-      "honesty_conditions": [],
+      "honesty_conditions": [
+        {
+          "id": "h4",
+          "text": "The text typed after [t] reaches the adapter's steer() unchanged (after redaction) through Responder.steer on both the daemon and the one-shot path, and no new daemon control message exists.",
+          "status": "proposed",
+          "instruction": ""
+        }
+      ],
       "hard_questions": [],
       "links": [],
       "instruction": "",
@@ -60,7 +88,14 @@
       "text": "Whether a harness can take a correction mid-turn becomes a declared capability (Capabilities.steer in nvsh/agent/base.py), true only for pi and codex; the choice prompt and the daemon's busy prompt both read it, replacing daemon._overrides_steer (daemon.py:454-456), which today reports openai-compat and agy as steerable because they override steer() only to return False.",
       "origin": "llm",
       "status": "proposed",
-      "honesty_conditions": [],
+      "honesty_conditions": [
+        {
+          "id": "h5",
+          "text": "Capabilities.steer is true for exactly pi and codex, false for every other registered adapter, and daemon._overrides_steer is gone: the busy prompt no longer offers [t] steer on openai-compat or agy.",
+          "status": "proposed",
+          "instruction": ""
+        }
+      ],
       "hard_questions": [],
       "links": [],
       "instruction": "",
@@ -72,7 +107,14 @@
       "text": "[Esc] keep going dismisses the prompt, sends nothing to the harness and resumes rendering; the turn's exit status and result.interrupted are unaffected, so a dismissed accidental press is not reported as exit 130.",
       "origin": "llm",
       "status": "proposed",
-      "honesty_conditions": [],
+      "honesty_conditions": [
+        {
+          "id": "h6",
+          "text": "After keep going, result.interrupted is False, the turn's remaining events render in order with none lost, and the process exit status equals that of an uninterrupted turn.",
+          "status": "proposed",
+          "instruction": ""
+        }
+      ],
       "hard_questions": [],
       "links": [],
       "instruction": "",
@@ -84,7 +126,14 @@
       "text": "Lone-Esc versus escape-sequence detection, cbreak handling, typeahead discard and the SIGHUP/SIGTERM terminal restore in nvsh/keys.py are not changed; the prompt reuses _suspending, _read_choice_key and the _busy_legend pattern from nvsh/panel.py rather than reading keys a new way.",
       "origin": "llm",
       "status": "proposed",
-      "honesty_conditions": [],
+      "honesty_conditions": [
+        {
+          "id": "h7",
+          "text": "nvsh/keys.py has no functional diff, and tests/test_keys.py passes unmodified.",
+          "status": "proposed",
+          "instruction": ""
+        }
+      ],
       "hard_questions": [],
       "links": [],
       "instruction": "",
@@ -96,7 +145,14 @@
       "text": "Force-stop, process-tree kill, the daemon's cancel/kill controls, slot removal after a kill, the per-run cancelled-flag reset and every adapter's cancel() are unchanged; the prompt only decides whether and when the existing cancel is called.",
       "origin": "llm",
       "status": "proposed",
-      "honesty_conditions": [],
+      "honesty_conditions": [
+        {
+          "id": "h8",
+          "text": "nvsh/daemon.py cancel_shell/kill_shell/_force_stop_turn and every adapter's cancel()/force_stop() have no functional diff; tests/test_agent_conformance.py stop cases and tests/test_close_kills_tree.py pass unmodified.",
+          "status": "proposed",
+          "instruction": ""
+        }
+      ],
       "hard_questions": [],
       "links": [],
       "instruction": "",
@@ -108,7 +164,14 @@
       "text": "Where the prompt cannot be shown or answered -- stdin or stdout is not a tty, TERM=dumb, --json -- the first Ctrl+C stops immediately exactly as it does today, so scripts and piped sessions keep their current behaviour.",
       "origin": "llm",
       "status": "proposed",
-      "honesty_conditions": [],
+      "honesty_conditions": [
+        {
+          "id": "h9",
+          "text": "With stdin or stdout not a tty, TERM=dumb, or --json, the first SIGINT calls cancel at once and no prompt text is written to stdout or stderr.",
+          "status": "proposed",
+          "instruction": ""
+        }
+      ],
       "hard_questions": [],
       "links": [],
       "instruction": "",
@@ -120,7 +183,14 @@
       "text": "This amends the reliable-agent-stop spec: claims c1, c4, c5, c17, c20, c21, c22 and c34 (first press = immediate polite cancel, stopping line within 1 s) are superseded by the choice prompt; the 1 s promise now applies to the prompt appearing, and the 3 s kill promise is measured from the press that follows [s] stop. The new frame records the amendment; the old frame is not edited.",
       "origin": "llm",
       "status": "proposed",
-      "honesty_conditions": [],
+      "honesty_conditions": [
+        {
+          "id": "h10",
+          "text": "The exported spec names each superseded reliable-agent-stop claim id, and .devague/frames/reliable-agent-stop.json has no diff.",
+          "status": "proposed",
+          "instruction": ""
+        }
+      ],
       "hard_questions": [],
       "links": [],
       "instruction": "",
@@ -132,7 +202,14 @@
       "text": "Every written description of the first press is updated together: docs/shell-integration.md 'Stopping the agent' (368-397) and its exit-code table (94-95), docs/daemon.md control table (187-189), README.md:54, and the stop paragraph in all five harness prompt files (CLAUDE.md:122-128, AGENTS.override.md:46-52, .pi/SYSTEM.md:22-28, AGENTS.colleague.md:53-59, QWEN.md:49-55).",
       "origin": "llm",
       "status": "proposed",
-      "honesty_conditions": [],
+      "honesty_conditions": [
+        {
+          "id": "h11",
+          "text": "After the change, grep for 'press again to kill' finds it only as the post-[s] line, in every one of the listed files, and scripts/harness-smoke.py --stage config passes.",
+          "status": "proposed",
+          "instruction": ""
+        }
+      ],
       "hard_questions": [],
       "links": [],
       "instruction": "",
@@ -144,7 +221,14 @@
       "text": "Tests that pin today's first press are rewritten rather than deleted -- tests/test_panel_stop.py (about 5), tests/test_client_stop.py (about 4) and the parametrized test_two_presses_stop_every_family_on_both_paths in tests/test_agent_stop.py -- and the conformance suite gains its first steer tests, asserting pi and codex deliver mid-turn and every other adapter declares steer=False.",
       "origin": "llm",
       "status": "proposed",
-      "honesty_conditions": [],
+      "honesty_conditions": [
+        {
+          "id": "h12",
+          "text": "No first-press test is deleted without a replacement asserting the new behaviour for the same case, and the suite's pass count does not drop.",
+          "status": "proposed",
+          "instruction": ""
+        }
+      ],
       "hard_questions": [],
       "links": [],
       "instruction": "",
@@ -156,7 +240,14 @@
       "text": "The audit log records what the operator chose at the prompt. nvsh/agent/audit.py STOP_KINDS (19-29) gains keep_going; [s] keeps the existing cancel/force_kill kinds; a steer from the prompt reuses the existing steer kind with a field naming where it came from (stop prompt versus busy prompt), so existing audit readers keep working.",
       "origin": "llm",
       "status": "proposed",
-      "honesty_conditions": [],
+      "honesty_conditions": [
+        {
+          "id": "h13",
+          "text": "Each prompt outcome writes exactly one audit line; keep_going and timeout are distinguishable; a steer line names the stop prompt as its origin; existing audit tests pass unmodified.",
+          "status": "proposed",
+          "instruction": ""
+        }
+      ],
       "hard_questions": [],
       "links": [],
       "instruction": "",
@@ -209,9 +300,202 @@
       "links": [],
       "instruction": "",
       "revisions": []
+    },
+    {
+      "id": "c18",
+      "kind": "decision",
+      "text": "On a harness that cannot steer mid-turn (Capabilities.steer false: openai-compat, acp, claude, qwen print mode, agy), [t] is 'stop and correct': nvsh cancels the running turn politely, then sends the operator's typed correction as the next request with the prior exchange as context. On pi and codex [t] delivers the text into the running turn and nothing is cancelled.",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c19",
+      "kind": "decision",
+      "text": "A choice prompt left unanswered for 30 s dismisses itself as 'keep going': nothing is sent to the harness, rendering resumes, and the audit log records the timeout.",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c20",
+      "kind": "decision",
+      "text": "Exit status: a turn that was steered from the prompt and then finishes normally exits 0 like an uninterrupted turn; 130 is reserved for [s] stop (and the kill that may follow it); keep going never changes the status.",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c21",
+      "kind": "decision",
+      "text": "Prompt wording: 'nvsh: paused -- [t] steer  [s] stop  [Esc] keep going'; where the harness cannot steer mid-turn the first key reads '[t] stop & correct'.",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c22",
+      "kind": "requirement",
+      "text": "'Stop and correct' sends the correction even though the turn was interrupted: today handle_failure, ask and the slash path return 130 before the follow-up request (nvsh/client.py:1739, 1826, 1904), which would drop the typed text. After a stop-and-correct the client waits for the cancelled turn to end, then streams the correction as the next request; only a plain [s] stop returns 130 without a follow-up.",
+      "origin": "llm",
+      "status": "proposed",
+      "honesty_conditions": [
+        {
+          "id": "h14",
+          "text": "A correction typed after stop-and-correct is never dropped: it is sent as the next request on the daemon path and the one-shot path, and if the cancelled turn will not end the operator still gets the second-press kill rather than a hang.",
+          "status": "proposed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "Test in tests/test_client_stop.py: press, choose t on a Capabilities.steer=False fake, type a line; assert cancel was called once, a second request carrying the line was sent, and the exit status is the second turn's.",
+      "revisions": []
+    },
+    {
+      "id": "c23",
+      "kind": "requirement",
+      "text": "The stop-and-correct request is self-contained: nvsh composes it from the original request and the operator's correction (and says the previous attempt was stopped), so it does not depend on the harness remembering the cancelled turn. agy in warm mode respawns after cancel() (nvsh/agent/agy.py:493-515) and a one-shot run has no session at all.",
+      "origin": "llm",
+      "status": "proposed",
+      "honesty_conditions": [
+        {
+          "id": "h15",
+          "text": "The follow-up prompt contains the original request text and the correction on every adapter family, verified without any harness session state.",
+          "status": "proposed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "Test: the follow-up AgentRequest.prompt contains both the original question and the correction text, on every adapter family, without reading harness session state.",
+      "revisions": []
+    },
+    {
+      "id": "c24",
+      "kind": "audience",
+      "text": "An operator at an interactive nvsh-hooked bash prompt on a Jetson, DGX Spark or RTX box, often over SSH, watching the agent work in the inline panel; secondarily the maintainers who read the audit log to see how a turn ended.",
+      "origin": "llm",
+      "status": "proposed",
+      "honesty_conditions": [
+        {
+          "id": "h16",
+          "text": "The behaviour is only ever seen by an interactive operator: non-interactive invocations never reach the panel's prompt.",
+          "status": "proposed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "Confirm docs/shell-integration.md 'Stopping the agent' addresses the operator at the prompt.",
+      "revisions": []
+    },
+    {
+      "id": "c25",
+      "kind": "before_state",
+      "text": "Today the first Ctrl+C or Esc cancels the turn at once. An accidental press throws away a turn that may have cost a minute of model time (70 s observed on thor on 2026-09-17), and an operator who only wanted to redirect the agent has no way to do it from the panel: steer is offered only at a proposal, via /steer, or at the busy prompt.",
+      "origin": "llm",
+      "status": "proposed",
+      "honesty_conditions": [
+        {
+          "id": "h17",
+          "text": "The 70 s figure and the missing choice are reproducible on 0.13.1 and are recorded in this session's thor capture log.",
+          "status": "proposed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "Reproduce on 0.13.1: press Esc during a turn and observe 'stopping\u2026 press again to kill' with no choice.",
+      "revisions": []
+    },
+    {
+      "id": "c26",
+      "kind": "after_state",
+      "text": "The first Ctrl+C or Esc pauses the panel and shows 'nvsh: paused -- [t] steer  [s] stop  [Esc] keep going'. Esc (or 30 s of silence) resumes as if nothing happened; s stops exactly as before, with a further press still killing; t takes one line and either steers the running turn (pi, codex) or stops and resends with the correction (every other harness).",
+      "origin": "llm",
+      "status": "proposed",
+      "honesty_conditions": [
+        {
+          "id": "h18",
+          "text": "Each key and the timeout behaves as described on a real pty, not only against a stubbed reader.",
+          "status": "proposed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "Drive tests/test_panel_stop.py through each of the three keys and the timeout on a pty.",
+      "revisions": []
+    },
+    {
+      "id": "c27",
+      "kind": "why_it_matters",
+      "text": "A stop key that acts instantly punishes a slip of the finger with a lost turn, and an operator who sees the agent heading the wrong way should be able to say so rather than kill it and start over. Asking first makes the stop deliberate and makes correcting the agent a first-class move.",
+      "origin": "llm",
+      "status": "proposed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c28",
+      "kind": "success_signal",
+      "text": "The prompt appears within 1 s of the first press; after [s] the 'stopping\u2026' line appears within 1 s and a further press returns the prompt within 3 s, as in 0.13.0; an unanswered prompt resumes at 30 s (+/- 1 s); keep going and a delivered steer exit 0 with interrupted unset; 100% of registered adapters declare Capabilities.steer and only pi and codex declare it true.",
+      "origin": "llm",
+      "status": "proposed",
+      "honesty_conditions": [
+        {
+          "id": "h19",
+          "text": "Every number in the signal (1 s, 3 s, 30 s +/- 1 s, 100%) is asserted by a test that fails when the number is violated.",
+          "status": "proposed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "Timing assertions on a pty in tests/test_panel_stop.py; a conformance test iterating registry.ADAPTERS for the capability.",
+      "revisions": []
     }
   ],
-  "open_vagueness": [],
+  "open_vagueness": [
+    {
+      "id": "v1",
+      "text": "Whether real pi and real codex visibly act on a mid-turn steer sent from the stop prompt was not probed on the fleet; only the fakes are exercised. Verify on thor/orin after merge.",
+      "kind": "follow_up",
+      "claim_id": null,
+      "resolved": false,
+      "resolution": "",
+      "resolution_claim_id": null
+    },
+    {
+      "id": "v2",
+      "text": "The 30 s timeout and the paused panel interact with NVSH_TURN_TIMEOUT (300 s) and with daemon-side buffering while the client renders nothing: confirm in implementation that a paused client cannot stall or drop the harness stream.",
+      "kind": "unknown_nonblocking",
+      "claim_id": null,
+      "resolved": false,
+      "resolution": "",
+      "resolution_claim_id": null
+    }
+  ],
   "scope_entries": [
     {
       "id": "s1",
@@ -315,6 +599,22 @@
       "finding": "STOP_KINDS is cancel, force_kill, steer, replace, busy_exit, declined, doctor_apply (audit.py:19-29); any other kind is rejected (audit.py:122). 'steer' is currently written only by the busy prompt.",
       "seeds": [
         "c13"
+      ]
+    },
+    {
+      "id": "s14",
+      "surface": "nvsh/client.py (interrupted -> 130 before follow-up)",
+      "finding": "handle_failure returns 130 as soon as result.interrupted is set, before the 'if inspections or steers' follow-up block (client.py:1739-1758); ask (1826) and the slash path (1904) do the same. A correction typed after a stop is therefore discarded today.",
+      "seeds": [
+        "c22"
+      ]
+    },
+    {
+      "id": "s15",
+      "surface": "nvsh/agent/agy.py cancel() (warm respawn)",
+      "finding": "Warm agy has no protocol cancel: cancel() discards queued events, marks the process unusable and sends SIGINT, so the next run() closes and respawns it (agy.py:493-515). Conversation continuity across a cancel cannot be assumed for agy; openai-compat replays the prior exchange only when steer() was called first (openai_compat.py:177-208).",
+      "seeds": [
+        "c23"
       ]
     }
   ],
