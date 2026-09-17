@@ -32,8 +32,14 @@ def _platform_kind(args: argparse.Namespace) -> str:
 def cmd_slash(args: argparse.Namespace) -> int:
     kind = _platform_kind(args)
     draft = os.environ.get("NVSH_DRAFT") or None
-    result = slash_mod.dispatch_result(args.line, platform_kind=kind, draft=draft)
     json_mode = bool(getattr(args, "json", False))
+    # d2 (stop-choice-prompt): ``nvsh slash --json`` has no panel to answer
+    # the stop-choice prompt on, so the verbs that stream a request
+    # (/ask, /fix, /explain, /steer) get told to skip it, the same way a
+    # non-tty invocation already does.
+    result = slash_mod.dispatch_result(
+        args.line, platform_kind=kind, draft=draft, json_mode=json_mode
+    )
     if json_mode:
         text = (args.line or "").strip()
         if text.startswith("/"):
