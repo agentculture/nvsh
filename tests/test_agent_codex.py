@@ -501,7 +501,8 @@ def test_force_stop_kills_the_app_server_pid_when_it_ignores_interrupt(
             break
 
     proc = agent._rpc
-    assert proc is not None and proc.poll() is None
+    assert proc is not None
+    assert proc.poll() is None
     pid = proc.pid
 
     agent.force_stop()
@@ -536,7 +537,8 @@ def test_run_after_force_stop_starts_a_fresh_app_server_with_new_session_status(
     # turn, reported with a 'new session' status ahead of the turn's events.
     second = _drive(agent, approve=True)
     kinds = [event.kind for event in second]
-    assert kinds[0] == EventKind.STATUS and second[0].text == "new session"
+    assert kinds[0] == EventKind.STATUS
+    assert second[0].text == "new session"
     assert kinds[-1] == EventKind.DONE
 
     # initialize/thread/start/turn/start all ran twice -- once for the

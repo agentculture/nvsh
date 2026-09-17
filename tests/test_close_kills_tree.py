@@ -91,7 +91,8 @@ def test_close_after_run_leaves_no_grandchild(tmp_path: Path, name: str) -> None
             events.append(event)
             if event.kind is EventKind.PROPOSAL:
                 _fake_adapters.answer_proposal(agent, event)
-        assert events and events[-1].kind is EventKind.DONE, f"{name}: {events}"
+        assert events, f"{name}: {events}"
+        assert events[-1].kind is EventKind.DONE, f"{name}: {events}"
         pids = json.loads((tmp_path / "pids.json").read_text(encoding="utf-8"))
         if name != "agy-cold":  # a cold turn reaps its own tree at turn end (below)
             assert _pid_alive(pids["grandchild"]), f"{name}: grandchild never started"

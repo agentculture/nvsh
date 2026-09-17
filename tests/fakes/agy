@@ -51,10 +51,25 @@ A few more knobs, for the reliable-agent-stop tests:
 * ``NVSH_FAKE_READY_FILE=<path>`` -- touched once signal handling is
   actually installed, so a test can wait for it instead of racing this
   process's own interpreter startup before sending a signal.
+* ``NVSH_FAKE_LATE_LINE=<ndjson line>`` -- written to stdout from inside
+  the ``SIGINT``/``SIGTERM`` handler itself, standing in for a real agy
+  that keeps emitting output from the turn being cancelled for a moment
+  after the signal arrives (it has no protocol-level cancel to make that
+  synchronous). Combine with ``NVSH_FAKE_IGNORE_CANCEL=1`` to keep the
+  warm process alive afterward, so a test can prove the *next* turn never
+  sees this line.
 * A turn's own ``"sleep_before"`` (seconds) makes ``_play_turn`` sleep
   before writing that turn's output -- long enough that a test can be sure
   the fake is still "working" the turn when it sends a signal, instead of
   racing a turn that finishes on its own first.
+* ``NVSH_FAKE_TURN_STARTED_FILE=<path>`` (warm mode only) -- touched right
+  after each turn's stdin line is read, before ``_play_turn`` runs (so
+  before any ``sleep_before``). A test that calls ``cancel()`` right after
+  starting a background ``run()`` races that background thread's own
+  write -- ``AgyAgent.start()`` already spawned the child, so waiting for
+  ``self._proc`` alone proves nothing about whether *this* turn's prompt
+  has actually been written yet. Waiting on this file first proves the
+  write landed before ``cancel()`` fires.
 """
 
 from __future__ import annotations
@@ -101,13 +116,17 @@ def install_signal_log() -> None:
     """
     log_path = os.environ.get("NVSH_FAKE_SIGNAL_LOG")
     ignore = os.environ.get("NVSH_FAKE_IGNORE_CANCEL") == "1"
-    if not log_path and not ignore:
+    late_line = os.environ.get("NVSH_FAKE_LATE_LINE")
+    if not log_path and not ignore and not late_line:
         return  # nothing to log, default signal disposition is fine as-is
 
     def _handler(signum: int, _frame: object) -> None:
         if log_path:
             with open(log_path, "a", encoding="utf-8") as fh:
                 fh.write(json.dumps({"signal": int(signum)}) + "\n")
+        if late_line:
+            sys.stdout.write(late_line.rstrip("\n") + "\n")
+            sys.stdout.flush()
         if not ignore:
             os._exit(0)
 
@@ -172,12 +191,15 @@ def main(argv: list[str]) -> int:
         hang_if_ignoring_cancel()
         return exit_code
 
+    turn_started_file = os.environ.get("NVSH_FAKE_TURN_STARTED_FILE")
     turns = list(spec.get("turns", []))
     exit_code = 0
     for turn in turns:
         line = sys.stdin.readline()
         if not line:
             break
+        if turn_started_file:
+            Path(turn_started_file).write_text("1", encoding="utf-8")
         exit_code = _play_turn(turn)
     hang_if_ignoring_cancel()
     return exit_code

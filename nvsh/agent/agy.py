@@ -117,6 +117,27 @@ def _drain_lines(stream, sink: deque) -> None:
         pass
 
 
+def _drain_stdout(proc: subprocess.Popen, out_queue: "queue.Queue[dict | None]") -> None:
+    """Read *proc*'s stdout to EOF, decoding NDJSON lines into *out_queue*.
+
+    Takes the process and queue as arguments -- not ``self.`` attribute
+    lookups -- so a thread started for one warm child always finishes into
+    the queue it was started with, even after ``AgyAgent`` has respawned
+    and moved ``self._proc``/``self._stdout_queue`` on to a new pair while
+    this one is still draining the old child to EOF.
+    """
+    assert proc.stdout is not None
+    try:
+        for raw_line in proc.stdout:
+            obj = _safe_json_line(raw_line)
+            if obj is not None:
+                out_queue.put(obj)
+    except (OSError, ValueError):
+        pass
+    finally:
+        out_queue.put(None)  # sentinel: stdout closed
+
+
 class AgyAgent(NvshAgent):
     """Drives the ``agy`` CLI, cold (default) or warm (``warm=True``)."""
 
@@ -159,6 +180,14 @@ class AgyAgent(NvshAgent):
         self._write_lock = threading.Lock()
         self._cancelled = False
         self._closed = False
+        #: Set by cancel() on a warm turn: the signalled child may still
+        #: enqueue late output from the turn being cancelled (agy has no
+        #: protocol-level cancel to await -- see cancel()'s docstring), so
+        #: the next run() must not read that stale, unversioned queue. Once
+        #: set, run() closes (process-group reap, t23) and respawns the
+        #: warm child with a fresh queue before writing the next prompt
+        #: (Qodo 5).
+        self._warm_unusable = False
 
     # -- argv ---------------------------------------------------------
 
@@ -212,24 +241,24 @@ class AgyAgent(NvshAgent):
         )
         self._stdout_queue = queue.Queue()
         self._stderr_tail.clear()
-        self._reader = threading.Thread(target=self._drain_stdout, daemon=True)
+        # Bound to *this* process/queue pair by argument, not looked up off
+        # ``self`` inside the thread: a respawn (cwd change, force_stop, or
+        # the cancelled-warm-process retirement in run()) swaps
+        # ``self._stdout_queue``/``self._proc`` for a new pair while the old
+        # reader thread may still be draining the old child's stdout to
+        # EOF. A ``self.``-attribute lookup there would let that old
+        # thread's own EOF sentinel land in the *new* queue once it finally
+        # finishes -- ``_warm_events`` reading that ``None`` off the new
+        # queue calls ``self._proc.wait()`` on the still-running new child
+        # and hangs forever (Qodo 5 fix, found while testing it).
+        self._reader = threading.Thread(
+            target=_drain_stdout, args=(self._proc, self._stdout_queue), daemon=True
+        )
         self._reader.start()
         self._stderr_thread = threading.Thread(
             target=_drain_lines, args=(self._proc.stderr, self._stderr_tail), daemon=True
         )
         self._stderr_thread.start()
-
-    def _drain_stdout(self) -> None:
-        assert self._proc is not None and self._proc.stdout is not None
-        try:
-            for raw_line in self._proc.stdout:
-                obj = _safe_json_line(raw_line)
-                if obj is not None:
-                    self._stdout_queue.put(obj)
-        except (OSError, ValueError):
-            pass
-        finally:
-            self._stdout_queue.put(None)  # sentinel: stdout closed
 
     # -- run --------------------------------------------------------------
 
@@ -243,6 +272,18 @@ class AgyAgent(NvshAgent):
         if cwd and not os.path.isdir(cwd):
             cwd = None  # a vanished directory falls back to the inherited one
         if self._warm:
+            if self._warm_unusable:
+                # The previous turn was cancelled: agy has no protocol-level
+                # cancel, so late output from that turn can still be sitting
+                # in (or still arriving in) the shared queue. Retire this
+                # child for good -- same escalation force_stop() uses -- so
+                # the respawn below starts a fresh process with a fresh
+                # queue instead of this run() reading anything left over
+                # from the cancelled one (Qodo 5).
+                if self._proc is not None and self._proc.poll() is None:
+                    self.close()
+                    self._closed = False
+                self._warm_unusable = False
             if cwd and self._cwd != cwd:
                 # A warm process is bound to one working tree: rebind by
                 # respawning when a request comes from a different directory.
@@ -457,8 +498,14 @@ class AgyAgent(NvshAgent):
             # ``_cancelled`` alone would just be a flag nobody outside this
             # object ever sees. Anything already queued from the turn being
             # cancelled is discarded too, so a stale event from before this
-            # cancel is never read as part of the next turn.
+            # cancel is never read as part of the next turn. The reader
+            # thread keeps running after this, though, and can still
+            # enqueue more output from the cancelled turn (agy's signal
+            # handling is not synchronous with the reader) -- marking the
+            # process unusable is what makes the *next* run() close and
+            # respawn it instead of trusting this same queue again (Qodo 5).
             self._discard_queued_events()
+            self._warm_unusable = True
             self._signal_child(signal.SIGINT)
         else:
             self._terminate(self._proc)
