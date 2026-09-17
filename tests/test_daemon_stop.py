@@ -178,7 +178,8 @@ def test_kill_releases_the_run_lock_and_the_queued_request_runs_on_a_fresh_slot(
 
     assert agents[0].force_stops == 1
     assert released_after < 3.0, f"the run lock was held {released_after:.2f}s after kill"
-    assert hung_events and hung_events[-1].kind in (EventKind.ERROR, EventKind.DONE)
+    assert hung_events
+    assert hung_events[-1].kind in (EventKind.ERROR, EventKind.DONE)
     assert len(agents) == 2, "the killed slot was not replaced with a fresh agent"
     assert agents[1].prompts == ["B fails"]
     assert "B fails" not in agents[0].prompts
@@ -201,11 +202,13 @@ def test_kill_from_another_shell_does_nothing_to_this_shells_turn(tmp_path: Path
         time.sleep(0.3)
 
         turn = daemon.active_turn()
-        assert turn is not None and turn["shell"] == "A"
+        assert turn is not None
+        assert turn["shell"] == "A"
         assert agents[0].force_stops == 0
         assert agents[0].cancels == 0
         assert not agents[0].closed
-        assert len(daemon._slots) == 1 and daemon._slots[0].agent is agents[0]
+        assert len(daemon._slots) == 1
+        assert daemon._slots[0].agent is agents[0]
         assert hung.is_alive()
     finally:
         for agent in agents:
@@ -323,8 +326,10 @@ def test_owning_shell_gets_a_busy_event_and_exit_leaves_the_turn_running(
         assert events[-1].args.get("busy_choice") == "exit"
 
         turn = daemon.active_turn()
-        assert turn is not None and turn["shell"] == "A"
-        assert agents[0].force_stops == 0 and agents[0].cancels == 0
+        assert turn is not None
+        assert turn["shell"] == "A"
+        assert agents[0].force_stops == 0
+        assert agents[0].cancels == 0
         assert agents[0].prompts == [f"{BLOCK} A"]
     finally:
         for agent in agents:
@@ -402,7 +407,8 @@ def test_replace_from_the_owning_shell_kills_the_turn_and_runs_the_request(
         assert client_transport.busy_choice("replace", shell_id="A", env=env) is True
         second.join(5.0)
         hung.join(5.0)
-        assert not second.is_alive() and not hung.is_alive()
+        assert not second.is_alive()
+        assert not hung.is_alive()
     finally:
         for agent in agents:
             agent.killed.set()
@@ -542,7 +548,8 @@ def test_kill_active_refuses_a_live_owner_without_confirmation(tmp_path: Path) -
         assert client_transport.kill_active(confirmed=False, env=env) == "refused"
         time.sleep(0.2)
         turn = daemon.active_turn()
-        assert turn is not None and turn["shell"] == "A"
+        assert turn is not None
+        assert turn["shell"] == "A"
         assert agents[0].force_stops == 0
         assert hung.is_alive()
     finally:
@@ -558,7 +565,13 @@ def test_kill_active_kills_a_live_owner_once_confirmed(tmp_path: Path) -> None:
     _start(daemon)
     try:
         hung = _hang(env, agents, "A")
-        assert client_transport.kill_active(confirmed=True, env=env) in ("killed", "stopping")
+        # A confirmation without the turn's identity confirms nothing.
+        assert client_transport.kill_active(confirmed=True, env=env) == "refused"
+        snapshot = daemon.active_turn()
+        assert snapshot is not None
+        expected = {"shell": snapshot["shell"], "started": snapshot["started"]}
+        outcome = client_transport.kill_active(confirmed=True, expected=expected, env=env)
+        assert outcome in ("killed", "stopping")
         hung.join(5.0)
         assert not hung.is_alive()
         assert daemon.active_turn() is None
@@ -568,3 +581,117 @@ def test_kill_active_kills_a_live_owner_once_confirmed(tmp_path: Path) -> None:
         daemon.shutdown()
 
     assert agents[0].force_stops == 1
+
+
+# --- review fixes (PR #16): stale kills, turn identity, strict confirm ------
+
+
+def _parked_turn(daemon: daemon_mod.Daemon, shell: str, agent: StubbornAgent):
+    """Put a fake active turn on *daemon* without a socket or a run thread."""
+    slot = daemon_mod._Slot(agent, shell=shell)
+    turn = daemon_mod._ActiveTurn(shell, slot)
+    with daemon._lock:
+        daemon._slots.append(slot)
+        daemon._active = turn
+    return slot, turn
+
+
+def test_force_stop_of_a_turn_that_is_no_longer_active_touches_nothing(tmp_path: Path) -> None:
+    """Qodo 2: a delayed kill must not stop the adapter now serving later work."""
+    daemon = daemon_mod.Daemon(Config(), env=_env(tmp_path), agent_factory=_factory([]))
+    agent = StubbornAgent("reused")
+    slot, stale = _parked_turn(daemon, "A", agent)
+    # The stale turn finished; its slot now serves a new turn.
+    stale.finished.set()
+    fresh = daemon_mod._ActiveTurn("A", slot)
+    with daemon._lock:
+        daemon._active = fresh
+
+    assert daemon._force_stop_turn(stale, wait=0.0) == "idle"
+    assert agent.force_stops == 0
+    assert agent.closed is False
+    assert slot in daemon._slots
+    assert fresh.aborted == ""
+    assert stale.aborted == ""
+
+
+def test_kill_active_refuses_when_the_active_turn_changed(tmp_path: Path) -> None:
+    """Qodo 3: a confirmation names one turn; a different turn is never killed."""
+    daemon = daemon_mod.Daemon(Config(), env=_env(tmp_path), agent_factory=_factory([]))
+    agent = StubbornAgent("b")
+    _, turn = _parked_turn(daemon, "B", agent)
+
+    outcome = daemon.kill_active_turn(
+        confirmed=True, expected={"shell": "A", "started": turn.started}, wait=0.0
+    )
+    assert outcome == "changed"
+    outcome = daemon.kill_active_turn(
+        confirmed=True, expected={"shell": "B", "started": turn.started - 1.0}, wait=0.0
+    )
+    assert outcome == "changed"
+    assert agent.force_stops == 0
+
+    events = list(
+        daemon.handle_message(
+            {"kind": "kill_active", "shell": "doctor", "confirmed": True, "expected": None}
+        )
+    )
+    assert events[-1].kind is EventKind.ERROR
+    assert agent.force_stops == 0
+
+    outcome = daemon.kill_active_turn(
+        confirmed=True, expected={"shell": "B", "started": turn.started}, wait=0.0
+    )
+    assert outcome in ("killed", "stopping")
+    assert agent.force_stops == 1
+
+
+def test_kill_active_changed_travels_to_the_client(tmp_path: Path) -> None:
+    env = _env(tmp_path)
+    agents: list[StubbornAgent] = []
+    daemon = daemon_mod.Daemon(Config(), env=env, agent_factory=_factory(agents))
+    _start(daemon)
+    try:
+        hung = _hang(env, agents, "A")
+        stale = {"shell": "A", "started": 1.0}
+        assert client_transport.kill_active(confirmed=True, expected=stale, env=env) == "changed"
+        assert agents[0].force_stops == 0
+        assert hung.is_alive()
+    finally:
+        for agent in agents:
+            agent.killed.set()
+        daemon.shutdown()
+
+
+@pytest.mark.parametrize("value", ["false", "yes", 1, [True], {"a": 1}])
+def test_kill_active_confirmed_must_be_exactly_true(tmp_path: Path, value: object) -> None:
+    """Qodo 7: only JSON ``true`` confirms a live-owner kill."""
+    daemon = daemon_mod.Daemon(Config(), env=_env(tmp_path), agent_factory=_factory([]))
+    agent = StubbornAgent("a")
+    _, turn = _parked_turn(daemon, "A", agent)
+    message = {
+        "kind": "kill_active",
+        "shell": "doctor",
+        "confirmed": value,
+        "expected": {"shell": "A", "started": turn.started},
+    }
+    events = list(daemon.handle_message(message))
+    assert events[-1].kind is EventKind.ERROR
+    assert "confirm" in events[-1].error
+    assert agent.force_stops == 0
+
+
+def test_shell_pid_gone_treats_an_oversized_pid_as_live() -> None:
+    """Qodo 8: an unrepresentable pid is unprobeable, so it counts as alive."""
+    assert daemon_mod._shell_pid_gone("9" * 30) is False
+    assert daemon_mod._shell_pid_gone("9" * 5000) is False
+
+
+def test_kill_active_with_an_oversized_owner_pid_is_refused_not_broken(tmp_path: Path) -> None:
+    daemon = daemon_mod.Daemon(Config(), env=_env(tmp_path), agent_factory=_factory([]))
+    agent = StubbornAgent("a")
+    _parked_turn(daemon, "9" * 30, agent)
+    events = list(daemon.handle_message({"kind": "kill_active", "shell": "doctor"}))
+    assert events[-1].kind is EventKind.ERROR
+    assert "confirm" in events[-1].error
+    assert agent.force_stops == 0
