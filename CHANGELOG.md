@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/). This project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.14.1] - 2026-09-18
+
+### Changed
+
+- Records only, no code change: the operator approved the stop-choice-prompt records (lapses l2-l4, obligations o1-o23, evidence e1-e70, deltas b1-b15), `docs/current-spec.md` is regenerated from the approved ledger with `devague today` and now describes the stop choice prompt, and the delivery summary gains an adjudication section.
+
 ## [0.14.0] - 2026-09-17
 
 ### Added
