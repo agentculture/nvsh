@@ -1860,8 +1860,15 @@ def _ask_request(
 
 def _with_prompt(request: AgentRequest, prompt: str) -> AgentRequest:
     """``request`` again, carrying ``prompt`` instead (the follow-up turn)."""
-    updated: AgentRequest = replace(request, prompt=prompt)
-    return updated
+    return AgentRequest(
+        kind=request.kind,
+        prompt=prompt,
+        command=request.command,
+        exit_code=request.exit_code,
+        failure_id=request.failure_id,
+        ask=request.ask,
+        target=request.target,
+    )
 
 
 def _on_last_failure(prompt: str, panel: Panel | None, env: Mapping[str, str] | None) -> int:

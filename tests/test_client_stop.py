@@ -676,3 +676,24 @@ def test_ctrl_c_at_a_raw_prompt_exits_130_cancels_once_and_never_declines(
     assert [entry["kind"] for entry in _stops(stop_env)] == ["cancel"]
     events = [entry["event"] for entry in AuditLog(env=stop_env).read_all()]
     assert "decision" not in events
+
+
+def test_with_prompt_keeps_every_field_but_the_prompt():
+    """The follow-up request copies every ``AgentRequest`` field except the prompt."""
+    import dataclasses
+
+    from nvsh.agent.base import AgentRequest, RequestKind, Target
+    from nvsh.client import _with_prompt
+
+    original = AgentRequest(
+        kind=RequestKind.FAILURE,
+        prompt="old",
+        command="ls /nope",
+        exit_code=2,
+        failure_id="f1",
+        ask="why",
+        target=Target(backend="pi"),
+    )
+    updated = _with_prompt(original, "new")
+    assert updated.prompt == "new"
+    assert dataclasses.replace(updated, prompt="old") == original
