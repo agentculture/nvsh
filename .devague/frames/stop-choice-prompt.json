@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-09-17T16:13:08Z",
-  "updated": "2026-09-17T17:03:40Z",
+  "updated": "2026-09-17T17:50:14Z",
   "claims": [
     {
       "id": "c1",
@@ -910,6 +910,18 @@
       ],
       "origin": "llm",
       "status": "approved"
+    },
+    {
+      "id": "l2",
+      "code": "assumption-for-measurement",
+      "what": "Task agent t1 reported 'every acceptance criterion has a real, passing test', but acceptance criterion 4 (nvsh agent list --json shows the new capability for every adapter) was only 'confirmed via read' of nvsh/cli/_commands/agent.py with no test, and criterion 1's 'fake declares False' rests on the Capabilities() default with no test pinning it. Caught by the main agent at the merge gate (commit 2e9e0ff); the task was sent back before merge.",
+      "skipped_check": "a test asserting the CLI's JSON output carries steer for every adapter",
+      "refs": [
+        "t1",
+        "2e9e0ff"
+      ],
+      "origin": "llm",
+      "status": "proposed"
     }
   ],
   "obligations": []
