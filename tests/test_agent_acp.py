@@ -120,6 +120,7 @@ def test_every_entry_reports_unmediated_file_access_over_acp():
         assert caps.unmediated_file_access is True
         assert caps.path == "acp"
         assert caps.persistent_session is True
+        assert caps.steer is False
 
 
 def test_no_entry_can_be_configured_into_a_bypass_mode():

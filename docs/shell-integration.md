@@ -91,8 +91,13 @@ reported, just not as the process's exit status: it is `exit_code` in
 | --- | --- | --- |
 | ran | 0 | `nvsh slash` exit status; `--json` `exit_code` |
 | unhandled line | 1 | `nvsh slash` exit status |
-| stopped with Ctrl+C / Esc during work | 130 | `--json` `exit_code`; audit `cancel` / `force_kill` |
+| stopped: `[s]` at the choice prompt, or Ctrl+C at another nvsh prompt | 130 | `--json` `exit_code`; audit `cancel` / `force_kill` |
 | declined: Esc/ignore at a proposal, or exit at the busy prompt | 3 (`EXIT_DECLINED`) | `--json` `exit_code`; audit `declined` |
+
+Choosing `[t]` steer at the choice prompt and letting the turn finish
+normally, or dismissing the prompt with `[Esc]` or its 30 s timeout, both
+leave the exit status untouched — 0 for a normal completion, never 130.
+See "Stopping the agent" below.
 
 `nvsh hook` returns the same 0/3/130, and `hook.bash` discards it with
 `|| return 0`, so the operator's `$?` and `PIPESTATUS` for the failing
@@ -344,8 +349,8 @@ the DGX Spark reported "I don't see proper indications things run"):
   next real event reaches the screen, and the ticker is paused for as long
   as the panel is handling an event — a proposal prompt is never painted
   over. One lock guards every write, so the ticker can never interleave
-  with the agent's text, and `Ctrl+C` or `Esc` still says `stopping…`
-  within a second while waiting (see "Stopping the agent" below).
+  with the agent's text, and `Ctrl+C` or `Esc` still opens the choice
+  prompt within a second while waiting (see "Stopping the agent" below).
 - **Keypress acknowledgement.** The instant a key is pressed at a proposal,
   the panel prints `nvsh: running ...` (Enter),
   `nvsh: running; 'ssh orin *' approved for this session` (`s`/`S`),
@@ -365,26 +370,78 @@ the DGX Spark reported "I don't see proper indications things run"):
   slower turn that follows. Every other status stays a dim `... text` line,
   and a status with empty text prints nothing at all.
 
-### Stopping the agent (reliable-agent-stop)
+### Stopping the agent (stop-choice-prompt)
 
 While the agent works — thinking, streaming text, or the waiting ticker —
-`Ctrl+C` and a lone `Esc` do the same thing:
+the first `Ctrl+C` or a lone `Esc` no longer cancels the turn at once. It
+pauses the panel and shows a one-line choice:
 
-1. **First press:** nvsh asks the harness to stop through its own channel
-   (pi `abort`, codex `turn/interrupt`, ACP `session/cancel`, a signal for
-   agy; claude, qwen-p and openai-compat stop at once). The panel stays up
-   and prints `stopping… press again to kill` within a second, and keeps
-   rendering until the turn really ends.
-2. **Second press:** nvsh kills the harness's whole process tree — its tool
-   subprocesses too — and the prompt comes back. The next request starts a
-   fresh harness session (the panel says `new session`); the harness's
-   in-memory conversation is gone. There is no automatic kill timer: only
-   `$NVSH_TURN_TIMEOUT` bounds a turn on its own.
+```text
+nvsh: paused -- [t] steer  [s] stop  [Esc] keep going
+```
+
+Where the harness cannot steer mid-turn — every adapter except `pi` and
+`codex` — the first key reads `[t] stop & correct` instead. Nothing is
+sent to the harness until the operator picks:
+
+- **`[t]` steer / stop & correct:** types one line. On `pi` and `codex` the
+  line is delivered into the running turn and nothing is cancelled. On
+  every other harness the running turn is cancelled first, and the typed
+  line is sent as the next request with the original request folded in, so
+  the follow-up is self-contained.
+- **`[s]` stop:** does exactly what the first press did before this change:
+  1. **First press (of the stop path):** nvsh asks the harness to stop
+     through its own channel (pi `abort`, codex `turn/interrupt`, ACP
+     `session/cancel`, a signal for agy; claude, qwen-p and openai-compat
+     stop at once). The panel stays up and prints `stopping… press again
+     to kill` within a second, and keeps rendering until the turn really
+     ends.
+  2. **Second press:** nvsh kills the harness's whole process tree — its
+     tool subprocesses too — and the prompt comes back. The next request
+     starts a fresh harness session (the panel says `new session`); the
+     harness's in-memory conversation is gone. There is no automatic kill
+     timer: only `$NVSH_TURN_TIMEOUT` bounds a turn on its own. A `Ctrl+C`
+     typed while another nvsh prompt (the choice prompt itself, a
+     proposal, or the busy prompt) is already open goes straight to this
+     stop path.
+- **`[Esc]` keep going, or no key for 30 s (±1 s):** dismisses the prompt.
+  Nothing is sent to the harness, rendering resumes, and the turn's exit
+  status and `result.interrupted` are unaffected — a dismissed accidental
+  press is never reported as exit 130.
 
 Both the daemon path (`client_transport.cancel`, then `kill`) and the
 one-shot path (the in-process adapter's `cancel()`, then `force_stop()`)
 work this way. After a stop in a one-shot run, whatever tool processes the
 harness left behind are killed once the turn is over (deviation d8).
+
+At the correction line (the `nvsh>` prompt) an empty line or `Ctrl+C` means never
+mind: nothing is sent, nothing is cancelled and the turn keeps going. The
+typed line is redacted (`nvsh/redact.py`) before it goes anywhere, and the
+audit log keeps only its length (`correction_chars`), never the text.
+
+If `pi` or `codex` cannot take the correction after all — codex fell back
+to `exec` mode, or the turn has no id yet — nvsh says `nvsh: could not
+steer the running turn` and asks once whether to stop and correct instead.
+`y` does that; any other key discards the text, which is written to the
+audit log as `steer` / `discarded`, and the turn keeps going. The text is
+never dropped silently.
+
+After a stop & correct the first turn is cancelled politely and nvsh waits
+for it to end before sending the follow-up; a harness that ignores the
+cancel can still be killed with a further press, and then no follow-up is
+sent. If the turn had already finished while the prompt was open, the
+correction simply becomes the next request and `[s]` stops nothing.
+
+Exit status: 0 after keep going or after a delivered steer whose turn ends
+normally; the follow-up turn's own status after a stop & correct; 130 is
+reserved for `[s]` stop on a running turn and for a kill (including a kill
+during stop & correct). `[s]` on a turn that had already finished exits 0.
+
+Every outcome writes one `event: "stop"` audit line: `keep_going` (with
+`reason` `key` or `timeout`), `cancel`, `force_kill`, or `steer` with
+outcome `delivered`, `queued` or `discarded`. Lines written from this
+prompt carry `origin: "stop_prompt"`; a stop & correct is a `steer` /
+`queued` line followed by a `cancel` line with that origin.
 
 Notes:
 
@@ -392,15 +449,47 @@ Notes:
   with the same byte, so nvsh waits 50 ms and drains a whole escape sequence
   instead of reading it as `Esc` (`nvsh/keys.py`).
 - **Typeahead is dropped.** While the panel streams, stdin is held in cbreak
-  mode to see `Esc`; anything else typed is discarded, never executed.
+  mode to see `Esc`; anything else typed is discarded, never executed, and
+  two presses arriving back-to-back (a key-repeated `Esc`) leave the choice
+  prompt open rather than silently answering it.
 - The terminal is restored on every exit path, including `SIGHUP` (ssh drop)
   and `SIGTERM`. `Esc` watching is off when stdin is not a tty, under
   `TERM=dumb`, or with `NVSH_DISABLE` set.
 - A press while an approved command is running is acted on when that command
   returns; the command itself still receives `SIGINT` from the terminal
   (deviation d2).
+- A `Ctrl+C` that lands while the panel is already shutting down (the turn
+  is over, typical after a double press on a harness whose cancel ends the
+  turn at once) is recorded as an interrupt and nothing more: no traceback,
+  the terminal is restored, and nothing is sent to the harness.
 - On a hung-up terminal, end of input at a proposal means **ignore**, never
-  approve (deviation d1).
+  approve (deviation d1); end of input at the choice prompt, or at the
+  correction line after `[t]`, means the same thing — keep going, nothing
+  sent, nothing cancelled.
+- **A session without a terminal stops at once.** Where the choice prompt
+  cannot be shown or answered — stdin or stdout is not a tty, `TERM=dumb`,
+  or `--json` — the first `Ctrl+C` stops immediately exactly as it did
+  before this change: no prompt text reaches stdout or stderr, so scripts
+  and piped sessions keep their current behavior.
+
+#### Amendment to reliable-agent-stop (2026-09-17)
+
+This section supersedes claims c1, c4, c5, c17, c20, c21, c22 and c34 of
+the reliable-agent-stop spec
+(`docs/specs/2026-09-16-reliable-agent-stop.md`), which described the
+first press as an immediate polite cancel, with no choice offered and the
+`stopping… press again to kill` line appearing within 1 s. The 1 s promise
+now applies to the choice prompt appearing, and the 3 s kill promise is
+measured from the press that follows `[s]` stop.
+`.devague/frames/reliable-agent-stop.json` is not edited by this change;
+the amendment is recorded here instead.
+
+The operator asked for this change after reproducing, on nvsh 0.13.1 on
+thor on 2026-09-17, that the first Esc or Ctrl+C cancelled a running turn
+at once with no choice, and that the turn in question had already taken
+about 70 s of model time — so an accidental press threw away real work.
+The stated reason for the change: "clearer for the user and avoid
+accidental clicks."
 
 ### The busy prompt
 

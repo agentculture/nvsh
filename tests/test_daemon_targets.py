@@ -764,7 +764,14 @@ def test_replace_keeps_a_request_otherwise_identical() -> None:
 # --- the resolved target reaches the panel and the audit log (t16/t18) -----
 
 
-def _drive_stream_request(monkeypatch: pytest.MonkeyPatch, config: Config, **kwargs):
+def _drive_stream_request(
+    monkeypatch: pytest.MonkeyPatch,
+    config: Config,
+    *,
+    one_shot: bool = False,
+    target: Target | None = None,
+    **kwargs,
+):
     """Run ``client._stream_request`` against a stub transport.
 
     Returns ``(panel_lines, captured_audit)`` -- the panel's rendered lines
@@ -803,6 +810,7 @@ def _drive_stream_request(monkeypatch: pytest.MonkeyPatch, config: Config, **kwa
         config=config,
         approvals=client._load_approvals(),
         inspections=[],
+        routing=client._Routing(one_shot=one_shot, target=target),
         **kwargs,
     )
     return out.getvalue().splitlines(), captured, sent

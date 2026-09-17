@@ -92,6 +92,7 @@ def test_capabilities_report_thinking_but_read_only_and_no_effort():
     assert caps.tool_calling is False
     assert caps.effort is False
     assert caps.path == "stream-json"
+    assert caps.steer is False
 
 
 def test_capabilities_report_the_configured_approval_mediator():

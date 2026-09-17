@@ -4,17 +4,25 @@ For every adapter family and both request paths (the warm daemon session
 and a one-shot ``/ask --agent <name>``), a real interactive ``bash`` runs
 the real ``nvsh slash '/ask ...'`` client and panel on a pty, against a fake
 harness that ignores its protocol-level cancel and holds a ``sleep 600``
-grandchild. The test types Ctrl+C into the pty like an operator would and
-measures, with :func:`time.monotonic`:
+grandchild. The test types the operator's three keys into the pty -- press,
+``s``, press (stop-choice-prompt c2/c3) -- and measures, with
+:func:`time.monotonic`:
 
+* the ``nvsh: paused -- [t] … [s] stop …`` legend appears within **1s** of
+  the first press (stop-choice c22's amended promise);
 * the ``stopping… press again to kill`` line appears within **1s** of the
-  first press (c22/h19);
-* after the second press the harness process tree is gone and bash's prompt
-  is back within **3s** (c21/h18).
+  ``s`` that answers the prompt (c22/h19, now measured from ``[s]``);
+* after the press that follows ``s`` the harness process tree is gone and
+  bash's prompt is back within **3s** (c21/h18). A family whose ``cancel()``
+  is already a kill has no turn left to press at, so it is only measured, not
+  pressed at again -- see the comment at that branch.
 
 Nothing here sleeps for a fixed time to "let things settle": every wait is a
-poll against a deadline, and only the two thresholds above are asserted as
+poll against a deadline, and only the three thresholds above are asserted as
 timings (plan risk r5 -- these run under ``pytest -n auto`` on loaded boxes).
+``s`` is typed only once the legend is on the pty, because
+:func:`nvsh.promptkeys.read_choice` discards typeahead before its first read
+(c33): a key typed ahead of the legend would be thrown away.
 
 openai-compat speaks HTTP, so it has no harness process tree: its case
 asserts the stopping line and the prompt coming back, and that the stalled
@@ -56,8 +64,15 @@ pytestmark = pytest.mark.skipif(
 PROMPT = "NVSH-E2E-PROMPT$ "
 
 #: The acceptance thresholds (c22/h19 and c21/h18).
+PROMPT_WITHIN = 1.0
 STOPPING_WITHIN = 1.0
 STOPPED_WITHIN = 3.0
+
+#: The distinctive part of ``nvsh: paused -- [t] <label>  [s] stop  [Esc]
+#: keep going``. The ``[t]`` label varies with the harness's steer
+#: capability, so the test matches the two fixed ends of the legend.
+PAUSED_HEAD = "paused -- [t] "
+PAUSED_TAIL = "[s] stop  [Esc] keep going"
 
 #: Generous bounds for everything that is *not* a measured threshold.
 SETUP_TIMEOUT = 30.0
@@ -366,6 +381,35 @@ def _kill_daemon(runtime: Path) -> None:
             _kill_quietly(int(entry.name))
 
 
+# -- typing at the choice prompt ------------------------------------------------
+
+
+def _legend_in(text: str) -> bool:
+    """The stop-choice legend, whichever ``[t]`` label the harness earned."""
+    head = text.find(PAUSED_HEAD)
+    return head != -1 and PAUSED_TAIL in text[head:]
+
+
+def _type_choice(term: Terminal, key: str, answered, budget: float = STOPPING_WITHIN) -> float:
+    """Type ``key`` once at the choice prompt. Returns the time of the write.
+
+    One write, no retry: the prompt discards typeahead *before* it draws its
+    legend, and every caller here types only once the legend is in the
+    terminal's buffer, so the key always reaches a prompt that is already
+    reading. (Until that ordering was fixed the flush came after the legend
+    and could still eat a key written in the microseconds behind it -- the
+    race plan risk r5 asked be handled without a bare sleep, and which the
+    retry this replaces papered over.)
+
+    The budget is never widened: the press has to land inside the same window
+    counted from the press the operator made.
+    """
+    started = time.monotonic()
+    term.type(key)
+    term.wait_for(answered, started + budget)
+    return started
+
+
 # -- the test --------------------------------------------------------------------
 
 
@@ -397,14 +441,27 @@ def test_two_presses_stop_every_family_on_both_paths(family: Family, path: str, 
     pids = [] if family.http else list((_read_pid_file(rig.pid_file) or {}).values())
     assert all(_pid_alive(pid) for pid in pids), f"harness tree not running: {pids}"
 
-    # First press: the stopping line within 1s.
+    # First press: the choice prompt within 1s, and nothing sent to the
+    # harness -- the turn is still open and the tree still running.
     mark = len(term.buffer)
     first = time.monotonic()
     term.type("\x03")
     assert term.wait_for(
-        lambda: STOPPING_TEXT in term.buffer[mark:], first + STOPPING_WITHIN
+        lambda: _legend_in(term.buffer[mark:]), first + PROMPT_WITHIN
+    ), f"{family.name}/{path}: no choice prompt within {PROMPT_WITHIN}s:\n{term.buffer}"
+    prompt_after = time.monotonic() - first
+    assert prompt_after <= PROMPT_WITHIN
+    assert STOPPING_TEXT not in term.buffer[mark:], "the first press stopped the turn"
+    assert all(_pid_alive(pid) for pid in pids), "the first press reached the harness"
+
+    # [s] stop: from here on this is byte-for-byte the pre-prompt first
+    # press -- the stopping line within 1s of the key that chose it.
+    mark = len(term.buffer)
+    chose = _type_choice(term, "s", lambda: STOPPING_TEXT in term.buffer[mark:])
+    assert term.wait_for(
+        lambda: STOPPING_TEXT in term.buffer[mark:], chose + STOPPING_WITHIN
     ), f"{family.name}/{path}: no stopping line within {STOPPING_WITHIN}s:\n{term.buffer}"
-    stopping_after = time.monotonic() - first
+    stopping_after = time.monotonic() - chose
     assert stopping_after <= STOPPING_WITHIN
 
     if not family.cancel_kills:
@@ -412,7 +469,18 @@ def test_two_presses_stop_every_family_on_both_paths(family: Family, path: str, 
         assert term.prompts() == 1, term.buffer
         assert all(_pid_alive(pid) for pid in pids), "the harness honoured a cancel it ignores"
 
-    # Second press: the tree is gone and the prompt is back within 3s.
+    # The press after [s]: the tree is gone and the prompt is back within 3s,
+    # measured from the last key the operator had any reason to type.
+    # The press is typed for every family, including the ones whose cancel()
+    # already ended the turn: there the press lands at a client that is
+    # already tearing down, which is precisely what plan risk r7 was about --
+    # the panel used to hand SIGINT back to Python's default handler before
+    # the ticker join, so the press became an uncaught KeyboardInterrupt and
+    # "nvsh: interrupted" was never printed ([openai-compat-one-shot] failed
+    # 3 in 30 under load). Since t8b the panel's handler covers the whole of
+    # teardown and records such a press as an interrupt, so the coverage is
+    # back for every family. The budget is unchanged, still counted from
+    # this instant.
     second = time.monotonic()
     term.type("\x03")
     deadline = second + STOPPED_WITHIN

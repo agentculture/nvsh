@@ -451,11 +451,6 @@ def shell_pid_gone(shell: str) -> bool:
     return _shell_pid_gone(shell)
 
 
-def _overrides_steer(agent: NvshAgent) -> bool:
-    """Does *agent*'s adapter have a mid-turn channel (it overrides ``steer``)?"""
-    return getattr(type(agent), "steer", NvshAgent.steer) is not NvshAgent.steer
-
-
 @dataclass
 class _Waiter:
     """One request queued behind :class:`_ActiveTurn`."""
@@ -1484,7 +1479,13 @@ class Daemon:
             owner = turn.shell
             if owner != shell and not _shell_pid_gone(owner):
                 return False
-            prompt = _BusyPrompt(turn, _overrides_steer(turn.slot.agent))
+            try:
+                steerable = bool(turn.slot.agent.capabilities().steer)
+            except Exception:
+                # A misbehaving adapter's capabilities() must not wedge the
+                # busy prompt; treat it as not steerable.
+                steerable = False
+            prompt = _BusyPrompt(turn, steerable)
             self._busy[shell] = prompt
         try:
             choices = [c for c in BUSY_CHOICES if c != "steer" or prompt.steerable]

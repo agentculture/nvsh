@@ -883,4 +883,5 @@ class CodexAgent(SubprocessAgent):
             path=self.binary_path(),
             approval=self._approval,
             unmediated_file_access=True,
+            steer=True,
         )
