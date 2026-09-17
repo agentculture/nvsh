@@ -15,6 +15,15 @@ The one-shot cases run the real ``CodexAgent`` against the
 drops ``turn/interrupt``) and ``NVSH_FAKE_GRANDCHILD=1`` (a ``sleep 600``
 grandchild), parked on an approval request so the turn is genuinely open
 when the operator presses Ctrl+C.
+
+Since the stop-choice prompt (t5-t8) there is a second thing to decide: not
+every stop is an operator stop. ``[t] stop & correct`` cancels the running
+turn so the operator's correction can be resent as a *self-contained* next
+request, and that is not 130 -- the exit status is the follow-up turn's own.
+Only a plain ``[s]``, and the kill press that may follow either kind of
+stop, still exits 130. The t8 cases below drive the real client against a
+scripted ``Panel.stream``; the panel's own half of the same story is proven
+on a pty in ``tests/test_panel_stop.py``.
 """
 
 from __future__ import annotations
@@ -36,6 +45,7 @@ from nvsh.agent.base import AgentContext, AgentEvent, AgentRequest, EventKind, R
 from nvsh.agent.codex import CodexAgent
 from nvsh.config import Config
 from nvsh.panel import Panel, StreamResult
+from tests.test_agent_stop import FAMILIES as _FAMILIES
 
 FAKES_DIR = Path(__file__).parent / "fakes"
 
@@ -199,6 +209,10 @@ def _one_shot_stream(tmp_path: Path):
 
 
 def test_one_shot_first_press_calls_in_process_cancel(codex_one_shot, tmp_path):
+    """Rewritten for t5-t8: this panel is not a tty, so no choice prompt can
+    be shown and the first press stops at once, exactly as before (spec c9).
+    It is a plain ``[s]``-equivalent stop and never a stop-and-correct, so
+    ``interrupted`` is set and ``stopped_to_correct`` is not."""
     install, pid_file = codex_one_shot
     built = install()
     errors: list[str] = []
@@ -222,6 +236,8 @@ def test_one_shot_first_press_calls_in_process_cancel(codex_one_shot, tmp_path):
 
     assert errors == []
     assert result.interrupted is True
+    assert result.stopped_to_correct is False
+    assert result.not_running is False
     assert built[0].calls == ["cancel"]
     # The polite stop still ends in a tree kill when the client tears down.
     assert built[0].teardown == ["force_stop"]
@@ -549,11 +565,18 @@ def test_slash_json_reports_declined_exit_code_but_exits_zero(stop_env, monkeypa
 
 
 def test_ctrl_c_during_work_exits_130_and_audits_cancel_and_force_kill_once(stop_env, monkeypatch):
+    """Rewritten for t8: a stop with no prompt to answer on (this panel is
+    not a tty) is still the plain two-press stop -- 130, one ``cancel`` and
+    one ``force_kill`` -- and the ``cancel`` line carries neither ``origin``
+    nor ``reason``, which is what tells it from a stop-and-correct's cancel.
+    No follow-up request is sent."""
     first = threading.Event()
     killed = threading.Event()
     calls: list[str] = []
+    requests: list[object] = []
 
     def fake_send(request, context, **kwargs):
+        requests.append(request)
         yield AgentEvent(kind=EventKind.TEXT_DELTA, text="working")
         first.set()
         killed.wait(10)
@@ -590,17 +613,24 @@ def test_ctrl_c_during_work_exits_130_and_audits_cancel_and_force_kill_once(stop
     assert errors == []
     assert code == 130
     assert calls == ["cancel", "kill"]
+    assert len(requests) == 1
     stops = _stops(stop_env)
     assert [entry["kind"] for entry in stops] == ["cancel", "force_kill"]
     for entry in stops:
         _assert_stop_shape(entry, entry["kind"])
+    assert "origin" not in stops[0] and "reason" not in stops[0]
 
 
 def test_single_ctrl_c_exits_130_and_audits_only_cancel(stop_env, monkeypatch):
+    """Rewritten for t8: one press, no prompt, one ``cancel`` -- and, since
+    nothing was steered, no ``steer`` line, no second request and no
+    stop-and-correct markers on the cancel line."""
     first = threading.Event()
     stopped = threading.Event()
+    requests: list[object] = []
 
     def fake_send(request, context, **kwargs):
+        requests.append(request)
         yield AgentEvent(kind=EventKind.TEXT_DELTA, text="working")
         first.set()
         stopped.wait(10)
@@ -622,7 +652,10 @@ def test_single_ctrl_c_exits_130_and_audits_only_cancel(stop_env, monkeypatch):
 
     assert errors == []
     assert code == 130
-    assert [entry["kind"] for entry in _stops(stop_env)] == ["cancel"]
+    assert len(requests) == 1
+    stops = _stops(stop_env)
+    assert [entry["kind"] for entry in stops] == ["cancel"]
+    assert "origin" not in stops[0] and "reason" not in stops[0]
 
 
 # --- Ctrl+C typed at a raw-mode prompt (PR #16 review, Qodo 4) --------------
@@ -632,6 +665,11 @@ def test_single_ctrl_c_exits_130_and_audits_only_cancel(stop_env, monkeypatch):
 def test_ctrl_c_at_a_raw_prompt_exits_130_cancels_once_and_never_declines(
     stop_env, monkeypatch, prompt
 ):
+    """Rewritten for t5-t8: a Ctrl+C typed while *another* nvsh prompt is
+    open still goes straight to stop -- the choice prompt only opens for a
+    press made while the panel is streaming (spec decision). So this is a
+    plain stop: 130, one cancel with no stop-prompt markers, no steer line
+    and no follow-up request."""
     import pty
 
     from nvsh.agent.audit import AuditLog
@@ -673,7 +711,9 @@ def test_ctrl_c_at_a_raw_prompt_exits_130_cancels_once_and_never_declines(
 
     assert code == 130
     assert calls == ["cancel"]
-    assert [entry["kind"] for entry in _stops(stop_env)] == ["cancel"]
+    stops = _stops(stop_env)
+    assert [entry["kind"] for entry in stops] == ["cancel"]
+    assert "origin" not in stops[0] and "reason" not in stops[0]
     events = [entry["event"] for entry in AuditLog(env=stop_env).read_all()]
     assert "decision" not in events
 
@@ -819,13 +859,16 @@ def test_correction_is_redacted_before_delivery_and_never_reaches_the_audit_log(
 def test_steer_not_delivered_queues_onto_the_turns_steers_list(stop_env, monkeypatch):
     """A harness with no mid-turn channel (Capabilities.steer False) queues
     the redacted text onto the same ``steers`` list ``_injector`` uses,
-    rather than losing it."""
+    rather than losing it. Since t8 it also answers ``STOP_BEGUN``: the
+    panel is being asked to stop this turn so the queued text can be
+    resent."""
+    from nvsh.panel import STOP_BEGUN
 
     def fake_steer(text, *, shell_id=None, env=None):
         return False
 
     def drive(captured):
-        assert captured["on_steer"]("do the other thing") is False
+        assert captured["on_steer"]("do the other thing") == STOP_BEGUN
 
     _stub_stream(monkeypatch, drive=drive)
     monkeypatch.setattr(client_transport, "send", _done_send)
@@ -1005,3 +1048,397 @@ def test_with_prompt_keeps_every_field_but_the_prompt():
     updated = _with_prompt(original, "new")
     assert updated.prompt == "new"
     assert dataclasses.replace(updated, prompt="old") == original
+
+
+# -- t8: stop and correct -----------------------------------------------------
+#
+# ``[t]`` on a harness with no mid-turn channel is "stop & correct": the
+# client cancels the running turn once, waits for it to end, and then sends
+# the operator's correction as a *self-contained* next request. Only a plain
+# ``[s]`` stop (and the kill that may follow it) still exits 130.
+#
+# These drive the real client against a scripted ``Panel.stream`` that plays
+# the part the panel plays for real -- calling ``on_steer`` and then, for a
+# :data:`STOP_BEGUN` answer, the very ``cancel`` callable the client handed
+# it (``tests/test_panel_stop.py`` is where the panel's own half is proven
+# on a pty).
+
+CORRECTION = "look at nvpmodel instead"
+
+
+def _scripted_stream(monkeypatch, *steps):
+    """Replace ``Panel.stream`` with one step per call.
+
+    Each step is ``step(kwargs) -> StreamResult | None`` and stands for what
+    the panel would do with the callbacks the client passed it. Calls past
+    the end of the script just drain their events and finish normally.
+    """
+    calls: list[dict] = []
+
+    def fake_stream(self, events, **kwargs):
+        calls.append(kwargs)
+        _drained(events)
+        index = len(calls) - 1
+        if index < len(steps):
+            return steps[index](kwargs) or StreamResult(done=True)
+        return StreamResult(done=True)
+
+    monkeypatch.setattr(Panel, "stream", fake_stream)
+    return calls
+
+
+def _stop_and_correct(text: str = CORRECTION, *, killed: bool = False):
+    """The panel's half of a stop-and-correct, as a scripted step."""
+
+    def step(kwargs) -> StreamResult:
+        from nvsh.panel import STOP_BEGUN
+
+        answer = kwargs["on_steer"](text)
+        assert answer == STOP_BEGUN, answer
+        kwargs["cancel"]()  # exactly what Panel._stop_to_correct does
+        # A harness that ignored the cancel is killed by a further press;
+        # that press -- not the stop-and-correct -- is what interrupts.
+        return StreamResult(done=not killed, interrupted=killed, stopped_to_correct=True)
+
+    return step
+
+
+def _requests(monkeypatch) -> list[AgentRequest]:
+    """Record every request that leaves the client, on both transports.
+
+    ``@name`` targets ride the one-shot path and everything else the
+    daemon's, so both are stubbed: no harness process is ever started, which
+    is also what makes the "no harness session state" claim testable.
+    """
+    sent: list[AgentRequest] = []
+
+    def send(request, context, **kwargs):
+        sent.append(request)
+        yield AgentEvent(kind=EventKind.DONE)
+
+    monkeypatch.setattr(client_transport, "send", send)
+    monkeypatch.setattr(client_transport, "one_shot", send)
+    monkeypatch.setattr(client_transport, "steer", lambda text, **kwargs: False)
+    return sent
+
+
+def _hook_args(stop_env, json: bool = False):
+    import types
+
+    return types.SimpleNamespace(
+        exit=2,
+        pipestatus="2",
+        line="ls /nope",
+        cwd=stop_env["XDG_STATE_HOME"],
+        log="",
+        json=json,
+        failure_id="",
+    )
+
+
+def _entry_point(name: str, stop_env):
+    """Run one of the three call sites and return its exit code."""
+    panel = _typed_panel("")
+    if name == "ask":
+        return client.ask("why did it fail?", panel=panel, env=stop_env)
+    if name == "handle_failure":
+        return client.handle_failure(_hook_args(stop_env), panel=panel, env=stop_env)
+    # the slash path: /fix, /explain -> client._on_last_failure
+    client.save_last_failure(_hook_args(stop_env), env=stop_env)
+    return client.fix(panel=panel, env=stop_env)
+
+
+ENTRY_POINTS = ["handle_failure", "ask", "slash"]
+
+
+@pytest.fixture
+def claude_default(monkeypatch, stop_env):
+    """Make ``default`` resolve to a harness that cannot steer mid-turn."""
+    config = Path(stop_env["XDG_CONFIG_HOME"]) / "nvsh"
+    config.mkdir(parents=True, exist_ok=True)
+    (config / "config.toml").write_text('[aliases]\ndefault = "claude"\n', encoding="utf-8")
+
+
+@pytest.mark.parametrize("entry", ENTRY_POINTS)
+def test_stop_and_correct_cancels_once_then_streams_the_correction(
+    stop_env, monkeypatch, claude_default, entry
+):
+    """Criterion 1: t plus a typed line on a steer=False target cancels the
+    turn once and then sends a second request -- no entry point returns 130
+    before that follow-up."""
+    cancelled: list[int] = []
+    monkeypatch.setattr(
+        client_transport, "cancel", lambda *, shell_id=None, env=None: cancelled.append(1) or True
+    )
+    monkeypatch.setattr(client_transport, "kill", _forbidden("kill"))
+    sent = _requests(monkeypatch)
+    calls = _scripted_stream(monkeypatch, _stop_and_correct())
+
+    code = _entry_point(entry, stop_env)
+
+    assert code == 0
+    assert cancelled == [1], "the cancelled turn must be cancelled exactly once"
+    assert len(sent) == 2, "the correction must come back as the next request"
+    assert len(calls) == 2
+    assert CORRECTION in sent[1].prompt
+    assert client.STOPPED_NOTICE in sent[1].prompt
+    assert sent[0].prompt in sent[1].prompt
+    # One line per outcome: the queued steer, and the cancel it caused.
+    stops = _stops(stop_env)
+    assert [entry_["kind"] for entry_ in stops] == ["steer", "cancel"]
+    assert stops[0]["outcome"] == "queued"
+    assert stops[0]["origin"] == "stop_prompt"
+    # The cancel names the stop prompt as its origin; a plain [s] stop does
+    # not, which is what tells a stop-and-correct from an operator stop.
+    assert stops[1]["origin"] == "stop_prompt"
+
+
+@pytest.mark.parametrize("entry", ENTRY_POINTS)
+def test_a_killed_stop_and_correct_exits_130_and_sends_no_follow_up(
+    stop_env, monkeypatch, claude_default, entry
+):
+    """The harness ignored the cancel and the operator pressed again: the
+    kill press is an interruption, so the follow-up is never sent and the
+    exit status is 130 -- the operator did ask for this one to stop."""
+    monkeypatch.setattr(client_transport, "cancel", lambda *, shell_id=None, env=None: True)
+    monkeypatch.setattr(client_transport, "kill", lambda *, shell_id=None, env=None: True)
+    sent = _requests(monkeypatch)
+    _scripted_stream(monkeypatch, _stop_and_correct(killed=True))
+
+    assert _entry_point(entry, stop_env) == 130
+    assert len(sent) == 1
+
+
+@pytest.mark.parametrize("family", [f.adapter for f in _FAMILIES], ids=[f.name for f in _FAMILIES])
+def test_the_follow_up_prompt_is_self_contained_for_every_adapter_family(
+    stop_env, monkeypatch, family
+):
+    """Criterion 2 / spec c23: the follow-up carries the original request,
+    the fact that the previous attempt was stopped, and the redacted
+    correction -- composed from the client's own AgentRequest, so no harness
+    session state is read and no harness process is started."""
+    monkeypatch.setattr(client_transport, "cancel", lambda *, shell_id=None, env=None: True)
+    sent = _requests(monkeypatch)
+    _scripted_stream(monkeypatch, _stop_and_correct("HF_TOKEN=abc123secret retry with that"))
+    monkeypatch.setattr(
+        registry, "installed", lambda name, config=None, env=None: True, raising=False
+    )
+    # pi and codex are offered as "steer"; their steer() refusing at runtime
+    # (c30) puts them on this same path once the operator agrees.
+    monkeypatch.setattr(Panel, "confirm", lambda self, question: True)
+
+    code = client.ask("why did it fail?", panel=_typed_panel(""), env=stop_env, agent=family)
+
+    assert code == 0, family
+    assert len(sent) == 2, family
+    follow_up = sent[1].prompt
+    assert "why did it fail?" in follow_up
+    assert client.STOPPED_NOTICE in follow_up
+    assert "retry with that" in follow_up
+    # Redacted before it ever left the process (c29), on this path too.
+    assert "abc123secret" not in follow_up
+
+
+def test_the_follow_up_prompt_is_identical_across_families(stop_env, monkeypatch):
+    """The same proof, stated once: what nvsh composes does not depend on
+    which harness is behind it."""
+    composed = {
+        family.name: client._follow_up_prompt(
+            [], ["do the other thing"], stopped=True, original="why did it fail?"
+        )
+        for family in _FAMILIES
+    }
+    assert len(set(composed.values())) == 1, composed
+
+
+def test_not_running_correction_is_a_plain_next_request(stop_env, monkeypatch, claude_default):
+    """c36: the turn had already finished when the prompt closed. Nothing is
+    cancelled, nothing exits 130, and the correction is simply the next
+    request -- with no claim that anything was stopped."""
+    monkeypatch.setattr(client_transport, "cancel", _forbidden("cancel"))
+    monkeypatch.setattr(client_transport, "kill", _forbidden("kill"))
+    sent = _requests(monkeypatch)
+
+    def finished(kwargs) -> StreamResult:
+        kwargs["on_steer"](CORRECTION)
+        # The panel saw the terminal event already queued: it cancels nothing.
+        return StreamResult(done=True, not_running=True)
+
+    _scripted_stream(monkeypatch, finished)
+
+    code = client.ask("why did it fail?", panel=_typed_panel(""), env=stop_env)
+
+    assert code == 0
+    assert len(sent) == 2
+    assert sent[1].prompt == CORRECTION
+    assert client.STOPPED_NOTICE not in sent[1].prompt
+    assert [e["kind"] for e in _stops(stop_env)] == ["steer"]
+
+
+# -- t8 criterion 3: the runtime fallback (spec c30) --------------------------
+
+
+def _runtime_refusal(monkeypatch, *, agrees: bool):
+    """A steer-capable target whose steer() refuses at runtime."""
+    monkeypatch.setattr(client_transport, "steer", lambda text, **kwargs: False)
+    asked: list[str] = []
+
+    def confirm(self, question: str) -> bool:
+        asked.append(question)
+        return agrees
+
+    monkeypatch.setattr(Panel, "confirm", confirm)
+    return asked
+
+
+def test_a_refused_steer_asks_once_and_stop_and_corrects_on_yes(stop_env, monkeypatch):
+    asked = _runtime_refusal(monkeypatch, agrees=True)
+    cancelled: list[int] = []
+    monkeypatch.setattr(
+        client_transport, "cancel", lambda *, shell_id=None, env=None: cancelled.append(1) or True
+    )
+    sent = _requests(monkeypatch)
+    _scripted_stream(monkeypatch, _stop_and_correct())
+    panel = _typed_panel("")
+
+    # ``pi`` declares Capabilities.steer, so [t] is offered as "steer".
+    code = client.ask("why did it fail?", panel=panel, env=stop_env, agent="pi")
+
+    assert code == 0
+    assert len(asked) == 1, "the operator is asked exactly once"
+    assert client.COULD_NOT_STEER_NOTE in panel.out.getvalue()
+    assert cancelled == [1]
+    assert len(sent) == 2
+    assert CORRECTION in sent[1].prompt
+    assert client.STOPPED_NOTICE in sent[1].prompt
+    assert [e["kind"] for e in _stops(stop_env)] == ["steer", "cancel"]
+
+
+def test_a_refused_steer_discards_the_text_on_anything_but_yes(stop_env, monkeypatch):
+    """Not a third outcome and never silent: the text is dropped only because
+    the operator said so, it is said on the panel, and it is audited."""
+    asked = _runtime_refusal(monkeypatch, agrees=False)
+    monkeypatch.setattr(client_transport, "cancel", _forbidden("cancel"))
+    monkeypatch.setattr(client_transport, "kill", _forbidden("kill"))
+    sent = _requests(monkeypatch)
+
+    def refused(kwargs) -> StreamResult:
+        assert kwargs["on_steer"](CORRECTION) is False
+        return StreamResult(done=True)
+
+    _scripted_stream(monkeypatch, refused)
+    panel = _typed_panel("")
+
+    code = client.ask("why did it fail?", panel=panel, env=stop_env, agent="pi")
+
+    assert code == 0, "declining the stop leaves the turn's own status alone"
+    assert len(asked) == 1
+    assert len(sent) == 1, "nothing is resent"
+    text = panel.out.getvalue()
+    assert client.COULD_NOT_STEER_NOTE in text
+    assert client.CORRECTION_DISCARDED_NOTE in text
+    stops = _stops(stop_env)
+    assert [e["kind"] for e in stops] == ["steer"]
+    assert stops[0]["outcome"] == "discarded"
+    assert stops[0]["correction_chars"] == len(CORRECTION)
+
+
+# -- t8 criterion 4: exit status ---------------------------------------------
+
+
+def test_a_delivered_steer_exits_zero_with_no_follow_up(stop_env, monkeypatch):
+    monkeypatch.setattr(client_transport, "steer", lambda text, **kwargs: True)
+    monkeypatch.setattr(client_transport, "cancel", _forbidden("cancel"))
+    sent = _requests(monkeypatch)
+    monkeypatch.setattr(client_transport, "steer", lambda text, **kwargs: True)
+
+    def delivered(kwargs) -> StreamResult:
+        assert kwargs["on_steer"](CORRECTION) is True
+        return StreamResult(done=True)
+
+    _scripted_stream(monkeypatch, delivered)
+
+    assert client.ask("why did it fail?", panel=_typed_panel(""), env=stop_env, agent="pi") == 0
+    assert len(sent) == 1
+    stops = _stops(stop_env)
+    assert [e["kind"] for e in stops] == ["steer"]
+    assert stops[0]["outcome"] == "delivered"
+
+
+def test_keep_going_exits_zero(stop_env, monkeypatch):
+    from nvsh.panel import KEEP_GOING
+
+    sent = _requests(monkeypatch)
+    monkeypatch.setattr(client_transport, "cancel", _forbidden("cancel"))
+
+    def kept(kwargs) -> StreamResult:
+        kwargs["on_choice"](KEEP_GOING, "key")
+        return StreamResult(done=True)
+
+    _scripted_stream(monkeypatch, kept)
+
+    assert client.ask("why did it fail?", panel=_typed_panel(""), env=stop_env) == 0
+    assert len(sent) == 1
+    assert [e["kind"] for e in _stops(stop_env)] == ["keep_going"]
+
+
+def test_the_follow_up_turns_own_status_is_what_stop_and_correct_reports(
+    stop_env, monkeypatch, claude_default
+):
+    """The second turn is a turn like any other: interrupt it and the exit
+    status is 130, from that press rather than from the correction."""
+    monkeypatch.setattr(client_transport, "cancel", lambda *, shell_id=None, env=None: True)
+    sent = _requests(monkeypatch)
+
+    def interrupted(_kwargs) -> StreamResult:
+        return StreamResult(interrupted=True)
+
+    _scripted_stream(monkeypatch, _stop_and_correct(), interrupted)
+
+    assert client.ask("why did it fail?", panel=_typed_panel(""), env=stop_env) == 130
+    assert len(sent) == 2
+
+
+def test_json_exit_code_and_the_audit_log_agree_on_a_stop_and_correct(
+    stop_env, monkeypatch, capsys, claude_default
+):
+    """--json turns the prompt off, so this is the report side of the same
+    story: the code on stdout is the one the entry point returned."""
+    from nvsh.cli import main
+
+    monkeypatch.setattr(client_transport, "cancel", lambda *, shell_id=None, env=None: True)
+    sent = _requests(monkeypatch)
+    calls = _scripted_stream(monkeypatch, _stop_and_correct())
+    monkeypatch.setattr(client, "_panel_for", lambda panel, env: _typed_panel(""))
+
+    assert main(["slash", "--json", "--platform", "generic", "/ask why did it fail?"]) == 0
+    payload = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert payload == {"command": "ask", "exit_code": 0}
+    assert calls[0]["stop_prompt"] is False
+    assert len(sent) == 2
+    assert [e["kind"] for e in _stops(stop_env)] == ["steer", "cancel"]
+
+
+def test_openai_compat_does_not_send_the_correction_twice():
+    """openai-compat's steer() queues the text in ``_pending_steer`` before
+    the stop-and-correct cancel (t7 calls ``Responder.steer`` first on every
+    harness). That queue is only a flag -- it makes the adapter prepend the
+    *previous exchange* to the next request -- so the correction itself
+    travels exactly once, inside the follow-up prompt nvsh composed."""
+    from nvsh.agent.openai_compat import OpenAICompatAgent
+
+    agent = OpenAICompatAgent({"base_url": "http://127.0.0.1:1/v1"})
+    agent._last_prompt = "why did it fail?"
+    agent._last_reply = "half an answer"
+    assert agent.steer(CORRECTION) is False
+
+    follow_up = f"{client.STOPPED_NOTICE}\n\nwhy did it fail?\n\n{CORRECTION}"
+    messages = agent._messages(follow_up)
+
+    assert [m["content"] for m in messages] == [
+        "why did it fail?",
+        "half an answer",
+        follow_up,
+    ]
+    assert sum(m["content"].count(CORRECTION) for m in messages) == 1
+    assert agent._pending_steer == []
