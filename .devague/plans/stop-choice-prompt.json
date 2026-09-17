@@ -5,7 +5,7 @@
   "schema_version": 5,
   "status": "exported",
   "created": "2026-09-17T17:03:56Z",
-  "updated": "2026-09-17T18:44:43Z",
+  "updated": "2026-09-17T20:00:23Z",
   "targets": [
     {
       "id": "c1",
@@ -688,8 +688,8 @@
       "text": "Product bug found by t9a, confirmed by the main agent in nvsh/panel.py Panel.stream's finally block: the previous SIGINT handler is restored BEFORE the ticker join (up to 2 s), termios restore and the 'nvsh: interrupted' line, so a Ctrl+C landing during teardown raises KeyboardInterrupt from Python's default handler and the operator gets a traceback. Most exposed on harnesses whose cancel() already ends the turn (openai-compat, the fleet default), where a double Ctrl+C lands in that window. Pre-existing since 0.13.0; not in this plan's scope unless the operator adds it.",
       "kind": "unknown_nonblocking",
       "task_id": "t6",
-      "resolved": false,
-      "resolution": ""
+      "resolved": true,
+      "resolution": "Fixed by task t8b (deviation d4), merged: Panel.stream's teardown now runs with the panel's own SIGINT handler installed and restores the previous handler in a nested finally; a press during teardown is recorded as an interrupt and nothing is sent to the harness. Proven deterministically at panel level (three pty tests firing SIGINT from inside patched teardown steps, plus a repeated-press test); confirmed by the main agent that those tests abort pytest with a raw KeyboardInterrupt against the unfixed panel. The cross-family test types the kill press for every family again. NOT reproduced at system level: t8b measured 0/30 failures both before and after the fix on this box (t9a had measured 3/30), so the system-level flake rate is unverified. One residual window remains by construction: a press between the last unhandled() check and the handler restore cannot raise but may not flip 'interrupted'."
     }
   ],
   "obligations": []
