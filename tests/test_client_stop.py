@@ -618,7 +618,8 @@ def test_ctrl_c_during_work_exits_130_and_audits_cancel_and_force_kill_once(stop
     assert [entry["kind"] for entry in stops] == ["cancel", "force_kill"]
     for entry in stops:
         _assert_stop_shape(entry, entry["kind"])
-    assert "origin" not in stops[0] and "reason" not in stops[0]
+    assert "origin" not in stops[0]
+    assert "reason" not in stops[0]
 
 
 def test_single_ctrl_c_exits_130_and_audits_only_cancel(stop_env, monkeypatch):
@@ -655,7 +656,8 @@ def test_single_ctrl_c_exits_130_and_audits_only_cancel(stop_env, monkeypatch):
     assert len(requests) == 1
     stops = _stops(stop_env)
     assert [entry["kind"] for entry in stops] == ["cancel"]
-    assert "origin" not in stops[0] and "reason" not in stops[0]
+    assert "origin" not in stops[0]
+    assert "reason" not in stops[0]
 
 
 # --- Ctrl+C typed at a raw-mode prompt (PR #16 review, Qodo 4) --------------
@@ -713,7 +715,8 @@ def test_ctrl_c_at_a_raw_prompt_exits_130_cancels_once_and_never_declines(
     assert calls == ["cancel"]
     stops = _stops(stop_env)
     assert [entry["kind"] for entry in stops] == ["cancel"]
-    assert "origin" not in stops[0] and "reason" not in stops[0]
+    assert "origin" not in stops[0]
+    assert "reason" not in stops[0]
     events = [entry["event"] for entry in AuditLog(env=stop_env).read_all()]
     assert "decision" not in events
 
