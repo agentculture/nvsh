@@ -164,7 +164,8 @@ def test_fake_pi_ignores_abort(tmp_path: Path, cleanup: list[subprocess.Popen]) 
 
     _write_line(proc, {"type": "prompt", "id": 1, "message": "hi"})
     ack = json.loads(_read_line(proc))
-    assert ack["command"] == "prompt" and ack["success"] is True
+    assert ack["command"] == "prompt"
+    assert ack["success"] is True
     _read_line(proc)  # the text_delta handle_prompt() streams
 
     _write_line(proc, {"type": "abort", "id": 2})
@@ -179,7 +180,8 @@ def test_fake_pi_scripted_ignores_abort(tmp_path: Path, cleanup: list[subprocess
 
     _write_line(proc, {"type": "prompt", "id": 1, "message": "hi"})
     ack = json.loads(_read_line(proc))
-    assert ack["command"] == "prompt" and ack["success"] is True
+    assert ack["command"] == "prompt"
+    assert ack["success"] is True
 
     _write_line(proc, {"type": "abort", "id": 2})
 
@@ -214,7 +216,8 @@ def test_fake_codex_app_server_ignores_turn_interrupt(
 
     _write_line(proc, {"id": 1, "method": "initialize", "params": {}})
     reply = json.loads(_read_line(proc))
-    assert reply["id"] == 1 and "result" in reply
+    assert reply["id"] == 1
+    assert "result" in reply
 
     _write_line(
         proc,

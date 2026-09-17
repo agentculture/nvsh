@@ -402,6 +402,33 @@ def test_subprocess_agent_cancel_kills_the_whole_tree():
     assert _wait_gone([child, grandchild]) == []
 
 
+def test_normal_exit_still_reaps_a_tool_grandchild_left_in_the_group():
+    """Qodo 6: a harness that exits normally (not cancelled) but leaves a
+    background tool running in its own process group must still lose that
+    grandchild. ``run()``'s ``_exit_event`` calls ``self._proc.wait()``
+    (reaping the leader) before the ``finally`` block's teardown runs, so
+    by then ``poll()`` is never ``None`` and a group looked up only there
+    would already be unreachable -- it has to be captured at spawn time."""
+    script = (
+        "import subprocess, sys\n"
+        "g = subprocess.Popen(\n"
+        "    [sys.executable, '-c', 'import time; time.sleep(600)'],\n"
+        "    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,\n"
+        ")\n"
+        "print(g.pid, flush=True)\n"
+    )
+    agent = _ScriptedAgent(script)
+    agent.start()
+    events = list(agent.run(_request(), AgentContext()))
+    grandchild = int(events[0].text)
+    assert events[-1].kind == EventKind.DONE
+    # The fix reaps it as part of run()'s own teardown, so by the time
+    # run() has returned it may already be gone -- the guarantee this test
+    # is proving is that it does not outlive run() at all, not that it is
+    # still alive right here.
+    assert _wait_gone([grandchild]) == []
+
+
 def test_force_stop_defaults_to_cancel_then_close():
     calls: list[str] = []
 

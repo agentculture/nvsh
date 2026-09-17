@@ -488,6 +488,82 @@ def test_warm_cancel_signals_the_child_not_just_a_flag(tmp_path):
     assert _wait_gone([proc.pid]) == []
 
 
+def test_cancelled_warm_turn_does_not_contaminate_next_run(tmp_path):
+    """Qodo 5: a cancelled warm turn's process can still enqueue late
+    output after cancel() returns (agy has no protocol-level cancel to
+    await). The next run() must not read any of it off the same queue --
+    cancel() marks the process unusable, and run() closes and respawns it
+    with a fresh queue before writing the next prompt."""
+    late_line = (
+        '{"event":"step_update","step_update":{"conversation_id":"stale",'
+        '"step_index":99,"state":"DONE","step_type":"agent_response",'
+        '"text_delta":"STALE"}}'
+    )
+    spec = {"turns": [{"stdout": WARM_TURN1_STDOUT, "exit_code": 0, "sleep_before": 3600}]}
+    ready_file = tmp_path / "ready"
+    turn_started_file = tmp_path / "turn-started"
+    env = _fake_env(tmp_path, spec, argv_log=True)
+    env["NVSH_FAKE_IGNORE_CANCEL"] = "1"
+    env["NVSH_FAKE_READY_FILE"] = str(ready_file)
+    env["NVSH_FAKE_LATE_LINE"] = late_line
+    env["NVSH_FAKE_TURN_STARTED_FILE"] = str(turn_started_file)
+    agent = AgyAgent(warm=True, env=env)
+    agent.start()
+    _wait_for_file(ready_file)  # the very first (start()-spawned) child
+
+    thread, _collected = _run_in_background(agent, "say OK")
+    proc = _wait_for_proc(agent)
+    # ``proc`` above only proves ``agent.start()``'s own spawn happened --
+    # the background thread's own run() call for "say OK" may not have
+    # reached ``_write_turn`` yet. Waiting for the fake to actually consume
+    # that turn's stdin line closes that race: without it, cancel() can
+    # land while this thread's *own* run() is still between its entry and
+    # the ``_warm_unusable`` check below, making it retire and rewrite its
+    # own in-flight turn instead of a genuinely previous one.
+    _wait_for_file(turn_started_file)
+
+    try:
+        agent.cancel()
+        thread.join(timeout=5)
+        assert not thread.is_alive(), "run() never returned after cancel()"
+
+        # Give the fake's signal handler a beat to write the late line, so
+        # an unfixed adapter would have it sitting in the queue ahead of
+        # the next turn's own output.
+        time.sleep(0.2)
+
+        _write_spec(tmp_path, {"turns": [{"stdout": WARM_TURN2_STDOUT, "exit_code": 0}]})
+        # Run on a background thread with a bounded join: an unfixed
+        # adapter writes turn 2's prompt to the still-alive, still-asleep
+        # cancelled process and then blocks forever waiting for output
+        # that process will never produce -- a plain ``list(agent.run(...))``
+        # here would hang the suite instead of failing it.
+        thread2, collected2 = _run_in_background(agent, "say DONE")
+        # Generous bound: the fix's respawn path escalates the cancelled
+        # process through terminate() then kill() (up to ~6s of grace on
+        # its own) before writing the next prompt, and a busy ``-n auto``
+        # run can stretch that further under CPU contention.
+        thread2.join(timeout=15)
+        assert not thread2.is_alive(), "run() never returned for the turn after cancel()"
+        events = collected2
+    finally:
+        # Force-stop, not close(): an unfixed adapter leaves the original
+        # (still-sleeping) process running, and close() alone only tears
+        # down whatever ``self._proc`` currently points at.
+        agent.force_stop()
+        agent.close()
+
+    texts = [e.text for e in events if e.text]
+    assert not any("STALE" in t for t in texts), f"stale event leaked into next turn: {events}"
+    assert events[-1].kind == EventKind.DONE
+    assert events[-1].text == "DONE\n"
+    assert agent._proc is not None
+    assert agent._proc.pid != proc.pid  # respawned, not the cancelled process
+
+    argv_calls = _read_argv_log(tmp_path)
+    assert len(argv_calls) == 2  # the cancelled process, then a fresh respawn
+
+
 def test_force_stop_kills_ignoring_warm_child_and_next_run_respawns(tmp_path):
     """Criterion 2: a fake that ignores the stop signal is still gone
     within 3s of ``force_stop()`` (``kill_tree``'s SIGKILL rung), and the

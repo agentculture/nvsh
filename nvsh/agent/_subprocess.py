@@ -332,6 +332,15 @@ class SubprocessAgent(NvshAgent):
         self._proc: subprocess.Popen | None = None
         self._cancelled = False
         self._closed = False
+        #: The leader's process group, captured at spawn time (Qodo 6).
+        #: ``run()``'s own ``_exit_event`` waits out the leader before the
+        #: ``finally`` block runs teardown, so by then ``poll()`` is never
+        #: ``None`` and a group captured only there would already be gone
+        #: (``_own_group`` refuses a reaped leader). Capturing it here,
+        #: before that wait, keeps it reapable either way --
+        #: ``child_group`` falls back to ``_reaped_leader_group`` once the
+        #: leader is gone.
+        self._pgid: int | None = None
 
     def start(self) -> None:
         self._cancelled = False
@@ -361,6 +370,12 @@ class SubprocessAgent(NvshAgent):
         except OSError as exc:
             yield AgentEvent(kind=EventKind.ERROR, error=f"failed to start {argv[0]}: {exc}")
             return
+
+        # Recorded before anything can reap the leader (``_exit_event``'s
+        # own ``wait()`` included, Qodo 6) -- a tool grandchild left in this
+        # group must still be reapable in the ``finally`` below even after
+        # the leader has already exited normally.
+        self._pgid = child_group(self._proc)
 
         # Drain stderr concurrently. Reading it only once stdout hits EOF
         # deadlocks any backend that writes more than a pipe buffer's worth
@@ -420,6 +435,13 @@ class SubprocessAgent(NvshAgent):
     def _terminate_if_running(self) -> None:
         if self._proc is not None and self._proc.poll() is None:
             kill_tree(self._proc, grace=CLOSE_WAIT_SECONDS)
+        # Reaps a tool grandchild left in the leader's group even when the
+        # leader itself already exited normally -- ``kill_tree`` above only
+        # fires while the leader still polls as running, and by the time
+        # this runs after ``_exit_event``'s own wait(), it never does
+        # (Qodo 6). ``self._pgid`` was captured at spawn time, before that
+        # wait could reap the leader out from under ``child_group``.
+        reap_group(self._pgid, grace=CLOSE_WAIT_SECONDS)
 
     def close(self) -> None:
         # Close, not cancel: the stdin rung matters here and must not run
