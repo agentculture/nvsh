@@ -11,6 +11,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - `openai-compat` shows a reasoning model's thoughts instead of looking hung. vLLM streams them as `delta.reasoning` (other servers: `delta.reasoning_content`) ahead of any `content`, and the adapter dropped every such chunk, so the panel sat on `... waiting for the agent` for the whole think — over a minute for Nemotron on thor on 2026-09-17, while 380 KB of stream arrived. They are now THINKING events, rendered as the same dimmed run the `claude` adapter already gets; they are never added to the reply kept for steer context. The adapter now declares `thinking=True` in its capabilities (shown by `nvsh agent list --json`) to match.
 
+## [0.14.1] - 2026-09-18
+
+### Changed
+
+- Records only, no code change: the operator approved the stop-choice-prompt records (lapses l2-l4, obligations o1-o23, evidence e1-e70, deltas b1-b15), `docs/current-spec.md` is regenerated from the approved ledger with `devague today` and now describes the stop choice prompt, and the delivery summary gains an adjudication section.
+
 ## [0.14.0] - 2026-09-17
 
 ### Added
