@@ -2,7 +2,7 @@
   "plan_slug": "stop-choice-prompt",
   "schema_version": 2,
   "created": "2026-09-17T18:23:45Z",
-  "updated": "2026-09-17T21:54:03Z",
+  "updated": "2026-09-17T22:30:44Z",
   "deviations": [
     {
       "id": "d1",
@@ -83,7 +83,7 @@
         "commit": "db124ea"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 5
     },
@@ -102,7 +102,7 @@
         "commit": "db124ea"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 6
     },
@@ -121,7 +121,7 @@
         "commit": "db124ea"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 7
     },
@@ -140,7 +140,7 @@
         "commit": "db124ea"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 8
     },
@@ -159,7 +159,7 @@
         "commit": "db124ea"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 9
     },
@@ -178,7 +178,7 @@
         "commit": "db124ea"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 10
     },
@@ -197,7 +197,7 @@
         "commit": "db124ea"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 11
     },
@@ -216,7 +216,7 @@
         "commit": "db124ea"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 12
     },
@@ -235,7 +235,7 @@
         "commit": "db124ea"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 13
     },
@@ -254,7 +254,7 @@
         "commit": "db124ea"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 14
     },
@@ -273,7 +273,7 @@
         "commit": "db124ea"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 15
     },
@@ -292,7 +292,7 @@
         "commit": "db124ea"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 16
     },
@@ -311,7 +311,7 @@
         "commit": "db124ea"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 17
     },
@@ -330,7 +330,7 @@
         "commit": "db124ea"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 18
     },
@@ -349,7 +349,7 @@
         "commit": "db124ea"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 19
     },
@@ -368,7 +368,7 @@
         "commit": "db124ea"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 20
     },
@@ -387,7 +387,7 @@
         "commit": "db124ea"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 21
     },
@@ -406,7 +406,7 @@
         "commit": "db124ea"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 22
     },
@@ -425,7 +425,7 @@
         "commit": "db124ea"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 23
     },
@@ -444,7 +444,7 @@
         "commit": "db124ea"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 24
     },
@@ -463,7 +463,7 @@
         "commit": "db124ea"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 25
     },
@@ -482,7 +482,7 @@
         "commit": "db124ea"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 26
     },
@@ -501,7 +501,7 @@
         "commit": "db124ea"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 27
     },
@@ -520,7 +520,7 @@
         "commit": "db124ea"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 28
     },
@@ -539,7 +539,7 @@
         "commit": "db124ea"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 29
     },
@@ -558,7 +558,7 @@
         "commit": "db124ea"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 30
     },
@@ -577,7 +577,7 @@
         "commit": "db124ea"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 31
     },
@@ -596,7 +596,7 @@
         "commit": "db124ea"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 32
     },
@@ -615,7 +615,7 @@
         "commit": "db124ea"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 33
     },
@@ -634,7 +634,7 @@
         "commit": "db124ea"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 34
     },
@@ -653,7 +653,7 @@
         "commit": "db124ea"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 35
     },
@@ -672,7 +672,7 @@
         "commit": "db124ea"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 36
     },
@@ -691,7 +691,7 @@
         "commit": "db124ea"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 37
     },
@@ -710,7 +710,7 @@
         "commit": "db124ea"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 38
     },
@@ -729,7 +729,7 @@
         "commit": "db124ea"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 39
     },
@@ -748,7 +748,7 @@
         "commit": "db124ea"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 40
     },
@@ -767,7 +767,7 @@
         "commit": "db124ea"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 41
     },
@@ -786,7 +786,7 @@
         "commit": "db124ea"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 42
     },
@@ -805,7 +805,7 @@
         "commit": "db124ea"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 43
     },
@@ -824,7 +824,7 @@
         "commit": "db124ea"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 44
     },
@@ -843,7 +843,7 @@
         "commit": "db124ea"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 45
     },
@@ -862,7 +862,7 @@
         "commit": "db124ea"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 46
     },
@@ -881,7 +881,7 @@
         "commit": "db124ea"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 47
     },
@@ -900,7 +900,7 @@
         "commit": "db124ea"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 48
     },
@@ -919,7 +919,7 @@
         "commit": "db124ea"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 49
     },
@@ -938,7 +938,7 @@
         "commit": "db124ea"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 50
     },
@@ -957,7 +957,7 @@
         "commit": "db124ea"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 51
     },
@@ -976,7 +976,7 @@
         "commit": "db124ea"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 52
     },
@@ -995,7 +995,7 @@
         "commit": "db124ea"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 53
     },
@@ -1014,7 +1014,7 @@
         "commit": "db124ea"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 54
     },
@@ -1033,7 +1033,7 @@
         "commit": "db124ea"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 55
     },
@@ -1052,7 +1052,7 @@
         "commit": "db124ea"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 56
     },
@@ -1071,7 +1071,7 @@
         "commit": "db124ea"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 57
     },
@@ -1090,7 +1090,7 @@
         "commit": "db124ea"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 58
     },
@@ -1109,7 +1109,7 @@
         "commit": "db124ea"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 59
     },
@@ -1128,7 +1128,7 @@
         "commit": "db124ea"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 60
     },
@@ -1147,7 +1147,7 @@
         "commit": "db124ea"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 61
     },
@@ -1166,7 +1166,7 @@
         "commit": "db124ea"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 62
     },
@@ -1185,7 +1185,7 @@
         "commit": "db124ea"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 63
     },
@@ -1204,7 +1204,7 @@
         "commit": "db124ea"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 64
     },
@@ -1223,7 +1223,7 @@
         "commit": "db124ea"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 65
     },
@@ -1242,7 +1242,7 @@
         "commit": "db124ea"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 66
     },
@@ -1261,7 +1261,7 @@
         "commit": "db124ea"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 67
     },
@@ -1280,7 +1280,7 @@
         "commit": "db124ea"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 68
     },
@@ -1299,7 +1299,7 @@
         "commit": "db124ea"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 69
     },
@@ -1318,7 +1318,7 @@
         "commit": "db124ea"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 70
     },
@@ -1337,7 +1337,7 @@
         "commit": "db124ea"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 71
     },
@@ -1356,7 +1356,7 @@
         "commit": "db124ea"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 72
     },
@@ -1375,7 +1375,7 @@
         "commit": "db124ea"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 73
     },
@@ -1394,7 +1394,7 @@
         "commit": "db124ea"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 74
     }
@@ -1412,7 +1412,7 @@
         "e2"
       ],
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false
     },
     {
@@ -1429,7 +1429,7 @@
         "e64"
       ],
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false
     },
     {
@@ -1445,7 +1445,7 @@
         "e13"
       ],
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false
     },
     {
@@ -1467,7 +1467,7 @@
         "e30"
       ],
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false
     },
     {
@@ -1481,7 +1481,7 @@
         "e32"
       ],
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false
     },
     {
@@ -1497,7 +1497,7 @@
         "e34"
       ],
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false
     },
     {
@@ -1512,7 +1512,7 @@
         "e52"
       ],
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false
     },
     {
@@ -1527,7 +1527,7 @@
         "e57"
       ],
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false
     },
     {
@@ -1543,7 +1543,7 @@
         "e17"
       ],
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false
     },
     {
@@ -1561,7 +1561,7 @@
         "e38"
       ],
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false
     },
     {
@@ -1576,7 +1576,7 @@
         "e9"
       ],
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false
     },
     {
@@ -1591,7 +1591,7 @@
         "e22"
       ],
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false
     },
     {
@@ -1609,7 +1609,7 @@
         "e46"
       ],
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false
     },
     {
@@ -1626,7 +1626,7 @@
         "e50"
       ],
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false
     },
     {
@@ -1641,7 +1641,7 @@
         "e70"
       ],
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false
     }
   ],

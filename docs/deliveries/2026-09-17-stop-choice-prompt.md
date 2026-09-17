@@ -120,3 +120,12 @@ pending approval (not yet evidence): `l2`, `l3`, `l4`
 - Upstream agentculture/devague#121: the coverage-boundary wording in `docs/current-spec.md`.
 - PR #22 (0.13.2) is still open and edits `nvsh/agent/openai_compat.py`; whichever of #22 and #23 merges second needs a version and CHANGELOG rebase.
 - PR #23 awaits human review and merge (gate 3).
+
+## Adjudication (2026-09-18)
+
+Recorded after PR #23 was squash-merged to `main` as `aeffedd` and nvsh 0.14.0 was published to PyPI. The sections above are left as written; this section supersedes their "proposed" wording.
+
+- The operator approved every record of this run: lapses `l2`, `l3`, `l4` (`l1` was approved earlier), obligations `o1`-`o23`, evidence `e1`-`e70` and deltas `b1`-`b15`.
+- `docs/current-spec.md` was regenerated with `devague today` and now projects this plan's fifteen behaviours. None of the previous run's behaviour lines contradicts them (`reliable-agent-stop:b7`, "Ctrl+C at a proposal or busy prompt stops the agent", agrees with decision c37), so nothing was superseded.
+- The three newly approved lapses are now evidence. They change no confidence level above, because each was already reflected in the text: `l2` (a task agent claimed tests it had not written) was closed before merge by adding those tests; `l3` (a gate run discarded a failing test's name) is why the intermittent failure is described as "probably" identified and rated `needs-follow-up`; `l4` (no gate ran without the local harness binaries) was closed by the hermetic full-suite runs recorded under Evidence.
+- Still open, unchanged: the fleet check on thor and orin, the two `unverified` claims, and the follow-up issues listed above.

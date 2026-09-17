@@ -2,8 +2,8 @@
 
 ## Coverage boundary
 
-This projection is complete only over the behavior ledger: 4 of 5 plans have a ledgered delivery (`first-class-multi-harness-with-aliases`, `readme-demo-recording`, `reliable-agent-stop`, `setup-works-with-any-installed-agent`), spanning `2026-09-14T06:16:12Z` (plan `first-class-multi-harness-with-aliases`) through `2026-09-16T18:23:52Z` (plan `reliable-agent-stop`).
-1 of 5 frame have no ledgered delivery at all (`nvsh-bash-hook-agent-on-error`) — nothing in this document reflects them.
+This projection is complete only over the behavior ledger: 5 of 6 plans have a ledgered delivery (`first-class-multi-harness-with-aliases`, `readme-demo-recording`, `reliable-agent-stop`, `setup-works-with-any-installed-agent`, `stop-choice-prompt`), spanning `2026-09-14T06:16:12Z` (plan `first-class-multi-harness-with-aliases`) through `2026-09-17T18:23:45Z` (plan `stop-choice-prompt`).
+1 of 6 frame have no ledgered delivery at all (`nvsh-bash-hook-agent-on-error`) — nothing in this document reflects them.
 Anything predating this boundary, or belonging to an unledgered frame, is not reflected here by construction.
 
 ## Current behavior
@@ -66,6 +66,91 @@ Anything predating this boundary, or belonging to an unledgered frame, is not re
   - proof: best strength `execution`
     - evidence: automated — execution: pass (run 2026-09-14 @ 4162f2f)
   - lineage: `setup-works-with-any-installed-agent:b1`, `setup-works-with-any-installed-agent:b5`
+- While the agent works on a terminal, the first Ctrl+C or lone Esc no longer cancels the turn: the panel pauses and shows 'nvsh: paused -- \[t\] steer  \[s\] stop  \[Esc\] keep going', and nothing reaches the harness until a key is read. (`stop-choice-prompt:b1`, amended)
+  - provenance: caused by `c2` — plan `stop-choice-prompt`, frame `stop-choice-prompt`
+  - proof: best strength `execution`
+    - evidence: automated — execution: pass (run 2026-09-17 @ db124ea)
+    - evidence: automated — execution: pass (run 2026-09-17 @ db124ea)
+- Stopping now takes a choice first: \[s\] (or Ctrl+C typed at the prompt) does what the first press used to do -- 'stopping… press again to kill', one polite cancel -- and a further press still kills the process tree. (`stop-choice-prompt:b2`, amended)
+  - provenance: caused by `c3` — plan `stop-choice-prompt`, frame `stop-choice-prompt`
+  - proof: best strength `execution`
+    - evidence: automated — execution: pass (run 2026-09-17 @ db124ea)
+    - evidence: automated — execution: pass (run 2026-09-17 @ db124ea)
+    - evidence: automated — execution: pass (run 2026-09-17 @ db124ea)
+    - evidence: integration — execution: pass (run 2026-09-17 @ db124ea)
+- \[Esc\], or 30 s without an answer, dismisses the prompt: nothing is sent, rendering resumes with no event lost, and the exit status is unaffected. (`stop-choice-prompt:b3`, added)
+  - provenance: caused by `c6`, `c19` — plan `stop-choice-prompt`, frame `stop-choice-prompt`
+  - proof: best strength `execution`
+    - evidence: automated — execution: pass (run 2026-09-17 @ db124ea)
+    - evidence: automated — execution: pass (run 2026-09-17 @ db124ea)
+- \[t\] takes one typed line. On pi and codex it is delivered into the running turn; on every other harness the key reads '\[t\] stop & correct' and nvsh cancels the turn, waits for it to end, and sends a self-contained follow-up (original request, a stopped notice, the correction). (`stop-choice-prompt:b4`, added)
+  - provenance: caused by `c4`, `c18`, `c22`, `c23` — plan `stop-choice-prompt`, frame `stop-choice-prompt`
+  - proof: best strength `execution`
+    - evidence: automated — execution: pass (run 2026-09-17 @ db124ea)
+    - evidence: integration — execution: pass (run 2026-09-17 @ db124ea)
+    - evidence: automated — execution: pass (run 2026-09-17 @ db124ea)
+    - evidence: automated — execution: pass (run 2026-09-17 @ db124ea)
+    - evidence: automated — execution: pass (run 2026-09-17 @ db124ea)
+    - evidence: automated — execution: pass (run 2026-09-17 @ db124ea)
+- The correction typed at the prompt is redacted before it leaves the process, and the audit log records only its length (`correction_chars`). (`stop-choice-prompt:b5`, added)
+  - provenance: caused by `c29` — plan `stop-choice-prompt`, frame `stop-choice-prompt`
+  - proof: best strength `execution`
+    - evidence: automated — execution: pass (run 2026-09-17 @ db124ea)
+- If a steer-capable harness refuses the steer at runtime, nvsh says it could not steer and asks once (y) whether to stop and correct; any other answer discards the text with a 'steer'/'discarded' audit line. (`stop-choice-prompt:b6`, added)
+  - provenance: caused by `c30`, `d3` — plan `stop-choice-prompt`, frame `stop-choice-prompt`
+  - proof: best strength `execution`
+    - evidence: automated — execution: pass (run 2026-09-17 @ db124ea)
+    - evidence: automated — execution: pass (run 2026-09-17 @ db124ea)
+- A correction typed after the turn has already finished -- before the prompt was answered or while the line was being typed -- becomes the next request with no cancel and no stopped notice; \[s\] on a finished turn renders the whole answer and exits 0. (`stop-choice-prompt:b7`, added)
+  - provenance: caused by `c36` — plan `stop-choice-prompt`, frame `stop-choice-prompt`
+  - proof: best strength `execution`
+    - evidence: automated — execution: pass (run 2026-09-17 @ db124ea)
+    - evidence: automated — execution: pass (run 2026-09-17 @ db124ea)
+- Exit status: 0 after keep going or a delivered steer; the follow-up turn's own status after stop & correct; 130 only for \[s\] on a running turn and for a kill. (`stop-choice-prompt:b8`, amended)
+  - provenance: caused by `c20` — plan `stop-choice-prompt`, frame `stop-choice-prompt`
+  - proof: best strength `execution`
+    - evidence: automated — execution: pass (run 2026-09-17 @ db124ea)
+    - evidence: automated — execution: pass (run 2026-09-17 @ db124ea)
+- Where the prompt cannot be shown -- no tty, TERM=dumb, or --json (nvsh slash --json and nvsh hook --json now tell the panel) -- the first Ctrl+C still stops at once and no prompt text is written. (`stop-choice-prompt:b9`, amended)
+  - provenance: caused by `c9`, `d2` — plan `stop-choice-prompt`, frame `stop-choice-prompt`
+  - proof: best strength `execution`
+    - evidence: automated — execution: pass (run 2026-09-17 @ db124ea)
+    - evidence: automated — execution: pass (run 2026-09-17 @ db124ea)
+- Every adapter declares Capabilities.steer (true only for pi and codex); it appears in 'nvsh agent list --json' and the client reads it without starting a harness. (`stop-choice-prompt:b10`, added)
+  - provenance: caused by `c5`, `c31` — plan `stop-choice-prompt`, frame `stop-choice-prompt`
+  - proof: best strength `execution`
+    - evidence: automated — execution: pass (run 2026-09-17 @ db124ea)
+    - evidence: automated — execution: pass (run 2026-09-17 @ db124ea)
+    - evidence: automated — execution: pass (run 2026-09-17 @ db124ea)
+    - evidence: automated — execution: pass (run 2026-09-17 @ db124ea)
+- The busy prompt offers \[t\] steer only where the harness declares it can steer; it no longer offers it on openai-compat or agy, which override steer() only to return False. (`stop-choice-prompt:b11`, amended)
+  - provenance: caused by `c5` — plan `stop-choice-prompt`, frame `stop-choice-prompt`
+  - proof: best strength `execution`
+    - evidence: automated — execution: pass (run 2026-09-17 @ db124ea)
+    - evidence: automated — execution: pass (run 2026-09-17 @ db124ea)
+- The audit log gains the stop kind `keep_going` and optional origin (`stop_prompt`, `busy_prompt`) and reason (key, timeout) fields; each prompt outcome writes exactly one stop line. (`stop-choice-prompt:b12`, added)
+  - provenance: caused by `c13` — plan `stop-choice-prompt`, frame `stop-choice-prompt`
+  - proof: best strength `execution`
+    - evidence: automated — execution: pass (run 2026-09-17 @ db124ea)
+    - evidence: automated — execution: pass (run 2026-09-17 @ db124ea)
+- Prompts read their key with a timed reader that discards typeahead before the prompt is drawn, never loses a key typed after it, and gives the terminal back if the process gets SIGHUP or SIGTERM while the prompt is open. (`stop-choice-prompt:b13`, added)
+  - provenance: caused by `c32`, `c33` — plan `stop-choice-prompt`, frame `stop-choice-prompt`
+  - proof: best strength `execution`
+    - evidence: automated — execution: pass (run 2026-09-17 @ db124ea)
+    - evidence: automated — execution: pass (run 2026-09-17 @ db124ea)
+    - evidence: automated — execution: pass (run 2026-09-17 @ db124ea)
+    - evidence: automated — execution: pass (run 2026-09-17 @ db124ea)
+- A Ctrl+C typed while a proposal or busy prompt is open goes straight to stop and never opens the choice prompt; an empty line, Ctrl+C or end of input at the correction line, and end of input at the prompt, send nothing. (`stop-choice-prompt:b14`, amended)
+  - provenance: caused by `c37`, `c34` — plan `stop-choice-prompt`, frame `stop-choice-prompt`
+  - proof: best strength `execution`
+    - evidence: automated — execution: pass (run 2026-09-17 @ db124ea)
+    - evidence: automated — execution: pass (run 2026-09-17 @ db124ea)
+    - evidence: automated — execution: pass (run 2026-09-17 @ db124ea)
+- A Ctrl+C that lands while the panel is shutting down no longer raises a traceback: it is recorded as an interrupt, the terminal and the previous SIGINT handler are restored, and nothing is sent to the harness. (`stop-choice-prompt:b15`, amended)
+  - provenance: caused by `d4` — plan `stop-choice-prompt`, frame `stop-choice-prompt`
+  - proof: best strength `sensitivity`
+    - evidence: automated — sensitivity: pass (run 2026-09-17 @ db124ea)
+    - evidence: automated — sensitivity: pass (run 2026-09-17 @ db124ea)
 
 ## Ledger status
 
