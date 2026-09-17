@@ -25,8 +25,14 @@ STOP_KINDS = frozenset(
         "busy_exit",
         "declined",
         "doctor_apply",
+        "keep_going",
     }
 )
+
+# stop-choice-prompt (t3): where a stop-prompt outcome originated, and why a
+# keep_going was recorded (an explicit key press versus the 30s timeout).
+STOP_ORIGINS = frozenset({"stop_prompt", "busy_prompt"})
+STOP_REASONS = frozenset({"key", "timeout"})
 
 
 def default_audit_path(env: Mapping[str, str] | None = None) -> Path:
@@ -115,18 +121,48 @@ class AuditLog:
         target: Target | Mapping[str, object] | None,
         elapsed: object,
         outcome: object,
+        *,
+        origin: str | None = None,
+        reason: str | None = None,
+        correction: str | None = None,
     ) -> dict:
         """Append one ``event='stop'`` line for the stop/cancel/steer/replace/
 
-        busy-exit/declined/doctor-apply lifecycle (t3, reliable-agent-stop).
-        ``kind`` must be one of :data:`STOP_KINDS`; anything else is a
-        programming error in the caller and raises ``ValueError`` rather than
-        silently recording an unrecognised stop path. ``target`` follows
-        :meth:`record`'s encoding: a :class:`~nvsh.agent.base.Target`
-        dataclass, a plain dict, or ``None``.
+        busy-exit/declined/doctor-apply/keep_going lifecycle (t3,
+        reliable-agent-stop and stop-choice-prompt). ``kind`` must be one of
+        :data:`STOP_KINDS`; anything else is a programming error in the
+        caller and raises ``ValueError`` rather than silently recording an
+        unrecognised stop path. ``target`` follows :meth:`record`'s
+        encoding: a :class:`~nvsh.agent.base.Target` dataclass, a plain
+        dict, or ``None``.
+
+        ``origin``, ``reason`` and ``correction`` are keyword-only and
+        optional so every existing call site (``nvsh/client.py``,
+        ``nvsh/cli/_commands/doctor.py``) keeps working unedited:
+
+        - ``origin`` names where a stop-prompt outcome came from --
+          ``"stop_prompt"`` or ``"busy_prompt"`` -- and is written only when
+          given.
+        - ``reason`` distinguishes an explicit ``keep_going`` key press from
+          the 30s timeout -- ``"key"`` or ``"timeout"`` -- and is written
+          only when given.
+        - ``correction`` is the operator's typed correction text. It is
+          never written to the log: only its length, as ``correction_chars``,
+          is recorded, and only when ``correction`` is given. There is no
+          parameter that accepts and stores the raw text under any other
+          name; passing one (e.g. ``text=...``) is a ``TypeError`` because
+          no such keyword exists.
         """
         if kind not in STOP_KINDS:
             raise ValueError(f"unknown stop kind: {kind!r} (expected one of {sorted(STOP_KINDS)})")
+        if origin is not None and origin not in STOP_ORIGINS:
+            raise ValueError(
+                f"unknown stop origin: {origin!r} (expected one of {sorted(STOP_ORIGINS)})"
+            )
+        if reason is not None and reason not in STOP_REASONS:
+            raise ValueError(
+                f"unknown stop reason: {reason!r} (expected one of {sorted(STOP_REASONS)})"
+            )
         entry = {
             "ts": time.time(),
             "event": "stop",
@@ -136,6 +172,12 @@ class AuditLog:
             "elapsed": elapsed,
             "outcome": _to_jsonable(outcome),
         }
+        if origin is not None:
+            entry["origin"] = origin
+        if reason is not None:
+            entry["reason"] = reason
+        if correction is not None:
+            entry["correction_chars"] = len(correction)
         self._write_entry(entry)
         return entry
 
