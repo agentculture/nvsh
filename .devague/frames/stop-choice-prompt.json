@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "drafting",
   "created": "2026-09-17T16:13:08Z",
-  "updated": "2026-09-17T16:30:24Z",
+  "updated": "2026-09-17T16:52:28Z",
   "claims": [
     {
       "id": "c1",
@@ -73,6 +73,12 @@
         {
           "id": "h4",
           "text": "The text typed after [t] reaches the adapter's steer() unchanged (after redaction) through Responder.steer on both the daemon and the one-shot path, and no new daemon control message exists.",
+          "status": "proposed",
+          "instruction": ""
+        },
+        {
+          "id": "h28",
+          "text": "The text typed after [t] reaches the adapter's steer() through Responder.steer on both the daemon and the one-shot path with no change other than the redaction required by c29, and no new daemon control message exists.",
           "status": "proposed",
           "instruction": ""
         }
@@ -474,6 +480,158 @@
       "links": [],
       "instruction": "Timing assertions on a pty in tests/test_panel_stop.py; a conformance test iterating registry.ADAPTERS for the capability.",
       "revisions": []
+    },
+    {
+      "id": "c29",
+      "kind": "requirement",
+      "text": "The correction line typed at the stop prompt is passed through nvsh/redact.py before it leaves the process (steer, or the stop-and-correct follow-up), and the audit line records that a correction was sent and its length, never its text.",
+      "origin": "llm",
+      "status": "proposed",
+      "honesty_conditions": [
+        {
+          "id": "h20",
+          "text": "A token-shaped string typed as a correction never appears in what the adapter receives nor in audit.jsonl, on both the steer and the stop-and-correct path.",
+          "status": "proposed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "Test: type a line containing HF_TOKEN=abc123 at the prompt; assert the adapter's steer()/run() receives the redacted form and the audit line contains no token.",
+      "revisions": []
+    },
+    {
+      "id": "c30",
+      "kind": "requirement",
+      "text": "Capabilities.steer says what the harness can do in principle; the runtime answer is steer()'s return value. When [t] was offered as 'steer' and steer() returns False (codex fell back to exec mode, no thread/turn id yet, the turn already ended), nvsh tells the operator it could not steer and asks once whether to stop and correct instead -- it never silently drops the text and never cancels without saying so.",
+      "origin": "llm",
+      "status": "proposed",
+      "honesty_conditions": [
+        {
+          "id": "h21",
+          "text": "With a steer-capable adapter whose steer() returns False, the typed text is either delivered as a follow-up the operator agreed to or explicitly discarded by the operator; no third outcome exists.",
+          "status": "proposed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "Test with a fake whose Capabilities.steer is True but steer() returns False: the typed line is not lost, and cancel is called only after the operator agrees.",
+      "revisions": []
+    },
+    {
+      "id": "c31",
+      "kind": "requirement",
+      "text": "The client learns the active harness's Capabilities.steer without asking the daemon, the way registry._tool_calling already reads tool_calling: by constructing the adapter class for the resolved target and reading .capabilities() (nvsh/agent/registry.py:305-317). No new wire field is needed for the stop prompt; the busy event's existing 'steerable' arg is filled from the same capability.",
+      "origin": "llm",
+      "status": "proposed",
+      "honesty_conditions": [
+        {
+          "id": "h22",
+          "text": "On the daemon path the prompt shows the right [t] label for pi, codex and openai-compat targets without any new daemon message, and reading the capability starts no harness process.",
+          "status": "proposed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "Test: the prompt's [t] label is chosen from the resolved target's capability on the daemon path with a stub daemon that sends no capability information.",
+      "revisions": []
+    },
+    {
+      "id": "c32",
+      "kind": "requirement",
+      "text": "The 30 s timeout needs a timed single-key read, which does not exist: _read_raw_key blocks forever (nvsh/panel.py:1408-1442) and KeyWatcher.poll is timed but discards every byte except a lone Esc (nvsh/keys.py:133-157). The prompt gets a select()-based timed read that returns t, s, Esc, Ctrl+C, EOF or timeout, with escape sequences drained as today. Boundary c7 is narrowed accordingly: Esc disambiguation, KeyWatcher and typeahead discard stay unchanged, but a timed read may be added beside them.",
+      "origin": "llm",
+      "status": "proposed",
+      "honesty_conditions": [
+        {
+          "id": "h23",
+          "text": "The timed read never spins on EOF or a hung-up tty, restores termios on every exit path including SIGHUP/SIGTERM, and tests/test_keys.py still passes unmodified.",
+          "status": "proposed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "Test on a pty: no key for 30 s returns timeout; an arrow key neither answers nor leaves bytes behind; Ctrl+C returns the stop path.",
+      "revisions": []
+    },
+    {
+      "id": "c33",
+      "kind": "requirement",
+      "text": "Keys typed before the prompt is on screen never answer it: pending input is discarded when the prompt is drawn, so a double-tapped Esc or a key-repeat opens the prompt and leaves it open rather than instantly choosing 'keep going' (or, with Ctrl+C twice, instantly stopping). Today Esc Esc means 'stop, then kill'; after this change it must not silently mean 'nothing happened'.",
+      "origin": "llm",
+      "status": "proposed",
+      "honesty_conditions": [
+        {
+          "id": "h24",
+          "text": "Two presses arriving within the terminal's key-repeat interval leave the prompt open and visible; a deliberate second press after the prompt is drawn is honoured.",
+          "status": "proposed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "Test on a pty: write Esc Esc back-to-back within 20 ms; assert the prompt is visible and unanswered.",
+      "revisions": []
+    },
+    {
+      "id": "c34",
+      "kind": "requirement",
+      "text": "At the correction line after [t], an empty line, Ctrl+C or end of input means 'never mind': nothing is sent, nothing is cancelled and the turn keeps going -- the existing read_tell rule (nvsh/panel.py:1108-1133). End of input at the choice prompt itself (a hung-up terminal) also means keep going locally and never stop or steer, matching reliable-agent-stop deviation d1; the daemon's client-gone watch ends the turn.",
+      "origin": "llm",
+      "status": "proposed",
+      "honesty_conditions": [
+        {
+          "id": "h25",
+          "text": "No combination of EOF, empty input or Ctrl+C at the correction line results in a cancel or a steer being sent.",
+          "status": "proposed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "Test: EOF at the choice prompt and at the correction line both leave cancel, force_stop and steer uncalled.",
+      "revisions": []
+    },
+    {
+      "id": "c35",
+      "kind": "assumption",
+      "text": "While the prompt is open the client reads nothing from the daemon socket. This is safe for 30 s: the daemon's _write is a blocking write with no send timeout (nvsh/daemon.py:511-517), so a full socket buffer back-pressures the turn thread rather than dropping events; _peer_is_gone does not fire for a client that is merely not reading (daemon.py:1079-1093); the 300 s turn cap keeps counting, so a pause can at most consume 30 s of it. kill and cancel travel on their own connections and are unaffected.",
+      "origin": "llm",
+      "status": "proposed",
+      "honesty_conditions": [
+        {
+          "id": "h26",
+          "text": "A client paused for the full 30 s against a fast-streaming fake loses no events, is not aborted as client-gone, and other shells' queued requests resume afterwards.",
+          "status": "proposed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "Test: pause a client for 5 s against a daemon streaming faster than the socket buffer drains; assert no event is lost or reordered and the turn is not aborted as client-gone.",
+      "revisions": []
+    },
+    {
+      "id": "c36",
+      "kind": "requirement",
+      "text": "The turn can finish while the prompt is open (the agent keeps working; only rendering is paused). Choosing [s] or [t] after that must not misreport: the rest of the answer is still rendered, a stop sent to an already-finished turn does not mark the result interrupted or exit 130, and a correction typed then simply becomes the next request.",
+      "origin": "llm",
+      "status": "proposed",
+      "honesty_conditions": [
+        {
+          "id": "h27",
+          "text": "When DONE is already queued at the moment of the choice, no outcome of the prompt loses rendered text or reports 130 for a turn that completed.",
+          "status": "proposed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "Test: a fake that emits DONE while the prompt is open; choose s; assert the full text is rendered and the exit status is 0.",
+      "revisions": []
     }
   ],
   "open_vagueness": [
@@ -490,6 +648,15 @@
       "id": "v2",
       "text": "The 30 s timeout and the paused panel interact with NVSH_TURN_TIMEOUT (300 s) and with daemon-side buffering while the client renders nothing: confirm in implementation that a paused client cannot stall or drop the harness stream.",
       "kind": "unknown_nonblocking",
+      "claim_id": null,
+      "resolved": false,
+      "resolution": "",
+      "resolution_claim_id": null
+    },
+    {
+      "id": "v3",
+      "text": "Pre-existing gap outside this frame: operator-typed text from /ask, /steer and the proposal prompt's [t] is sent to the harness unredacted, against CLAUDE.md's 'everything that leaves the process is redacted first'. Needs its own issue.",
+      "kind": "follow_up",
       "claim_id": null,
       "resolved": false,
       "resolution": "",
@@ -616,8 +783,103 @@
       "seeds": [
         "c23"
       ]
+    },
+    {
+      "id": "s16",
+      "surface": "challenge pass / security lens: nvsh/client.py + nvsh/client_transport.py steer path",
+      "finding": "Operator-typed text is not redacted anywhere today: _redact is used only at client.py:1607 (inspection output). /ask, /steer and the proposal [t] share the gap; this frame fixes it only for the new prompt.",
+      "seeds": [
+        "c29"
+      ]
+    },
+    {
+      "id": "s17",
+      "surface": "challenge pass / hidden-dependencies lens: nvsh/agent/codex.py steer()",
+      "finding": "codex.steer() returns False when the app-server is not running (exec fallback) or no thread/turn id exists yet (codex.py:729-755), so a static Capabilities.steer=True is not a guarantee. _injector already handles a False return by queueing the text and noting 'could not be steered' (client.py:1156-1186).",
+      "seeds": [
+        "c30"
+      ]
+    },
+    {
+      "id": "s18",
+      "surface": "challenge pass / adjacent-systems lens: nvsh/agent/registry.py + client capability lookup",
+      "finding": "On the daemon path the adapter lives in the daemon; the client sees capabilities only through the busy event's 'steerable' arg (client.py:1474-1502). registry._tool_calling (registry.py:305-317) is the existing precedent for reading a capability client-side by constructing the adapter without starting it.",
+      "seeds": [
+        "c31"
+      ]
+    },
+    {
+      "id": "s19",
+      "surface": "challenge pass / concurrency lens: nvsh/panel.py _read_raw_key + nvsh/keys.py KeyWatcher.poll",
+      "finding": "No timed key read that returns ordinary keys exists. _read_key puts the tty in raw mode, where Ctrl+C arrives as byte 0x03 and is raised as KeyboardInterrupt (panel.py:1431-1442); KeyWatcher.poll uses select with a deadline but consumes and discards non-Esc bytes. h7 ('keys.py has no functional diff') is stricter than the design can honour if the timed read is placed in keys.py.",
+      "seeds": [
+        "c32"
+      ]
+    },
+    {
+      "id": "s20",
+      "surface": "challenge pass / overlooked-actors lens: muscle memory from 0.13.x (Esc Esc, Ctrl+C Ctrl+C)",
+      "finding": "0.13.x taught two presses = stop then kill (docs/shell-integration.md:373-378, README.md:54). With Esc bound to both 'open the prompt' and 'keep going', an unfiltered double-tap becomes a no-op and defeats the feature's stated purpose of avoiding accidental outcomes. keys.py already discards typeahead while streaming (keys.py:16,137), so the precedent exists.",
+      "seeds": [
+        "c33"
+      ]
+    },
+    {
+      "id": "s21",
+      "surface": "challenge pass / failure-modes lens: nvsh/panel.py read_tell + hung-up terminal",
+      "finding": "read_tell reads a cooked line with its own SIGINT handler that means 'never mind' (panel.py:1108-1133). _read_raw_key returns '' on EOF and d1 already fixes 'end of input at a proposal means ignore, never approve' (docs/shell-integration.md:400-401). c3's 'Ctrl+C at the choice prompt means stop' must not be read as applying to the correction line.",
+      "seeds": [
+        "c34"
+      ]
+    },
+    {
+      "id": "s22",
+      "surface": "challenge pass / concurrency lens: nvsh/daemon.py _write + _watch_turn",
+      "finding": "Examined for parked item v2. The serving loop writes each event with wfile.write/flush and treats only BrokenPipe/ConnectionReset/ValueError as a gone client (daemon.py:505-517); there is no send timeout. The run lock is held for the paused duration, so other shells wait up to 30 s longer. Residual: not measured under a real 6 KB/s reasoning stream.",
+      "seeds": [
+        "c35"
+      ]
+    },
+    {
+      "id": "s23",
+      "surface": "challenge pass / lifecycle lens: turn ends during the prompt (nvsh/panel.py _Feeder, nvsh/daemon.py cancel_shell)",
+      "finding": "_Feeder holds at most one un-acked event, so the client cannot see that a turn has finished while it is paused (panel.py:1261-1285). cancel_shell returns nothing and only calls slot.agent.cancel() (daemon.py:926-940); a cancel that lands after the turn ended just sets the adapter's flag, which is harmless only because run() clears it per turn since 0.13.1 -- this frame depends on that fix.",
+      "seeds": [
+        "c36"
+      ]
+    },
+    {
+      "id": "s24",
+      "surface": "challenge pass / migration lens: mixed client and daemon versions",
+      "finding": "Clean pass. A newer client retires a stale daemon on connect via the version handshake (_retire_stale_daemon, client_transport.py:360-380), and nvsh setup stops the daemon on upgrade, so an old daemon computing 'steerable' with _overrides_steer cannot outlive the first request. Residual: a shell opened before the upgrade keeps the old hook file, which this frame does not touch.",
+      "seeds": []
+    },
+    {
+      "id": "s25",
+      "surface": "challenge pass / operations lens: nvsh overview + audit visibility of a paused turn",
+      "finding": "Examined, not changed. nvsh overview shows 'active turn: shell N (target, elapsed)' (nvsh/cli/_commands/overview.py:119) and has no notion of a client paused at a prompt; the pause is client-side and invisible to the daemon. The audit line per outcome (c13) is the only record. Residual: an operator on another terminal cannot tell a paused turn from a slow one.",
+      "seeds": []
+    },
+    {
+      "id": "s26",
+      "surface": "challenge pass / adjacent-systems lens: demo casts, explain catalog, bash hook, Ctrl+G",
+      "finding": "Clean pass. docs/demos/*.cast contain neither 'stopping' nor 'press again' (grep: 0 files), nvsh/explain/catalog.py has no entry describing the press behaviour, and the bash hook and readline bindings never see keys typed while the Python panel owns the terminal.",
+      "seeds": []
     }
   ],
-  "lapses": [],
+  "lapses": [
+    {
+      "id": "l1",
+      "code": "assumption-for-measurement",
+      "what": "Honesty condition h4 states steer text reaches the adapter 'after redaction'. No redaction exists on that path: client._redact is called only for inspection output (nvsh/client.py:1607), and neither Responder.steer (client_transport.py:101-121), _injector (client.py:1156-1186) nor nvsh/agent/prompt.py redacts operator-typed text. The phrase was written from the project rule in CLAUDE.md, not from the code.",
+      "skipped_check": "grep for redact on the steer path before writing h4",
+      "refs": [
+        "h4",
+        "challenge pass / security lens: nvsh/client.py steer path"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    }
+  ],
   "obligations": []
 }
