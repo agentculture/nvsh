@@ -5,7 +5,7 @@
   "schema_version": 5,
   "status": "exported",
   "created": "2026-09-17T17:03:56Z",
-  "updated": "2026-09-17T20:43:46Z",
+  "updated": "2026-09-17T21:18:51Z",
   "targets": [
     {
       "id": "c1",
@@ -701,7 +701,7 @@
     },
     {
       "id": "r9",
-      "text": "One unidentified intermittent failure: 1 of 15 full-suite runs on the idle machine at the t11 gate reported '1 failed, 2192 passed'; the test name was not captured (lapse l3) and 12 consecutive reruns were clean. Earlier one-off failures this day were in subprocess-backed adapter tests (r5/r6 history) and one traced to a real product bug (r7), so this must not be assumed to be harmless test timing. CI on the PR and the fleet check are the next chances to catch it by name.",
+      "text": "Intermittent failure, now named: tests/test_agent_conformance.py::test_a_rejected_effort_surfaces_the_cli_stderr_tail[pi] failed once in the t4 agent's full run and once in the main agent's hermetic full run after rv1 (2 sightings in roughly 25 full runs on 2026-09-17/18); it passes 5/5 alone and 8/8 for its file under -n auto, with or without harness binaries on PATH. It is probably also the unidentified '1 failed' at the t11 gate, whose name was lost (lapse l3), but that is not proven. The test predates this plan (the branch only added other tests to that file). Likely mechanism, read not measured: the fake pi refuses and exits before the adapter's stderr drain thread has captured the text the error must carry. Pre-existing, low-rate, in the pi start/error path and unrelated to the stop prompt; needs its own issue.",
       "kind": "unknown_nonblocking",
       "task_id": "t11",
       "resolved": false,
