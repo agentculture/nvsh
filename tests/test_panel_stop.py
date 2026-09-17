@@ -154,7 +154,8 @@ def test_first_press_opens_the_prompt_within_1s_and_calls_nothing(pty_pair, kind
     result, text, calls, at_prompt = _prompt_run(kind, master, tty_in)
     assert at_prompt["delay"] < 1.0, at_prompt
     assert at_prompt["calls"] == {"cancel": [], "kill": [], "choice": []}
-    assert calls["cancel"] == [] and calls["kill"] == []
+    assert calls["cancel"] == []
+    assert calls["kill"] == []
     assert PAUSED in text
     assert STOPPING not in text
     # The open run of text was closed before the prompt line.
@@ -218,7 +219,8 @@ def test_esc_at_the_prompt_keeps_going_with_no_events_lost(pty_pair):
     assert result.interrupted is False
     assert result.done is True
     assert result.text == "one two three four five"
-    assert cancelled == [] and killed == []
+    assert cancelled == []
+    assert killed == []
     assert STOPPING not in out
     assert "nvsh: interrupted" not in out
 
@@ -233,7 +235,8 @@ def test_timeout_at_the_prompt_keeps_going(pty_pair, monkeypatch):
     assert result.interrupted is False
     assert result.done is True
     assert result.text == "one two three four five"
-    assert cancelled == [] and killed == []
+    assert cancelled == []
+    assert killed == []
     assert STOPPING not in out
 
 
@@ -266,7 +269,8 @@ def test_steer_label_is_used_verbatim_and_t_reports_steer(pty_pair, label):
     text = out.getvalue()
     assert f"nvsh: paused -- [t] {label}  [s] stop  [Esc] keep going" in text
     assert choices == [("steer", "key")]
-    assert cancelled == [] and killed == []
+    assert cancelled == []
+    assert killed == []
     assert result.interrupted is False
     assert result.done is True
     # t5 reads no correction line yet: no ``nvsh> `` prompt was shown.
@@ -891,7 +895,8 @@ def test_t_reads_a_correction_line_and_hands_it_to_on_steer(pty_pair, line):
     assert TELL_PROMPT in out
     assert calls["steer"] == ["look at nvpmodel instead"]
     assert calls["choice"] == [("steer", "key")]
-    assert calls["cancel"] == [] and calls["kill"] == []
+    assert calls["cancel"] == []
+    assert calls["kill"] == []
     assert result.interrupted is False
     assert result.done is True
     assert result.text == "working winding down"
@@ -904,7 +909,8 @@ def test_a_correction_the_harness_did_not_take_is_still_only_handed_over(pty_pai
     result, out, calls = _correction_run(pty_pair, _type(b"try jtop\n"), taken=False)
     assert calls["steer"] == ["try jtop"]
     assert calls["choice"] == [("steer", "key")]
-    assert calls["cancel"] == [] and calls["kill"] == []
+    assert calls["cancel"] == []
+    assert calls["kill"] == []
     assert result.interrupted is False
     assert result.done is True
     assert STOPPING not in out
@@ -924,7 +930,8 @@ def test_never_mind_at_the_correction_line_sends_nothing(pty_pair, typist):
     result, out, calls = _correction_run(pty_pair, typist)
     assert calls["steer"] == []
     assert calls["choice"] == [("keep_going", "key")]
-    assert calls["cancel"] == [] and calls["kill"] == []
+    assert calls["cancel"] == []
+    assert calls["kill"] == []
     assert result.interrupted is False
     assert result.done is True
     assert result.text == "working winding down"
@@ -959,7 +966,9 @@ def test_eof_at_the_choice_prompt_keeps_going_and_sends_nothing(pty_pair):
     )
     text = out.getvalue()
     assert calls["choice"] == [("keep_going", "")]
-    assert calls["cancel"] == [] and calls["kill"] == [] and calls["steer"] == []
+    assert calls["cancel"] == []
+    assert calls["kill"] == []
+    assert calls["steer"] == []
     assert result.interrupted is False
     assert result.done is True
     assert result.text == "working winding down"
@@ -1040,7 +1049,8 @@ def test_t_with_done_already_queued_hands_the_correction_to_the_caller(pty_pair)
     assert result.interrupted is False
     assert result.done is True
     assert result.text == "the whole answer"
-    assert calls["cancel"] == [] and calls["kill"] == []
+    assert calls["cancel"] == []
+    assert calls["kill"] == []
     assert STOPPING not in out
 
 
@@ -1213,7 +1223,8 @@ def test_stop_begun_on_an_already_finished_turn_cancels_nothing(pty_pair):
         thread.join(15)
     out = out.getvalue()
     assert calls["steer"] == ["look at nvpmodel instead"]
-    assert calls["cancel"] == [] and calls["kill"] == []
+    assert calls["cancel"] == []
+    assert calls["kill"] == []
     assert result.not_running is True
     assert result.stopped_to_correct is False
     assert result.interrupted is False
@@ -1290,7 +1301,8 @@ def test_a_turn_that_finishes_while_the_correction_is_typed_cancels_nothing(pty_
     out = out.getvalue()
     assert calls["steer"] == [("look at nvpmodel instead", True)]
     assert calls["choice"] == [("steer", "key")]
-    assert calls["cancel"] == [] and calls["kill"] == []
+    assert calls["cancel"] == []
+    assert calls["kill"] == []
     assert result.not_running is True
     assert result.stopped_to_correct is False
     assert result.interrupted is False
@@ -1486,7 +1498,8 @@ def test_a_press_during_teardown_never_escapes_stream(monkeypatch, pty_pair, whe
     # The press is recorded as an interrupt and nothing more.
     assert result.interrupted is True
     assert "nvsh: interrupted" in out
-    assert calls["cancel"] == [] and calls["kill"] == []
+    assert calls["cancel"] == []
+    assert calls["kill"] == []
     assert calls["choice"] == []
     # The panel's handler is gone and the terminal is back.
     before, after = handlers
@@ -1500,7 +1513,8 @@ def test_repeated_presses_during_teardown_are_all_absorbed(monkeypatch, pty_pair
     )
     assert result.interrupted is True
     assert out.count("nvsh: interrupted") == 1
-    assert calls["cancel"] == [] and calls["kill"] == []
+    assert calls["cancel"] == []
+    assert calls["kill"] == []
     assert handlers[1] is handlers[0]
     assert attrs[1] == attrs[0]
 

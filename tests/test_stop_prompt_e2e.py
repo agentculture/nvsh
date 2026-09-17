@@ -609,7 +609,8 @@ def test_stop_and_correct_on_a_subprocess_family_resends_the_correction(rig_fact
     stdin_log = rig.tmp / "claude-stdin.jsonl"
 
     pids = list((_read_pid_file(rig.pid_file) or {}).values())
-    assert pids and all(_pid_alive(int(pid)) for pid in pids)
+    assert pids
+    assert all(_pid_alive(int(pid)) for pid in pids)
     mark = _press(term, STOP_AND_CORRECT_LABEL)
     assert all(_pid_alive(int(pid)) for pid in pids), "the press reached the harness"
     assert not stdin_log.exists() or stdin_log.stat().st_size == 0
