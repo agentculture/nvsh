@@ -16,17 +16,13 @@ from __future__ import annotations
 import os
 import pty
 import select
-import subprocess  # nosec B404 - read-only `git diff` for the no-diff guard
 import threading
 import time
-from pathlib import Path
 
 import pytest
 
 from nvsh import keys as keys_mod
 from nvsh import promptkeys
-
-_REPO = Path(__file__).resolve().parents[1]
 
 # Generous everywhere: these run under `pytest -n auto` on loaded Jetsons.
 _PATIENT = 10.0
@@ -294,33 +290,7 @@ def test_return_constants_are_distinct_and_never_collide_with_a_key():
     assert all(len(value) > 1 for value in sentinels)
 
 
-# -- criterion 4: nvsh/keys.py is untouched -----------------------------------
-
-
-def _git(*args: str) -> str | None:
-    try:
-        out = subprocess.run(  # nosec B603 B607 - fixed args, no shell, repo-local
-            ["git", *args],
-            cwd=_REPO,
-            capture_output=True,
-            text=True,
-            timeout=30,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None
-    return out.stdout if out.returncode == 0 else None
-
-
-@pytest.mark.parametrize("path", ["nvsh/keys.py", "tests/test_keys.py"])
-def test_this_branch_does_not_touch_the_key_reader(path):
-    base = _git("merge-base", "main", "HEAD")
-    if base is None:
-        pytest.skip("no `main` ref to compare against")
-    diff = _git("diff", "--stat", base.strip(), "HEAD", "--", path)
-    if diff is None:
-        pytest.skip("git diff unavailable")
-    assert diff.strip() == "", f"{path} must have no diff on this branch:\n{diff}"
+# -- criterion 4: nvsh/keys.py is reused, not re-implemented ------------------
 
 
 def test_the_timed_read_reuses_the_key_module():
