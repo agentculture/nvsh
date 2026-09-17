@@ -486,18 +486,18 @@ def test_two_presses_stop_every_family_on_both_paths(family: Family, path: str, 
 
     # The press after [s]: the tree is gone and the prompt is back within 3s,
     # measured from the last key the operator had any reason to type.
-    # A family whose cancel already kills has nothing left to kill here, and
-    # a press typed at a client that is already tearing down is a measured
-    # flake rather than a test: the KeyWatcher has restored the default SIGINT
-    # handler while the stream loop is still joining its threads, so the press
-    # lands as an uncaught KeyboardInterrupt and "nvsh: interrupted" is never
-    # printed. That is exactly plan risk r5's [openai-compat-one-shot] flake:
-    # 3 failures in 30 runs under load before this rewrite, 1 in 30 with the
-    # press kept. The kill press is typed only where there is a turn to kill;
-    # the budget is unchanged, still counted from this instant.
+    # The press is typed for every family, including the ones whose cancel()
+    # already ended the turn: there the press lands at a client that is
+    # already tearing down, which is precisely what plan risk r7 was about --
+    # the panel used to hand SIGINT back to Python's default handler before
+    # the ticker join, so the press became an uncaught KeyboardInterrupt and
+    # "nvsh: interrupted" was never printed ([openai-compat-one-shot] failed
+    # 3 in 30 under load). Since t8b the panel's handler covers the whole of
+    # teardown and records such a press as an interrupt, so the coverage is
+    # back for every family. The budget is unchanged, still counted from
+    # this instant.
     second = time.monotonic()
-    if not family.cancel_kills:
-        term.type("\x03")
+    term.type("\x03")
     deadline = second + STOPPED_WITHIN
     assert term.wait_for(
         lambda: term.prompts() >= 2, deadline

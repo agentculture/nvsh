@@ -711,16 +711,17 @@ class Panel:
         answer on), the first press stops at once, exactly as before t5.
 
         Terminal attributes and the previous SIGINT handler are always
-        restored.
+        restored, and no press can turn into a traceback: the panel's own
+        handler stays installed for the whole of teardown (the feeder halt,
+        the watcher, the ticker join, the termios restore and the closing
+        lines) and goes back only on the way out. A press that lands there
+        is recorded as an interrupt and nothing more -- the turn is already
+        over, so nothing further is sent to the harness (t8b, plan risk r7).
         """
         result = StreamResult()
         if self._target is not None:
             self.line(self._target_header_line())
         stop = _StopState(cancel, force_stop)
-        saved_attrs = None
-        previous = None
-        started_text = False
-        self._thinking_open = False
         stop_waiting = threading.Event()
         self._waiting_shown = False
         self._waiting_plain = False
@@ -730,6 +731,49 @@ class Panel:
         fd = _fileno(self.in_)
         watcher = keys.KeyWatcher(fd=-1 if fd is None else fd, env=self.env)
         feeder = _Feeder(events)
+        try:
+            self._run_stream(
+                result,
+                feeder=feeder,
+                watcher=watcher,
+                ticker=ticker,
+                stop=stop,
+                stop_waiting=stop_waiting,
+                on_proposal=on_proposal,
+                on_busy=on_busy,
+                on_choice=on_choice,
+                on_steer=on_steer,
+                steer_label=steer_label,
+                stop_prompt=stop_prompt,
+            )
+        except KeyboardInterrupt:
+            # The last instant of teardown: the previous handler is back in
+            # place and everything is already restored and printed. The
+            # operator gets their prompt, not a traceback.
+            result.interrupted = True
+        return result
+
+    def _run_stream(
+        self,
+        result: StreamResult,
+        *,
+        feeder: _Feeder,
+        watcher: keys.KeyWatcher,
+        ticker: threading.Thread,
+        stop: _StopState,
+        stop_waiting: threading.Event,
+        on_proposal: Callable[[Proposal, AgentEvent], object] | None,
+        on_busy: Callable[[AgentEvent], object] | None,
+        on_choice: Callable[[str, str], object] | None,
+        on_steer: Callable[[str], object] | None,
+        steer_label: str,
+        stop_prompt: bool,
+    ) -> None:
+        """Render the stream into ``result`` and tear down. See :meth:`stream`."""
+        saved_attrs = None
+        previous = None
+        started_text = False
+        self._thinking_open = False
         try:
             # All setup happens inside the try: a SIGINT that lands before
             # the handler is in place (Python's default handler raises
@@ -776,22 +820,58 @@ class Panel:
             stop.stopping = True
             stop.cancel_once()
         finally:
-            # Handler first: a second Ctrl+C during the ticker join below
-            # must not escape stream() with our handler still installed.
-            _restore_sigint(previous)
-            feeder.halt()
-            _quiet(watcher.__exit__, None, None, None)
-            stop_waiting.set()
-            if ticker.ident is not None:
-                _quiet(ticker.join, 2.0)
-            self._pause_waiting()
-            _restore_termios(saved_attrs)
-            self._close_thinking()
-            if started_text:
-                self.line()
-            if result.interrupted:
-                self.line(f"{self.style.dim}nvsh: interrupted{self.style.reset}")
-        return result
+            # Handler last (t8b): teardown blocks -- the ticker join alone is
+            # worth up to 2s -- and a press landing in that window must be
+            # recorded by the panel's own handler, not raised as a traceback
+            # by Python's default one. The nested finally puts the previous
+            # handler back whatever any step does, so it can never outlive
+            # stream() either.
+            try:
+                pressed = self._teardown(feeder, watcher, ticker, stop_waiting, saved_attrs)
+                if pressed or stop.unhandled():
+                    # A press nobody acted on: the turn is over, so nothing
+                    # goes to the harness -- it is recorded, and no more.
+                    stop.drain()
+                    result.interrupted = True
+                if started_text:
+                    self.line()
+                if result.interrupted:
+                    self.line(f"{self.style.dim}nvsh: interrupted{self.style.reset}")
+            finally:
+                _restore_sigint(previous)
+
+    def _teardown(
+        self,
+        feeder: _Feeder,
+        watcher: keys.KeyWatcher,
+        ticker: threading.Thread,
+        stop_waiting: threading.Event,
+        saved_attrs,
+    ) -> bool:
+        """Stop the threads and give the terminal back. Returns whether a press landed.
+
+        Every step runs even if an earlier one blew up: the operator must get
+        their terminal back. A :class:`KeyboardInterrupt` is only reachable
+        here when the panel's handler never went in (a non-main thread) or
+        when a step raises one itself; it is reported, never propagated, and
+        the steps after it still run.
+        """
+        steps: tuple[Callable[[], object], ...] = (
+            feeder.halt,
+            lambda: watcher.__exit__(None, None, None),
+            stop_waiting.set,
+            lambda: ticker.join(2.0) if ticker.ident is not None else None,
+            self._pause_waiting,
+            lambda: _restore_termios(saved_attrs),
+            self._close_thinking,
+        )
+        pressed = False
+        for step in steps:
+            try:
+                _quiet(step)  # an error in one step must not skip the rest
+            except KeyboardInterrupt:
+                pressed = True
+        return pressed
 
     def _stream_loop(
         self,

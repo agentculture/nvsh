@@ -1308,3 +1308,127 @@ def test_confirm_under_term_dumb_is_no_at_once(pty_pair):
     assert time.monotonic() - started < 1.0
     assert out.getvalue() == ""
     _drain(tty_in)
+
+
+# --- t8b / plan risk r7: a Ctrl+C that lands during teardown ----------------
+#
+# Once the stream loop has ended, Panel.stream still has work to do: halt the
+# feeder, close the key watcher, join the waiting ticker (up to 2s), put
+# termios back and print "nvsh: interrupted". A press landing in that window
+# used to reach Python's default handler -- the panel restored the previous
+# SIGINT handler *first* -- so the operator got a traceback instead of their
+# prompt. It is most reachable on a harness whose cancel() already ends the
+# turn: the kill press lands at a client that is already tearing down.
+#
+# The rule: a press during teardown is recorded as an interrupt and nothing
+# more. The turn is over, so nothing is sent to the harness; the panel's own
+# handler is still gone by the time stream() returns, and the terminal is
+# restored either way.
+
+
+def _teardown_press_run(monkeypatch, pty_pair, where: str, presses: int = 1):
+    """Stream one clean turn and press Ctrl+C during ``stream``'s teardown."""
+    master, tty_in = pty_pair
+    out = io.StringIO()
+    p = _panel(tty_in, out)
+    calls: dict[str, list] = {"cancel": [], "kill": [], "choice": []}
+    tearing_down = threading.Event()
+    released = threading.Event()
+
+    def fire() -> None:
+        for _ in range(presses):
+            os.kill(os.getpid(), signal.SIGINT)
+
+    original_halt = panel_mod._Feeder.halt
+
+    def halt(self) -> None:
+        # The first teardown step, and the one that runs right after the
+        # panel used to hand SIGINT back to Python's default handler.
+        tearing_down.set()
+        if where == "halt":
+            fire()
+        original_halt(self)
+
+    monkeypatch.setattr(panel_mod._Feeder, "halt", halt)
+
+    if where == "join":
+        # Hold the ticker alive so ticker.join(2.0) is a real, wide window,
+        # and press from another thread while the main thread is inside it.
+        def ticker(_self, _stop_waiting):
+            released.wait(15)
+
+        monkeypatch.setattr(panel_mod.Panel, "_wait_ticker", ticker)
+
+        def presser():
+            if tearing_down.wait(15):
+                fire()
+            released.set()
+
+        thread = threading.Thread(target=presser, daemon=True)
+    else:
+        thread = None
+
+    if where == "restore-termios":
+        original_restore = panel_mod._restore_termios
+
+        def restore(saved):
+            # The last blocking step is done; only the terminal and the
+            # closing lines are left.
+            fire()
+            original_restore(saved)
+
+        monkeypatch.setattr(panel_mod, "_restore_termios", restore)
+
+    def events():
+        yield AgentEvent(kind=EventKind.TEXT_DELTA, text="working")
+        yield AgentEvent(kind=EventKind.DONE)
+
+    before = signal.getsignal(signal.SIGINT)
+    import termios as _termios
+
+    attrs_before = _termios.tcgetattr(tty_in.fileno())
+    if thread is not None:
+        thread.start()
+    try:
+        result = p.stream(
+            events(),
+            cancel=lambda: calls["cancel"].append(1),
+            force_stop=lambda: calls["kill"].append(1),
+            on_choice=lambda outcome, reason: calls["choice"].append((outcome, reason)),
+        )
+    finally:
+        released.set()
+        if thread is not None:
+            thread.join(15)
+        _drain(tty_in)
+    after = signal.getsignal(signal.SIGINT)
+    attrs_after = _termios.tcgetattr(tty_in.fileno())
+    return result, out.getvalue(), calls, (before, after), (attrs_before, attrs_after)
+
+
+@pytest.mark.parametrize("where", ["halt", "join", "restore-termios"])
+def test_a_press_during_teardown_never_escapes_stream(monkeypatch, pty_pair, where):
+    result, out, calls, handlers, attrs = _teardown_press_run(monkeypatch, pty_pair, where)
+    # No traceback: stream() returned, and it returned its result.
+    assert result.done is True
+    assert result.text == "working"
+    # The press is recorded as an interrupt and nothing more.
+    assert result.interrupted is True
+    assert "nvsh: interrupted" in out
+    assert calls["cancel"] == [] and calls["kill"] == []
+    assert calls["choice"] == []
+    # The panel's handler is gone and the terminal is back.
+    before, after = handlers
+    assert after is before
+    assert attrs[1] == attrs[0]
+
+
+def test_repeated_presses_during_teardown_are_all_absorbed(monkeypatch, pty_pair):
+    result, out, calls, handlers, attrs = _teardown_press_run(
+        monkeypatch, pty_pair, "halt", presses=3
+    )
+    assert result.interrupted is True
+    assert out.count("nvsh: interrupted") == 1
+    assert calls["cancel"] == [] and calls["kill"] == []
+    assert handlers[1] is handlers[0]
+    assert attrs[1] == attrs[0]
