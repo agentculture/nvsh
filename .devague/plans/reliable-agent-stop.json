@@ -5,7 +5,7 @@
   "schema_version": 5,
   "status": "exported",
   "created": "2026-09-16T17:16:29Z",
-  "updated": "2026-09-16T20:21:06Z",
+  "updated": "2026-09-17T03:23:20Z",
   "targets": [
     {
       "id": "c1",
@@ -847,8 +847,8 @@
       "text": "doctor --apply confirms a live owner by shell id but kill_active does not carry that owner, so if the turn changes between the confirm prompt and the control message a different turn could be killed (t19)",
       "kind": "follow_up",
       "task_id": "t19",
-      "resolved": false,
-      "resolution": ""
+      "resolved": true,
+      "resolution": "fixed in PR #16 review (Qodo 3): kill_active carries the expected turn identity (owner + started) and the daemon refuses with 'changed' under the lock"
     },
     {
       "id": "r8",
