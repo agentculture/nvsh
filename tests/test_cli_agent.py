@@ -126,6 +126,24 @@ def test_agent_list_reports_capabilities(capsys):
         assert "streaming" in row["capabilities"]
 
 
+def test_agent_list_json_shows_steer_capability_for_every_adapter(capsys):
+    """stop-choice-prompt AC4: 'nvsh agent list --json' shows Capabilities.steer
+    for every adapter, true for exactly pi and codex -- exercised through the
+    real CLI path (main -> cmd_agent_list -> build_adapter_rows), not by
+    reading the source."""
+    rc = main(["agent", "list", "--json"])
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    by_name = {row["name"]: row for row in payload["adapters"]}
+    assert set(by_name) == set(ADAPTER_NAMES)
+    steerable = set()
+    for name, row in by_name.items():
+        assert isinstance(row["capabilities"]["steer"], bool), name
+        if row["capabilities"]["steer"]:
+            steerable.add(name)
+    assert steerable == {"pi", "codex"}
+
+
 def test_agent_list_default_backend_sorts_first(capsys):
     rc = main(["agent", "list", "--json"])
     assert rc == 0

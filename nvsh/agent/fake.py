@@ -23,7 +23,11 @@ class FakeAgent(NvshAgent):
         capabilities: Capabilities | None = None,
     ) -> None:
         self._script = list(script)
-        self._capabilities = capabilities or Capabilities()
+        # A scripted fixture has no running turn to steer; explicit rather
+        # than relying on the Capabilities default (stop-choice-prompt c5),
+        # while ``capabilities=`` still overrides it for a case that wants
+        # to fake a steer-capable adapter (see test_agent_registry.py).
+        self._capabilities = capabilities or Capabilities(steer=False)
         self._started = False
         self._closed = False
         self._cancelled = False

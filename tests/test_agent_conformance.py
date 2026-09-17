@@ -181,6 +181,7 @@ def test_capability_report(adapter_factory):
     assert isinstance(caps.cancellation, bool)
     assert isinstance(caps.persistent_session, bool)
     assert isinstance(caps.local_model, bool)
+    assert isinstance(caps.steer, bool)
 
 
 def test_teardown(adapter_factory):
@@ -866,3 +867,39 @@ def test_fake_agent_honours_a_cancel_that_lands_before_the_first_step():
     stream = agent.run(_fake_adapters.conformance_request(), _fake_adapters.conformance_context())
     agent.cancel()
     assert list(stream) == []
+
+
+# ---------------------------------------------------------------------------
+# -- Capabilities.steer (stop-choice-prompt c5/c31): declared per registered
+# -- adapter, not per fake. Every one of the nine names in registry.ADAPTERS
+# -- is constructed with a bare Config and its declared capability read --
+# -- exactly the way registry._tool_calling already does it -- so this stays
+# -- honest against what 'nvsh agent list' actually reports.
+# ---------------------------------------------------------------------------
+
+
+def test_exactly_pi_and_codex_declare_steer_true():
+    from nvsh.agent import registry
+    from nvsh.config import Config
+
+    config = Config()
+    steerable = set()
+    for name in registry.ADAPTERS:
+        agent = registry.ADAPTERS[name].factory(config)
+        if agent.capabilities().steer:
+            steerable.add(name)
+    assert steerable == {"pi", "codex"}
+
+
+def test_fake_agent_default_capabilities_declare_steer_false():
+    """FakeAgent falls back to a plain Capabilities() when no override is
+    given (nvsh/agent/fake.py); pin that fallback declares steer=False,
+    matching every non-pi/codex adapter, and that ``capabilities=`` can
+    still override it (used elsewhere to fake a steer-capable adapter)."""
+    default_agent = FakeAgent([AgentEvent(kind=EventKind.DONE)])
+    assert default_agent.capabilities().steer is False
+
+    overridden_agent = FakeAgent(
+        [AgentEvent(kind=EventKind.DONE)], capabilities=Capabilities(steer=True)
+    )
+    assert overridden_agent.capabilities().steer is True

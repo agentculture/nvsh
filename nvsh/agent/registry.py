@@ -319,6 +319,23 @@ def _tool_calling(name: str, config: Config) -> bool:
         return False
 
 
+def steer_capable(name: str, config: Config) -> bool:
+    """Whether adapter ``name`` can take a mid-turn correction, built the
+    same way as :func:`_tool_calling`: construct the adapter (cheap, no
+    subprocess) and read ``.capabilities().steer`` -- ``start()`` is never
+    called, so this starts no process. Used client-side (stop-choice-prompt
+    c31) to pick the choice prompt's ``[t]`` label without asking the
+    daemon: ``true`` only for ``pi`` and ``codex``. A factory that
+    validates its own settings and raises is treated as ``steer=False``
+    rather than failing the caller.
+    """
+    try:
+        agent = ADAPTERS[name].factory(config)
+        return bool(agent.capabilities().steer)
+    except Exception:  # noqa: BLE001 - defensive: factories may validate/raise
+        return False
+
+
 def probe(which: WhichFn = shutil.which, config: Config | None = None) -> list[dict]:
     """Installed adapters (:data:`PROBE_EXCLUDED` left out), tool-calling first.
 

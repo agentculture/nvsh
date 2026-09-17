@@ -378,6 +378,7 @@ def test_capabilities_report_the_transport_and_the_approval_owner():
     assert caps.thinking is True
     assert caps.effort is True
     assert caps.persistent_session is True
+    assert caps.steer is False
 
 
 def test_the_recorded_transcript_declares_where_it_came_from():
