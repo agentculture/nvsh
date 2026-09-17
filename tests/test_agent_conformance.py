@@ -889,3 +889,17 @@ def test_exactly_pi_and_codex_declare_steer_true():
         if agent.capabilities().steer:
             steerable.add(name)
     assert steerable == {"pi", "codex"}
+
+
+def test_fake_agent_default_capabilities_declare_steer_false():
+    """FakeAgent falls back to a plain Capabilities() when no override is
+    given (nvsh/agent/fake.py); pin that fallback declares steer=False,
+    matching every non-pi/codex adapter, and that ``capabilities=`` can
+    still override it (used elsewhere to fake a steer-capable adapter)."""
+    default_agent = FakeAgent([AgentEvent(kind=EventKind.DONE)])
+    assert default_agent.capabilities().steer is False
+
+    overridden_agent = FakeAgent(
+        [AgentEvent(kind=EventKind.DONE)], capabilities=Capabilities(steer=True)
+    )
+    assert overridden_agent.capabilities().steer is True
