@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import pytest
 
-from nvsh.agent.audit import AuditLog
+from nvsh.agent.audit import STOP_KINDS, AuditLog
 from nvsh.agent.base import Target
 from nvsh.cli._errors import EXIT_DECLINED, EXIT_ENV_ERROR, EXIT_SUCCESS, EXIT_USER_ERROR
 
@@ -140,3 +140,92 @@ def test_record_stop_defaults_target_to_none(tmp_path):
     audit = AuditLog(path=tmp_path / "audit.jsonl")
     entry = audit.record_stop(kind="declined", shell="7", target=None, elapsed=0.0, outcome=None)
     assert entry["target"] is None
+
+
+# -- stop-choice-prompt (t3): keep_going kind, origin, reason, correction_chars --
+
+
+def test_stop_kinds_gains_keep_going():
+    assert "keep_going" in STOP_KINDS
+
+
+def test_record_stop_accepts_keep_going_kind(tmp_path):
+    audit = AuditLog(path=tmp_path / "audit.jsonl")
+    entry = audit.record_stop(kind="keep_going", shell="1", target=None, elapsed=0.1, outcome=None)
+    assert entry["kind"] == "keep_going"
+
+
+@pytest.mark.parametrize("origin", ["stop_prompt", "busy_prompt"])
+def test_record_stop_accepts_an_optional_origin(tmp_path, origin):
+    audit = AuditLog(path=tmp_path / "audit.jsonl")
+    entry = audit.record_stop(
+        kind="steer", shell="1", target=None, elapsed=0.1, outcome=None, origin=origin
+    )
+    assert entry["origin"] == origin
+
+
+@pytest.mark.parametrize("reason", ["key", "timeout"])
+def test_record_stop_accepts_an_optional_reason(tmp_path, reason):
+    audit = AuditLog(path=tmp_path / "audit.jsonl")
+    entry = audit.record_stop(
+        kind="keep_going", shell="1", target=None, elapsed=0.1, outcome=None, reason=reason
+    )
+    assert entry["reason"] == reason
+
+
+def test_record_stop_omits_origin_and_reason_when_not_given(tmp_path):
+    audit = AuditLog(path=tmp_path / "audit.jsonl")
+    entry = audit.record_stop(kind="cancel", shell="1", target=None, elapsed=0.1, outcome=None)
+    assert "origin" not in entry
+    assert "reason" not in entry
+    assert "correction_chars" not in entry
+
+
+def test_record_stop_rejects_an_unknown_origin(tmp_path):
+    audit = AuditLog(path=tmp_path / "audit.jsonl")
+    with pytest.raises(ValueError):
+        audit.record_stop(
+            kind="steer", shell="1", target=None, elapsed=0.1, outcome=None, origin="bogus"
+        )
+
+
+def test_record_stop_rejects_an_unknown_reason(tmp_path):
+    audit = AuditLog(path=tmp_path / "audit.jsonl")
+    with pytest.raises(ValueError):
+        audit.record_stop(
+            kind="keep_going", shell="1", target=None, elapsed=0.1, outcome=None, reason="bogus"
+        )
+
+
+def test_record_stop_records_correction_length_not_text(tmp_path):
+    audit = AuditLog(path=tmp_path / "audit.jsonl")
+    correction = "use the other flag instead"
+    entry = audit.record_stop(
+        kind="steer",
+        shell="1",
+        target=None,
+        elapsed=0.1,
+        outcome=None,
+        correction=correction,
+    )
+    assert entry["correction_chars"] == len(correction)
+    assert "correction" not in entry
+
+    # Grep the file on disk, not just the in-memory entry: the text itself
+    # must never be written to the audit log.
+    written = (tmp_path / "audit.jsonl").read_text(encoding="utf-8")
+    assert correction not in written
+    assert str(len(correction)) in written
+
+
+def test_record_stop_passing_a_text_keyword_is_a_typeerror(tmp_path):
+    audit = AuditLog(path=tmp_path / "audit.jsonl")
+    with pytest.raises(TypeError):
+        audit.record_stop(
+            kind="steer",
+            shell="1",
+            target=None,
+            elapsed=0.1,
+            outcome=None,
+            text="should never be accepted",
+        )

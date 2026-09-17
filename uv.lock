@@ -236,7 +236,7 @@ wheels = [
 
 [[package]]
 name = "nvsh"
-version = "0.13.2"
+version = "0.14.2"
 source = { editable = "." }
 
 [package.dev-dependencies]

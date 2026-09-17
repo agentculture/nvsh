@@ -324,6 +324,7 @@ def test_capabilities_cold():
     assert caps.approval == "none"
     assert caps.persistent_session is False
     assert caps.effort is True
+    assert caps.steer is False
 
 
 def test_capabilities_warm_reports_persistent_session():

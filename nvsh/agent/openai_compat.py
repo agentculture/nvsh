@@ -296,4 +296,7 @@ class OpenAICompatAgent(NvshAgent):
             # endpoint; the adapter streams them whenever the server sends
             # ``delta.reasoning``, so it says it can.
             thinking=True,
+            # No mid-turn channel over plain HTTP; a correction becomes the
+            # next request ("stop and correct").
+            steer=False,
         )

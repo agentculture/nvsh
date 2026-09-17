@@ -494,4 +494,7 @@ class ClaudeAgent(SubprocessAgent):
             path=TRANSPORT_PATH,
             approval="nvsh" if self._approval != "none" else "none",
             unmediated_file_access=True,
+            # claude has no mid-turn channel: a correction becomes the next
+            # request ("stop and correct"), never steer().
+            steer=False,
         )

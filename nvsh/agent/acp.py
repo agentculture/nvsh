@@ -988,6 +988,9 @@ class AcpAgent(NvshAgent):
             # nvsh advertises no fs capability, so the agent reads and writes
             # with its own tools and nvsh never sees those calls.
             unmediated_file_access=True,
+            # ACP (qwen, kiro) never sends session/request_permission for a
+            # mid-turn steer; a correction becomes the next request.
+            steer=False,
         )
 
 

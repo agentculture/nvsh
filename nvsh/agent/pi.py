@@ -922,4 +922,5 @@ class PiAgent(NvshAgent):
             path="rpc",
             approval=self._approval,
             unmediated_file_access=False,
+            steer=True,
         )

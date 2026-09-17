@@ -59,6 +59,8 @@ DEMO_CAPABILITIES = Capabilities(
     local_model=True,
     path="fixture",
     approval="nvsh",
+    # A scripted fixture replay has no running turn to steer.
+    steer=False,
 )
 
 

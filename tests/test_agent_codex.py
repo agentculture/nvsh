@@ -449,6 +449,7 @@ def test_capabilities_report_the_app_server_surface() -> None:
     assert caps.approval == "nvsh"
     assert caps.unmediated_file_access is True
     assert caps.path.endswith(FAKE_BINARY)
+    assert caps.steer is True
 
 
 def test_close_is_idempotent() -> None:
