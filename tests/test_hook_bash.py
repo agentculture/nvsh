@@ -278,6 +278,25 @@ def test_unload_removes_only_the_nvsh_element(tmp_path, fake_nvsh):
     assert fake_nvsh.count == 0
 
 
+def test_the_command_counter_rides_ps0_and_unload_takes_it_back_out(tmp_path, fake_nvsh):
+    env = fake_nvsh.env(tmp_path)
+    out = _run_bash(
+        [
+            "PS0='KEEPME'",
+            _source(),
+            "declare -p PS0 | sed 's/^/WITH:/'",
+            "__nvsh_hook_unload",
+            "declare -p PS0 | sed 's/^/AFTER:/'",
+        ],
+        env,
+    )
+    assert "__NVSH_CMD_SEQ" in _tagged(out, "WITH:")
+    assert "KEEPME" in _tagged(out, "WITH:")
+    unloaded = _tagged(out, "AFTER:")
+    assert "__NVSH_CMD_SEQ" not in unloaded
+    assert "KEEPME" in unloaded
+
+
 @pytest.mark.skipif(not GHOSTTY_BASH.exists(), reason="ghostty shell integration not installed")
 def test_composes_with_ghostty_integration(tmp_path, fake_nvsh):
     env = fake_nvsh.env(
@@ -533,9 +552,31 @@ def test_slash_dispatch_flag_is_one_shot(tmp_path, fake_nvsh):
 
 
 def test_prefilter_does_not_refire_on_a_redrawn_prompt(tmp_path, fake_nvsh):
+    """A redraw is PROMPT_COMMAND running again with no command in between:
+    an empty Enter. ``$?`` still holds the failure. (Ctrl+C at the prompt is
+    the same path but cannot be typed ahead on a pty: it would interrupt the
+    failing command itself.)"""
     env = fake_nvsh.env(tmp_path)
-    _run_bash([_source(), "ls /nvsh-no-such-dir", "__nvsh_hook", "__nvsh_hook"], env)
+    _run_bash([_source(), "ls /nvsh-no-such-dir", "", "", ""], env)
     assert fake_nvsh.count == 1
+
+
+def test_the_same_failing_line_typed_twice_fires_twice(tmp_path, fake_nvsh):
+    """Ubuntu ships ``HISTCONTROL=ignoreboth``: a line identical to the last
+    one is not recorded, so ``HISTCMD`` does not move and the redraw guard
+    swallowed the retry -- the operator retyped a question and got nothing
+    (thor, 2026-09-17)."""
+    env = fake_nvsh.env(tmp_path)
+    _run_bash(
+        [
+            "HISTCONTROL=ignoreboth",
+            _source(),
+            "ls /nvsh-no-such-dir",
+            "ls /nvsh-no-such-dir",
+        ],
+        env,
+    )
+    assert fake_nvsh.count == 2
 
 
 def test_hook_does_not_fire_inside_a_sourced_script(tmp_path, fake_nvsh):

@@ -1,6 +1,6 @@
 [project]
 name = "nvsh"
-version = "0.13.0"
+version = "0.13.3"
 description = "nvsh: an agent-first shell for NVIDIA Jetson, DGX Spark and RTX Spark. Runs your commands like a normal shell; when a command fails, it hands the error and context to an agent (shell -> agent) to diagnose and propose a fix."
 readme = "README.md"
 license = "Apache-2.0"

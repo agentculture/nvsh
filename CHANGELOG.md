@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/). This project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.13.3] - 2026-09-17
+
+### Fixed
+
+- Retyping the same failed line now reaches nvsh again. The hook told a new command from a redrawn prompt by comparing `HISTCMD`, but under `HISTCONTROL=ignoredups`/`ignoreboth` (the Ubuntu default) a line identical to the previous one is never recorded, so `HISTCMD` did not move and the retry was dropped without a word — no agent call, no held-back note. The hook now counts executed commands with a `PS0` token (expanded once per command that runs, never for an empty Enter; pure bash, no fork, no DEBUG trap), composes with an existing `PS0` (Ghostty, OSC 133), falls back to `HISTCMD` if `PS0` is replaced, and `nvsh off` takes the token back out. Found on thor on 2026-09-17.
+
 ## [0.13.0] - 2026-09-16
 
 ### Added
