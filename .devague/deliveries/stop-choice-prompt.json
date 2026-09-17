@@ -2,7 +2,7 @@
   "plan_slug": "stop-choice-prompt",
   "schema_version": 2,
   "created": "2026-09-17T18:23:45Z",
-  "updated": "2026-09-17T18:23:45Z",
+  "updated": "2026-09-17T19:16:05Z",
   "deviations": [
     {
       "id": "d1",
@@ -34,6 +34,37 @@
       "status": "approved",
       "classification": "acceptable",
       "seq": 2
+    },
+    {
+      "id": "d3",
+      "what": "t8 may add two small, additive public seams to nvsh/panel.py (with pty tests in tests/test_panel_stop.py), outside its confirmed file list: a way for the caller to tell the panel that a stop has begun, so the next Ctrl+C/Esc kills instead of re-opening the choice prompt, and a one-key yes/no prompt for 'could not steer -- stop and correct instead?'. No existing panel behaviour changes.",
+      "task_ref": "t8",
+      "reason": "Reading the merged t5/t6/t7 code showed the panel/client seam was under-specified in the plan: on_steer returns only a bool, so a client-initiated cancel for stop-and-correct leaves _StopState.stopping False and 'a further press still kills' (t8 criterion 1) cannot hold; and nvsh/panel.py has no yes/no helper for t8 criterion 3's 'asks once'. Operator approved the additive route on 2026-09-17 over a client-only workaround.",
+      "affects": [
+        "t5",
+        "t6",
+        "c22",
+        "c30"
+      ],
+      "origin": "user",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 3
+    },
+    {
+      "id": "d4",
+      "what": "A new task t8b, after t8, fixes plan risk r7: Panel.stream's finally block restores the previous SIGINT handler before the ticker join, the termios restore and the 'nvsh: interrupted' line, so a Ctrl+C landing during teardown raises KeyboardInterrupt and the operator sees a traceback. Files: nvsh/panel.py and tests/test_panel_stop.py; one pty test presses Ctrl+C during teardown.",
+      "task_ref": "t6",
+      "reason": "Pre-existing since 0.13.0 and outside the confirmed plan, but found and measured by this run (t9a: 3 failures in 30 under load), in the file and feature area this plan owns, and most exposed on openai-compat, the fleet default, where cancel() already ends the turn and a double Ctrl+C lands in that window. Operator approved including it on 2026-09-17, sequenced after t8 so the two never edit nvsh/panel.py concurrently.",
+      "affects": [
+        "t8",
+        "t9",
+        "t11"
+      ],
+      "origin": "user",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 4
     }
   ],
   "evidence": [],
