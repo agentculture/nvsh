@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-09-17T16:13:08Z",
-  "updated": "2026-09-17T20:43:46Z",
+  "updated": "2026-09-17T20:52:42Z",
   "claims": [
     {
       "id": "c1",
@@ -931,6 +931,18 @@
       "refs": [
         "t11",
         "r6"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l4",
+      "code": "control-absent",
+      "what": "Three tests added by task t8 (tests/test_client_stop.py: test_a_refused_steer_asks_once_and_stop_and_corrects_on_yes, test_a_refused_steer_discards_the_text_on_anything_but_yes, test_a_delivered_steer_exits_zero_with_no_follow_up) pass agent='pi', which nvsh refuses unless pi is on PATH. pi and codex are installed on the build machine, so the task agent's runs and every merge-gate run by the main agent passed; CI, which has neither, failed all three on PR #23. No gate in this run ever executed the suite without the local harness binaries.",
+      "skipped_check": "run the suite once with harness binaries hidden from PATH before opening the PR",
+      "refs": [
+        "t8",
+        "PR #23 CI run 35272614601"
       ],
       "origin": "llm",
       "status": "proposed"

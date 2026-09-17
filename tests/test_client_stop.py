@@ -1275,6 +1275,17 @@ def test_not_running_correction_is_a_plain_next_request(stop_env, monkeypatch, c
     assert [e["kind"] for e in _stops(stop_env)] == ["steer"]
 
 
+@pytest.fixture
+def pi_installed(monkeypatch):
+    """``agent="pi"`` is refused unless the harness is installed, and CI has
+    no ``pi`` on PATH (a developer box often does -- which is how three of
+    these tests passed locally and failed in CI). The tests below are about
+    what happens *after* the target resolves, so say it is installed."""
+    from nvsh.agent import registry
+
+    monkeypatch.setattr(registry, "installed", lambda name, *args, **kwargs: True)
+
+
 # -- t8 criterion 3: the runtime fallback (spec c30) --------------------------
 
 
@@ -1291,7 +1302,9 @@ def _runtime_refusal(monkeypatch, *, agrees: bool):
     return asked
 
 
-def test_a_refused_steer_asks_once_and_stop_and_corrects_on_yes(stop_env, monkeypatch):
+def test_a_refused_steer_asks_once_and_stop_and_corrects_on_yes(
+    pi_installed, stop_env, monkeypatch
+):
     asked = _runtime_refusal(monkeypatch, agrees=True)
     cancelled: list[int] = []
     monkeypatch.setattr(
@@ -1314,7 +1327,7 @@ def test_a_refused_steer_asks_once_and_stop_and_corrects_on_yes(stop_env, monkey
     assert [e["kind"] for e in _stops(stop_env)] == ["steer", "cancel"]
 
 
-def test_a_refused_steer_discards_the_text_on_anything_but_yes(stop_env, monkeypatch):
+def test_a_refused_steer_discards_the_text_on_anything_but_yes(pi_installed, stop_env, monkeypatch):
     """Not a third outcome and never silent: the text is dropped only because
     the operator said so, it is said on the panel, and it is audited."""
     asked = _runtime_refusal(monkeypatch, agrees=False)
@@ -1346,7 +1359,7 @@ def test_a_refused_steer_discards_the_text_on_anything_but_yes(stop_env, monkeyp
 # -- t8 criterion 4: exit status ---------------------------------------------
 
 
-def test_a_delivered_steer_exits_zero_with_no_follow_up(stop_env, monkeypatch):
+def test_a_delivered_steer_exits_zero_with_no_follow_up(pi_installed, stop_env, monkeypatch):
     monkeypatch.setattr(client_transport, "steer", lambda text, **kwargs: True)
     monkeypatch.setattr(client_transport, "cancel", _forbidden("cancel"))
     sent = _requests(monkeypatch)
