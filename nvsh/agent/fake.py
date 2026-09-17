@@ -33,6 +33,7 @@ class FakeAgent(NvshAgent):
         self._cancelled = False
 
     def run(self, request: AgentRequest, context: AgentContext) -> Iterator[AgentEvent]:
+        self._cancelled = False  # a cancel ends one turn, like the real adapters
         for item in self._script:
             if self._cancelled:
                 return

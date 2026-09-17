@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/). This project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.13.2] - 2026-09-17
+
+### Changed
+
+- Regression tests drive a second `run()` after `cancel()` without a second `start()` (the conformance cases restarted the adapter and only asserted a trailing DONE, which the bug also produced), plus a daemon-level test that cancels a warm `openai-compat` turn and asks again.
+
+### Fixed
+
+- A polite stop (first Ctrl+C/Esc) no longer silences the warm session. The `openai-compat`, `claude`, `qwen-p`, `codex exec`, cold `agy` and `fake` adapters kept their cancelled flag set after a stop; the daemon calls `start()` once per warm session, not once per turn, so every later request printed its header and then nothing (exit 0) until the daemon restarted. `run()` now clears the flag itself. Found on thor on 2026-09-17.
+- `@default <question>` is labelled `warm` in the panel header instead of `one-shot`: it names a target but still rides the daemon's warm session.
+
 ## [0.13.0] - 2026-09-16
 
 ### Added

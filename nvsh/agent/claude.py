@@ -219,6 +219,7 @@ class ClaudeAgent(SubprocessAgent):
         """Stream one turn. Unlike the shared base, stdin stays a live pipe:
         the prompt goes in as a stream-json user message and a permission
         prompt is answered on the same channel."""
+        self._cancelled = False  # a cancel ends one turn; start() runs once per session
         argv = self._argv(request, context)
         self._pending.clear()
         self._tools.clear()

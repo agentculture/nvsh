@@ -829,6 +829,20 @@ def test_the_panel_header_names_an_explicit_target_as_one_shot(
     assert sent[0].target == target  # and it rides on the request
 
 
+def test_the_panel_header_calls_the_named_default_target_warm(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``@default hi`` names a target but still rides the warm session (c25)."""
+    from nvsh import client
+
+    config = Config(agent_provider="pi", agents={"pi": {"model": "associate"}})
+    target = Target(backend="pi", model="associate", alias="default")
+    lines, _captured, _sent = _drive_stream_request(
+        monkeypatch, config, one_shot=client._is_one_shot(target), target=target
+    )
+    assert lines[0] == "pi/associate · rpc · warm"
+
+
 def test_every_audit_line_of_a_turn_carries_the_resolved_target(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

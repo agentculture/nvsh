@@ -354,6 +354,9 @@ class SubprocessAgent(NvshAgent):
         raise NotImplementedError
 
     def run(self, request: AgentRequest, context: AgentContext) -> Iterator[AgentEvent]:
+        # A cancel ends one turn, not the adapter (start() runs once per
+        # warm daemon session, not once per turn).
+        self._cancelled = False
         argv = self._argv(request, context)
         try:
             self._proc = subprocess.Popen(  # nosec B603 - argv is a fixed list, no shell
