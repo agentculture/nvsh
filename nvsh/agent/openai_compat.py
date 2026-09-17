@@ -177,15 +177,19 @@ class OpenAICompatAgent(NvshAgent):
             if data == "[DONE]":
                 yield AgentEvent(kind=EventKind.DONE)
                 return
-            thinking, text = self._deltas(data)
-            if thinking:
-                yield AgentEvent(kind=EventKind.THINKING, text=thinking)
-            if text:
-                self._last_reply += text
-                yield AgentEvent(kind=EventKind.TEXT_DELTA, text=text)
+            yield from self._chunk_events(data)
         # Stream closed without an explicit [DONE] -- treat as done anyway.
         if not self._cancelled:
             yield AgentEvent(kind=EventKind.DONE)
+
+    def _chunk_events(self, data: str) -> Iterator[AgentEvent]:
+        """The events one SSE chunk carries: a thought, answer text, or both."""
+        thinking, text = self._deltas(data)
+        if thinking:
+            yield AgentEvent(kind=EventKind.THINKING, text=thinking)
+        if text:
+            self._last_reply += text
+            yield AgentEvent(kind=EventKind.TEXT_DELTA, text=text)
 
     def _messages(self, prompt: str) -> list[dict[str, str]]:
         """This request's messages, with any steered text after the prior turn.
@@ -288,4 +292,8 @@ class OpenAICompatAgent(NvshAgent):
             cancellation=True,
             persistent_session=False,
             local_model=True,
+            # Whether thoughts arrive depends on the model behind the
+            # endpoint; the adapter streams them whenever the server sends
+            # ``delta.reasoning``, so it says it can.
+            thinking=True,
         )

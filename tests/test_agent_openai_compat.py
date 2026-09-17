@@ -161,6 +161,7 @@ def test_capabilities_are_honest():
         cancellation=True,
         persistent_session=False,
         local_model=True,
+        thinking=True,
     )
 
 
@@ -448,5 +449,7 @@ def test_reasoning_deltas_stream_as_thinking_before_the_answer(fake_server, monk
         (EventKind.TEXT_DELTA, "answer"),
     ]
     assert events[-1].kind == EventKind.DONE
+    # What it streams is what it declares.
+    assert agent.capabilities().thinking is True
     # Thoughts are shown, never replayed: the steer context is the answer only.
     assert agent._last_reply == "answer"  # noqa: SLF001

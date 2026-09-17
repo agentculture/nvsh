@@ -9,7 +9,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
-- `openai-compat` shows a reasoning model's thoughts instead of looking hung. vLLM streams them as `delta.reasoning` (other servers: `delta.reasoning_content`) ahead of any `content`, and the adapter dropped every such chunk, so the panel sat on `... waiting for the agent` for the whole think — over a minute for Nemotron on thor on 2026-09-17, while 380 KB of stream arrived. They are now THINKING events, rendered as the same dimmed run the `claude` adapter already gets; they are never added to the reply kept for steer context.
+- `openai-compat` shows a reasoning model's thoughts instead of looking hung. vLLM streams them as `delta.reasoning` (other servers: `delta.reasoning_content`) ahead of any `content`, and the adapter dropped every such chunk, so the panel sat on `... waiting for the agent` for the whole think — over a minute for Nemotron on thor on 2026-09-17, while 380 KB of stream arrived. They are now THINKING events, rendered as the same dimmed run the `claude` adapter already gets; they are never added to the reply kept for steer context. The adapter now declares `thinking=True` in its capabilities (shown by `nvsh agent list --json`) to match.
 
 ## [0.13.1] - 2026-09-17
 
