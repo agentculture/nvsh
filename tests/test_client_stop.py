@@ -623,3 +623,56 @@ def test_single_ctrl_c_exits_130_and_audits_only_cancel(stop_env, monkeypatch):
     assert errors == []
     assert code == 130
     assert [entry["kind"] for entry in _stops(stop_env)] == ["cancel"]
+
+
+# --- Ctrl+C typed at a raw-mode prompt (PR #16 review, Qodo 4) --------------
+
+
+@pytest.mark.parametrize("prompt", ["proposal", "busy"])
+def test_ctrl_c_at_a_raw_prompt_exits_130_cancels_once_and_never_declines(
+    stop_env, monkeypatch, prompt
+):
+    import pty
+
+    from nvsh.agent.audit import AuditLog
+    from nvsh.agent.base import Proposal, ProposalKind
+
+    master, slave = pty.openpty()
+    tty_in = os.fdopen(slave, "rb", buffering=0)
+    stopped = threading.Event()
+    calls: list[str] = []
+
+    def fake_send(request, context, **kwargs):
+        if prompt == "proposal":
+            proposal = Proposal(command="sudo reboot", kind=ProposalKind.FIX, rationale="x")
+            yield AgentEvent(kind=EventKind.PROPOSAL, proposal=proposal)
+        else:
+            yield _busy_event(steerable=True)
+        stopped.wait(5)
+        yield AgentEvent(kind=EventKind.DONE)
+
+    def fake_cancel(*, shell_id=None, env=None):
+        calls.append("cancel")
+        stopped.set()
+        return True
+
+    monkeypatch.setattr(client_transport, "send", fake_send)
+    monkeypatch.setattr(client_transport, "cancel", fake_cancel)
+    monkeypatch.setattr(client_transport, "kill", _forbidden("kill"))
+    monkeypatch.setattr(client_transport, "busy_choice", _forbidden("busy_choice"))
+    panel = Panel(out=io.StringIO(), in_=tty_in, env={"NO_COLOR": "1"}, isatty=True)
+    # After raw mode is entered (tty.setraw flushes earlier input).
+    typist = threading.Timer(0.5, lambda: os.write(master, b"\x03"))
+    typist.start()
+    try:
+        code = client.ask("why?", panel=panel, env=stop_env)
+    finally:
+        typist.cancel()
+        tty_in.close()
+        os.close(master)
+
+    assert code == 130
+    assert calls == ["cancel"]
+    assert [entry["kind"] for entry in _stops(stop_env)] == ["cancel"]
+    events = [entry["event"] for entry in AuditLog(env=stop_env).read_all()]
+    assert "decision" not in events

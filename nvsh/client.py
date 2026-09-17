@@ -1471,16 +1471,7 @@ def _busy_handler(panel: Panel, turn: _Turn, *, shell_id: int, env: Mapping[str,
     """
 
     def handle(event: AgentEvent) -> None:
-        args = event.args or {}
-        owner = str(args.get("owner") or "agent")
-        try:
-            elapsed = float(args.get("elapsed") or 0.0)
-        except (TypeError, ValueError):
-            elapsed = 0.0
-        choices = args.get("choices")
-        steerable = bool(args.get("steerable")) and (
-            not isinstance(choices, list) or "steer" in choices
-        )
+        owner, elapsed, steerable = _busy_args(event)
 
         def await_steer(timeout: float) -> bool:
             heard = _busy_choice_within("steer", timeout, shell_id=shell_id, env=env)
@@ -1490,22 +1481,43 @@ def _busy_handler(panel: Panel, turn: _Turn, *, shell_id: int, env: Mapping[str,
         choice = panel.show_busy(
             owner, elapsed, steerable, await_event=await_steer if steerable else None
         )
-        if choice == STEER:
-            return
-        wire = "replace" if choice == REPLACE else "exit"
-        accepted = _busy_choice_within(wire, 10.0, shell_id=shell_id, env=env)
-        if choice == REPLACE:
-            turn.record("replace", _BUSY_OUTCOME[accepted], elapsed)
-            if not accepted:
-                panel.note("nvsh: the busy prompt already closed; this request is queued")
-            return
-        # Exit: leave the running turn alone and decline this request.
-        turn.record("busy_exit", _BUSY_OUTCOME[accepted], elapsed)
-        turn.decline("busy exit")
-        if not accepted:
-            turn.ended = True
+        if choice != STEER:
+            _send_busy_choice(panel, turn, choice, elapsed, shell_id=shell_id, env=env)
 
     return handle
+
+
+def _busy_args(event: AgentEvent) -> tuple[str, float, bool]:
+    """``(owner, elapsed, steerable)`` from a ``busy`` event, tolerating bad fields."""
+    args = event.args or {}
+    owner = str(args.get("owner") or "agent")
+    try:
+        elapsed = float(args.get("elapsed") or 0.0)
+    except (TypeError, ValueError):
+        elapsed = 0.0
+    choices = args.get("choices")
+    steerable = bool(args.get("steerable")) and (
+        not isinstance(choices, list) or "steer" in choices
+    )
+    return owner, elapsed, steerable
+
+
+def _send_busy_choice(
+    panel: Panel, turn: _Turn, choice: str, elapsed: float, *, shell_id: int, env
+) -> None:
+    """Send replace or exit to the daemon, then audit (and decline) accordingly."""
+    wire = "replace" if choice == REPLACE else "exit"
+    accepted = _busy_choice_within(wire, 10.0, shell_id=shell_id, env=env)
+    if choice == REPLACE:
+        turn.record("replace", _BUSY_OUTCOME[accepted], elapsed)
+        if not accepted:
+            panel.note("nvsh: the busy prompt already closed; this request is queued")
+        return
+    # Exit: leave the running turn alone and decline this request.
+    turn.record("busy_exit", _BUSY_OUTCOME[accepted], elapsed)
+    turn.decline("busy exit")
+    if not accepted:
+        turn.ended = True
 
 
 def _stream_request(
@@ -1780,24 +1792,13 @@ def ask(
         if config is None:
             panel.line(refusal)
             return 1
-    text = prompt
-    if draft:
-        text = f"{prompt}\n\nThe operator was in the middle of typing: {draft}"
-    question = (prompt or "").strip()
-    if question:
+    state = load_last_failure(resolved) or {}
+    request = _ask_request(prompt, draft, kind, state)
+    if request.ask:
         # Same first line as the hook's question path (d20/d22), so `? ...`
         # reads the same whichever route carried it.
-        panel.header("", 0, backend_label=backend_label(config), ask=question)
-    state = load_last_failure(resolved) or {}
-    args = _args_from_state(state) if state else _args_from_state({"cwd": os.getcwd()})
-    request = AgentRequest(
-        kind=kind,
-        prompt=text,
-        command=str(state.get("line", "") or ""),
-        failure_id=str(state.get("failure_id", "") or ""),
-        ask=question,
-    )
-    context = build_context(args, resolved)
+        panel.header("", 0, backend_label=backend_label(config), ask=request.ask)
+    context = build_context(_args_from_state(state or {"cwd": os.getcwd()}), resolved)
     shell_id = _shell_pid(resolved)
     approvals = _load_approvals()
     inspections: list[tuple[str, RunResult]] = []
@@ -1824,7 +1825,7 @@ def ask(
     if inspections or steers:
         follow = _stream_request(
             panel,
-            replace(request, prompt=_follow_up_prompt(inspections, steers)),
+            _with_prompt(request, _follow_up_prompt(inspections, steers)),
             context,
             env=resolved,
             shell_id=shell_id,
@@ -1839,6 +1840,27 @@ def ask(
         if follow.interrupted:
             return 130
     return EXIT_DECLINED if declined else 0
+
+
+def _ask_request(
+    prompt: str, draft: str | None, kind: RequestKind, state: Mapping[str, Any]
+) -> AgentRequest:
+    """The request ``ask`` sends: the question, the draft, the last failure's ids."""
+    text = prompt
+    if draft:
+        text = f"{prompt}\n\nThe operator was in the middle of typing: {draft}"
+    return AgentRequest(
+        kind=kind,
+        prompt=text,
+        command=str(state.get("line", "") or ""),
+        failure_id=str(state.get("failure_id", "") or ""),
+        ask=(prompt or "").strip(),
+    )
+
+
+def _with_prompt(request: AgentRequest, prompt: str) -> AgentRequest:
+    """``request`` again, carrying ``prompt`` instead (the follow-up turn)."""
+    return replace(request, prompt=prompt)
 
 
 def _on_last_failure(prompt: str, panel: Panel | None, env: Mapping[str, str] | None) -> int:

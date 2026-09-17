@@ -252,7 +252,6 @@ def test_show_proposal_non_tty_reads_a_line():
         (b"e", "explain"),
         (b"d", "details"),
         (b"\x1b", "ignore"),
-        (b"\x03", "ignore"),
     ],
 )
 def test_show_proposal_reads_single_keys_on_a_tty(key, expected):
@@ -271,6 +270,25 @@ def test_show_proposal_reads_single_keys_on_a_tty(key, expected):
             p = panel_mod.Panel(out=io.StringIO(), in_=tty_in, env={}, isatty=True)
             proposal = Proposal("df -h", "disk", ProposalKind.INSPECT)
             assert p.show_proposal(proposal) == expected
+    finally:
+        typist.cancel()
+        os.close(master)
+
+
+def test_show_proposal_ctrl_c_on_a_tty_is_a_stop_press_not_ignore():
+    """Raw mode delivers Ctrl+C as 0x03; it must not answer the proposal.
+
+    It raises ``KeyboardInterrupt`` instead, which ``Panel.stream`` counts
+    as a stop press (PR #16 review, Qodo 4; see tests/test_panel_stop.py).
+    """
+    master, slave = pty.openpty()
+    typist = threading.Timer(0.2, lambda: os.write(master, b"\x03"))
+    typist.start()
+    try:
+        with os.fdopen(slave, "rb", buffering=0) as tty_in:
+            p = panel_mod.Panel(out=io.StringIO(), in_=tty_in, env={}, isatty=True)
+            with pytest.raises(KeyboardInterrupt):
+                p.show_proposal(Proposal("df -h", "disk", ProposalKind.INSPECT))
     finally:
         typist.cancel()
         os.close(master)
