@@ -129,17 +129,28 @@ class OpenAICompatAgent(NvshAgent):
         return line[len("data:") :].strip()
 
     @staticmethod
-    def _content_delta(data: str) -> str | None:
-        """The assistant text in one SSE chunk, or ``None`` if it carries none."""
+    def _deltas(data: str) -> tuple[str | None, str | None]:
+        """``(thinking, text)`` carried by one SSE chunk; either may be ``None``.
+
+        A reasoning model streams its thoughts ahead of the answer, as
+        ``delta.reasoning`` (vLLM) or ``delta.reasoning_content`` (older vLLM,
+        DeepSeek-style servers). They are surfaced as THINKING so a long
+        think is visibly a think and not a hang.
+        """
         try:
             obj = json.loads(data)
         except json.JSONDecodeError:
-            return None
-        choices = obj.get("choices") or []
-        if not choices:
-            return None
+            return None, None
+        choices = obj.get("choices") if isinstance(obj, dict) else None
+        if not choices or not isinstance(choices[0], dict):
+            return None, None
         delta = choices[0].get("delta") or {}
-        return delta.get("content") or None
+        thinking = delta.get("reasoning") or delta.get("reasoning_content")
+        text = delta.get("content")
+        return (
+            thinking if isinstance(thinking, str) and thinking else None,
+            text if isinstance(text, str) and text else None,
+        )
 
     def _stream_events(self) -> Iterator[AgentEvent]:
         """Map the open SSE stream to events, ending in DONE either way."""
@@ -166,7 +177,9 @@ class OpenAICompatAgent(NvshAgent):
             if data == "[DONE]":
                 yield AgentEvent(kind=EventKind.DONE)
                 return
-            text = self._content_delta(data)
+            thinking, text = self._deltas(data)
+            if thinking:
+                yield AgentEvent(kind=EventKind.THINKING, text=thinking)
             if text:
                 self._last_reply += text
                 yield AgentEvent(kind=EventKind.TEXT_DELTA, text=text)
