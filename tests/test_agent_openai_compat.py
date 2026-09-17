@@ -406,3 +406,17 @@ def test_a_cancelled_turn_does_not_silence_the_next_run(fake_server):
         agent.close()
     assert [e.text for e in events if e.kind == EventKind.TEXT_DELTA] == ["hello ", "world"]
     assert events[-1].kind == EventKind.DONE
+
+
+def test_a_cancel_between_run_and_the_first_step_still_stops_that_turn(fake_server):
+    """``run()`` clears the flag eagerly; a generator body would clear it at the
+    first ``next()`` and erase a cancel that was meant for this very turn."""
+    agent = OpenAICompatAgent({"base_url": f"http://127.0.0.1:{fake_server.server_port}"})
+    agent.start()
+    try:
+        stream = agent.run(_request(), _context())
+        agent.cancel()
+        events = list(stream)
+    finally:
+        agent.close()
+    assert [e for e in events if e.kind == EventKind.TEXT_DELTA] == []

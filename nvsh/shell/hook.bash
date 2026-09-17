@@ -175,9 +175,13 @@ __nvsh_osc133_init() {
 # Ubuntu default is ignoreboth) a line identical to the previous one is not
 # recorded, so retyping a failed command looked like a redrawn prompt and
 # was silently dropped.
+#
+# Presence is always tested against the *whole* token, quoted so it matches
+# literally: a PS0 that merely mentions the variable name does not count.
 __nvsh_cmdseq_init() {
+    local __nvsh_tok='${__NVSH_SEQ_SINK[__NVSH_CMD_SEQ++]-}'
     __NVSH_CMD_SEQ=${__NVSH_CMD_SEQ:-0}
-    [[ ${PS0:-} == *'__NVSH_CMD_SEQ'* ]] || PS0='${__NVSH_SEQ_SINK[__NVSH_CMD_SEQ++]-}'${PS0:-}
+    [[ ${PS0-} == *"${__nvsh_tok}"* ]] || PS0=${__nvsh_tok}${PS0-}
     return 0
 }
 
@@ -208,9 +212,16 @@ __nvsh_hook() {
     # One string test, no fork - the success path stays free.
     [[ -n ${NVSH_DISABLE:-} && ${NVSH_DISABLE} != 0 ]] && return 0
 
-    # A terminal integration that assigns PS0 outright on its first prompt
-    # would drop the command counter; put it back (one string test, no fork).
-    [[ ${PS0:-} == *'__NVSH_CMD_SEQ'* ]] || __nvsh_cmdseq_init
+    # Was the command counter on PS0 while the command that just finished
+    # ran? An integration that assigns PS0 outright takes it off; then the
+    # counter did not tick and must not be compared for this prompt (HISTCMD
+    # decides instead). Put it back for the next one. Two string tests, no
+    # fork.
+    local __nvsh_tok='${__NVSH_SEQ_SINK[__NVSH_CMD_SEQ++]-}' __nvsh_seq_ok=1
+    if [[ ${PS0-} != *"${__nvsh_tok}"* ]]; then
+        __nvsh_seq_ok=0
+        __nvsh_cmdseq_init
+    fi
 
     # bash-preexec (loaded by Ghostty's own integration on bash < 5.3, and by
     # kiro-cli / fig / amazon-q on any bash) rewrites PROMPT_COMMAND on its first prompt so that its
@@ -273,10 +284,16 @@ __nvsh_hook() {
     # Re-drawing the prompt must not re-fire for the same command. The PS0
     # counter is the real "a command ran" signal; HISTCMD is only the
     # fallback for a shell whose PS0 was replaced after the hook loaded.
-    local __nvsh_hc=${HISTCMD:-0}
-    [[ ${PS0:-} == *'__NVSH_CMD_SEQ'* ]] && __nvsh_hc=seq${__NVSH_CMD_SEQ:-0}
-    [[ ${__nvsh_hc} == "${__NVSH_LAST_HISTCMD:-}" ]] && return 0
+    # Both are recorded every time, so switching between them never compares
+    # a counter value with a history number.
+    local __nvsh_hc=${HISTCMD:-0} __nvsh_seq=${__NVSH_CMD_SEQ:-0}
+    if ((__nvsh_seq_ok)); then
+        [[ ${__nvsh_seq} == "${__NVSH_LAST_SEQ:-}" ]] && return 0
+    else
+        [[ ${__nvsh_hc} == "${__NVSH_LAST_HISTCMD:-}" ]] && return 0
+    fi
     __NVSH_LAST_HISTCMD=${__nvsh_hc}
+    __NVSH_LAST_SEQ=${__nvsh_seq}
 
     local __nvsh_line
     __nvsh_line=$(HISTTIMEFORMAT= builtin history 1 2>/dev/null)
@@ -375,9 +392,12 @@ __nvsh_hook_unload() {
             PROMPT_COMMAND=${__NVSH_STRIPPED}
         fi
     fi
-    PS0=${PS0//'${__NVSH_SEQ_SINK[__NVSH_CMD_SEQ++]-}'/}
+    # PS0 may have been unset by another integration, and the operator may
+    # run with `set -u`: a failed expansion here would skip the cleanup below.
+    local __nvsh_tok='${__NVSH_SEQ_SINK[__NVSH_CMD_SEQ++]-}'
+    [[ -n ${PS0+x} ]] && PS0=${PS0//"${__nvsh_tok}"/}
     unset __NVSH_HOOK_LOADED __NVSH_OSC133_OWNED __NVSH_LAST_HISTCMD __NVSH_SLASH_DISPATCH
-    unset __NVSH_CMD_SEQ
+    unset __NVSH_CMD_SEQ __NVSH_LAST_SEQ
     return 0
 }
 

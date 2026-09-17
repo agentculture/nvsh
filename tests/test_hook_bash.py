@@ -579,6 +579,57 @@ def test_the_same_failing_line_typed_twice_fires_twice(tmp_path, fake_nvsh):
     assert fake_nvsh.count == 2
 
 
+def test_a_ps0_replaced_after_a_failure_does_not_swallow_the_next_one(tmp_path, fake_nvsh):
+    """An integration that assigns PS0 after the hook ran takes the counter
+    off, so it does not tick for the next command. The restored-but-stale
+    counter must not be what decides: HISTCMD does, for that one prompt."""
+    env = fake_nvsh.env(tmp_path)
+    _run_bash(
+        [
+            _source(),
+            "PROMPT_COMMAND+=('PS0=replaced')",
+            "ls /nvsh-no-such-dir",
+            "ls /nvsh-no-such-dir-2",
+            "",
+        ],
+        env,
+    )
+    assert fake_nvsh.count == 2
+
+
+def test_a_ps0_that_only_mentions_the_counter_name_is_not_the_token(tmp_path, fake_nvsh):
+    env = fake_nvsh.env(tmp_path)
+    out = _run_bash(
+        [
+            "HISTCONTROL=ignoreboth",
+            "PS0='__NVSH_CMD_SEQ'",
+            _source(),
+            "declare -p PS0 | sed 's/^/WITH:/'",
+            "ls /nvsh-no-such-dir",
+            "ls /nvsh-no-such-dir",
+        ],
+        env,
+    )
+    assert "__NVSH_SEQ_SINK[__NVSH_CMD_SEQ++]" in _tagged(out, "WITH:")
+    assert fake_nvsh.count == 2
+
+
+def test_unload_survives_nounset_with_ps0_unset(tmp_path, fake_nvsh):
+    env = fake_nvsh.env(tmp_path)
+    out = _run_bash(
+        [
+            _source(),
+            "set -u",
+            # One line: the hook would put PS0 back at the next prompt.
+            "unset PS0; __nvsh_hook_unload",
+            "echo LOADED_MARK=[${__NVSH_HOOK_LOADED-}]",
+        ],
+        env,
+    )
+    assert "unbound variable" not in out
+    assert "LOADED_MARK=[]" in out
+
+
 def test_hook_does_not_fire_inside_a_sourced_script(tmp_path, fake_nvsh):
     script = tmp_path / "inner.sh"
     script.write_text("ls /nvsh-no-such-dir\n__nvsh_hook\n")

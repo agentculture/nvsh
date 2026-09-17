@@ -64,7 +64,13 @@ class OpenAICompatAgent(NvshAgent):
         # A cancel ends one turn, not the adapter: the daemon calls start()
         # once per warm session, so the flag has to be cleared per run or
         # every turn after the first stop streams nothing and ends in DONE.
+        # Cleared *here*, not in the generator: a generator body only runs
+        # at the first next(), and a cancel that lands between this call
+        # and that first step belongs to this turn and must survive.
         self._cancelled = False
+        return self._turn(request, context)
+
+    def _turn(self, request: AgentRequest, context: AgentContext) -> Iterator[AgentEvent]:
         url = f"{self._base_url}/chat/completions"
         scheme = urlsplit(url).scheme
         if scheme not in ("http", "https"):

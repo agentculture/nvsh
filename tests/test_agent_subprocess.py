@@ -490,3 +490,15 @@ def test_a_cancelled_turn_does_not_silence_the_next_run():
         agent.close()
     assert [e.text for e in events if e.kind is EventKind.TEXT_DELTA] == ["hi"]
     assert events[-1].kind is EventKind.DONE
+
+
+def test_a_cancel_between_run_and_the_first_step_still_stops_that_turn():
+    agent = _ScriptedAgent("print('hi')\nprint('__DONE__')\n")
+    agent.start()
+    try:
+        stream = agent.run(_request(), AgentContext())
+        agent.cancel()
+        events = list(stream)
+    finally:
+        agent.close()
+    assert [e for e in events if e.kind is EventKind.TEXT_DELTA] == []
