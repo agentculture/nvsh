@@ -572,4 +572,7 @@ class AgyAgent(NvshAgent):
             path=self.binary,
             approval="none",
             unmediated_file_access=True,
+            # agy has no protocol cancel or mid-turn channel; a correction
+            # becomes the next request ("stop and correct").
+            steer=False,
         )

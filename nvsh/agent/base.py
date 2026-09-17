@@ -305,6 +305,13 @@ class Capabilities:
     #: Whether the adapter can read/write files on its own, outside of
     #: nvsh's deterministic operator tools.
     unmediated_file_access: bool = False
+    #: Whether the adapter can deliver text into the turn that is running
+    #: right now (:meth:`NvshAgent.steer`) rather than only as the next
+    #: request. Declared in principle -- the runtime answer is still
+    #: ``steer()``'s return value, which can be ``False`` even when this is
+    #: ``True`` (codex's exec fallback, no turn id yet, the turn already
+    #: ended).
+    steer: bool = False
 
 
 class NvshAgent(abc.ABC):

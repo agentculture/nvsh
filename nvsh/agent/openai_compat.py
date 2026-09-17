@@ -275,4 +275,7 @@ class OpenAICompatAgent(NvshAgent):
             cancellation=True,
             persistent_session=False,
             local_model=True,
+            # No mid-turn channel over plain HTTP; a correction becomes the
+            # next request ("stop and correct").
+            steer=False,
         )

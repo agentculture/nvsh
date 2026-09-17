@@ -170,6 +170,41 @@ def test_installed_openai_compat_always_true():
     assert registry.installed("openai-compat", which=_which_all_missing) is True
 
 
+def test_steer_capable_reads_capability_without_starting_the_adapter(monkeypatch):
+    """steer_capable() must construct-and-read, never start(), the adapter --
+    built the same way registry._tool_calling already reads tool_calling
+    (AC3)."""
+    from nvsh.agent.base import Capabilities
+    from nvsh.agent.fake import FakeAgent
+
+    class _StartRaises(FakeAgent):
+        def start(self) -> None:  # pragma: no cover - must never be called
+            raise AssertionError("steer_capable must not start the adapter")
+
+    def _factory(_config: Config) -> _StartRaises:
+        return _StartRaises([], capabilities=Capabilities(steer=True))
+
+    fake_spec = registry.AdapterSpec(
+        name="fake-steer",
+        binary=None,
+        factory=_factory,
+        description="test-only fake",
+        path="fixture",
+        hosted=False,
+    )
+    monkeypatch.setitem(registry.ADAPTERS, "fake-steer", fake_spec)
+    assert registry.steer_capable("fake-steer", Config()) is True
+
+
+def test_steer_capable_false_by_default():
+    assert registry.steer_capable("openai-compat", Config()) is False
+
+
+def test_steer_capable_true_for_pi_and_codex():
+    assert registry.steer_capable("pi", Config()) is True
+    assert registry.steer_capable("codex", Config()) is True
+
+
 def test_available_adapters_reports_all_nine_with_installed_status():
     which = _which_factory({"pi", "claude"})
     rows = registry.available_adapters(which=which)

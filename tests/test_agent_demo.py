@@ -154,6 +154,11 @@ def test_the_demo_adapter_declares_tool_calling():
     assert registry._tool_calling("demo", Config()) is True
 
 
+def test_the_demo_adapter_declares_steer_false():
+    assert registry.ADAPTERS["demo"].factory(Config()).capabilities().steer is False
+    assert registry.steer_capable("demo", Config()) is False
+
+
 def test_installed_demo_is_true_without_ever_calling_which():
     def _explode(name):  # pragma: no cover - called only on a regression
         raise AssertionError(f"shutil.which was called with {name!r}")

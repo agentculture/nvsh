@@ -125,6 +125,7 @@ def test_capabilities(tmp_path):
         path="rpc",
         approval="nvsh",
         unmediated_file_access=False,
+        steer=True,
     )
 
 

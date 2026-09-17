@@ -151,4 +151,7 @@ class QwenAgent(SubprocessAgent):
             # Print-mode qwen reads files with its own tools (plan mode still
             # allows read tools); nvsh never sees those reads.
             unmediated_file_access=True,
+            # Print mode has no mid-turn channel; a correction becomes the
+            # next request ("stop and correct").
+            steer=False,
         )
