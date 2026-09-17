@@ -166,6 +166,21 @@ __nvsh_osc133_init() {
     return 0
 }
 
+# Count the commands bash actually runs, on PS0 too. PS0 is expanded once per
+# command line that is about to execute -- never for an empty Enter, a
+# Ctrl+C at the prompt or a redraw -- and an array subscript is an arithmetic
+# context evaluated in this shell, so the token below bumps the counter and
+# expands to nothing: no fork, no DEBUG trap, no output. The hook needs this
+# because HISTCMD is not a command counter: under HISTCONTROL=ignoredups (the
+# Ubuntu default is ignoreboth) a line identical to the previous one is not
+# recorded, so retyping a failed command looked like a redrawn prompt and
+# was silently dropped.
+__nvsh_cmdseq_init() {
+    __NVSH_CMD_SEQ=${__NVSH_CMD_SEQ:-0}
+    [[ ${PS0:-} == *'__NVSH_CMD_SEQ'* ]] || PS0='${__NVSH_SEQ_SINK[__NVSH_CMD_SEQ++]-}'${PS0:-}
+    return 0
+}
+
 __nvsh_ghostty_init() {
     if [[ ${TERM_PROGRAM:-} == ghostty ]] && ! declare -F __ghostty_hook >/dev/null 2>&1; then
         local __nvsh_res=${GHOSTTY_RESOURCES_DIR:-}
@@ -192,6 +207,10 @@ __nvsh_hook() {
     # read-only scalar) must still stop working when NVSH_DISABLE is set.
     # One string test, no fork - the success path stays free.
     [[ -n ${NVSH_DISABLE:-} && ${NVSH_DISABLE} != 0 ]] && return 0
+
+    # A terminal integration that assigns PS0 outright on its first prompt
+    # would drop the command counter; put it back (one string test, no fork).
+    [[ ${PS0:-} == *'__NVSH_CMD_SEQ'* ]] || __nvsh_cmdseq_init
 
     # bash-preexec (loaded by Ghostty's own integration on bash < 5.3, and by
     # kiro-cli / fig / amazon-q on any bash) rewrites PROMPT_COMMAND on its first prompt so that its
@@ -251,8 +270,11 @@ __nvsh_hook() {
     ((${#BASH_SOURCE[@]} <= 1)) || return 0
     ((BASH_SUBSHELL == 0)) || return 0
 
-    # Re-drawing the prompt must not re-fire for the same command.
+    # Re-drawing the prompt must not re-fire for the same command. The PS0
+    # counter is the real "a command ran" signal; HISTCMD is only the
+    # fallback for a shell whose PS0 was replaced after the hook loaded.
     local __nvsh_hc=${HISTCMD:-0}
+    [[ ${PS0:-} == *'__NVSH_CMD_SEQ'* ]] && __nvsh_hc=seq${__NVSH_CMD_SEQ:-0}
     [[ ${__nvsh_hc} == "${__NVSH_LAST_HISTCMD:-}" ]] && return 0
     __NVSH_LAST_HISTCMD=${__nvsh_hc}
 
@@ -326,6 +348,7 @@ __nvsh_prompt_command_install() {
 
 __nvsh_hook_install() {
     __nvsh_ghostty_init
+    __nvsh_cmdseq_init
     __nvsh_prompt_command_install
     __NVSH_HOOK_LOADED=1
     return 0
@@ -352,7 +375,9 @@ __nvsh_hook_unload() {
             PROMPT_COMMAND=${__NVSH_STRIPPED}
         fi
     fi
+    PS0=${PS0//'${__NVSH_SEQ_SINK[__NVSH_CMD_SEQ++]-}'/}
     unset __NVSH_HOOK_LOADED __NVSH_OSC133_OWNED __NVSH_LAST_HISTCMD __NVSH_SLASH_DISPATCH
+    unset __NVSH_CMD_SEQ
     return 0
 }
 
