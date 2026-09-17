@@ -185,8 +185,8 @@ handshake. `kind` is one of:
 | `failure` / `slash` / `explicit` | run an agent request (the `request`/`context` objects are required) |
 | `register` | this shell is alive |
 | `unregister` | this shell exited; the last one stops the daemon |
-| `cancel` | ask this shell's running turn to stop (first Ctrl+C/Esc) |
-| `kill` | force-stop this shell's running turn and release the agent (second press) |
+| `cancel` | ask this shell's running turn to stop (`[s]` chosen at the choice prompt, or Ctrl+C at another nvsh prompt) |
+| `kill` | force-stop this shell's running turn and release the agent (the press after `[s]`) |
 | `busy_choice` | answer a `busy` prompt: adds `choice` (`steer`/`replace`/`exit`) |
 | `kill_active` | force-stop the active turn for `nvsh doctor --apply`: adds `confirmed` |
 | `ui_response` | answer a proposal dialog: adds `request_id` and `fields` |
