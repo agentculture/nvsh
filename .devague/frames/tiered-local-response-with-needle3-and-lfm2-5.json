@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-09-19T11:10:08Z",
-  "updated": "2026-09-19T12:45:16Z",
+  "updated": "2026-09-19T12:48:13Z",
   "claims": [
     {
       "id": "c1",
@@ -136,7 +136,7 @@
       "kind": "after_state",
       "text": "An explicit operator request (`/ask`, Ctrl+G, a `?`-marked line) goes through tiers in order: Tier 0 shell and slash commands, Tier 1 Needle3 selecting one typed operation, Tier 2 a small resident LFM2.5 agent running a bounded inspect-interpret-propose loop, Tier 3 the configured full NvshAgent. A qualifying command FAILURE skips Tier 1 and starts at Tier 2, because Tier 1 selects an operation from a short intent and measurably mis-selects (including mutating operations) when shown command/exit/stderr text. Each tier either answers with a normal nvsh Proposal or declines, and a decline moves the request up one tier. A machine with only Tier 1 (or Tiers 1-2) installed is a supported configuration, not a degraded one.",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "honesty_conditions": [
         {
           "id": "h6",
@@ -375,7 +375,7 @@
       "kind": "non_goal",
       "text": "LFM2.5 fine-tuning is not part of this spec. It establishes the Tier 2 baseline with post-trained LFM2.5 checkpoints and collects the data a fine-tune would need; training an LFM2.5 Base checkpoint with unsloth-cli is a follow-up decided from the committed benchmark results. (A Needle3 LoRA fine-tune IS in scope \u2014 see the Needle fine-tune requirement.)",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "honesty_conditions": [],
       "hard_questions": [],
       "links": [],
@@ -476,9 +476,9 @@
     {
       "id": "c25",
       "kind": "requirement",
-      "text": "Tier 2 talks to its model through one OpenAI-compatible localhost interface with tool-call support. The runtime behind it runs as a Docker container that nvsh starts and stops, on DGX Spark, AGX Thor, AGX Orin and Orin Nano alike, with GPU acceleration as the target and a CPU-only run as the fallback. nvsh detects how each machine exposes its GPU to Docker and renders the matching launch line \u2014 CDI devices (`--device nvidia.com/gpu=all`) where only CDI exists, as on the DGX Spark, and `--runtime nvidia` where that runtime is registered, as on Thor and Orin \u2014 and records the detection source in docs/platforms.md. Which engine the container holds is a config choice among `llama-server`, `vllm` and `sglang`, and nvsh can instead attach to a runtime the operator already runs. The container publishes its port on localhost only. The benchmark runner records speed and memory cost per engine and per CPU/GPU mode, so each device class's default is picked from numbers, weighing footprint as heavily as latency.",
+      "text": "Tier 2 talks to its model through one OpenAI-compatible localhost interface with tool-call support. The runtime behind it runs as a Docker container that nvsh starts and stops, on DGX Spark, AGX Thor, AGX Orin and Orin Nano alike, with GPU acceleration as the target and a CPU-only run as the fallback. nvsh detects how each machine exposes its GPU to Docker and renders the matching launch line \u2014 `--gpus all` on the DGX Spark, which is what the operator's own containers already use, and `--runtime nvidia` on Jetson, where `--gpus all` is refused by the container toolkit's csv mode \u2014 and changes no Docker configuration on either \u2014 and records the detection source in docs/platforms.md. Which engine the container holds is a config choice among `llama-server`, `vllm` and `sglang`, and nvsh can instead attach to a runtime the operator already runs. The container publishes its port on localhost only. The benchmark runner records speed and memory cost per engine and per CPU/GPU mode, so each device class's default is picked from numbers, weighing footprint as heavily as latency.",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "honesty_conditions": [
         {
           "id": "h18",
@@ -511,6 +511,11 @@
           "text": "Tier 2 talks to its model through one OpenAI-compatible localhost interface with tool-call support. The runtime behind it runs as a Docker container that nvsh starts and stops with the NVIDIA container runtime (`--runtime nvidia`), the same way on DGX Spark, AGX Thor, AGX Orin and Orin Nano, with GPU acceleration as the target and a CPU-only run as the fallback when no GPU runtime is available. Which engine the container holds is a config choice among `llama-server`, `vllm` and `sglang`, and nvsh can instead attach to a runtime the operator already runs. The container publishes its port on localhost only. The benchmark runner records speed and memory cost per engine and per CPU/GPU mode, so each device class's default is picked from numbers, weighing footprint as heavily as latency.",
           "kind": "requirement",
           "reason": "challenge probe s17: the Spark has no nvidia runtime, only CDI"
+        },
+        {
+          "text": "Tier 2 talks to its model through one OpenAI-compatible localhost interface with tool-call support. The runtime behind it runs as a Docker container that nvsh starts and stops, on DGX Spark, AGX Thor, AGX Orin and Orin Nano alike, with GPU acceleration as the target and a CPU-only run as the fallback. nvsh detects how each machine exposes its GPU to Docker and renders the matching launch line \u2014 CDI devices (`--device nvidia.com/gpu=all`) where only CDI exists, as on the DGX Spark, and `--runtime nvidia` where that runtime is registered, as on Thor and Orin \u2014 and records the detection source in docs/platforms.md. Which engine the container holds is a config choice among `llama-server`, `vllm` and `sglang`, and nvsh can instead attach to a runtime the operator already runs. The container publishes its port on localhost only. The benchmark runner records speed and memory cost per engine and per CPU/GPU mode, so each device class's default is picked from numbers, weighing footprint as heavily as latency.",
+          "kind": "requirement",
+          "reason": "probe s21: Spark uses --gpus all with runc; Orin refuses --gpus all"
         }
       ]
     },
@@ -562,12 +567,12 @@
       "kind": "requirement",
       "text": "Tier 1 output is accepted only when it is exactly one function call. Zero calls, or more than one, is a decline. (Needle3 returns several calls for some inputs \u2014 challenge probe s16.)",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "honesty_conditions": [
         {
           "id": "h24",
           "text": "A fixture tier returning two calls, and one returning none, both produce a decline recorded with its reason; the s16 failure inputs are in the corpus as regression cases.",
-          "status": "proposed",
+          "status": "confirmed",
           "instruction": ""
         }
       ],
@@ -581,12 +586,12 @@
       "kind": "requirement",
       "text": "Argument values from a tier are untrusted text. nvsh renders operations as an argv list and never through a shell; a `service` or `container` argument must match a unit or container that a read-only lookup finds on the machine (case-insensitively, so 'vLLM' resolves to `vllm.service`), and anything that does not match is a decline with a one-line 'no such service' message. (Probe s16: 'restart the thing; rm -rf /' became `service_restart(service='rm -rf /')` at confidence 0.99.)",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "honesty_conditions": [
         {
           "id": "h25",
           "text": "A test passes `rm -rf /`, `x; reboot`, `$(id)` and a non-existent unit as arguments and every one declines; a test asserts the executor receives an argv list and that no tier-rendered command is run with `shell=True`; 'vLLM' resolves to an existing `vllm.service` fixture.",
-          "status": "proposed",
+          "status": "confirmed",
           "instruction": ""
         }
       ],
@@ -600,12 +605,12 @@
       "kind": "requirement",
       "text": "nvsh pins what it fetches: the `cactus-needle` version range in the flavor, the sha256 of the Needle engine library and weights, and the Tier 2 container image by digest. A fetched file whose hash does not match is refused and reported by `nvsh doctor`. The prefetch command covers container images as well as engine and model files, and prints each item's size before downloading.",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "honesty_conditions": [
         {
           "id": "h26",
           "text": "A test swaps a fetched file for one with a different hash and the tier refuses to load it and `nvsh doctor` reports the mismatch; the rendered container launch line references an image by `@sha256:` digest.",
-          "status": "proposed",
+          "status": "confirmed",
           "instruction": ""
         }
       ],
@@ -619,12 +624,12 @@
       "kind": "requirement",
       "text": "The Needle engine runs in a child process owned by the daemon, not inside the daemon itself, so a native crash or hang in `libneedle.so` costs one tier answer and a status line rather than the daemon and every shell's warm session. Tier 1 selection happens before the daemon's turn lock (`_run_lock`) is taken, so a Tier 1 answer never waits behind another shell's full-agent turn.",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "honesty_conditions": [
         {
           "id": "h27",
           "text": "A test kills the Needle child process mid-request and the daemon keeps serving, the request moves up a tier, and the next request restarts the child; a test shows a Tier 1 answer returning while another shell holds the turn lock.",
-          "status": "proposed",
+          "status": "confirmed",
           "instruction": ""
         }
       ],
@@ -638,12 +643,12 @@
       "kind": "requirement",
       "text": "Before loading a tier model or starting the Tier 2 container, nvsh reads available memory (`MemAvailable`) and declines that tier, with one status line, when it is below a configured floor \u2014 a tier must never be the thing that pushes a loaded machine into OOM. (Scope s15: the AGX Orin had about 2 GB available of 61 GB when checked.)",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "honesty_conditions": [
         {
           "id": "h28",
           "text": "A test with a faked `MemAvailable` below the floor shows the tier declining without loading anything, and the benchmark on the loaded AGX Orin records whether the floor triggered.",
-          "status": "proposed",
+          "status": "confirmed",
           "instruction": ""
         }
       ],
@@ -657,12 +662,12 @@
       "kind": "requirement",
       "text": "A container image's disk size counts toward a runtime's cost in the benchmark results alongside memory, and the results name it. (Probe s17: inference images on the fleet are 6.7 GB to 33 GB, against model files of a few hundred MB.)",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "honesty_conditions": [
         {
           "id": "h29",
           "text": "Every committed results file has an image-size column for container runtimes.",
-          "status": "proposed",
+          "status": "confirmed",
           "instruction": ""
         }
       ],
@@ -676,12 +681,12 @@
       "kind": "requirement",
       "text": "The tier measurement records are size-bounded with rotation, since nvsh's existing audit.jsonl is append-only with no cap. `nvsh uninstall` removes the tier records, prefetched engine and model files, and stops and removes the Tier 2 container, and says what it left (pulled images) and how to remove them.",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "honesty_conditions": [
         {
           "id": "h30",
           "text": "A test writes records past the cap and the oldest rotate out; an uninstall test on a box with tier files leaves none of nvsh's own files behind and prints the leftover-images note.",
-          "status": "proposed",
+          "status": "confirmed",
           "instruction": ""
         }
       ],
@@ -695,12 +700,12 @@
       "kind": "requirement",
       "text": "The panel names the tier that answered (for example `needle`, `lfm`, or the full agent's name) in the same header position that shows the target today, so the operator always knows how much model stood behind a proposal.",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "honesty_conditions": [
         {
           "id": "h31",
           "text": "A panel test per tier asserts the header text, including the escalated case where Tier 2 declined and the full agent answered.",
-          "status": "proposed",
+          "status": "confirmed",
           "instruction": ""
         }
       ],
@@ -714,12 +719,12 @@
       "kind": "boundary",
       "text": "nvsh's use of Docker is fixed: it starts only its own pinned Tier 2 image with a launch line built from config and detection, never from model output, and no tier can select an operation that runs an arbitrary container. The operation table's container operations act only on containers that already exist.",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "honesty_conditions": [
         {
           "id": "h32",
           "text": "A grep-style test asserts the only `docker run` in nvsh is the Tier 2 launcher and that its arguments come from config and detection only; the operation table has no operation that creates a container.",
-          "status": "proposed",
+          "status": "confirmed",
           "instruction": ""
         }
       ],
@@ -733,7 +738,7 @@
       "kind": "assumption",
       "text": "The corpus numbers mean something only if the corpus is split: operation descriptions and decline thresholds are tuned on a development split, and the reported results come from a held-out split whose phrasings were written separately (ideally by the operator, or sampled from real opted-in records) \u2014 otherwise the descriptions get fitted to the test.",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "honesty_conditions": [],
       "hard_questions": [],
       "links": [],
@@ -757,12 +762,12 @@
       "kind": "requirement",
       "text": "nvsh ships a reproducible Needle3 fine-tune recipe: a dataset builder that turns the corpus development split (plus opted-in, redacted records) into the `needle finetune` JSONL format, the training command, and `needle build --lora` producing a `.cact` file whose hash is pinned like any other fetched file. The tuned model is adopted only if, on the held-out split, it beats stock Needle3 on correct-operation rate and proposes no more wrong mutating operations than stock. Because a tuned Needle reports no confidence, every decline for the tuned model rests on the single-call rule, table validation and argument grounding. Training needs the `cactus-needle[train]` extra on a development machine, never on the operator's device at runtime.",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "honesty_conditions": [
         {
           "id": "h33",
           "text": "The committed results show stock and tuned Needle3 side by side on the same held-out split with the dataset hash and training command recorded; if the tuned model does not win, the results say so and stock ships.",
-          "status": "proposed",
+          "status": "confirmed",
           "instruction": ""
         }
       ],
@@ -985,7 +990,7 @@
         "s13"
       ],
       "origin": "llm",
-      "status": "proposed"
+      "status": "approved"
     },
     {
       "id": "l2",
@@ -997,7 +1002,7 @@
         "c28"
       ],
       "origin": "llm",
-      "status": "proposed"
+      "status": "approved"
     }
   ],
   "obligations": []
