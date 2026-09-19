@@ -760,8 +760,7 @@ def _tier_container_status() -> tuple[str, list[str]]:
     """Stop the container, then separately report leftover pinned images.
 
     Two independent, guarded steps: the container stop must run even when
-    config loading or platform detection fails, and vice versa -- see
-    finding 4054701421.
+    config loading or platform detection fails, and vice versa.
     """
     status = _stop_tier_container()
     refs = _tier_image_refs()

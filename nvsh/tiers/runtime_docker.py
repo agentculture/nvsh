@@ -52,7 +52,7 @@ DOCKER = "docker"
 #: Container naming and port allocation, per OS user. The span is as wide as
 #: the unprivileged port range allows above ``PORT_BASE`` (18400..58399, all
 #: <= 65535), so two ordinary uids far apart (uid 1000 and uid 2000, say) do
-#: not land on the same host port (finding 4054701431); ``[tiers.lfm] port``
+#: not land on the same host port; ``[tiers.lfm] port``
 #: still overrides this for a site that needs a fixed number.
 NAME_PREFIX = "nvsh-tier2-"
 PORT_BASE = 18400
@@ -581,10 +581,10 @@ def stop_container(
     ``docker stop`` then a ``docker rm``, never any other container, never
     ``docker rmi``, never ``docker system prune``. ``rm`` is attempted even
     when ``stop`` itself raises (a client-side timeout, say), so a container
-    that failed to stop cleanly is still reclaimed rather than left behind
-    (finding 4054701423). Never raises: a missing docker binary or an
-    unreachable daemon folds into the returned one-line status instead of
-    failing the caller, so a Docker-less uninstall still exits clean.
+    that failed to stop cleanly is still reclaimed rather than left behind.
+    Never raises: a missing docker binary or an unreachable daemon folds into
+    the returned one-line status instead of failing the caller, so a
+    Docker-less uninstall still exits clean.
     """
     runner = runner if runner is not None else _default_runner
     name = container_name(uid)
@@ -610,8 +610,7 @@ def _try_stop(runner: RunnerFn, name: str, timeout: float) -> tuple[int | None, 
     Returns ``(returncode, None)`` on an ordinary run, or ``(None, exc)``
     when the runner itself raised (a client-side timeout, say) -- the
     caller still goes on to attempt ``docker rm`` either way, so a
-    container that failed to stop cleanly is still reclaimed (finding
-    4054701423).
+    container that failed to stop cleanly is still reclaimed.
     """
     try:
         stop_code, _stop_out = runner([DOCKER, "stop", name], timeout)
