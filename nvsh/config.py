@@ -262,6 +262,38 @@ def _toml_scalar(value: object) -> str:
     return _toml_str(str(value))
 
 
+def _dump_tiers(cfg: Config) -> list[str]:
+    """Return the ``[tiers]``/``[tiers.lfm]`` block lines, or ``[]`` when *cfg.tiers*
+    matches the defaults exactly.
+
+    Split out of :func:`_dump_toml` to keep that function's cognitive
+    complexity manageable; the emitted lines are unchanged.
+    """
+    if cfg.tiers == _DEFAULT_TIERS:
+        return []
+
+    lines = ["[tiers]"]
+    for key, value in cfg.tiers.items():
+        if key == "lfm":
+            continue
+        default_val = _DEFAULT_TIERS.get(key)
+        if value != default_val:
+            lines.append(f"{key} = {_toml_scalar(value)}")
+    lines.append("")
+
+    lfm_cfg = cfg.tiers.get("lfm", {})
+    lfm_default = _DEFAULT_TIERS.get("lfm", {})
+    if isinstance(lfm_cfg, dict) and lfm_cfg != lfm_default:
+        lines.append("[tiers.lfm]")
+        for key, value in lfm_cfg.items():
+            default_val = lfm_default.get(key) if isinstance(lfm_default, dict) else None
+            if value != default_val:
+                lines.append(f"{key} = {_toml_scalar(value)}")
+        lines.append("")
+
+    return lines
+
+
 def _dump_toml(cfg: Config) -> str:
     """Serialize *cfg* back to ``config.toml`` text (round-trips through :func:`load`).
 
@@ -292,25 +324,7 @@ def _dump_toml(cfg: Config) -> str:
     lines.append("")
 
     # [tiers] — only when cfg.tiers differs from defaults.
-    if cfg.tiers != _DEFAULT_TIERS:
-        lines.append("[tiers]")
-        for key, value in cfg.tiers.items():
-            if key == "lfm":
-                continue
-            default_val = _DEFAULT_TIERS.get(key)
-            if value != default_val:
-                lines.append(f"{key} = {_toml_scalar(value)}")
-        lines.append("")
-
-        lfm_cfg = cfg.tiers.get("lfm", {})
-        lfm_default = _DEFAULT_TIERS.get("lfm", {})
-        if isinstance(lfm_cfg, dict) and lfm_cfg != lfm_default:
-            lines.append("[tiers.lfm]")
-            for key, value in lfm_cfg.items():
-                default_val = lfm_default.get(key) if isinstance(lfm_default, dict) else None
-                if value != default_val:
-                    lines.append(f"{key} = {_toml_scalar(value)}")
-            lines.append("")
+    lines.extend(_dump_tiers(cfg))
 
     return "\n".join(lines)
 
@@ -449,6 +463,70 @@ def _require_localhost_url(value: object) -> None:
         raise ConfigError("[tiers.lfm] base_url must be a localhost URL")
 
 
+#: bool-typed [tiers] keys, checked table-driven by ``_check_tiers_bools``.
+_TIERS_BOOL_KEYS = ("enabled", "store_request_text")
+
+#: non-negative-int-typed [tiers] keys, checked table-driven by
+#: ``_check_tiers_nonneg_ints``.
+_TIERS_NONNEG_INT_KEYS = ("memory_floor_mb", "idle_unload_seconds", "records_cap_mb")
+
+
+def _check_tiers_lfm_choice(key: str, value: object, allowed_values: tuple[str, ...]) -> None:
+    """Raise unless *value* (a ``[tiers.lfm]`` key) is ``None`` or one of *allowed_values*."""
+    if value is not None and value not in allowed_values:
+        allowed = ", ".join(sorted(allowed_values))
+        raise ConfigError(f"[tiers.lfm] {key}={value!r} is invalid (valid values: {allowed})")
+
+
+def _apply_tiers_lfm(lfm_input: object, merged: dict[str, object]) -> None:
+    """Validate a ``[tiers.lfm]`` table and merge it into *merged* in place."""
+    if not isinstance(lfm_input, dict):
+        raise ConfigError("[tiers.lfm] must be a table")
+    _reject_unknown(lfm_input, _VALID_TIERS_LFM_KEYS, "[tiers.lfm]")
+    _check_tiers_lfm_choice("engine", lfm_input.get("engine"), _TIERS_LFM_ENGINES)
+    _check_tiers_lfm_choice("mode", lfm_input.get("mode"), _TIERS_LFM_MODES)
+    lfm_base_url = lfm_input.get("base_url")
+    if lfm_base_url is not None:
+        _require_localhost_url(lfm_base_url)
+    lfm_model = lfm_input.get("model")
+    if lfm_model is not None and not isinstance(lfm_model, str):
+        raise ConfigError("[tiers.lfm] model must be a string")
+    default_lfm = dict(merged["lfm"]) if isinstance(merged.get("lfm"), dict) else {}
+    default_lfm.update(lfm_input)
+    merged["lfm"] = default_lfm
+
+
+def _check_tiers_bools(merged: dict[str, object]) -> None:
+    """enabled and store_request_text must be bool."""
+    for bool_key in _TIERS_BOOL_KEYS:
+        if not isinstance(merged[bool_key], bool):
+            raise ConfigError(f"[tiers] {bool_key} must be true or false")
+
+
+def _check_needle_min_confidence(merged: dict[str, object]) -> None:
+    """needle_min_confidence must be int or float (not bool), between 0 and 1."""
+    nmc = merged["needle_min_confidence"]
+    if isinstance(nmc, bool) or not isinstance(nmc, (int, float)):
+        raise ConfigError("[tiers] needle_min_confidence must be between 0 and 1")
+    if not (0 <= nmc <= 1):
+        raise ConfigError("[tiers] needle_min_confidence must be between 0 and 1")
+
+
+def _check_tiers_nonneg_ints(merged: dict[str, object]) -> None:
+    """memory_floor_mb, idle_unload_seconds, records_cap_mb must be int (not bool) >= 0."""
+    for int_key in _TIERS_NONNEG_INT_KEYS:
+        val = merged[int_key]
+        if isinstance(val, bool) or not isinstance(val, int) or val < 0:
+            raise ConfigError(f"[tiers] {int_key} must be a non-negative integer")
+
+
+def _check_tiers_types(merged: dict[str, object]) -> None:
+    """Type-check every merged ``[tiers]`` key."""
+    _check_tiers_bools(merged)
+    _check_needle_min_confidence(merged)
+    _check_tiers_nonneg_ints(merged)
+
+
 def _apply_tiers(raw: dict, cfg: Config) -> None:
     tiers_table = _table(raw, "tiers", "[tiers] must be a table")
     _reject_unknown(tiers_table, _VALID_TIERS_KEYS, "[tiers]")
@@ -459,56 +537,11 @@ def _apply_tiers(raw: dict, cfg: Config) -> None:
     for key, value in tiers_table.items():
         if key == "lfm":
             # lfm sub-table merges over the default lfm sub-table.
-            lfm_input = tiers_table["lfm"]
-            if not isinstance(lfm_input, dict):
-                raise ConfigError("[tiers.lfm] must be a table")
-            _reject_unknown(lfm_input, _VALID_TIERS_LFM_KEYS, "[tiers.lfm]")
-            lfm_engine = lfm_input.get("engine")
-            if lfm_engine is not None and lfm_engine not in _TIERS_LFM_ENGINES:
-                allowed = ", ".join(sorted(_TIERS_LFM_ENGINES))
-                raise ConfigError(
-                    f"[tiers.lfm] engine={lfm_engine!r} is invalid " f"(valid values: {allowed})"
-                )
-            lfm_mode = lfm_input.get("mode")
-            if lfm_mode is not None and lfm_mode not in _TIERS_LFM_MODES:
-                allowed = ", ".join(sorted(_TIERS_LFM_MODES))
-                raise ConfigError(
-                    f"[tiers.lfm] mode={lfm_mode!r} is invalid " f"(valid values: {allowed})"
-                )
-            lfm_base_url = lfm_input.get("base_url")
-            if lfm_base_url is not None:
-                _require_localhost_url(lfm_base_url)
-            lfm_model = lfm_input.get("model")
-            if lfm_model is not None and not isinstance(lfm_model, str):
-                raise ConfigError("[tiers.lfm] model must be a string")
-            default_lfm = dict(merged["lfm"]) if isinstance(merged.get("lfm"), dict) else {}
-            default_lfm.update(lfm_input)
-            merged["lfm"] = default_lfm
+            _apply_tiers_lfm(value, merged)
         else:
             merged[key] = value
 
-    # Type-check every key.
-    # enabled and store_request_text must be bool.
-    for bool_key in ("enabled", "store_request_text"):
-        val = merged[bool_key]
-        if not isinstance(val, bool):
-            raise ConfigError(f"[tiers] {bool_key} must be true or false")
-
-    # needle_min_confidence must be int or float (not bool), between 0 and 1.
-    nmc = merged["needle_min_confidence"]
-    if isinstance(nmc, bool) or not isinstance(nmc, (int, float)):
-        raise ConfigError("[tiers] needle_min_confidence must be between 0 and 1")
-    if not (0 <= nmc <= 1):
-        raise ConfigError("[tiers] needle_min_confidence must be between 0 and 1")
-
-    # memory_floor_mb, idle_unload_seconds, records_cap_mb must be int (not bool) >= 0.
-    for int_key in ("memory_floor_mb", "idle_unload_seconds", "records_cap_mb"):
-        val = merged[int_key]
-        if isinstance(val, bool) or not isinstance(val, int):
-            raise ConfigError(f"[tiers] {int_key} must be a non-negative integer")
-        if val < 0:
-            raise ConfigError(f"[tiers] {int_key} must be a non-negative integer")
-
+    _check_tiers_types(merged)
     cfg.tiers = merged
 
 

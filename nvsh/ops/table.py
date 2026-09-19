@@ -126,6 +126,64 @@ def names() -> tuple[str, ...]:
     return tuple(op.name for op in OPERATIONS)
 
 
+def _validate_value(name: str, arg_spec: ArgSpec, value: object) -> ValidationError | None:
+    """Validate one already-present argument's *value* against *arg_spec*.
+
+    Returns the first problem found, or ``None`` when *value* is fine.
+    """
+    # Must be a string
+    if not isinstance(value, str):
+        return ValidationError(
+            code="wrong_type",
+            message=(
+                f"{name!r} argument {arg_spec.name!r} "
+                f"must be a string, not {type(value).__name__}"
+            ),
+        )
+
+    # Empty or whitespace-only is wrong_type
+    if not value.strip():
+        return ValidationError(
+            code="wrong_type",
+            message=f"{name!r} argument {arg_spec.name!r} must not be empty",
+        )
+
+    # Literal choices
+    if arg_spec.kind == "choice" and value not in arg_spec.choices:
+        return ValidationError(
+            code="bad_choice",
+            message=(
+                f"{name!r} argument {arg_spec.name!r} must be one of "
+                f"{arg_spec.choices}, not {value!r}"
+            ),
+        )
+
+    return None
+
+
+def _validate_arg_presence(
+    name: str, op: Operation, arg_map: dict[str, object]
+) -> ValidationError | None:
+    """Check every declared argument is present and no unexpected one was passed."""
+    declared_names = {a.name for a in op.args}
+
+    for arg_spec in op.args:
+        if arg_spec.name not in arg_map:
+            return ValidationError(
+                code="missing_argument",
+                message=f"{name!r} requires argument {arg_spec.name!r}",
+            )
+
+    for key in arg_map:
+        if key not in declared_names:
+            return ValidationError(
+                code="unexpected_argument",
+                message=f"{name!r} does not accept argument {key!r}",
+            )
+
+    return None
+
+
 def validate(name: object, args: object) -> ValidationError | None:
     """Validate *name* and *args* against the operation table.
 
@@ -158,51 +216,14 @@ def validate(name: object, args: object) -> ValidationError | None:
     arg_map: dict[str, object] = args
 
     # 4. Every declared argument is required and must not be unexpected
-    declared_names = {a.name for a in op.args}
-
-    for arg_spec in op.args:
-        if arg_spec.name not in arg_map:
-            return ValidationError(
-                code="missing_argument",
-                message=f"{name!r} requires argument {arg_spec.name!r}",
-            )
-
-    for key in arg_map:
-        if key not in declared_names:
-            return ValidationError(
-                code="unexpected_argument",
-                message=f"{name!r} does not accept argument {key!r}",
-            )
+    presence_error = _validate_arg_presence(name, op, arg_map)
+    if presence_error is not None:
+        return presence_error
 
     # 5. Validate each argument value
     for arg_spec in op.args:
-        value = arg_map[arg_spec.name]
-
-        # Must be a string
-        if not isinstance(value, str):
-            return ValidationError(
-                code="wrong_type",
-                message=(
-                    f"{name!r} argument {arg_spec.name!r} "
-                    f"must be a string, not {type(value).__name__}"
-                ),
-            )
-
-        # Empty or whitespace-only is wrong_type
-        if not value.strip():
-            return ValidationError(
-                code="wrong_type",
-                message=f"{name!r} argument {arg_spec.name!r} must not be empty",
-            )
-
-        # Literal choices
-        if arg_spec.kind == "choice" and value not in arg_spec.choices:
-            return ValidationError(
-                code="bad_choice",
-                message=(
-                    f"{name!r} argument {arg_spec.name!r} must be one of "
-                    f"{arg_spec.choices}, not {value!r}"
-                ),
-            )
+        value_error = _validate_value(name, arg_spec, arg_map[arg_spec.name])
+        if value_error is not None:
+            return value_error
 
     return None  # everything is fine

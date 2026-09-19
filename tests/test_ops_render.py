@@ -95,7 +95,9 @@ def test_render_result_shape(op, args, platform):
     )
     if result is not None:
         rejoined = " ".join(result)
-        assert ";" not in rejoined and "|" not in rejoined and "&&" not in rejoined
+        assert ";" not in rejoined
+        assert "|" not in rejoined
+        assert "&&" not in rejoined
 
 
 # ---------------------------------------------------------------------------

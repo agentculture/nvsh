@@ -241,8 +241,10 @@ def test_fake_tier_replays_ready_made_decline():
 
 def test_fake_tier_replays_exception():
     tier = FakeTier([RuntimeError("boom")])
+    req = _req()
+    ctx = _ctx()
     with pytest.raises(RuntimeError):
-        tier.select(_req(), _ctx())
+        tier.select(req, ctx)
 
 
 def test_fake_tier_records_requests_seen():
@@ -269,14 +271,18 @@ def test_fake_tier_advances_through_script_in_order():
     )
     first = tier.select(_req(), _ctx())
     second = tier.select(_req(), _ctx())
-    assert isinstance(first, TierDecision) and first.operation == "machine_status"
-    assert isinstance(second, TierDecision) and second.operation == "gpu_stats"
+    assert isinstance(first, TierDecision)
+    assert first.operation == "machine_status"
+    assert isinstance(second, TierDecision)
+    assert second.operation == "gpu_stats"
 
 
 def test_fake_tier_exhausted_script_raises():
     tier = FakeTier([])
-    with pytest.raises(Exception):
-        tier.select(_req(), _ctx())
+    req = _req()
+    ctx = _ctx()
+    with pytest.raises(IndexError, match="script exhausted"):
+        tier.select(req, ctx)
 
 
 def test_fake_tier_is_a_tier_and_has_name():
