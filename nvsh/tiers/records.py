@@ -141,8 +141,12 @@ class TierRecords:
             with open(fpath, encoding="utf-8") as handle:
                 for line in handle:
                     line = line.strip()
-                    if line:
+                    if not line:
+                        continue
+                    try:
                         entries.append(json.loads(line))
+                    except ValueError:
+                        continue  # a torn line must not hide the rest
         return entries
 
     def _rotate_if_needed(self) -> None:
@@ -173,23 +177,18 @@ class TierRecords:
         self._enforce_cap()
 
     def _enforce_cap(self) -> None:
-        """Prune oldest rotated files until total on-disk <= cap_bytes."""
-        while self._total_size() > self._cap_bytes:
-            self._prune_oldest()
+        """Delete the oldest files until total on-disk size <= cap_bytes.
+
+        Bounded: each pass deletes one file, and it stops when nothing is
+        left to delete -- a cap smaller than one record must never spin.
+        """
+        for victim in self._list_files():
+            if self._total_size() <= self._cap_bytes:
+                return
+            victim.unlink(missing_ok=True)
 
     def _total_size(self) -> int:
         return sum(f.stat().st_size for f in self._list_files() if f.exists())
-
-    def _prune_oldest(self) -> None:
-        """Delete .3, shift .2 -> .3, .1 -> .2.  Base is untouched."""
-        base = self.path
-        for i in range(3, 1, -1):
-            src = Path(str(base) + f".{i - 1}")
-            dst = Path(str(base) + f".{i}")
-            if src.exists():
-                if dst.exists():
-                    dst.unlink()
-                src.rename(dst)
 
     def _list_files(self) -> list[Path]:
         """Return file paths oldest-first: .3 .. .1, then base (newest)."""

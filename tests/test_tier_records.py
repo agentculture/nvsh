@@ -260,3 +260,21 @@ def test_write_swallows_oserror(tmp_path):
 def test_constants_are_correct():
     assert DEFAULT_CAP_BYTES == 8 * 1024 * 1024
     assert ROTATED_FILES == 4
+
+
+def test_cap_smaller_than_one_record_terminates(tmp_path):
+    """A zero cap must drop records, never spin (config allows records_cap_mb = 0)."""
+    records = TierRecords(tmp_path / "state" / "tiers.jsonl", cap_bytes=0)
+    for _ in range(3):
+        records.write(TierRecord(tier="needle", request_kind="explicit"))
+    assert records.read_all() == []
+
+
+def test_read_all_skips_a_torn_line(tmp_path):
+    path = tmp_path / "state" / "tiers.jsonl"
+    records = TierRecords(path)
+    records.write(TierRecord(tier="needle", request_kind="explicit"))
+    with open(path, "a", encoding="utf-8") as handle:
+        handle.write("{not json\n")
+    records.write(TierRecord(tier="lfm", request_kind="failure"))
+    assert [e["tier"] for e in records.read_all()] == ["needle", "lfm"]
