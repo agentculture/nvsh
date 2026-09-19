@@ -62,6 +62,9 @@ def held_out_corpus_path() -> Path:
     return CORPUS_DIR / "held-out.json"
 
 
+ESCALATE_LABEL = "(escalate)"
+NO_CLASS_LABEL = "(none)"
+
 # ---------------------------------------------------------------------------
 # Corpus loading
 # ---------------------------------------------------------------------------
@@ -81,6 +84,10 @@ class CorpusEntry:
     text: str
     expect: dict  # {"operation": name, "args": {...}} or {"escalate": True}
     source: str
+    #: How the request is phrased ("imperative", "question", "symptom",
+    #: "terse", "jargon", ...). Free text, as data: the grid in
+    #: docs/tiers-improving-accuracy.md names the classes, no code does.
+    phrasing: str = ""
 
 
 @dataclass(frozen=True)
@@ -137,7 +144,10 @@ def _parse_entry(index: int, item: object) -> CorpusEntry | str:
         return f"{entry_id}: unknown kind {kind!r}"
     if not isinstance(expect, dict):
         return f"{entry_id}: expect must be an object"
-    return CorpusEntry(id=entry_id, kind=kind, text=text, expect=expect, source=source)
+    phrasing = str(item.get("class", ""))
+    return CorpusEntry(
+        id=entry_id, kind=kind, text=text, expect=expect, source=source, phrasing=phrasing
+    )
 
 
 def _validate_expect(entry: CorpusEntry) -> str | None:
@@ -311,6 +321,48 @@ def accuracy_by_kind(items: Sequence[ItemResult]) -> dict:
         kind: compute_operation_accuracy([item for item in items if item.entry.kind == kind])
         for kind in kinds
     }
+
+
+def _expected_label(entry: CorpusEntry) -> str:
+    """The expected operation's name, or ``"(escalate)"`` for a should-decline."""
+    if entry.expect.get("escalate"):
+        return ESCALATE_LABEL
+    return str(entry.expect.get("operation"))
+
+
+def _is_correct(item: ItemResult) -> bool:
+    """Right operation and arguments, or an escalation where one was expected."""
+    outcome = item.outcome
+    if item.entry.expect.get("escalate"):
+        return outcome is not None and outcome.escalated_to is not None
+    if outcome is None or outcome.operation != item.entry.expect.get("operation"):
+        return False
+    return outcome.args == item.entry.expect.get("args", {})
+
+
+def _breakdown(items: Sequence[ItemResult], label: Callable[[CorpusEntry], str]) -> dict:
+    """Correct/total per label, with the ids that missed -- what to write next."""
+    groups: dict[str, list[ItemResult]] = {}
+    for item in items:
+        groups.setdefault(label(item.entry), []).append(item)
+    return {
+        name: {
+            "total": len(group),
+            "correct": sum(1 for item in group if _is_correct(item)),
+            "missed": [item.entry.id for item in group if not _is_correct(item)],
+        }
+        for name, group in sorted(groups.items())
+    }
+
+
+def accuracy_by_operation(items: Sequence[ItemResult]) -> dict:
+    """Per expected operation (should-decline entries under one label)."""
+    return _breakdown(items, _expected_label)
+
+
+def accuracy_by_class(items: Sequence[ItemResult]) -> dict:
+    """Per phrasing class; entries without one are grouped as ``"(none)"``."""
+    return _breakdown(items, lambda entry: entry.phrasing or NO_CLASS_LABEL)
 
 
 def compute_operation_accuracy(items: Sequence[ItemResult]) -> dict:
@@ -899,6 +951,8 @@ def bench(
         },
         "accuracy": accuracy,
         "accuracy_by_kind": accuracy_by_kind(items),
+        "accuracy_by_operation": accuracy_by_operation(items),
+        "accuracy_by_class": accuracy_by_class(items),
         "items": item_rows(items),
         "escalation": escalation,
         "false_mutating_pick": false_mutating,
