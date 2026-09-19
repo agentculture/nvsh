@@ -34,6 +34,7 @@ from nvsh.ops import ground as ops_ground
 from nvsh.ops import table as ops_table
 from nvsh.ops.render import render
 from nvsh.platform._model import Platform
+from nvsh.tiers import router as router_mod
 from nvsh.tiers.base import Decline, DeclineReason, Explanation, Tier, TierDecision
 from nvsh.tiers.fake import FakeTier
 from nvsh.tiers.records import TierRecords
@@ -661,3 +662,15 @@ def test_the_verifier_numbers_land_in_the_tier1_record(records):
 def test_fake_tier_passes_an_explanation_through():
     explanation = Explanation(text="disk is full")
     assert FakeTier([explanation]).select(_request(), _context()) is explanation
+
+
+def test_an_excerpt_is_bounded_before_it_is_redacted(monkeypatch):
+    seen: list[int] = []
+
+    def _recording(data: bytes) -> bytes:
+        seen.append(len(data))
+        return data
+
+    monkeypatch.setattr(router_mod, "redact", _recording)
+    router_mod._excerpt("A" * 2_000_000)
+    assert max(seen) <= router_mod.EXCERPT_CHARS + router_mod.REDACT_SLACK

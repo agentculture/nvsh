@@ -64,6 +64,8 @@ ESCALATE = "escalate"
 
 #: How much of one inspection result travels to the next tier / the agent.
 EXCERPT_CHARS = 2048
+#: Extra characters handed to the redactor beyond the excerpt limit.
+REDACT_SLACK = 512
 
 #: The content-free request the per-operation verifier baselines are measured
 #: against. Not a real question: it holds the question's *shape* constant so
@@ -248,6 +250,10 @@ class TierOutcome:
 def _excerpt(text: object) -> str:
     """One inspection result, redacted and bounded, ready to leave the process."""
     raw = text if isinstance(text, str) else str(text)
+    # Bound first: the redactor's cost grows much faster than its input, so a
+    # tier handing over a megabyte must not stall the request. A secret cut
+    # by the excerpt limit lies inside the slack and is still seen whole.
+    raw = raw[: EXCERPT_CHARS + REDACT_SLACK]
     cleaned = redact(raw.encode("utf-8", "replace")).decode("utf-8", "replace")
     if len(cleaned) > EXCERPT_CHARS:
         return cleaned[: EXCERPT_CHARS - 3] + "..."
