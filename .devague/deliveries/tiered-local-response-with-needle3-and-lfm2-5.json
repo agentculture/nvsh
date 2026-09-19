@@ -2,7 +2,7 @@
   "plan_slug": "tiered-local-response-with-needle3-and-lfm2-5",
   "schema_version": 2,
   "created": "2026-09-19T14:14:40Z",
-  "updated": "2026-09-19T20:47:25Z",
+  "updated": "2026-09-19T21:26:18Z",
   "deviations": [
     {
       "id": "d1",
@@ -50,7 +50,7 @@
         "t24"
       ],
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "classification": "needs-follow-up",
       "seq": 56
     },
@@ -64,7 +64,7 @@
         "c20"
       ],
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "classification": "needs-follow-up",
       "seq": 57
     }
