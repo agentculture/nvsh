@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-09-19T11:10:08Z",
-  "updated": "2026-09-19T13:35:36Z",
+  "updated": "2026-09-19T14:29:33Z",
   "claims": [
     {
       "id": "c1",
@@ -976,6 +976,12 @@
         "c25",
         "c34"
       ]
+    },
+    {
+      "id": "s22",
+      "surface": "deviation d1 probe: LFM2.5-350M-Base as a logprob verifier, vLLM on the DGX Spark",
+      "finding": "Run 2026-09-19, `vllm/vllm-openai:nightly`, `--gpu-memory-utilization 0.04`, prefix caching on, 24 (request, pick) pairs taken from the Needle spikes. SPEED: a yes/no check is one prefill + one token over a 434-token cached prompt \u2014 11-28 ms end to end over HTTP (p50 17 ms); a one-pass lettered multiple choice 8-32 ms; scoring the text of all 17 options with `prompt_logprobs` ~210 ms (it bypasses the prefix cache). QUALITY of the stock 350M base model, 8-shot: raw p(yes) sits at 0.6-0.8 for almost everything and cannot separate 'How hot' -> power_get (0.73) from -> thermal_stats (0.71); lettered multiple choice is near-uniform noise (small models do not bind letters to options); option-text likelihood is 5/18 top-1 with a strong prior toward `service_restart`. CALIBRATION is what makes it work at all: subtracting each option's score under a content-free request lifts option-likelihood to 9/18 and turns yes/no into a usable ranking \u2014 AUC 0.76 for right vs wrong picks; it rejects the reasoning-type wrong picks (poem, nvcc not found, 'why did vLLM crash' -> service_restart) and still misses near-miss picks ('How hot' -> power_get) and the injection string. So: the latency premise holds, a stock 350M base gives a real but insufficient signal, per-operation calibration is mandatory, and the natural next measurements are the post-trained 350M, the 1.2B, and a fine-tuned verifier. COST of vLLM for this job: ~5.2 GB GPU allocation plus ~4.2 GB container memory for a 681 MB model, and 75-120 s to become ready \u2014 fine on a Spark, not viable on an 8 GB Orin Nano, so llama.cpp (or another light engine) must be measured for the Nano. `nvcr.io/nvidia/vllm:26.06-py3` loaded the model but every HTTP route returned 500 from a metrics-middleware bug; the vLLM nightly image worked. Also seen on Hugging Face: `LiquidAI/LFM2.5-Encoder-350M-Prompt-Router`, an encoder checkpoint built for routing, not yet evaluated.",
+      "seeds": []
     }
   ],
   "lapses": [
