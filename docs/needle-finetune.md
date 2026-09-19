@@ -83,7 +83,7 @@ review what it produced like any other data, and say so in the model card.
 
 ```bash
 ./needle-train/bin/needle finetune needle-train.jsonl \
-    --epochs 3 --lora-rank 16 --lora-alpha 32 --seed 0 \
+    --epochs 20 --lr 5e-4 --lora-rank 32 --lora-alpha 64 --seed 0 \
     --out needle3-nvsh-ops.lora.safetensors
 
 ./needle-train/bin/needle build \
@@ -94,8 +94,24 @@ review what it produced like any other data, and say so in the model card.
 `finetune` downloads the Needle3 base checkpoint when `--checkpoint` is not
 given, holds out 10% of the examples for validation, and writes the LoRA
 adapter. `build --lora` merges the adapter into the base and exports the
-2-bit `.cact` archive nvsh loads. Keep `--seed` in the model card so the run
-can be repeated.
+`.cact` archive nvsh loads. Keep `--seed` in the model card so the run can be
+repeated.
+
+Measured on 2026-09-19 (233 examples, DGX Spark): the defaults (3 epochs,
+`--lr 1e-4`) barely move the validation loss (2.93 to 2.57 after 5 epochs);
+the settings above bring it to 0.16 in about 35 minutes. Install
+`'jax[cuda13]'` into the training venv to use the GPU; without it JAX falls
+back to the CPU and says so.
+
+**Known fault, reported upstream as
+[cactus-compute/needle#134](https://github.com/cactus-compute/needle/issues/134):**
+with cactus-needle 3.0.2 the exported archive does not behave like the
+weights it was built from. The adapter above picks the right operation on 42
+of 53 test requests when run in JAX, and the archive built from it gets 2 of
+30 of its own training examples right through the engine. Check your export
+before measuring it: ask the archive a handful of its own training requests.
+If it fails them, the numbers in step 4 describe the export fault, not your
+model.
 
 ## 4. Measure it
 
