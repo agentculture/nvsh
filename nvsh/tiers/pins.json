@@ -1,0 +1,19 @@
+{
+  "needle3": {
+    "repo": "Cactus-Compute/needle3",
+    "revision": "c1fc4d4cb32993156a880ceb8ff171b03b1f166a",
+    "weights": {
+      "filename": "needle3.cact",
+      "sha256": "c9d915eca282ed42d1a09b143b592adb4cc6744ffe2d294adf5cfc5548170c38",
+      "size_bytes": 35335380
+    },
+    "engines": {
+      "aarch64": {
+        "filename": "python/cactus_needle-3.0.1-py3-none-manylinux2014_aarch64.whl",
+        "sha256": "509d620b481d070e889c28e2d1ffcf7546cbe6a3adc04ec453ad5b78e9dcac7d",
+        "size_bytes": 516013
+      }
+    }
+  },
+  "images": []
+}

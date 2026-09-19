@@ -48,6 +48,12 @@ def test_wheel_contains_shell_bash_files(built_wheel):
     assert "nvsh/shell/readline.bash" in names
 
 
+def test_wheel_contains_tier_fetch_pins(built_wheel):
+    with zipfile.ZipFile(built_wheel) as zf:
+        names = set(zf.namelist())
+    assert "nvsh/tiers/pins.json" in names
+
+
 def test_wheel_contains_every_pi_ext_ts_file(built_wheel):
     pi_ext_dir = REPO_ROOT / "nvsh" / "agent" / "pi_ext"
     ts_files = sorted(pi_ext_dir.glob("*.ts")) if pi_ext_dir.is_dir() else []
