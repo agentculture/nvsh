@@ -575,12 +575,15 @@ def test_cli_bench_writes_results_to_out_file(tmp_path, capsys):
     assert written["corpus"]["split"] == "dev"
 
 
-def test_cli_bench_needle_tier_reports_a_remediating_cli_error_until_it_ships(capsys):
+def test_cli_bench_needle_tier_without_its_files_escalates_everything(
+    capsys, tmp_path, monkeypatch
+):
+    # An empty cache: the tier has no weights or engine, so it declines each
+    # item instead of crashing the bench (and never downloads anything).
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
     rc = main(["tiers", "bench", "--tier", "needle", "--json"])
-    assert rc != 0
-    payload = json.loads(capsys.readouterr().err)
-    assert "needle" in payload["message"]
-    assert payload["remediation"]
+    payload = json.loads(capsys.readouterr().out)
+    assert (rc, payload["accuracy"]["operation_correct"]) == (0, 0)
 
 
 def test_cli_bench_unknown_tier_is_a_user_error():
