@@ -18,6 +18,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- The delivery record for the tiered local response run now covers PR C: what was delivered, the two approved deviations (`d3`, `d4`), the accuracy targets recorded as not met, and what is left.
 - Text is bounded before it is redacted in the tier router and Tier 2, because the redactor is slow on very long unbroken input.
 - An unconfigured `@needle` or `@lfm` now says what is missing instead of naming a binary that is not on PATH.
 
