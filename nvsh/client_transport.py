@@ -24,7 +24,7 @@ import json
 import os
 import socket
 import time
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, fields, replace
 from pathlib import Path
 from typing import Iterator, Mapping, cast
 
@@ -623,11 +623,11 @@ def ask_tiers(
         return _ESCALATED
     if reply is None:
         return _ESCALATED
-    # Annotated local: ``dataclasses.replace`` is typed as returning a bare
-    # ``DataclassInstance``, which does not match the declared return type
-    # (SonarCloud python:S5886).
-    answered: TierReply = replace(reply, events=tuple(events))
-    return answered
+    # Built by name rather than with ``dataclasses.replace``, whose declared
+    # return type is a bare dataclass instance, not ``TierReply``.
+    values = {f.name: getattr(reply, f.name) for f in fields(TierReply)}
+    values["events"] = tuple(events)
+    return TierReply(**values)
 
 
 def tier_decision(

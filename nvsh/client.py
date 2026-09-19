@@ -52,7 +52,7 @@ import subprocess  # nosec B404 - argv is always ["bash", "-c", <approved comman
 import threading
 import time
 import uuid
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, fields, replace
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -1876,11 +1876,11 @@ def _escalated_context(context: AgentContext, results) -> AgentContext:
         lines.append(f"{operation}: {' '.join(str(excerpt).split())}")
     block = "\n".join(lines)[:ESCALATION_MAX_CHARS]
     output = f"{context.output}\n\n{block}" if context.output else block
-    # Annotated local: ``dataclasses.replace`` is typed as returning a bare
-    # ``DataclassInstance``, which does not match the declared return type
-    # (SonarCloud python:S5886).
-    escalated: AgentContext = replace(context, output=output)
-    return escalated
+    # Built by name rather than with ``dataclasses.replace``, whose declared
+    # return type is a bare dataclass instance, not ``AgentContext``.
+    values = {f.name: getattr(context, f.name) for f in fields(AgentContext)}
+    values["output"] = output
+    return AgentContext(**values)
 
 
 def _tier_approved(decisions: Sequence[str]) -> bool:
@@ -2077,9 +2077,9 @@ class _Routing:
 
 def _follow_up_routing(routing: _Routing) -> _Routing:
     """The routing for a turn that continues one the full agent answered."""
-    # Annotated local: see ``_escalated_context`` (SonarCloud python:S5886).
-    follow_up: _Routing = replace(routing, tiers=False)
-    return follow_up
+    values = {f.name: getattr(routing, f.name) for f in fields(_Routing)}
+    values["tiers"] = False
+    return _Routing(**values)
 
 
 def _stream_request(

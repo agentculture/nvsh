@@ -246,33 +246,42 @@ def _uninstalled(monkeypatch) -> None:
     monkeypatch.setattr(registry, "installed", lambda name, which=None: False)
 
 
+def _no_binary(_name: str) -> None:
+    """A ``which`` that finds nothing."""
+    return None
+
+
 def test_forced_needle_without_the_flavor_names_the_flavor(monkeypatch):
     _uninstalled(monkeypatch)
+    config = Config()
     with pytest.raises(CliError) as caught:
-        registry.choose(Config(), lambda _name: None, forced="needle")
+        registry.choose(config, _no_binary, forced="needle")
     assert "needle flavor" in caught.value.message
 
 
 def test_forced_needle_without_the_flavor_never_says_none(monkeypatch):
     """``needle`` has no ``binary``; the old message formatted it anyway."""
     _uninstalled(monkeypatch)
+    config = Config()
     with pytest.raises(CliError) as caught:
-        registry.choose(Config(), lambda _name: None, forced="needle")
+        registry.choose(config, _no_binary, forced="needle")
     assert "None" not in caught.value.message
 
 
 def test_forced_needle_without_the_flavor_remediates_with_an_install(monkeypatch):
     _uninstalled(monkeypatch)
+    config = Config()
     with pytest.raises(CliError) as caught:
-        registry.choose(Config(), lambda _name: None, forced="needle")
+        registry.choose(config, _no_binary, forced="needle")
     assert "pip install" in caught.value.remediation
 
 
 def test_forced_claude_without_its_binary_still_names_the_binary(monkeypatch):
     """The binary-bearing branch's message is unchanged."""
     _uninstalled(monkeypatch)
+    config = Config()
     with pytest.raises(CliError) as caught:
-        registry.choose(Config(), lambda _name: None, forced="claude")
+        registry.choose(config, _no_binary, forced="claude")
     assert caught.value.message.startswith("claude is not installed")
 
 
