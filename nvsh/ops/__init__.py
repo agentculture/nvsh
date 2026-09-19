@@ -7,6 +7,7 @@ Re-exports the frozen dataclasses and the public API so callers can use
 from __future__ import annotations
 
 from nvsh.ops._model import ArgSpec, Operation, ValidationError
+from nvsh.ops.render import DEVICE_CLI_VERBS, render
 from nvsh.ops.table import OPERATIONS, get, names, validate
 
 __all__ = [
@@ -14,7 +15,9 @@ __all__ = [
     "Operation",
     "OPERATIONS",
     "ValidationError",
+    "DEVICE_CLI_VERBS",
     "get",
     "names",
+    "render",
     "validate",
 ]
