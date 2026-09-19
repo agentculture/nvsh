@@ -20,7 +20,8 @@ contract in ``CLAUDE.md``.
   says would be fetched, with sizes, and asks before downloading anything:
   ``--yes`` downloads without asking; off a terminal or under ``--json``
   without ``--yes`` it refuses outright (a CliError naming ``--yes``, never
-  a silent download); on an interactive terminal it prompts per item. With nothing missing it just reports.
+  a silent download); on an interactive terminal it prompts per item. With
+  nothing missing it just reports.
 
 Sub-subparser layout (``tiers <verb>``) matches ``nvsh agent`` — a later
 ``nvsh tiers bench`` verb (task t22) is one more ``noun_sub.add_parser`` call

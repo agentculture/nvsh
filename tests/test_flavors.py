@@ -74,7 +74,7 @@ def _top_level_needle_imports(py_file: Path) -> list[str]:
     for node in tree.body:
         if isinstance(node, ast.Import):
             found += [alias.name for alias in node.names if _is_needle(alias.name)]
-        elif isinstance(node, ast.ImportFrom) and _is_needle(node.module):
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and _is_needle(node.module):
             found.append(node.module)
     return found
 
