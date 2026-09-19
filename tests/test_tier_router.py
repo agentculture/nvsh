@@ -604,3 +604,41 @@ def test_a_wrong_mutating_pick_for_a_read_only_request_still_needs_approval(reco
     events = list(_router(records, tier1).route(asked, _context()))
     executed = _run_through_loop(events, tmp_path, approve=lambda proposal: False)
     assert executed == [] and "service_restart" in _proposals(events)[0].rationale
+
+
+def test_a_pick_grounding_refuses_never_costs_a_verifier_call(records):
+    verifier = _ScriptedVerifier(VerifierVerdict(action="propose"))
+    tier1 = FakeTier([_pick("service_restart", {"service": "rm -rf /"})], "needle")
+    list(_router(records, tier1, verifier=verifier).route(_request(), _context()))
+    assert verifier.calls == 0
+
+
+class _RecordingVerifier(_ScriptedVerifier):
+    def verify(self, request_text: str, decision: TierDecision):
+        self.seen = decision
+        return super().verify(request_text, decision)
+
+
+def test_the_verifier_is_asked_about_the_grounded_arguments(records):
+    verifier = _RecordingVerifier(VerifierVerdict(action="propose"))
+    tier1 = FakeTier([_pick("service_restart", {"service": "nginx"})], "needle")
+    list(_router(records, tier1, verifier=verifier).route(_request(), _context()))
+    assert verifier.seen.args == {"service": "nginx.service"}
+
+
+class _LateChat(_FakeChat):
+    """A server that is not up for the first call, then answers."""
+
+    def score_next_token(self, prompt: str, *, top: int = 20) -> dict[str, float]:
+        if not self.prompts:
+            self.prompts.append(prompt)
+            raise OSError("connection refused")
+        return super().score_next_token(prompt, top=top)
+
+
+def test_a_failed_baseline_measurement_is_retried_on_the_next_request():
+    verifier = LogprobVerifier(_LateChat())
+    pick = _pick("service_restart", {"service": "nginx.service"})
+    first = verifier.verify("restart nginx", pick)
+    second = verifier.verify("restart nginx", pick)
+    assert (first, second is not None) == (None, True)

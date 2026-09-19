@@ -173,7 +173,7 @@ class LogprobVerifier:
         self._escalate_below = escalate_below
         self._min_mass = min_mass
         self._baseline_request = baseline_request
-        self._baselines: dict[str, float | None] = {}
+        self._baselines: dict[str, float] = {}
 
     def verify(self, request_text: str, decision: TierDecision) -> VerifierVerdict | None:
         """Score *decision*. Returns ``None`` rather than raising, always."""
@@ -198,10 +198,15 @@ class LogprobVerifier:
 
     def _baseline(self, operation: Operation) -> float | None:
         """The content-free p(yes) for *operation*, measured once and kept."""
-        if operation.name not in self._baselines:
-            question = _question(self._baseline_request, operation, {})
-            self._baselines[operation.name] = self._p_yes(question)
-        return self._baselines[operation.name]
+        known = self._baselines.get(operation.name)
+        if known is not None:
+            return known
+        measured = self._p_yes(_question(self._baseline_request, operation, {}))
+        if measured is not None:
+            # A failed measurement is not kept: a server that was still
+            # starting must not switch the check off for the daemon's life.
+            self._baselines[operation.name] = measured
+        return measured
 
     def _p_yes(self, question: str) -> float | None:
         try:
@@ -371,19 +376,13 @@ class Route:
         )
 
     def _build(self, tier: Tier, decision: TierDecision) -> Proposal | Decline:
-        """Chain a decision to a proposal: floor -> verifier -> ground -> render."""
+        """Chain a decision to a proposal: floor -> table -> ground -> render -> verifier."""
         floor = self._router.min_confidence
         if decision.confidence is not None and decision.confidence < floor:
             return Decline(
                 DeclineReason.LOW_CONFIDENCE,
                 f"confidence {decision.confidence} below floor {floor}",
             )
-
-        if tier is self._router.tier1:
-            verdict = self._verify(decision)
-            self._verdict = verdict
-            if verdict is not None and verdict.action == ESCALATE:
-                return Decline(DeclineReason.LOW_CONFIDENCE, "the confidence check said no")
 
         operation = ops_table.get(decision.operation)
         if operation is None:
@@ -401,6 +400,20 @@ class Route:
                 DeclineReason.NOT_RENDERABLE,
                 f"no single command renders {operation.name} on this machine",
             )
+        # The verifier runs last: the table, grounding and rendering are the
+        # cheap, deterministic checks, so a pick they refuse never costs a
+        # model call -- and the question is asked about the grounded
+        # arguments, which are the ones the operator would be shown.
+        if tier is self._router.tier1:
+            checked = TierDecision(
+                operation=operation.name,
+                args=dict(grounded.args),
+                confidence=decision.confidence,
+                read_only=operation.read_only,
+            )
+            self._verdict = self._verify(checked)
+            if self._verdict is not None and self._verdict.action == ESCALATE:
+                return Decline(DeclineReason.LOW_CONFIDENCE, "the confidence check said no")
         return self._proposal(tier, operation, grounded.args, argv)
 
     def _verify(self, decision: TierDecision) -> VerifierVerdict | None:
