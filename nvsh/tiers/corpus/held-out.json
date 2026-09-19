@@ -1,0 +1,4 @@
+{
+  "header": "Held-out split (task t22, assumption c38). This file intentionally ships EMPTY. Held-out phrasings must not be authored in the same sitting as the operation descriptions and dev-split entries in dev.json, or the reported numbers are just fitted to the test. The operator (or someone sampling real opted-in records later) should add or review entries here, in a separate sitting, before the held-out numbers in a committed results file mean anything. Until then `nvsh tiers bench --split held-out` reports 'held-out: 0 entries (operator has not added any)' rather than a fake score. Entries use the same shape as dev.json: {id, kind: \"explicit\"|\"failure\", text, expect: {operation, args} | {escalate: true}, source}.",
+  "entries": []
+}
