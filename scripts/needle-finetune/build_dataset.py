@@ -20,14 +20,19 @@ import json
 import sys
 from pathlib import Path
 
-from nvsh.ops import validate
-from nvsh.tiers.needle_worker import tool_schemas
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # runnable from any directory
+
+from nvsh.ops import validate  # noqa: E402
+from nvsh.tiers.needle_worker import tool_schemas  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # The repo root is where we find nvsh/tiers/corpus/dev.json by default.
 # ---------------------------------------------------------------------------
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
+
+#: The split a tuned model is judged on. Training on it would make that judgement worthless.
+HELD_OUT_NAME = "held-out.json"
 
 
 # ---------------------------------------------------------------------------
@@ -97,7 +102,7 @@ def example_from_record(record: dict, tools: list) -> dict | None:
     return {
         "query": request_text,
         "tools": tools,
-        "answers": [],
+        "answers": [{"name": operation, "arguments": args}],
     }
 
 
@@ -111,51 +116,52 @@ def build(corpus_path: Path, bundle_path: Path | None, tools: list) -> tuple[lis
     - ``"skipped_records"`` -- bundle records skipped by RULE B checks
     - ``"duplicates"`` -- entries dropped by deduplication
     """
+    if corpus_path.name == HELD_OUT_NAME:
+        raise ValueError("refusing to train on the held-out split")
     corpus = json.loads(corpus_path.read_text(encoding="utf-8"))
-    entries: list[dict] = corpus.get("entries", [])
-
-    seen: set[str] = set()
-    examples: list[dict] = []
     counts: dict[str, int] = {"written": 0, "invalid": 0, "skipped_records": 0, "duplicates": 0}
+    examples: list[dict] = []
+    seen: set[tuple[str, str]] = set()
 
-    # Process corpus entries first (file order).
-    for entry in entries:
+    for entry in corpus.get("entries", []):
         example = example_from_entry(entry, tools)
         if example is None:
-            # entry was skipped by RULE A or RULE C.
-            if entry.get("kind") == "explicit":
-                # Explicit entry that failed validation → invalid.
-                expect = entry.get("expect", {})
-                if expect.get("operation") and not expect.get("escalate"):
-                    counts["invalid"] += 1
-            continue
+            counts["invalid"] += _is_invalid_entry(entry)
+        else:
+            _add(example, examples, seen, counts)
 
-        key = (example["query"].strip().lower(), json.dumps(example["answers"], sort_keys=True))
-        if key in seen:
-            counts["duplicates"] += 1
-            continue
-        seen.add(key)
-        examples.append(example)
-        counts["written"] += 1
-
-    # Process bundle records (file order).
-    if bundle_path is not None:
-        bundle = json.loads(bundle_path.read_text(encoding="utf-8"))
-        records: list[dict] = bundle.get("records", [])
-        for record in records:
-            example = example_from_record(record, tools)
-            if example is None:
-                counts["skipped_records"] += 1
-                continue
-            key = (example["query"].strip().lower(), json.dumps(example["answers"], sort_keys=True))
-            if key in seen:
-                counts["duplicates"] += 1
-                continue
-            seen.add(key)
-            examples.append(example)
-            counts["written"] += 1
-
+    for record in _bundle_records(bundle_path):
+        example = example_from_record(record, tools)
+        if example is None:
+            counts["skipped_records"] += 1
+        else:
+            _add(example, examples, seen, counts)
     return examples, counts
+
+
+def _is_invalid_entry(entry: dict) -> int:
+    """1 for an explicit entry whose expected operation did not validate, else 0."""
+    expect = entry.get("expect", {})
+    named = bool(expect.get("operation")) and not expect.get("escalate")
+    return int(entry.get("kind") == "explicit" and named)
+
+
+def _bundle_records(bundle_path: Path | None) -> list[dict]:
+    if bundle_path is None:
+        return []
+    records = json.loads(bundle_path.read_text(encoding="utf-8")).get("records", [])
+    return [record for record in records if isinstance(record, dict)]
+
+
+def _add(example: dict, examples: list[dict], seen: set, counts: dict[str, int]) -> None:
+    """Append *example* unless the same request with the same answer is already in."""
+    key = (example["query"].strip().lower(), json.dumps(example["answers"], sort_keys=True))
+    if key in seen:
+        counts["duplicates"] += 1
+        return
+    seen.add(key)
+    examples.append(example)
+    counts["written"] += 1
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -184,7 +190,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     # RULE B: refuse to train on held-out split.
-    if args.corpus.name == "held-out.json":
+    if args.corpus.name == HELD_OUT_NAME:
         print("refusing to train on the held-out split", file=sys.stderr)
         return 2
 

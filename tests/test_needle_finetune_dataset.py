@@ -368,3 +368,21 @@ def test_nothing_in_the_nvsh_package_imports_the_script() -> None:
 
     assert not found_finetune, f"'needle-finetune' found in: {found_finetune}"
     assert not found_dataset, f"'build_dataset' found in: {found_dataset}"
+
+
+def test_an_approved_record_teaches_the_call_the_operator_approved():
+    record = {
+        "operator_decision": "approved",
+        "operation": "disk_stats",
+        "args": {},
+        "request_text": "am I out of disk?",
+    }
+    example = _builder.example_from_record(record, [])
+    assert example["answers"] == [{"name": "disk_stats", "arguments": {}}]
+
+
+def test_build_itself_refuses_the_held_out_split(tmp_path):
+    held_out = tmp_path / "held-out.json"
+    held_out.write_text('{"entries": []}', encoding="utf-8")
+    with pytest.raises(ValueError):
+        _builder.build(held_out, None, [])
