@@ -245,18 +245,15 @@ class _ServerHandler(BaseHTTPRequestHandler):
         self.wfile.write(body.encode("utf-8"))
 
     def _reply_score_shape_l(self) -> None:
-        # Shape L (legacy): choices[0].logprobs.top_logprobs is a LIST,
-        # each item is a dict {token: logprob}.
+        # Shape L (legacy), as vLLM returns it: top_logprobs is a list with one
+        # {token: logprob} dict per GENERATED token.
         body = {
             "choices": [
                 {
                     "message": {"content": ""},
                     "logprobs": {
-                        "top_logprobs": [
-                            {" yes": -0.2},
-                            {" no": -1.8},
-                            {"Maybe": -4.0},
-                        ]
+                        # One dict per generated token; one token was asked for.
+                        "top_logprobs": [{" yes": -0.2, " no": -1.8, "Maybe": -4.0}]
                     },
                 }
             ]
@@ -297,13 +294,7 @@ class _ServerHandler(BaseHTTPRequestHandler):
             "choices": [
                 {
                     "message": {"content": ""},
-                    "logprobs": {
-                        "top_logprobs": [
-                            {" yes": "x"},
-                            {" no": True},
-                            {"Maybe": -4.0},
-                        ]
-                    },
+                    "logprobs": {"top_logprobs": [{" yes": "x", " no": True, "Maybe": -4.0}]},
                 }
             ]
         }
@@ -778,3 +769,82 @@ def test_calibrated_logit_clamps_extremes() -> None:
 )
 def test_yes_no_probability_skips_junk_entries(junk) -> None:
     assert yes_no_probability(junk) == (None, 0.0)
+
+
+# ------------------------------------------------------------------
+# Review findings on PR #32 (qodo): redirects, stop before headers, scalars
+# ------------------------------------------------------------------
+
+
+class _ScriptedHandler(BaseHTTPRequestHandler):
+    """Behaviour chosen per server instance through ``server.mode``."""
+
+    def log_message(self, *args) -> None:  # silence test output
+        pass
+
+    def do_POST(self) -> None:
+        length = int(self.headers.get("Content-Length", 0))
+        self.rfile.read(length)
+        self.server.hits += 1
+        if self.server.mode == "redirect":
+            self.send_response(307)
+            self.send_header("Location", self.server.redirect_to)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+        elif self.server.mode == "silent":
+            time.sleep(5)  # never sends a status line within the test's patience
+
+
+def _scripted_server(mode: str, redirect_to: str = "") -> ThreadingHTTPServer:
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), _ScriptedHandler)
+    srv.mode, srv.redirect_to, srv.hits = mode, redirect_to, 0
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv
+
+
+def test_redirect_is_refused_and_never_followed() -> None:
+    """A local server must not be able to bounce the request to another host."""
+    target = _scripted_server("silent")
+    bouncer = _scripted_server(
+        "redirect", f"http://127.0.0.1:{target.server_address[1]}/chat/completions"
+    )
+    try:
+        chat = _make_toolchat(bouncer.server_address[1], stream=False)
+        with pytest.raises(ToolChatError, match="HTTP 307"):
+            chat.complete([{"role": "user", "content": "secret"}], [])
+        assert bouncer.hits == 1
+        assert target.hits == 0
+    finally:
+        bouncer.shutdown()
+        target.shutdown()
+
+
+def test_stop_unblocks_a_request_still_waiting_for_headers() -> None:
+    srv = _scripted_server("silent")
+    try:
+        chat = _make_toolchat(srv.server_address[1], stream=False)
+        errors: list[ToolChatError] = []
+
+        def run_complete() -> None:
+            try:
+                chat.complete([{"role": "user", "content": "x"}], [])
+            except ToolChatError as exc:
+                errors.append(exc)
+
+        worker = threading.Thread(target=run_complete, daemon=True)
+        worker.start()
+        time.sleep(0.2)
+        chat.stop()
+        worker.join(timeout=2)
+        assert not worker.is_alive()
+        assert len(errors) == 1
+        assert "stopped" in str(errors[0])
+    finally:
+        srv.shutdown()
+
+
+def test_shape_b_skips_scalars_and_keeps_valid_calls() -> None:
+    start, end = "<|tool_call_" + "start|>", "<|tool_call_" + "end|>"
+    good = {"name": "gpu_stats", "arguments": {}}
+    text = f"{start}{json.dumps([1, 'x', None, good, [good]])}{end} {start}[1]{end}"
+    assert parse_raw_tool_calls(text) == (ToolCall(name="gpu_stats", arguments={}),)

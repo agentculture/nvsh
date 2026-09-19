@@ -1,47 +1,47 @@
-"""Tool-call chat client over stdlib HTTP: urllib only, OpenAI-compatible.
+"""Tool-call chat client for an OpenAI-compatible server on THIS machine.
 
-A minimal client for an OpenAI-compatible chat server on THIS machine that
-supports tool calling.  No third-party dependencies — only ``http.server``
-and ``urllib.request`` from the Python standard library.
+stdlib only. The transport is ``http.client`` rather than ``urllib`` for two
+reasons that are both part of the contract:
+
+* ``http.client`` never follows a redirect, so a local server cannot bounce a
+  request (with its messages and tools) to another host. Any status other
+  than 200 is an error.
+* the connection's socket exists from ``connect()`` on, so :meth:`ToolChat.stop`
+  can unblock a request that is still waiting for response *headers*, not only
+  one that is reading a body.
 
 Usage::
 
-    from nvsh.tiers.toolchat import ToolChat, ChatReply
-
-    chat = ToolChat("http://127.0.0.1:8000", "my-model")
-    reply: ChatReply = chat.complete(
-        messages=[{"role": "user", "content": "check gpu"}],
-        tools=[{"type": "function", "function": {"name": "gpu_stats"}}],
-    )
-    for tc in reply.tool_calls:
-        ...  # tc.name, tc.arguments
+    chat = ToolChat("http://127.0.0.1:8080/v1", "my-model")
+    reply = chat.complete(messages=[...], tools=[...])
+    for call in reply.tool_calls:
+        ...  # call.name, call.arguments -- untrusted: pass them through decide()
 """
 
 from __future__ import annotations
 
+import http.client
 import json
 import math
 import re
 import socket
-import urllib.error
-import urllib.request
+import threading
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Iterable
 from urllib.parse import urlsplit
 
-# -- exceptions --
+_NO_LOGPROBS = "server returned no log-probabilities"
+_HOST_ACCEPT: frozenset[str] = frozenset(("127.0.0.1", "localhost", "::1"))
+_DEFAULT_PORT = 80
 
 
 class ToolChatError(Exception):
-    """Raised for all client-side errors during HTTP communication."""
-
-
-# -- data classes --
+    """Raised for every client-side failure; nothing else escapes this module."""
 
 
 @dataclass(frozen=True)
 class ToolCall:
-    """A single tool call extracted from a chat completion."""
+    """A single tool call extracted from a chat completion. Untrusted."""
 
     name: str
     arguments: dict[str, object]
@@ -49,7 +49,7 @@ class ToolCall:
 
 @dataclass(frozen=True)
 class ChatReply:
-    """The full reply from the model: text content + tool calls."""
+    """The reply from the model: text content plus tool calls."""
 
     text: str
     tool_calls: tuple[ToolCall, ...]
@@ -58,109 +58,255 @@ class ChatReply:
 # -- localhost enforcement --
 
 
-_HOST_ACCEPT: frozenset[str] = frozenset(("127.0.0.1", "localhost", "::1"))
-
-
 def require_localhost(base_url: str) -> None:
-    """Raise ``ToolChatError`` unless the URL is ``http://`` to localhost.
+    """Raise ``ToolChatError`` unless the URL is ``http://`` to this machine.
 
-    Parses the host with ``urllib.parse.urlsplit`` and checks against a
-    whitelist.  A host like ``localhost.example.com`` is refused — only
-    an *exact* match passes.
+    The host is parsed and compared exactly; ``localhost.example.com`` starts
+    with ``localhost`` and is refused.
     """
-    parsed = urlsplit(base_url)
+    try:
+        parsed = urlsplit(base_url)
+        host = parsed.hostname
+    except ValueError as exc:
+        raise ToolChatError(f"invalid base URL: {exc}") from exc
     if parsed.scheme != "http":
         raise ToolChatError(f"only http:// scheme accepted (got {parsed.scheme!r})")
-    host = parsed.hostname
     if host is None or host not in _HOST_ACCEPT:
         raise ToolChatError(f"host must be 127.0.0.1, ::1, or localhost (got {host!r})")
 
 
 # -- raw tool-call parsing --
 
-# Shape A: <tool_call>{JSON object}</tool_call>. The body is taken between the
-# tags (non-greedy across the closing TAG, not across a brace), so nested
+# Shape A: a JSON object between tool-call tags. The body is taken between
+# the TAGS (non-greedy across the closing tag, not across a brace), so nested
 # braces and a "}" inside a string value survive; json.loads does the rest.
 _RE_SHAPE_A = re.compile(r"<tool_call>(.*?)</tool_call>", re.DOTALL)
 
-# Shape B: <|tool_call_start|> [JSON array] <|tool_call_end|>
-_RE_SHAPE_B = re.compile(
-    r"<\|tool_call_start\|>(\[.*?\])<\|tool_call_end\|>",
-    re.DOTALL,
-)
+# Shape B: a JSON array between start/end markers.
+_RE_SHAPE_B = re.compile(r"<\|tool_call_start\|>(.*?)<\|tool_call_end\|>", re.DOTALL)
 
 
 def parse_raw_tool_calls(text: str) -> tuple[ToolCall, ...]:
-    """Extract ToolCalls from raw model output text.
+    """Extract tool calls a model printed as text instead of returning them.
 
-    Supports two shapes anywhere in the text:
-
-    A. <tool_call>{"name": "f", "arguments": {}}</tool_call>
-
-    B. <|tool_call_start|>[{"name": "f", "arguments": {}}]<|tool_call_end|>
-
-    Each valid JSON object found with a string ``"name"`` and dict
-    ``"arguments"`` becomes a ``ToolCall``.  Invalid fragments are skipped
-    silently.  Never raises; returns ``()`` when nothing is found.
+    Two shapes, anywhere in the text, possibly several: a JSON object between
+    tool-call tags, and a JSON array between start/end markers. Anything that
+    does not parse, or is not an object with a string ``name`` and a dict
+    ``arguments``, is skipped. Never raises; returns ``()`` when nothing fits.
     """
-    results: list[ToolCall] = []
-    for _obj in _find_json_objects(text, _RE_SHAPE_A):
-        call = _make_call(_obj)
+    if not isinstance(text, str):
+        return ()
+    calls: list[ToolCall] = []
+    for candidate in _raw_candidates(text):
+        call = _make_call(candidate)
         if call is not None:
-            results.append(call)
-    for _arr in _find_json_arrays(text, _RE_SHAPE_B):
-        call = _make_call(_arr)
-        if call is not None:
-            results.append(call)
-    return tuple(results)
+            calls.append(call)
+    return tuple(calls)
 
 
-def _find_json_objects(text: str, pattern: re.Pattern) -> list[dict[str, Any]]:
-    objs: list[dict[str, Any]] = []
-    for m in pattern.finditer(text):
-        try:
-            obj = json.loads(m.group(1))
-            if isinstance(obj, dict):
-                objs.append(obj)
-        except json.JSONDecodeError:
-            pass
-    return objs
+def _raw_candidates(text: str) -> Iterable[object]:
+    for match in _RE_SHAPE_A.finditer(text):
+        yield _loads_or_none(match.group(1))
+    for match in _RE_SHAPE_B.finditer(text):
+        decoded = _loads_or_none(match.group(1))
+        if isinstance(decoded, list):
+            yield from decoded
 
 
-def _find_json_arrays(text: str, pattern: re.Pattern) -> list[dict[str, Any]]:
-    objs: list[dict[str, Any]] = []
-    for m in pattern.finditer(text):
-        try:
-            arr = json.loads(m.group(1))
-            if isinstance(arr, list):
-                objs.extend(arr)
-        except json.JSONDecodeError:
-            pass
-    return objs
+def _loads_or_none(raw: str) -> object:
+    try:
+        return json.loads(raw)
+    except ValueError:
+        return None
 
 
-def _make_call(obj: dict[str, Any]) -> ToolCall | None:
-    name = obj.get("name")
-    args = obj.get("arguments")
-    if isinstance(name, str) and isinstance(args, dict):
-        return ToolCall(name=name, arguments=args)
-    return None
+def _make_call(candidate: object) -> ToolCall | None:
+    """A ToolCall from a decoded object, or None when it is not call-shaped."""
+    if not isinstance(candidate, dict):
+        return None
+    name = candidate.get("name")
+    arguments = candidate.get("arguments")
+    if not isinstance(name, str) or not name or not isinstance(arguments, dict):
+        return None
+    return ToolCall(name=name, arguments=arguments)
 
 
-# -- HTTP client --
+# -- structured tool-call parsing --
+
+
+def _call_from_function(function: object) -> ToolCall | None:
+    """A ToolCall from an OpenAI ``function`` object (arguments is a JSON string)."""
+    if not isinstance(function, dict):
+        return None
+    arguments = function.get("arguments")
+    decoded = _loads_or_none(arguments) if isinstance(arguments, str) else None
+    return _make_call({"name": function.get("name"), "arguments": decoded})
+
+
+def _calls_from_message(message: dict[str, Any]) -> list[ToolCall]:
+    raw_calls = message.get("tool_calls")
+    if not isinstance(raw_calls, list):
+        return []
+    calls = [_call_from_function(_function_of(item)) for item in raw_calls]
+    return [call for call in calls if call is not None]
+
+
+def _function_of(item: object) -> object:
+    return item.get("function") if isinstance(item, dict) else None
+
+
+def _first_choice(payload: object) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise ToolChatError("server reply is not a JSON object")
+    choices = payload.get("choices")
+    if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+        raise ToolChatError("server reply has no choices")
+    return choices[0]
+
+
+def _reply(text: str, calls: list[ToolCall]) -> ChatReply:
+    """Fall back to tool calls printed in the text when none came structured."""
+    found = tuple(calls) if calls else parse_raw_tool_calls(text)
+    return ChatReply(text=text, tool_calls=found)
+
+
+class _StreamAccumulator:
+    """Joins SSE deltas: text is appended, tool-call fragments are joined by index."""
+
+    def __init__(self) -> None:
+        self.text = ""
+        self._names: dict[int, str] = {}
+        self._arguments: dict[int, str] = {}
+
+    def add(self, delta: object) -> None:
+        if not isinstance(delta, dict):
+            return
+        content = delta.get("content")
+        if isinstance(content, str):
+            self.text += content
+        fragments = delta.get("tool_calls")
+        if isinstance(fragments, list):
+            for fragment in fragments:
+                self._add_fragment(fragment)
+
+    def _add_fragment(self, fragment: object) -> None:
+        if not isinstance(fragment, dict) or not isinstance(fragment.get("index"), int):
+            return
+        index = fragment["index"]
+        function = fragment.get("function")
+        if not isinstance(function, dict):
+            return
+        name = function.get("name")
+        if isinstance(name, str) and name and index not in self._names:
+            # First non-empty name wins: some servers resend the name on every
+            # chunk, which must not double it.
+            self._names[index] = name
+        arguments = function.get("arguments")
+        if isinstance(arguments, str):
+            self._arguments[index] = self._arguments.get(index, "") + arguments
+
+    def calls(self) -> list[ToolCall]:
+        built = (
+            _call_from_function({"name": name, "arguments": self._arguments.get(index, "")})
+            for index, name in sorted(self._names.items())
+        )
+        return [call for call in built if call is not None]
+
+
+def _sse_payloads(response: http.client.HTTPResponse) -> Iterable[object]:
+    """Decoded ``data:`` payloads of an SSE body, up to ``[DONE]`` or end of stream."""
+    for raw_line in response:
+        line = raw_line.decode("utf-8", "replace").strip()
+        if not line.startswith("data:"):
+            continue
+        data = line[len("data:") :].strip()
+        if data == "[DONE]":
+            return
+        yield _loads_or_none(data)
+
+
+def _delta_of(payload: object) -> object:
+    if not isinstance(payload, dict):
+        return None
+    choices = payload.get("choices")
+    if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+        return None
+    return choices[0].get("delta")
+
+
+# -- log-probability scoring --
+
+
+def _valid_logprob(value: object) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and not math.isnan(value)
+
+
+def _shape_l(logprobs: dict[str, Any]) -> dict[str, float]:
+    """Legacy shape: ``top_logprobs`` is a list whose first item maps token -> logprob."""
+    top = logprobs.get("top_logprobs")
+    first = top[0] if isinstance(top, list) and top else None
+    if not isinstance(first, dict):
+        return {}
+    return {
+        token: float(value)
+        for token, value in first.items()
+        if isinstance(token, str) and _valid_logprob(value)
+    }
+
+
+def _shape_c(logprobs: dict[str, Any]) -> dict[str, float]:
+    """Content shape: ``content[0].top_logprobs`` is a list of {token, logprob}."""
+    content = logprobs.get("content")
+    first = content[0] if isinstance(content, list) and content else None
+    entries = first.get("top_logprobs") if isinstance(first, dict) else None
+    if not isinstance(entries, list):
+        return {}
+    return {
+        entry["token"]: float(entry["logprob"])
+        for entry in entries
+        if isinstance(entry, dict)
+        and isinstance(entry.get("token"), str)
+        and _valid_logprob(entry.get("logprob"))
+    }
+
+
+def yes_no_probability(top_logprobs: dict[str, float]) -> tuple[float | None, float]:
+    """``(p_yes, mass)`` from a next-token distribution. Never raises.
+
+    Token variants (" yes", "Yes", "YES") are summed. ``p_yes`` is normalised
+    over yes+no only; ``mass`` is how much of the distribution those two words
+    hold. ``(None, 0.0)`` when neither word appears.
+    """
+    if not isinstance(top_logprobs, dict):
+        return (None, 0.0)
+    masses = {"yes": 0.0, "no": 0.0}
+    for token, logprob in top_logprobs.items():
+        if not isinstance(token, str) or not _valid_logprob(logprob) or logprob > 0:
+            continue  # a log-probability is never positive; skip junk, never raise
+        word = token.strip().casefold()
+        if word in masses:
+            masses[word] += math.exp(logprob)
+    mass = masses["yes"] + masses["no"]
+    if mass > 0:
+        return (masses["yes"] / mass, mass)
+    return (None, 0.0)
+
+
+def calibrated_logit(p_yes: float, baseline_p_yes: float) -> float:
+    """How much more the model says yes for this request than for an empty one."""
+    return _logit(p_yes) - _logit(baseline_p_yes)
+
+
+def _logit(probability: float) -> float:
+    clamped = min(max(probability, 1e-6), 1 - 1e-6)
+    return math.log(clamped / (1 - clamped))
+
+
+# -- client --
 
 
 class ToolChat:
-    """OpenAI-compatible chat client with tool-call support.
-
-    Uses only ``urllib.request`` for HTTP (no third-party deps).  The
-    constructor calls :func:`require_localhost` to enforce that ``base_url``
-    points at a localhost endpoint.
-
-    ``complete()`` returns a :class:`ChatReply` whose ``text`` and
-    ``tool_calls`` are always populated (never ``None``).  Errors from the
-    HTTP layer or from invalid JSON are wrapped in :class:`ToolChatError`.
-    """
+    """Minimal OpenAI-compatible chat client with tool calling, localhost only."""
 
     def __init__(
         self,
@@ -171,372 +317,109 @@ class ToolChat:
         stream: bool = True,
     ) -> None:
         require_localhost(base_url)
-        self._base_url = base_url
+        parsed = urlsplit(base_url)
+        self._host = parsed.hostname or "127.0.0.1"
+        self._port = parsed.port or _DEFAULT_PORT
+        self._prefix = parsed.path.rstrip("/")
         self._model = model
         self._timeout = timeout
         self._stream = stream
+        self._lock = threading.Lock()
+        self._sock: socket.socket | None = None
         self._cancelled = False
-        self._response = None
 
     def complete(self, messages: list[dict], tools: list[dict]) -> ChatReply:
-        """Send a chat request and return the parsed reply.
-
-        POSTs to ``{base_url}/chat/completions`` with ``{"stream": <bool>}``.
-        On success returns a :class:`ChatReply`; on error raises
-        :class:`ToolChatError`.
-        """
-        self._cancelled = False
-        url = f"{self._base_url}/chat/completions"
-        payload = json.dumps(
-            {
-                "model": self._model,
-                "messages": messages,
-                "tools": tools,
-                "stream": self._stream,
-            }
-        ).encode("utf-8")
-
-        resp = self._http_post(url, payload)
-        self._response = resp
-        try:
-            if self._stream:
-                return self._parse_stream(resp)
-            return self._parse_non_stream(resp)
-        except ToolChatError:
-            raise
-        except Exception as exc:
-            raise ToolChatError(f"parse error: {exc}") from exc
-        finally:
-            self._close_response()
-
-    def stop(self) -> None:
-        """Signal that a blocked ``complete()`` should return promptly.
-
-        Safe to call from another thread.  Shuts down the underlying socket
-        so a blocked read in another thread is interrupted immediately.
-        """
-        self._cancelled = True
-        self._close_response()
-
-    def _close_response(self) -> None:
-        """Close the response and optionally shut down its socket.
-
-        If ``self._cancelled`` is True (``stop()`` was called), shuts down
-        the socket so a blocked read in another thread returns promptly.
-        Otherwise just closes the response cleanly without touching the
-        socket — the server expects a clean HTTP response close.
-        """
-        if self._response is None:
-            return
-        if self._cancelled:
-            try:
-                sock = getattr(getattr(self._response, "fp", None), "raw", None)
-                sock = getattr(sock, "_sock", None) if sock is not None else None
-                if isinstance(sock, socket.socket):
-                    sock.shutdown(socket.SHUT_RDWR)
-            except (OSError, AttributeError):
-                pass
-        try:
-            self._response.close()
-        except (OSError, AttributeError):
-            pass
-        self._response = None
-
-    def _http_post(self, url: str, payload: bytes) -> Any:
-        """POST *payload* to *url* and return the open response.
-
-        Wraps every HTTP-layer exception in :class:`ToolChatError`.
-        """
-        headers = {"Content-Type": "application/json"}
-        req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
-
-        try:
-            return urllib.request.urlopen(req, timeout=self._timeout)  # nosec B310
-        except urllib.error.HTTPError as exc:
-            raise ToolChatError(f"HTTP {exc.code}: {exc.reason}") from exc
-        except urllib.error.URLError as exc:
-            raise ToolChatError(f"connection failed: {exc.reason}") from exc
-        except OSError as exc:
-            raise ToolChatError(f"connection failed: {exc}") from exc
-        except TimeoutError:
-            raise ToolChatError("request timed out") from None
-        except ValueError as exc:
-            raise ToolChatError(f"HTTP error: {exc}") from exc
+        """One chat completion. Raises nothing except ``ToolChatError``."""
+        body = {"model": self._model, "messages": messages, "tools": tools, "stream": self._stream}
+        return self._request("/chat/completions", body, self._parse_completion)
 
     def score_next_token(self, prompt: str, *, top: int = 20) -> dict[str, float]:
-        """Score the first generated token's log-probabilities.
+        """Token -> natural-log probability for the first generated token.
 
-        POSTs to ``{base_url}/completions`` (not ``/chat/completions``).
-        Returns a dict mapping token text → log-probability (float, ≤ 0).
-
-        Raises ``ToolChatError`` on any client-side error or when the server
-        returns no log-probabilities.
+        One prefill and one token: nothing is generated beyond it. Raises
+        nothing except ``ToolChatError``.
         """
-        self._cancelled = False
-        url = f"{self._base_url}/completions"
-        payload = json.dumps(
-            {
-                "model": self._model,
-                "prompt": prompt,
-                "max_tokens": 1,
-                "temperature": 0,
-                "logprobs": top,
-                "stream": False,
-            }
-        ).encode("utf-8")
+        body = {
+            "model": self._model,
+            "prompt": prompt,
+            "max_tokens": 1,
+            "temperature": 0,
+            "logprobs": top,
+            "stream": False,
+        }
+        return self._request("/completions", body, self._parse_score)
 
-        resp = self._http_post(url, payload)
-        self._response = resp
-        try:
-            raw = resp.read().decode("utf-8")
+    def stop(self) -> None:
+        """Make a blocked request fail promptly. Safe from another thread.
+
+        Works before the response headers arrive as well as mid-body: the
+        connection's socket is shut down, which unblocks any pending read.
+        """
+        with self._lock:
+            self._cancelled = True
+            sock = self._sock
+        if sock is not None:
             try:
-                data = json.loads(raw)
-            except json.JSONDecodeError:
-                raise ToolChatError("response is not valid JSON")
+                sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass  # already closed
 
-            choices = data.get("choices")
-            if not choices or not isinstance(choices, list):
-                raise ToolChatError("server returned no log-probabilities")
+    # -- internals --
 
-            logprobs_section = choices[0].get("logprobs")
-            if not isinstance(logprobs_section, dict):
-                raise ToolChatError("server returned no log-probabilities")
-
-            result: dict[str, float] = {}
-
-            # Shape L (legacy): top_logprobs is a LIST of {token: logprob}.
-            if "top_logprobs" in logprobs_section:
-                raw_list = logprobs_section["top_logprobs"]
-                if isinstance(raw_list, list):
-                    for item in raw_list:
-                        if not isinstance(item, dict):
-                            continue
-                        for token, lp in item.items():
-                            if not isinstance(lp, (int, float)) or isinstance(lp, bool):
-                                continue
-                            if not isinstance(token, str):
-                                continue
-                            if isinstance(lp, float) and (
-                                lp != lp or lp == float("inf") or lp == float("-inf")
-                            ):
-                                continue
-                            result[token] = float(lp)
-
-            # Shape C (content): content[i].top_logprobs.
-            if not result and "content" in logprobs_section:
-                content_list = logprobs_section["content"]
-                if isinstance(content_list, list):
-                    for entry in content_list:
-                        if not isinstance(entry, dict):
-                            continue
-                        tl = entry.get("top_logprobs")
-                        if not isinstance(tl, list):
-                            continue
-                        for item in tl:
-                            if not isinstance(item, dict):
-                                continue
-                            token = item.get("token")
-                            lp = item.get("logprob")
-                            if not isinstance(token, str):
-                                continue
-                            if not isinstance(lp, (int, float)) or isinstance(lp, bool):
-                                continue
-                            if isinstance(lp, float) and (
-                                lp != lp or lp == float("inf") or lp == float("-inf")
-                            ):
-                                continue
-                            result[token] = float(lp)
-
-            if not result:
-                raise ToolChatError("server returned no log-probabilities")
-
-            return result
+    def _request(self, path: str, body: dict[str, Any], parse: Any) -> Any:
+        connection = http.client.HTTPConnection(self._host, self._port, timeout=self._timeout)
+        with self._lock:
+            self._cancelled = False
+        try:
+            return parse(self._post(connection, path, body))
         except ToolChatError:
             raise
-        except Exception as exc:
-            raise ToolChatError(f"parse error: {exc}") from exc
+        except Exception as exc:  # transport, decoding and shape errors alike
+            reason = "stopped" if self._cancelled else f"{type(exc).__name__}: {exc}"
+            raise ToolChatError(f"request to {path} failed: {reason}") from exc
         finally:
-            self._close_response()
+            with self._lock:
+                self._sock = None
+            connection.close()
 
-    def _parse_non_stream(self, resp: Any) -> ChatReply:
-        """Parse a non-streamed (HTTP-level) ChatCompletion response."""
-        raw = resp.read().decode("utf-8")
-        try:
-            data = json.loads(raw)
-        except json.JSONDecodeError:
-            raise ToolChatError("response is not valid JSON")
+    def _post(
+        self, connection: http.client.HTTPConnection, path: str, body: dict[str, Any]
+    ) -> http.client.HTTPResponse:
+        connection.connect()
+        with self._lock:
+            # Kept separately from the connection: http.client drops its own
+            # reference once a "Connection: close" response starts, while the
+            # body is still being read from the same socket.
+            self._sock = connection.sock
+            if self._cancelled:
+                raise ToolChatError("request stopped before it was sent")
+        payload = json.dumps(body).encode("utf-8")
+        headers = {"Content-Type": "application/json"}
+        connection.request("POST", self._prefix + path, body=payload, headers=headers)
+        response = connection.getresponse()
+        if response.status != 200:
+            # Includes every 3xx: a redirect is never followed.
+            raise ToolChatError(f"server answered HTTP {response.status} for {path}")
+        return response
 
-        choices = data.get("choices")
-        if not choices or not isinstance(choices, list):
-            raise ToolChatError("no choices in response")
-
-        message = choices[0].get("message") or {}
+    def _parse_completion(self, response: http.client.HTTPResponse) -> ChatReply:
+        if self._stream:
+            accumulator = _StreamAccumulator()
+            for payload in _sse_payloads(response):
+                accumulator.add(_delta_of(payload))
+            return _reply(accumulator.text, accumulator.calls())
+        message = _first_choice(json.loads(response.read())).get("message")
+        if not isinstance(message, dict):
+            raise ToolChatError("server reply has no message")
         content = message.get("content")
-        text = content if isinstance(content, str) and content else ""
-
-        tool_calls_raw = message.get("tool_calls")
-        tool_calls = self._build_tool_calls_from_raw(tool_calls_raw)
-
-        # Fallback: if no tool calls from the API fields, try raw parsing.
-        if not tool_calls:
-            tool_calls = parse_raw_tool_calls(text)
-
-        return ChatReply(text=text, tool_calls=tool_calls)
+        return _reply(content if isinstance(content, str) else "", _calls_from_message(message))
 
     @staticmethod
-    def _build_tool_calls_from_raw(
-        raw_calls: list[dict] | None,
-    ) -> tuple[ToolCall, ...]:
-        """Build ToolCalls from the API's ``tool_calls`` field."""
-        if not raw_calls or not isinstance(raw_calls, list):
-            return ()
-        results: list[ToolCall] = []
-        for tc in raw_calls:
-            if not isinstance(tc, dict):
-                continue
-            fn = tc.get("function")
-            if not isinstance(fn, dict):
-                continue
-            name = fn.get("name")
-            args_str = fn.get("arguments")
-            if not isinstance(name, str):
-                continue
-            if not isinstance(args_str, str):
-                continue
-            try:
-                args = json.loads(args_str)
-                if isinstance(args, dict):
-                    results.append(ToolCall(name=name, arguments=args))
-            except json.JSONDecodeError:
-                # Invalid arguments JSON → skip this call.
-                pass
-        return tuple(results)
-
-    def _parse_stream(self, resp: Any) -> ChatReply:
-        """Parse a streamed (SSE) ChatCompletion response."""
-        text = ""
-        # index -> {"name": str, "arguments": str}
-        tc_accum: dict[int, dict[str, str]] = {}
-
-        for raw_line in resp:
-            if self._cancelled:
-                raise ToolChatError("complete() was stopped")
-            try:
-                line = raw_line.decode("utf-8", errors="replace").strip()
-            except (OSError, ValueError, AttributeError):
-                break
-
-            if not line or not line.startswith("data:"):
-                continue
-            data = line[len("data:") :].strip()
-            if data == "[DONE]":
-                break
-            if not data:
-                continue
-
-            try:
-                chunk = json.loads(data)
-            except json.JSONDecodeError:
-                continue
-
-            choices = chunk.get("choices")
-            if not choices or not isinstance(choices, list):
-                continue
-
-            delta = choices[0].get("delta")
-            if not isinstance(delta, dict):
-                continue
-
-            # Accumulate text.
-            chunk_text = delta.get("content")
-            if isinstance(chunk_text, str) and chunk_text:
-                text += chunk_text
-
-            # Accumulate tool_call fragments.
-            chunk_tcs = delta.get("tool_calls")
-            if isinstance(chunk_tcs, list):
-                for frag in chunk_tcs:
-                    if not isinstance(frag, dict):
-                        continue
-                    idx = frag.get("index")
-                    if not isinstance(idx, int):
-                        continue
-                    acc = tc_accum.setdefault(idx, {"name": "", "arguments": ""})
-                    fn = frag.get("function")
-                    if isinstance(fn, dict):
-                        fn_name = fn.get("name")
-                        if isinstance(fn_name, str) and fn_name and not acc["name"]:
-                            # First non-empty name wins: some servers resend
-                            # the name on every chunk, which must not double it.
-                            acc["name"] = fn_name
-                        fn_args = fn.get("arguments")
-                        if isinstance(fn_args, str):
-                            acc["arguments"] += fn_args  # accumulate, not replace
-
-        # Finalise accumulated tool calls.
-        tool_calls: list[ToolCall] = []
-        for _idx, acc in tc_accum.items():
-            name = acc.get("name", "")
-            args_str = acc.get("arguments", "")
-            if not name:
-                continue
-            try:
-                args = json.loads(args_str)
-                if isinstance(args, dict):
-                    tool_calls.append(ToolCall(name=name, arguments=args))
-            except json.JSONDecodeError:
-                # Invalid accumulated arguments → skip.
-                pass
-        tool_calls_tuple = tuple(tool_calls)
-
-        # Fallback: if no tool calls from streaming, try raw parsing.
-        if not tool_calls_tuple:
-            tool_calls_tuple = parse_raw_tool_calls(text)
-
-        return ChatReply(text=text, tool_calls=tool_calls_tuple)
-
-
-# -- yes/no probability helpers --
-
-
-def yes_no_probability(top_logprobs: dict[str, float]) -> tuple[float | None, float]:
-    """Return ``(yes_mass / mass, mass)`` for yes/no token variants.
-
-    For every token in *top_logprobs* compute ``word = token.strip().casefold()``.
-    ``yes_mass`` is the sum of ``math.exp(logprob)`` for tokens whose word is
-    ``"yes"``, and ``no_mass`` the same for ``"no"``.
-    Returns ``(None, 0.0)`` when *mass* is zero.  Never raises.
-    """
-    yes_mass = 0.0
-    no_mass = 0.0
-    for token, logprob in top_logprobs.items():
-        if not isinstance(token, str) or isinstance(logprob, bool):
-            continue
-        if not isinstance(logprob, (int, float)) or math.isnan(logprob) or logprob > 0:
-            continue  # a log-probability is never positive; skip junk, never raise
-        word = token.strip().casefold()
-        prob = math.exp(logprob)
-        if word == "yes":
-            yes_mass += prob
-        elif word == "no":
-            no_mass += prob
-    mass = yes_mass + no_mass
-    if mass > 0:
-        return (yes_mass / mass, mass)
-    return (None, 0.0)
-
-
-def calibrated_logit(p_yes: float, baseline_p_yes: float) -> float:
-    """Return ``logit(p_yes) - logit(baseline_p_yes)`` with clamping.
-
-    ``clamp(p) = min(max(p, 1e-6), 1 - 1e-6)``.  This is *how much more* the
-    model says yes for this request than it does for an empty request.
-    """
-
-    def _clamp(v: float) -> float:
-        return min(max(v, 1e-6), 1 - 1e-6)
-
-    def _logit(p: float) -> float:
-        return math.log(p / (1 - p))
-
-    return _logit(_clamp(p_yes)) - _logit(_clamp(baseline_p_yes))
+    def _parse_score(response: http.client.HTTPResponse) -> dict[str, float]:
+        logprobs = _first_choice(json.loads(response.read())).get("logprobs")
+        if not isinstance(logprobs, dict):
+            raise ToolChatError(_NO_LOGPROBS)
+        scores = _shape_l(logprobs) or _shape_c(logprobs)
+        if not scores:
+            raise ToolChatError(_NO_LOGPROBS)
+        return scores
