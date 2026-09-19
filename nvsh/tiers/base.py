@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import abc
 import enum
+import math
 from dataclasses import dataclass
 
 from ..agent.base import AgentContext, AgentRequest
@@ -82,7 +83,11 @@ def _coerce_confidence(confidence: object) -> float | None:
         # bool is an int subclass; a tier has no business reporting True/False.
         return None
     if isinstance(confidence, (int, float)):
-        return float(confidence)
+        value = float(confidence)
+        # NaN compares False against any floor and is not valid JSON; an
+        # out-of-range score is not a probability. Both count as absent.
+        if math.isfinite(value) and 0.0 <= value <= 1.0:
+            return value
     return None
 
 

@@ -283,3 +283,11 @@ def test_fake_tier_is_a_tier_and_has_name():
     tier = FakeTier([])
     assert isinstance(tier, Tier)
     assert isinstance(tier.name, str)
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), -1, 2.5])
+def test_non_probability_confidence_counts_as_absent(bad):
+    """NaN slips under any floor and is not valid JSON; treat it as no confidence."""
+    result = decide([{"name": "gpu_stats", "arguments": {}}], bad, min_confidence=0.5)
+    assert isinstance(result, TierDecision)
+    assert result.confidence is None
