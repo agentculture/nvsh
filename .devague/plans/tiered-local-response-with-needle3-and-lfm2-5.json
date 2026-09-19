@@ -3,9 +3,9 @@
   "title": "Tiered local response with Needle3 and LFM2.5",
   "frame_slug": "tiered-local-response-with-needle3-and-lfm2-5",
   "schema_version": 5,
-  "status": "drafting",
+  "status": "exported",
   "created": "2026-09-19T12:48:24Z",
-  "updated": "2026-09-19T12:50:53Z",
+  "updated": "2026-09-19T12:53:49Z",
   "targets": [
     {
       "id": "c1",
@@ -433,7 +433,7 @@
       "id": "t1",
       "summary": "Operation table model and validation: `nvsh/ops/__init__.py`, `nvsh/ops/_model.py`, `nvsh/ops/table.py`",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "acceptance_criteria": [
         "tests/test_ops_table.py: the table holds the 16 operations named in c8, each with typed arguments and a read_only/mutating flag",
         "validate(name, args) returns a typed error for an unknown operation, a missing/extra argument, a wrong type, or a Literal value outside its set; never raises",
@@ -451,7 +451,7 @@
       "id": "t2",
       "summary": "Per-platform rendering of operations to argv, plus `thor`/`orin` CLI detection: `nvsh/ops/render.py`, `nvsh/platform/_detect.py`, docs/platforms.md",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "acceptance_criteria": [
         "tests/test_ops_render.py table-tests every operation per platform kind with the device CLI present (`spark`/`thor`/`orin` `<verb> --json`) and absent (system command), asserting the exact argv list",
         "render() returns a list of strings, never a shell string; a verb the detected device CLI lacks falls back to the system command",
@@ -471,7 +471,7 @@
       "id": "t3",
       "summary": "Argument grounding: `nvsh/ops/ground.py`",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "acceptance_criteria": [
         "tests/test_ops_ground.py: `rm -rf /`, `x; reboot`, `$(id)` and a non-existent unit all return a decline with a one-line message",
         "'vLLM' resolves case-insensitively to an existing `vllm.service` fixture; a container argument resolves only to a name the lookup returned",
@@ -490,7 +490,7 @@
       "id": "t4",
       "summary": "Tier measurement records with rotation: `nvsh/tiers/__init__.py`, `nvsh/tiers/records.py`",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "acceptance_criteria": [
         "tests/test_tier_records.py: a record carries tier, selected operation, confidence (may be None), latency_ms, decline reason, escalated_to, operator decision; written as JSONL under XDG_STATE_HOME/nvsh with 0600 perms",
         "every record passes through nvsh/redact.py; the raw request text is stored only when config opts in, otherwise only its length",
@@ -508,7 +508,7 @@
       "id": "t5",
       "summary": "Tier contract, decision validation and fixture tier: `nvsh/tiers/base.py`, `nvsh/tiers/fake.py`",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "acceptance_criteria": [
         "tests/test_tier_base.py: a fixture tier output naming an unknown operation, a bad argument, or a raw shell string each becomes a decline with a reason code",
         "zero calls or more than one call is a decline; exactly one valid call becomes a TierDecision",
@@ -529,7 +529,7 @@
       "id": "t6",
       "summary": "Config `[tiers]` table: `nvsh/config.py`, docs/config.example.toml",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "acceptance_criteria": [
         "tests/test_config.py: `[tiers]` parses enabled (default false), decline thresholds, memory_floor_mb, idle_unload_seconds, records cap, store_request_text (default false), and `[tiers.lfm]` engine (llama-server|vllm|sglang), mode (managed|attach), base_url",
         "unknown keys fail loudly via the existing _reject_unknown path; save() round-trips the table; default_toml() documents it"
@@ -546,7 +546,7 @@
       "id": "t7",
       "summary": "Memory floor check: `nvsh/tiers/memfloor.py`",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "acceptance_criteria": [
         "tests/test_tier_memfloor.py: with a faked /proc/meminfo below the floor the check returns a decline and one status line; above the floor it passes; an unreadable meminfo passes with a note"
       ],
@@ -563,7 +563,7 @@
       "id": "t8",
       "summary": "Pinned fetch and prefetch: `nvsh/tiers/fetch.py`, `nvsh/tiers/pins.json`",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "acceptance_criteria": [
         "tests/test_tier_fetch.py: a file whose sha256 differs from pins.json is refused and reported; a matching file is accepted",
         "plan_prefetch() lists each item (engine, weights, container image by digest) with its size before anything downloads; after prefetch, resolve() makes no network call (asserted with a socket guard)",
@@ -584,7 +584,7 @@
       "id": "t9",
       "summary": "Needle3 child-process tier: `nvsh/tiers/needle.py`, `nvsh/tiers/needle_worker.py`",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "acceptance_criteria": [
         "tests/test_tier_needle.py with a fake worker: killing the child mid-request yields a decline and the next request restarts the child; a hung child is killed after a timeout",
         "the worker sets NEEDLE_TELEMETRY=0, DO_NOT_TRACK=1 and HF_HUB_OFFLINE=1 before importing needle (asserted by test); a grep-style test asserts nvsh never references Needle.run",
@@ -609,7 +609,7 @@
       "id": "t10",
       "summary": "Install flavors: pyproject.toml extras `needle`, `lfm`, `tiers`",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "acceptance_criteria": [
         "dependencies stays []; [project.optional-dependencies] defines needle (pinned cactus-needle range), lfm (empty or marker-only, since the runtime is a container) and tiers (both)",
         "tests/test_wheel_packaging.py: a no-extras install imports and runs every existing verb; a test with a deliberately broken needle import shows the request reaching the full agent with one status line"
@@ -627,7 +627,7 @@
       "id": "t11",
       "summary": "Tier router: `nvsh/tiers/router.py`",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "acceptance_criteria": [
         "tests/test_tier_router.py with fixture tiers: answered at Tier 1; declined by 1 and answered at 2; declined by both and handed to Tier 3 \u2014 each writes a record naming the tier and decline reason",
         "a FAILURE request never reaches Tier 1; an explicit request tries Tier 1 first",
@@ -655,7 +655,7 @@
       "id": "t12",
       "summary": "Daemon residency: tiers in `nvsh/daemon.py`",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "acceptance_criteria": [
         "tests/test_daemon_tiers.py: tier models load on first use, not at daemon start, and unload after idle_unload_seconds",
         "a Tier 1 answer returns while another shell holds _run_lock",
@@ -677,7 +677,7 @@
       "id": "t13",
       "summary": "Client routing and panel tier header: `nvsh/client.py`, `nvsh/client_transport.py`, `nvsh/panel.py`",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "acceptance_criteria": [
         "tests/test_client_tiers.py: with [tiers] enabled = false no tier is consulted; with it true /ask and Ctrl+G consult tiers; `@claude` sends the request past both tiers",
         "the panel header names the tier that answered (needle, lfm, or the full agent's name), including the escalated case",
@@ -698,7 +698,7 @@
       "id": "t14",
       "summary": "Explicit `needle` adapter: `nvsh/agent/needle.py`, `nvsh/agent/registry.py`, tests/_fake_adapters.py",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "acceptance_criteria": [
         "`@needle` and `nvsh --agent needle` work when the flavor is installed; the adapter joins tests/test_agent_conformance.py",
         "needle is in PROBE_EXCLUDED: a test asserts nvsh setup never offers it as default, and nvsh agent use needle is refused like demo",
@@ -718,7 +718,7 @@
       "id": "t15",
       "summary": "Doctor checks for tiers: `nvsh/doctor_checks.py`",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "acceptance_criteria": [
         "tests/test_doctor_checks.py: checks tiers_configured, tier_files_present and tier_hashes_match in the rubric shape; a swapped file fails tier_hashes_match with a remediation naming the prefetch command",
         "with no flavor installed doctor reports one info check and stays healthy"
@@ -737,7 +737,7 @@
       "id": "t16",
       "summary": "Tool-call chat client over stdlib HTTP: `nvsh/tiers/toolchat.py`",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "acceptance_criteria": [
         "tests/test_tier_toolchat.py against a fixture HTTP server: parses OpenAI tool_calls (streamed and non-streamed), and falls back to parsing a raw tool-call block in content when tool_calls is absent",
         "only http://127.0.0.1 or localhost base URLs are accepted; pointing at a different fixture port is a config change only"
@@ -755,7 +755,7 @@
       "id": "t17",
       "summary": "Docker runtime launcher for Tier 2: `nvsh/tiers/runtime_docker.py`, docs/platforms.md",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "acceptance_criteria": [
         "tests/test_tier_runtime_docker.py: the rendered launch line uses `--gpus all` on a dgx-spark platform and `--runtime nvidia` on jetson, binds 127.0.0.1 only, and names the image by @sha256 digest",
         "with Docker missing, or the daemon socket unreachable, the tier declines with one status line; attach mode starts nothing",
@@ -778,7 +778,7 @@
       "id": "t18",
       "summary": "Tier 2 bounded loop: `nvsh/tiers/lfm.py`",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "acceptance_criteria": [
         "tests/test_tier_lfm.py with a fixture chat server: a model that never stops inspecting is cut off at 4 rounds and escalates",
         "a mutating operation requested inside the loop is refused and fed back as an error; read-only operations run through nvsh/ops render with a timeout and a bounded, redacted result",
@@ -799,7 +799,7 @@
       "id": "t19",
       "summary": "Explicit `lfm` adapter and Tier 2 wiring: `nvsh/agent/lfm.py`, `nvsh/agent/registry.py`, `nvsh/tiers/router.py`",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "acceptance_criteria": [
         "`@lfm` works, joins the conformance suite, is PROBE_EXCLUDED and refused as default",
         "the router's Tier 2 slot uses the real LFM tier when the flavor is configured; failures start there"
@@ -820,7 +820,7 @@
       "id": "t20",
       "summary": "`nvsh tiers` CLI verbs \u2014 stats, export, prefetch: `nvsh/cli/_commands/tiers.py`, `nvsh/explain/catalog.py`",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "acceptance_criteria": [
         "tests/test_cli_tiers.py: `nvsh tiers stats [--json]` prints per-tier counts, latency p50/p95, escalation reasons and approve/decline rates from local records",
         "`nvsh tiers export <file>` writes a redacted bundle to a local path only and opens no socket; `nvsh tiers prefetch` shows sizes and asks before downloading",
@@ -843,7 +843,7 @@
       "id": "t21",
       "summary": "Uninstall removes tier state: `nvsh/cli/_commands/setup.py`",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "acceptance_criteria": [
         "tests/test_setup.py: uninstall on a box with tier records, prefetched files and a running Tier 2 container leaves none of nvsh's own files, stops and removes the container, and prints which images remain and how to remove them"
       ],
@@ -862,7 +862,7 @@
       "id": "t22",
       "summary": "Benchmark corpus and runner: `nvsh/tiers/bench.py`, `nvsh/tiers/corpus/*.json`, `nvsh tiers bench`",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "acceptance_criteria": [
         "the corpus holds the prompts and failure cases from issues #30/#31 and scope s13/s16, each with expected operation+arguments or expected escalation, split into dev and held-out files",
         "tests/test_tier_bench.py: running twice with a fixture tier gives identical accuracy; the results file records model file hashes, nvsh version, device, engine, CPU/GPU mode, concurrent load",
@@ -882,13 +882,13 @@
         "c20",
         "h17"
       ],
-      "instruction": "Memory from /proc/<pid>/status and docker stats. Held-out phrasings must not be authored in the same sitting as operation descriptions \u2014 leave held-out.json with a header asking the operator to add or review entries (assumption c38)."
+      "instruction": "Memory from `/proc/<pid>/status` and docker stats. Held-out phrasings must not be authored in the same sitting as operation descriptions \u2014 leave held-out.json with a header asking the operator to add or review entries (assumption c38)."
     },
     {
       "id": "t23",
       "summary": "Needle3 LoRA fine-tune recipe: `scripts/needle-finetune/`, docs/needle-finetune.md",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "acceptance_criteria": [
         "a dataset builder turns the dev split (plus an optional redacted export bundle) into needle finetune JSONL; tests cover the conversion",
         "the doc gives the exact `needle finetune` and `needle build --lora` commands, and how to pin the resulting .cact hash in pins.json",
@@ -907,7 +907,7 @@
       "id": "t24",
       "summary": "Run the benchmark on DGX Spark, AGX Thor and AGX Orin and commit results: docs/benchmarks/",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "acceptance_criteria": [
         "one results file per device is committed; a device or metric not measured is listed as not measured",
         "the AGX Orin file has an 'Orin Nano estimate' section with its scaling assumptions, marked estimated; it records the no-full-agent behaviour of h21 and GPU offload evidence for h23",
@@ -945,7 +945,7 @@
       "id": "t25",
       "summary": "Docs, prompt files, sibling-repo issues, version bump",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "acceptance_criteria": [
         "docs/architecture.md, docs/daemon.md, docs/shell-integration.md and docs/current-spec.md describe the tiers; README has a short section; CLAUDE.md, AGENTS.override.md + .pi/SYSTEM.md, AGENTS.colleague.md and QWEN.md agree; harness-smoke config stage passes",
         "issues are filed on jetson-orin-cli (machine verbs), dgx-spark-cli (power verb) and all three (service and container-restart verbs) and linked from the spec's follow-ups",
