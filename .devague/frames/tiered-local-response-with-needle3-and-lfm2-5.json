@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-09-19T11:10:08Z",
-  "updated": "2026-09-19T16:23:53Z",
+  "updated": "2026-09-19T16:40:44Z",
   "claims": [
     {
       "id": "c1",
@@ -1054,6 +1054,18 @@
       "refs": [
         "c20",
         "r10"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l7",
+      "code": "control-absent",
+      "what": "Opened PR #34 after running a cognitive-complexity count only. SonarCloud then failed the gate on reliability with 25 issues I could have found locally: 15 composite assertions in tests (the same S9073 rule that failed PR #32, and which I had written into every brief as a rule but never checked for in the merged code), three return-type mismatches, a 21-parameter function, a backtracking regex, a float equality. Qodo found 14 more, two high (setup can persist needle as the default; the idle sweep can close tiers under an in-flight request). My pre-PR check repeated only the ONE failure class I remembered from #32's lesson instead of the rule list in my own handoff notes.",
+      "skipped_check": "grep the merged test files for tuple-comparison asserts and run the handoff note's full Sonar rule list before opening the PR",
+      "refs": [
+        "PR #34",
+        "l4"
       ],
       "origin": "llm",
       "status": "proposed"
