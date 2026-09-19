@@ -25,6 +25,58 @@ back as `disk_stats`; "Show running containers" as `process_list`; "Run nvsh
 doctor" as a service operation; "Why did vLLM crash?" gets a confident
 read-only pick instead of a decline.
 
+## Update, 2026-09-19 (later the same day): the grid corpus and the first fine-tune
+
+The dev corpus is now a grid of **318 entries** (every operation across five
+phrasing classes, a third should-decline), each with a `class` field, and
+`nvsh tiers bench` reports accuracy per expected operation and per class.
+
+Stock Needle3 on it, shipped path, DGX Spark:
+
+| What | Result |
+|---|---|
+| Operation and arguments right, explicit asks | 72 of 208 (35%) |
+| Should-decline asks declined | 78 of 106 (74%) |
+| Wrong mutating picks (each shown with its interpretation) | 7 |
+| Operations at zero | `thermal_stats`, `power_get`, `nvsh_doctor`, `container_restart` |
+| Worst phrasing class | operator jargon, 3 of 33 |
+| Warm latency p95 | 70 ms |
+
+A LoRA was trained on a 75% fold of the grid (233 examples, 20 epochs,
+`--lr 5e-4 --lora-rank 32 --lora-alpha 64`, about 35 minutes on the GB10 with
+`jax[cuda13]`; the default 3 to 5 epochs at `1e-4` barely moves the loss) and
+scored on the other 80 entries. Same author for both folds, so this is
+**indicative only**:
+
+| Pick only, 80-entry test fold | Stock | Tuned |
+|---|---|---|
+| Run in JAX: asks expecting an operation | 11 of 53 | **42 of 53** |
+| Run in JAX: should-decline asks declined | 0 of 27 | 16 of 27 |
+| Through nvsh, using the exported `.cact` | 18 of 52 | 18 of 52 |
+
+Two things follow.
+
+1. **Fine-tuning works, and the data is the lever**: 21% to 79% on picks.
+2. **The export is broken, upstream.** The `.cact` that `needle build --lora`
+   writes does not behave like the weights it was built from: through the
+   engine it gets 2 of 30 of its own training examples right. Matching the
+   prompt (compact tool JSON, `auto_date=False`) changes nothing, and nothing
+   is truncated. Reported as
+   [cactus-compute/needle#134](https://github.com/cactus-compute/needle/issues/134).
+   **Until that is resolved a tuned Needle3 cannot ship through nvsh's engine
+   path**, whatever its accuracy in JAX. Do not read the "through nvsh" row as
+   a verdict on the model.
+
+Also learned: in JAX the stock model never declines (the engine adds that),
+and the tuned model still answers many should-decline asks with a confident
+pick ("Is grafana running?" becomes `service_status grafana.service`, which
+grounding then refuses). Decline examples need more weight, and nvsh's
+grounding already catches the unknown-name half of them.
+
+The scripts for all of this (`foldbench.py`, `jaxfold.py`, `jaxcheck.py`,
+`promptmatch.py`) are development tools kept outside the repository; the
+recipe in `needle-finetune.md` has the commands.
+
 ## What was tried, and did not work
 
 - **Rewording operation descriptions.** 5 of 9 became 6 of 9, and a request
@@ -40,9 +92,9 @@ the lever. Do not spend another session on wording.
 
 ## The lever: data, organised
 
-The dev corpus has **21 entries, 9 of them explicit picks** across 16
-operations. That is too small to train on and too small to measure a 90%
-target (one request is 11 points). The first job is the corpus.
+The dev corpus had 21 entries when this was written; it is now the 318-entry
+grid described in the update above. What follows is how it was built and how
+to extend it.
 
 Build it as a grid, not a pile, so gaps are visible:
 
