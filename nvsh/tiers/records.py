@@ -103,6 +103,8 @@ class TierRecords:
         self._store_request_text = store_request_text
         self._clock = clock
         self._thread_lock = threading.Lock()
+        #: Writes that failed (disk full, permissions, a lock that would not open).
+        self.dropped = 0
         self._lock_path = self.path.with_name(self.path.name + ".lock")
         try:
             self._ensure_dir()
@@ -121,7 +123,8 @@ class TierRecords:
             with self._locked():
                 self._write_locked(record)
         except Exception:  # noqa: BLE001
-            pass
+            # Counted, not raised: `nvsh tiers stats` can report lost records.
+            self.dropped += 1
 
     @contextlib.contextmanager
     def _locked(self) -> Iterator[None]:

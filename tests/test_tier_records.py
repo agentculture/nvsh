@@ -319,3 +319,11 @@ def test_concurrent_writers_lose_no_records_and_stay_under_cap(tmp_path):
     entries = TierRecords(path, cap_bytes=cap).read_all()
     assert len(entries) == 400
     assert {entry["tier"] for entry in entries} == {"t0", "t1", "t2", "t3"}
+
+
+def test_a_failed_write_is_counted(tmp_path):
+    blocker = tmp_path / "blocker"
+    blocker.write_text("a regular file where a directory is needed", encoding="utf-8")
+    records = TierRecords(blocker / "state" / "tiers.jsonl")
+    records.write(TierRecord(tier="needle", request_kind="explicit"))
+    assert records.dropped == 1
