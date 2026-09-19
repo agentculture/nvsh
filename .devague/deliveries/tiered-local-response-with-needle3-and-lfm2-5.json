@@ -2,7 +2,7 @@
   "plan_slug": "tiered-local-response-with-needle3-and-lfm2-5",
   "schema_version": 2,
   "created": "2026-09-19T14:14:40Z",
-  "updated": "2026-09-19T15:58:08Z",
+  "updated": "2026-09-19T17:48:36Z",
   "deviations": [
     {
       "id": "d1",
@@ -42,7 +42,793 @@
       "seq": 2
     }
   ],
-  "evidence": [],
-  "deltas": [],
+  "evidence": [
+    {
+      "id": "e1",
+      "obligation_ref": "o2",
+      "test_ref": "tests/test_tier_router.py::test_a_failure_request_never_reaches_tier1",
+      "behavior_text": "a failure-kind request is never offered to the tier-1 fixture",
+      "contract_text": "a FAILURE request never reaches Tier 1; an explicit request tries Tier 1 first; an @target request bypasses the tiers",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "the named test ran green in the run at the named commit",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-19T17:47:08",
+        "commit": "61f8c6d"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 3
+    },
+    {
+      "id": "e2",
+      "obligation_ref": "o2",
+      "test_ref": "tests/test_client_tiers.py::test_an_explicit_target_sends_the_request_past_both_tiers",
+      "behavior_text": "with an explicit target the client never calls ask_tiers",
+      "contract_text": "a FAILURE request never reaches Tier 1; an explicit request tries Tier 1 first; an @target request bypasses the tiers",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "the named test ran green in the run at the named commit",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-19T17:47:08",
+        "commit": "61f8c6d"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 4
+    },
+    {
+      "id": "e3",
+      "obligation_ref": "o3",
+      "test_ref": "tests/test_tier_router.py::test_a_mutating_pick_executes_nothing_without_approval[1.0]",
+      "behavior_text": "a mutating pick driven through the real run_loop with approve=False runs nothing, at confidence 1.0",
+      "contract_text": "a mutating pick at confidence 1.0 or None becomes a FIX proposal that states the interpreted operation and arguments, and nothing executes without approval",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "the named test ran green in the run at the named commit",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-19T17:47:08",
+        "commit": "61f8c6d"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 5
+    },
+    {
+      "id": "e4",
+      "obligation_ref": "o3",
+      "test_ref": "tests/test_tier_router.py::test_a_mutating_pick_executes_nothing_without_approval[None]",
+      "behavior_text": "the same holds with confidence None",
+      "contract_text": "a mutating pick at confidence 1.0 or None becomes a FIX proposal that states the interpreted operation and arguments, and nothing executes without approval",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "the named test ran green in the run at the named commit",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-19T17:47:08",
+        "commit": "61f8c6d"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 6
+    },
+    {
+      "id": "e5",
+      "obligation_ref": "o4",
+      "test_ref": "tests/test_tier_base.py::test_zero_calls_is_decline_no_call",
+      "behavior_text": "zero calls declines NO_CALL",
+      "contract_text": "Tier output is accepted only when it is exactly one call; zero or several is a decline",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "the named test ran green in the run at the named commit",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-19T17:47:08",
+        "commit": "61f8c6d"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 7
+    },
+    {
+      "id": "e6",
+      "obligation_ref": "o4",
+      "test_ref": "tests/test_tier_base.py::test_multiple_calls_is_decline",
+      "behavior_text": "more than one call declines",
+      "contract_text": "Tier output is accepted only when it is exactly one call; zero or several is a decline",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "the named test ran green in the run at the named commit",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-19T17:47:08",
+        "commit": "61f8c6d"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 8
+    },
+    {
+      "id": "e7",
+      "obligation_ref": "o5",
+      "test_ref": "tests/test_ops_render.py",
+      "behavior_text": "option-like, empty and unprintable argument values render to None for every argument-taking operation (whole file green)",
+      "contract_text": "argument values are untrusted: rendered as argv, never through a shell; an option-like or unprintable value renders nothing; an ambiguous name declines",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "the named test ran green in the run at the named commit",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-19T17:47:08",
+        "commit": "61f8c6d"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 9
+    },
+    {
+      "id": "e8",
+      "obligation_ref": "o5",
+      "test_ref": "tests/test_ops_ground.py::test_case_variant_containers_are_ambiguous_not_first_match",
+      "behavior_text": "case-variant names decline as ambiguous instead of taking the first match",
+      "contract_text": "argument values are untrusted: rendered as argv, never through a shell; an option-like or unprintable value renders nothing; an ambiguous name declines",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "the named test ran green in the run at the named commit",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-19T17:47:08",
+        "commit": "61f8c6d"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 10
+    },
+    {
+      "id": "e9",
+      "obligation_ref": "o6",
+      "test_ref": "tests/test_tier_needle.py::test_hung_child_is_killed",
+      "behavior_text": "a hung worker is killed after the timeout",
+      "contract_text": "the Needle engine runs in a child process; a dead or hung child costs one declined answer and the next request restarts it",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "the named test ran green in the run at the named commit",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-19T17:47:08",
+        "commit": "61f8c6d"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 11
+    },
+    {
+      "id": "e10",
+      "obligation_ref": "o6",
+      "test_ref": "tests/test_tier_needle.py::test_next_request_restarts_the_child",
+      "behavior_text": "after a death the next select starts a new child",
+      "contract_text": "the Needle engine runs in a child process; a dead or hung child costs one declined answer and the next request restarts it",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "the named test ran green in the run at the named commit",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-19T17:47:08",
+        "commit": "61f8c6d"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 12
+    },
+    {
+      "id": "e11",
+      "obligation_ref": "o7",
+      "test_ref": "tests/test_tier_needle.py::test_worker_hardens_env_before_importing_needle",
+      "behavior_text": "NEEDLE_TELEMETRY=0, DO_NOT_TRACK=1, HF_HUB_OFFLINE=1 are set before needle is imported",
+      "contract_text": "third-party telemetry is off and nothing is downloaded at request time",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "the named test ran green in the run at the named commit",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-19T17:47:08",
+        "commit": "61f8c6d"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 13
+    },
+    {
+      "id": "e12",
+      "obligation_ref": "o7",
+      "test_ref": "tests/test_tier_needle.py::test_stage_never_opens_a_socket",
+      "behavior_text": "staging the pinned engine and weights opens no socket",
+      "contract_text": "third-party telemetry is off and nothing is downloaded at request time",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "the named test ran green in the run at the named commit",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-19T17:47:08",
+        "commit": "61f8c6d"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 14
+    },
+    {
+      "id": "e13",
+      "obligation_ref": "o8",
+      "test_ref": "tests/test_daemon_tiers.py::test_the_first_request_builds_tier_one",
+      "behavior_text": "nothing is built until the first tier request",
+      "contract_text": "models load on first use, unload when idle, and a Tier 1 answer returns while another shell holds the agent turn lock",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "the named test ran green in the run at the named commit",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-19T17:47:08",
+        "commit": "61f8c6d"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 15
+    },
+    {
+      "id": "e14",
+      "obligation_ref": "o8",
+      "test_ref": "tests/test_daemon_tiers.py::test_the_watchdog_unloads_idle_tiers",
+      "behavior_text": "the daemon watchdog closes idle tiers",
+      "contract_text": "models load on first use, unload when idle, and a Tier 1 answer returns while another shell holds the agent turn lock",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "the named test ran green in the run at the named commit",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-19T17:47:08",
+        "commit": "61f8c6d"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 16
+    },
+    {
+      "id": "e15",
+      "obligation_ref": "o8",
+      "test_ref": "tests/test_daemon_tiers.py::test_a_tier_answer_returns_while_another_shell_holds_the_run_lock",
+      "behavior_text": "a tier answer returns while _run_lock is held",
+      "contract_text": "models load on first use, unload when idle, and a Tier 1 answer returns while another shell holds the agent turn lock",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "the named test ran green in the run at the named commit",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-19T17:47:08",
+        "commit": "61f8c6d"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 17
+    },
+    {
+      "id": "e16",
+      "obligation_ref": "o8",
+      "test_ref": "tests/test_daemon_tiers.py::test_sweep_keeps_a_tier_while_a_request_is_mid_stream",
+      "behavior_text": "the idle sweep never closes tiers under an in-flight request",
+      "contract_text": "models load on first use, unload when idle, and a Tier 1 answer returns while another shell holds the agent turn lock",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "the named test ran green in the run at the named commit",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-19T17:47:08",
+        "commit": "61f8c6d"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 18
+    },
+    {
+      "id": "e17",
+      "obligation_ref": "o9",
+      "test_ref": "tests/test_flavors.py::test_runtime_dependencies_stay_empty",
+      "behavior_text": "pyproject dependencies == []",
+      "contract_text": "dependencies stays empty and CLI startup imports no tier module",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "the named test ran green in the run at the named commit",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-19T17:47:08",
+        "commit": "61f8c6d"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 19
+    },
+    {
+      "id": "e18",
+      "obligation_ref": "o9",
+      "test_ref": "tests/test_flavors.py::test_cli_startup_imports_no_tier_module",
+      "behavior_text": "import nvsh.cli loads neither nvsh.tiers nor nvsh.ops",
+      "contract_text": "dependencies stays empty and CLI startup imports no tier module",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "the named test ran green in the run at the named commit",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-19T17:47:08",
+        "commit": "61f8c6d"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 20
+    },
+    {
+      "id": "e19",
+      "obligation_ref": "o10",
+      "test_ref": "tests/test_agent_needle.py::test_needle_is_probe_excluded",
+      "behavior_text": "needle is in PROBE_EXCLUDED",
+      "contract_text": "needle is reachable explicitly, excluded from setup's probe and refused as a persisted default",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "the named test ran green in the run at the named commit",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-19T17:47:08",
+        "commit": "61f8c6d"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 21
+    },
+    {
+      "id": "e20",
+      "obligation_ref": "o10",
+      "test_ref": "tests/test_agent_needle.py::test_setup_agent_needle_is_refused",
+      "behavior_text": "nvsh setup --agent needle is refused before any side effect",
+      "contract_text": "needle is reachable explicitly, excluded from setup's probe and refused as a persisted default",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "the named test ran green in the run at the named commit",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-19T17:47:08",
+        "commit": "61f8c6d"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 22
+    },
+    {
+      "id": "e21",
+      "obligation_ref": "o11",
+      "test_ref": "tests/test_client_tiers.py::test_the_header_names_the_tier_that_answered",
+      "behavior_text": "header shows the tier name",
+      "contract_text": "the panel names the tier that answered, including the escalated case",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "the named test ran green in the run at the named commit",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-19T17:47:08",
+        "commit": "61f8c6d"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 23
+    },
+    {
+      "id": "e22",
+      "obligation_ref": "o11",
+      "test_ref": "tests/test_client_tiers.py::test_the_header_names_the_escalation",
+      "behavior_text": "header shows tier -> agent when escalated",
+      "contract_text": "the panel names the tier that answered, including the escalated case",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "the named test ran green in the run at the named commit",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-19T17:47:08",
+        "commit": "61f8c6d"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 24
+    },
+    {
+      "id": "e23",
+      "obligation_ref": "o12",
+      "test_ref": "tests/test_tier_router.py",
+      "behavior_text": "one record per tier consulted with tier, decline reason and escalated_to (whole file green)",
+      "contract_text": "every tier consulted writes a record naming the tier and decline reason; the audit log names the tier that proposed a command",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "the named test ran green in the run at the named commit",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-19T17:47:08",
+        "commit": "61f8c6d"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 25
+    },
+    {
+      "id": "e24",
+      "obligation_ref": "o12",
+      "test_ref": "tests/test_client_tiers.py::test_the_audit_log_names_the_tier_that_proposed_the_command",
+      "behavior_text": "audit.jsonl carries the tier name for a tier proposal",
+      "contract_text": "every tier consulted writes a record naming the tier and decline reason; the audit log names the tier that proposed a command",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "the named test ran green in the run at the named commit",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-19T17:47:08",
+        "commit": "61f8c6d"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 26
+    },
+    {
+      "id": "e25",
+      "obligation_ref": "o13",
+      "test_ref": "tests/test_doctor_checks.py::test_tier_hashes_match_fails_for_a_swapped_file_and_names_the_prefetch_command",
+      "behavior_text": "a same-length swapped file fails tier_hashes_match with the prefetch remediation",
+      "contract_text": "fetched files are pinned by sha256 and a swapped file is detected",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "the named test ran green in the run at the named commit",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-19T17:47:08",
+        "commit": "61f8c6d"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 27
+    },
+    {
+      "id": "e26",
+      "obligation_ref": "o14",
+      "test_ref": "tests/test_cli_tiers.py::test_tiers_export_opens_no_socket",
+      "behavior_text": "export succeeds with socket.socket patched to raise",
+      "contract_text": "the export is a local, redacted file and opens no socket",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "the named test ran green in the run at the named commit",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-19T17:47:08",
+        "commit": "61f8c6d"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 28
+    },
+    {
+      "id": "e27",
+      "obligation_ref": "o14",
+      "test_ref": "tests/test_cli_tiers.py::test_tiers_export_redacts_secret_shaped_content",
+      "behavior_text": "a token-shaped request text never appears in the bundle",
+      "contract_text": "the export is a local, redacted file and opens no socket",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "the named test ran green in the run at the named commit",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-19T17:47:08",
+        "commit": "61f8c6d"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 29
+    },
+    {
+      "id": "e28",
+      "obligation_ref": "o15",
+      "test_ref": "tests/test_tier_needle.py::test_memory_floor_declines",
+      "behavior_text": "a failing floor check declines MEMORY_FLOOR before any child starts",
+      "contract_text": "below the MemAvailable floor the tier declines instead of loading",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "the named test ran green in the run at the named commit",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-19T17:47:08",
+        "commit": "61f8c6d"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 30
+    },
+    {
+      "id": "e29",
+      "obligation_ref": "o16",
+      "test_ref": "tests/test_needle_finetune_dataset.py::test_held_out_file_is_refused",
+      "behavior_text": "main() returns 2 for held-out.json",
+      "contract_text": "the builder turns the dev split into needle finetune JSONL and refuses the held-out split",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "the named test ran green in the run at the named commit",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-19T17:47:08",
+        "commit": "61f8c6d"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 31
+    },
+    {
+      "id": "e30",
+      "obligation_ref": "o16",
+      "test_ref": "tests/test_needle_finetune_dataset.py::test_an_approved_record_teaches_the_call_the_operator_approved",
+      "behavior_text": "an approved record becomes the approved call, not an empty answer",
+      "contract_text": "the builder turns the dev split into needle finetune JSONL and refuses the held-out split",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "the named test ran green in the run at the named commit",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-19T17:47:08",
+        "commit": "61f8c6d"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 32
+    },
+    {
+      "id": "e31",
+      "obligation_ref": "o1",
+      "test_ref": "tests/test_tier_needle.py::test_nvsh_never_calls_needle_run",
+      "behavior_text": "no file under nvsh/ calls Needle.run or .run( on a needle object",
+      "contract_text": "a tier only returns an operation name plus arguments; nothing a tier returns is executed",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "the named test ran green in the run at the named commit",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-19T17:47:08",
+        "commit": "61f8c6d"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 33
+    },
+    {
+      "id": "e32",
+      "obligation_ref": "o1",
+      "test_ref": "tests/test_tier_router.py",
+      "behavior_text": "the proposal command is exactly shlex.join(render(...)) and the router executes nothing (whole file green)",
+      "contract_text": "a tier only returns an operation name plus arguments; nothing a tier returns is executed",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "the named test ran green in the run at the named commit",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-19T17:47:08",
+        "commit": "61f8c6d"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 34
+    },
+    {
+      "id": "e33",
+      "obligation_ref": "o17",
+      "test_ref": "nvsh tiers bench --tier needle (dev split)",
+      "behavior_text": "warm p95 78.5 ms, cold 312 ms",
+      "contract_text": "Tier 1 warm selection p95 < 150 ms",
+      "evidence_type": "observation",
+      "strength": "execution",
+      "strength_basis": "nvsh tiers bench --tier needle run on the DGX Spark with cactus-needle 3.0.2 through the shipped path (fixture world); result file kept outside the repo",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-19T17:47:08",
+        "commit": "61f8c6d"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 35
+    },
+    {
+      "id": "e34",
+      "obligation_ref": "o17",
+      "test_ref": "nvsh tiers bench --tier needle (dev split)",
+      "behavior_text": "0 false mutating picks; every proposal rationale names the interpreted operation",
+      "contract_text": "0 wrong mutating operations without the interpretation shown",
+      "evidence_type": "observation",
+      "strength": "execution",
+      "strength_basis": "nvsh tiers bench --tier needle run on the DGX Spark with cactus-needle 3.0.2 through the shipped path (fixture world); result file kept outside the repo",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-19T17:47:08",
+        "commit": "61f8c6d"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 36
+    },
+    {
+      "id": "e35",
+      "obligation_ref": "o17",
+      "test_ref": "nvsh tiers bench --tier needle (dev split)",
+      "behavior_text": "stock Needle3 picked the correct operation on 4 of 9 explicit asks (4-5 of 9 across runs); rewording descriptions and reordering tools did not move it",
+      "contract_text": "at least 90% of fast-path prompts get the correct operation and arguments",
+      "evidence_type": "observation",
+      "strength": "execution",
+      "strength_basis": "nvsh tiers bench --tier needle run on the DGX Spark with cactus-needle 3.0.2 through the shipped path (fixture world); result file kept outside the repo; n=9 explicit asks, one device only (Thor and AGX Orin not measured)",
+      "outcome": "fail",
+      "run": {
+        "timestamp": "2026-09-19T17:47:08",
+        "commit": "61f8c6d"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 37
+    },
+    {
+      "id": "e36",
+      "obligation_ref": "o17",
+      "test_ref": "nvsh tiers bench --tier needle (dev split)",
+      "behavior_text": "2-3 of 5 should-escalate asks were declined; two got a confident read-only pick",
+      "contract_text": "at least 80% of should-escalate prompts are declined",
+      "evidence_type": "observation",
+      "strength": "execution",
+      "strength_basis": "nvsh tiers bench --tier needle run on the DGX Spark with cactus-needle 3.0.2 through the shipped path (fixture world); result file kept outside the repo; n=5, Tier 2 and the verifier not yet in the path",
+      "outcome": "fail",
+      "run": {
+        "timestamp": "2026-09-19T17:47:08",
+        "commit": "61f8c6d"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 38
+    }
+  ],
+  "deltas": [
+    {
+      "id": "b1",
+      "kind": "added",
+      "behavior_text": "The pinned engine is extracted from the verified wheel and the verified stock weights are staged into an nvsh-owned HOME for the child only, so stock Needle3 keeps a real confidence, starts no nested subprocess and never downloads; the plan had the worker pass the weights path directly, which cactus-needle treats as a tuned model (confidence None).",
+      "caused_by": [
+        "c12"
+      ],
+      "evidence_refs": [
+        "e12",
+        "e11"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    },
+    {
+      "id": "b2",
+      "kind": "amended",
+      "behavior_text": "The d1 yes/no check runs last (after table, grounding and rendering) and is asked about the grounded arguments; a failed baseline measurement is retried instead of cached. Its three thresholds are unmeasured placeholders.",
+      "caused_by": [
+        "d1"
+      ],
+      "evidence_refs": [
+        "e23"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    },
+    {
+      "id": "b3",
+      "kind": "added",
+      "behavior_text": "A tier request holds a lease from the moment it opens, so the idle sweep cannot close the tiers under an in-flight selection; a client that disconnects cancels its tier session (cooperatively: an in-flight select, bounded at 10 s, is not interrupted).",
+      "caused_by": [
+        "c13"
+      ],
+      "evidence_refs": [
+        "e16"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    },
+    {
+      "id": "b4",
+      "kind": "added",
+      "behavior_text": "The benchmark grounds against a fixture machine declared in the corpus (--live for the host), reports one row per request and accuracy per request kind; a target that was not measured prints 'not measured', never pass.",
+      "caused_by": [
+        "c16"
+      ],
+      "evidence_refs": [
+        "e35"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    },
+    {
+      "id": "b5",
+      "kind": "amended",
+      "behavior_text": "Measured through the shipped path, stock Needle3 reaches about half of the c20 accuracy and decline targets on the Spark; routing therefore ships opt-in only and the accuracy work (corpus as a grid, LoRA, verifier thresholds) is recorded in docs/tiers-improving-accuracy.md. Thor and AGX Orin are not measured yet.",
+      "caused_by": [
+        "c20"
+      ],
+      "evidence_refs": [
+        "e35",
+        "e36"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    },
+    {
+      "id": "b6",
+      "kind": "added",
+      "behavior_text": "needle can never be persisted as the default agent: nvsh agent use, nvsh setup (flag, @name, model-qualified, alias) and nvsh doctor all read one registry table.",
+      "caused_by": [
+        "c14"
+      ],
+      "evidence_refs": [
+        "e20"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    },
+    {
+      "id": "b7",
+      "kind": "added",
+      "behavior_text": "Publishing under the jetson-ai-lab Hugging Face org with the <base>-nvsh-<task> naming and ops<N>-r<M> tags is documented in docs/needle-finetune.md; loading a tuned model (tuned pin, operation-table hash check, config override) is NOT built.",
+      "caused_by": [
+        "d2"
+      ],
+      "evidence_refs": [
+        "e29"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    }
+  ],
   "supersessions": []
 }
