@@ -98,6 +98,8 @@ _VALID_TIERS_LFM_KEYS = {
     "ctx",
     "startup_timeout_seconds",
     "gpu_memory_fraction",
+    "tool_call_parser",
+    "hf_cache_dir",
 }
 
 #: Accepted engines for ``[tiers.lfm]``.

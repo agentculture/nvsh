@@ -905,3 +905,61 @@ def test_llama_server_has_no_gpu_share_flag():
 def test_a_bad_gpu_share_is_refused(value):
     with pytest.raises(rd.RuntimeUnavailable, match="gpu_memory_fraction"):
         rd.check_gpu_memory_fraction(value)
+
+
+# -- server-side tool-call parsing -----------------------------------------
+
+
+def test_vllm_turns_on_tool_call_parsing_with_its_default_parser():
+    argv = rd.render_launch(settings(engine="vllm"), SPARK, uid=1000)
+    assert argv[argv.index("--enable-auto-tool-choice") + 1 :][:2] == ["--tool-call-parser", "lfm2"]
+
+
+def test_the_tool_call_parser_is_a_config_choice():
+    argv = rd.render_launch(settings(engine="vllm", tool_call_parser="hermes"), SPARK, uid=1000)
+    assert _after(argv, "--tool-call-parser") == "hermes"
+
+
+def test_sglang_names_no_parser_unless_configured():
+    argv = rd.render_launch(settings(engine="sglang"), SPARK, uid=1000)
+    assert "--tool-call-parser" not in argv
+
+
+def test_llama_server_takes_no_parser_flag_even_when_one_is_configured():
+    argv = rd.render_launch(settings(tool_call_parser="lfm2"), SPARK, uid=1000)
+    assert "--tool-call-parser" not in argv
+
+
+@pytest.mark.parametrize("value", ["--privileged", "a b", "LFM2", "", 7, "x" * 41])
+def test_a_bad_tool_call_parser_is_refused(value):
+    with pytest.raises(rd.RuntimeUnavailable, match="tool_call_parser"):
+        rd.check_tool_call_parser(value)
+
+
+# -- the download cache of an engine that fetches its model by id ----------
+
+
+def test_a_downloading_engine_mounts_the_host_cache(tmp_path):
+    argv = rd.render_launch(settings(engine="vllm", hf_cache_dir="/var/cache/x"), SPARK, uid=1000)
+    assert f"/var/cache/x:{rd.CACHE_MOUNT}" in argv
+
+
+def test_a_downloading_engine_with_a_cache_runs_as_the_operator():
+    argv = rd.render_launch(settings(engine="vllm", hf_cache_dir="/var/cache/x"), SPARK, uid=1234)
+    assert _after(argv, "--user") == "1234:1234"
+
+
+def test_llama_server_ignores_the_download_cache():
+    argv = rd.render_launch(settings(hf_cache_dir="/var/cache/x"), SPARK, uid=1000)
+    assert "--user" not in argv
+
+
+def test_a_cache_dir_that_could_smuggle_a_volume_is_refused():
+    with pytest.raises(rd.RuntimeUnavailable, match="hf_cache_dir"):
+        rd.render_launch(settings(engine="vllm", hf_cache_dir="/a:/b"), SPARK, uid=1000)
+
+
+def test_build_runtime_defaults_the_cache_under_nvsh_own_cache_dir(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+    rd.build_runtime(settings(engine="vllm"), SPARK)
+    assert (tmp_path / "nvsh" / "tiers" / rd.HF_CACHE_NAME).is_dir()

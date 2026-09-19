@@ -65,6 +65,10 @@ _IN_CONTAINER_BIND = "0.0.0.0"  # nosec B104 - container namespace, published on
 
 #: Where a mounted model directory appears inside the container, read-only.
 MODEL_MOUNT = "/models"
+#: Where a downloading engine keeps its model cache inside the container.
+CACHE_MOUNT = "/cache"
+#: The host side of that cache, under nvsh's own tier cache directory.
+HF_CACHE_NAME = "hf"
 
 DEFAULT_ENGINE = "llama-server"
 DEFAULT_CTX = 4096
@@ -129,6 +133,15 @@ class EngineTemplate:
     args: tuple[str, ...]
     needs_model_mount: bool
     health_path: str
+    #: Extra arguments that turn on server-side tool-call parsing, with a
+    #: ``{tool_parser}`` placeholder; added only when a parser is named.
+    #: Without them vLLM answers a request that carries ``tools`` with 400.
+    tool_parser_args: tuple[str, ...] = ()
+    #: The parser used when ``[tiers.lfm] tool_call_parser`` is not set.
+    default_tool_parser: str = ""
+    #: True for an engine that downloads its model by id: its download cache
+    #: is then kept on the host (``hf_cache_dir``) so a restart needs no network.
+    downloads_model: bool = False
 
 
 #: The engines ``[tiers.lfm] engine`` accepts, and how each is launched.
@@ -164,6 +177,9 @@ ENGINES: Mapping[str, EngineTemplate] = {
         ),
         needs_model_mount=False,
         health_path="/health",
+        tool_parser_args=("--enable-auto-tool-choice", "--tool-call-parser", "{tool_parser}"),
+        downloads_model=True,
+        default_tool_parser="lfm2",  # verified in vllm/vllm-openai nightly, 2026-09-19
     ),
     "sglang": EngineTemplate(
         port=30000,
@@ -181,6 +197,8 @@ ENGINES: Mapping[str, EngineTemplate] = {
         ),
         needs_model_mount=False,
         health_path="/health",
+        downloads_model=True,
+        tool_parser_args=("--tool-call-parser", "{tool_parser}"),  # no default: unverified
     ),
 }
 
@@ -233,6 +251,15 @@ def check_startup_timeout(value: object) -> float:
     return float(value)  # type: ignore[arg-type]
 
 
+def check_host_dir(key: str, value: object) -> str:
+    """A host directory safe to name in a ``-v`` argument (see check_model_dir)."""
+    if not isinstance(value, str) or not value:
+        raise _refuse(key, "must be an absolute path", value)
+    if not os.path.isabs(value) or ":" in value or "," in value or not _is_word(value):
+        raise _refuse(key, "must be an absolute path with no ':', ',' or whitespace", value)
+    return value
+
+
 def check_model_dir(value: object) -> str:
     """The host directory bind-mounted read-only at :data:`MODEL_MOUNT`.
 
@@ -272,6 +299,16 @@ def _check_mounted_model(value: str) -> str:
     return value
 
 
+def check_tool_call_parser(value: object) -> str:
+    """The name of the server's tool-call parser: a short lowercase word."""
+    ok = isinstance(value, str) and 0 < len(value) <= 40
+    if not ok or not all(ch.islower() or ch.isdigit() or ch in "_-" for ch in value):
+        raise _refuse("tool_call_parser", "must be a short lowercase parser name", value)
+    if value.startswith("-"):
+        raise _refuse("tool_call_parser", "must be a short lowercase parser name", value)
+    return value
+
+
 def check_gpu_memory_fraction(value: object) -> float:
     """The share of GPU memory an engine may reserve up front.
 
@@ -293,6 +330,8 @@ SETTING_CHECKS: Mapping[str, Callable[[object], object]] = {
     "startup_timeout_seconds": check_startup_timeout,
     "model_dir": check_model_dir,
     "gpu_memory_fraction": check_gpu_memory_fraction,
+    "tool_call_parser": check_tool_call_parser,
+    "hf_cache_dir": lambda value: check_host_dir("hf_cache_dir", value),
 }
 
 
@@ -422,10 +461,16 @@ def _gpu_fraction(settings: Mapping[str, object]) -> float:
     return check_gpu_memory_fraction(configured)
 
 
-def _mount_args(template: EngineTemplate, settings: Mapping[str, object]) -> list[str]:
-    if not template.needs_model_mount:
+def _mount_args(template: EngineTemplate, settings: Mapping[str, object], uid: int) -> list[str]:
+    if template.needs_model_mount:
+        return ["-v", f"{_model_dir(settings)}:{MODEL_MOUNT}:ro"]
+    cache = settings.get("hf_cache_dir")
+    if not template.downloads_model or cache is None:
         return []
-    return ["-v", f"{_model_dir(settings)}:{MODEL_MOUNT}:ro"]
+    # The engine runs as the operator, not root, so what it downloads into the
+    # host cache stays the operator's to delete (``nvsh uninstall`` does).
+    host = check_host_dir("hf_cache_dir", cache)
+    return ["--user", f"{uid}:{uid}", "-e", f"HF_HOME={CACHE_MOUNT}", "-v", f"{host}:{CACHE_MOUNT}"]
 
 
 def _engine_args(template: EngineTemplate, settings: Mapping[str, object]) -> list[str]:
@@ -435,7 +480,10 @@ def _engine_args(template: EngineTemplate, settings: Mapping[str, object]) -> li
         "ctx": str(_ctx(settings)),
         "gpu_fraction": str(_gpu_fraction(settings)),
     }
-    return [arg.format(**values) for arg in template.args]
+    parser = settings.get("tool_call_parser") or template.default_tool_parser
+    extra = template.tool_parser_args if parser else ()
+    values["tool_parser"] = str(parser)
+    return [arg.format(**values) for arg in (*template.args, *extra)]
 
 
 def render_launch(settings: Mapping[str, object], platform: Platform, *, uid: int) -> list[str]:
@@ -457,7 +505,7 @@ def render_launch(settings: Mapping[str, object], platform: Platform, *, uid: in
     published = f"{LOOPBACK}:{host_port(settings, uid)}:{template.port}"
     argv = [DOCKER, "run", "-d", "--name", container_name(uid), "-p", published]
     argv += gpu_flags(platform, settings.get("gpu"))
-    argv += _mount_args(template, settings)
+    argv += _mount_args(template, settings, uid)
     argv.append(image)
     argv += _engine_args(template, settings)
     return argv
@@ -733,4 +781,23 @@ def build_runtime(settings: Mapping[str, object], platform: Platform, **kwargs: 
         raise RuntimeUnavailable(
             f"unknown [tiers.lfm] mode {mode!r}; accepted modes: {ATTACH}, {MANAGED}"
         )
-    return DockerRuntime(settings, platform, **kwargs)  # type: ignore[arg-type]
+    return DockerRuntime(_with_cache_dir(settings), platform, **kwargs)  # type: ignore[arg-type]
+
+
+def _with_cache_dir(settings: Mapping[str, object]) -> Mapping[str, object]:
+    """*settings* with ``hf_cache_dir`` defaulted to nvsh's own tier cache.
+
+    Done here, not in :func:`render_launch`, so rendering stays a pure
+    function of its arguments. The directory is created so Docker does not
+    create it as root.
+    """
+    if settings.get("hf_cache_dir") is not None:
+        return settings
+    from .fetch import default_cache_dir  # lazy: keep this module light to import
+
+    cache = default_cache_dir() / HF_CACHE_NAME
+    try:
+        cache.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return settings  # no cache: the engine downloads inside the container
+    return {**settings, "hf_cache_dir": str(cache)}
