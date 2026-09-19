@@ -189,3 +189,17 @@ def test_an_unmarked_sentence_still_pays_the_rate_limit(xdg, monkeypatch, capsys
     )
     client_mod.handle_failure(_args(xdg, "why is the gpu slow", 127), panel=panel)
     assert "held back" in capsys.readouterr().err
+
+
+def test_an_unconfigured_tier_adapter_names_its_config_key_not_a_binary(xdg, monkeypatch):
+    _rc, _captured, _configs, out = _run_marked(
+        xdg, monkeypatch, "@lfm why did that fail?", adapters=("pi", "lfm"), installed=("pi",)
+    )
+    assert "[tiers.lfm] model" in out
+
+
+def test_an_unconfigured_tier_adapter_never_says_not_on_path(xdg, monkeypatch):
+    _rc, _captured, _configs, out = _run_marked(
+        xdg, monkeypatch, "@lfm why did that fail?", adapters=("pi", "lfm"), installed=("pi",)
+    )
+    assert "PATH" not in out
