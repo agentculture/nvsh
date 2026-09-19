@@ -33,6 +33,7 @@ from dataclasses import dataclass, field
 from typing import Callable, Iterator, Mapping
 
 from ..agent.base import AgentContext, AgentEvent, AgentRequest, EventKind
+from ..config import _DEFAULT_TIERS as _CONFIG_TIER_DEFAULTS
 from ..platform._model import Platform
 from .base import Tier
 from .records import TierRecords, default_records_path
@@ -55,14 +56,7 @@ RECENT_ROUTES = 32
 #: owns the real defaults; these only keep the manager working when it is
 #: handed a config object whose table is partial (a test's, or one written
 #: by an older nvsh).
-_DEFAULTS: dict[str, object] = {
-    "enabled": False,
-    "needle_min_confidence": 0.0,
-    "memory_floor_mb": 1024,
-    "idle_unload_seconds": 900,
-    "records_cap_mb": 8,
-    "store_request_text": False,
-}
+_DEFAULTS: Mapping[str, object] = _CONFIG_TIER_DEFAULTS
 
 TierFactory = Callable[[], Tier]
 VerifierFactory = Callable[[], Verifier]
