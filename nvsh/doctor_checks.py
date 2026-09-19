@@ -1149,6 +1149,23 @@ def check_agent_allowlist(home: Path | None = None) -> dict:
 TIER_PREFETCH_REMEDIATION = "run `nvsh tiers prefetch` to fetch and verify the pinned tier files"
 
 
+#: What a damaged ``pins.json`` (or an unreadable cache entry) can raise out
+#: of ``nvsh.tiers.fetch``. Doctor is the tool an operator reaches for when
+#: something is broken, so it reports these as a failed check, never a crash.
+_TIER_PIN_ERRORS = (OSError, ValueError, KeyError, AttributeError, TypeError)
+
+
+def _tier_pins_unreadable(check_id: str, exc: BaseException) -> dict:
+    return _check(
+        check_id,
+        False,
+        "error",
+        f"tier pins could not be read: {type(exc).__name__}: {exc}",
+        "reinstall nvsh (its packaged nvsh/tiers/pins.json is damaged), then "
+        + TIER_PREFETCH_REMEDIATION,
+    )
+
+
 def check_tiers_configured(config: Config | None) -> dict:
     """Report ``[tiers]``/``[tiers.lfm]`` routing state.
 
@@ -1191,8 +1208,16 @@ def check_tier_files_present(
     """
     from nvsh.tiers import fetch as fetch_mod
 
-    items = fetch_mod.plan_prefetch(pins, cache_dir=cache_dir, platform_tag=platform_tag)
-    missing = [item.name for item in items if item.source and not item.present]
+    try:
+        items = fetch_mod.plan_prefetch(pins, cache_dir=cache_dir, platform_tag=platform_tag)
+    except _TIER_PIN_ERRORS as exc:
+        return _tier_pins_unreadable("tier_files_present", exc)
+    pinned = [item for item in items if item.source]
+    missing = [item.name for item in pinned if not item.present]
+    if not pinned:
+        return _check(
+            "tier_files_present", True, "info", "no tier files are pinned for this platform", ""
+        )
     if not missing:
         return _check(
             "tier_files_present", True, "info", "pinned tier files are present locally", ""
@@ -1225,7 +1250,10 @@ def check_tier_hashes_match(
     """
     from nvsh.tiers import fetch as fetch_mod
 
-    problems = fetch_mod.verify_all(pins, cache_dir=cache_dir, platform_tag=platform_tag)
+    try:
+        problems = fetch_mod.verify_all(pins, cache_dir=cache_dir, platform_tag=platform_tag)
+    except _TIER_PIN_ERRORS as exc:
+        return _tier_pins_unreadable("tier_hashes_match", exc)
     mismatches = [
         problem for problem in problems if problem.code in ("hash_mismatch", "size_mismatch")
     ]

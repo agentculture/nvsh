@@ -1451,3 +1451,17 @@ def test_agent_reachable_lfm_reports_configured_engine_and_mode():
     assert "sglang" in check["message"]
     assert "attach" in check["message"]
     assert "has no reachability probe" not in check["message"]
+
+
+@pytest.mark.parametrize("pins", ["junk", {"images": [{"ref": 1}]}])
+@pytest.mark.parametrize(
+    "check", [doctor_checks.check_tier_files_present, doctor_checks.check_tier_hashes_match]
+)
+def test_damaged_tier_pins_fail_the_check_instead_of_crashing_doctor(check, pins, tmp_path):
+    result = check(pins=pins, cache_dir=tmp_path)
+    assert (result["passed"], result["severity"]) == (False, "error")
+
+
+def test_tier_files_present_says_so_when_nothing_is_pinned(tmp_path):
+    result = doctor_checks.check_tier_files_present(pins={}, cache_dir=tmp_path)
+    assert "no tier files are pinned" in result["message"]
