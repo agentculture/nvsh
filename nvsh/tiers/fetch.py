@@ -273,9 +273,17 @@ def _download(item: PrefetchItem, dest_dir: Path, opener: OpenerFn) -> FetchProb
                     chunk = response.read(_CHUNK_BYTES)
                     if not chunk:
                         break
+                    size += len(chunk)
+                    if size > item.size_bytes:
+                        # Stop at the pinned size: a server that keeps
+                        # streaming must not be able to fill the disk.
+                        break
                     out.write(chunk)
                     digest.update(chunk)
-                    size += len(chunk)
+        except OSError as exc:
+            return FetchProblem(
+                item=item.name, code="download_failed", message=f"download failed: {exc}"
+            )
         finally:
             close = getattr(response, "close", None)
             if close is not None:

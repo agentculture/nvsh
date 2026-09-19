@@ -441,3 +441,47 @@ def test_verify_all_reports_clean_when_everything_matches_and_image_present(tmp_
         pins, cache_dir=tmp_path, platform_tag="aarch64", image_present=lambda _i: True
     )
     assert problems == []
+
+
+class _EndlessResponse:
+    """A server that never stops streaming."""
+
+    def __init__(self):
+        self.reads = 0
+
+    def read(self, n=-1):
+        self.reads += 1
+        if self.reads > 10_000:
+            raise AssertionError("download was not bounded by the pinned size")
+        return b"x" * max(n, 1)
+
+    def close(self):
+        pass
+
+
+def test_download_stops_at_the_pinned_size(tmp_path):
+    items = fetch.plan_prefetch(_fake_pins(), platform_tag="aarch64", cache_dir=tmp_path)
+    weights = [i for i in items if i.kind == "weights"]
+    problems = fetch.prefetch(
+        weights, cache_dir=tmp_path, opener=lambda request: _EndlessResponse(), runner=lambda a: 0
+    )
+    assert [p.code for p in problems] == ["size_mismatch"]
+    assert [p.name for p in tmp_path.iterdir()] == []
+
+
+class _BrokenResponse:
+    def read(self, n=-1):
+        raise ConnectionResetError("reset mid-stream")
+
+    def close(self):
+        pass
+
+
+def test_mid_stream_error_is_reported_not_raised(tmp_path):
+    items = fetch.plan_prefetch(_fake_pins(), platform_tag="aarch64", cache_dir=tmp_path)
+    weights = [i for i in items if i.kind == "weights"]
+    problems = fetch.prefetch(
+        weights, cache_dir=tmp_path, opener=lambda request: _BrokenResponse(), runner=lambda a: 0
+    )
+    assert [p.code for p in problems] == ["download_failed"]
+    assert [p.name for p in tmp_path.iterdir()] == []
