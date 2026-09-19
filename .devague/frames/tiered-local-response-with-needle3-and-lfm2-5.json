@@ -2,9 +2,9 @@
   "slug": "tiered-local-response-with-needle3-and-lfm2-5",
   "title": "Tiered local response with Needle3 and LFM2.5",
   "schema_version": 6,
-  "status": "drafting",
+  "status": "exported",
   "created": "2026-09-19T11:10:08Z",
-  "updated": "2026-09-19T11:47:30Z",
+  "updated": "2026-09-19T11:49:31Z",
   "claims": [
     {
       "id": "c1",
@@ -16,13 +16,13 @@
         {
           "id": "h1",
           "text": "On an Orin Nano with no full agent configured, a fast-path prompt from the corpus produces a correct proposal, and a should-escalate prompt produces a plain 'no local answer and no full agent configured' message rather than a guess.",
-          "status": "proposed",
+          "status": "rejected",
           "instruction": ""
         },
         {
           "id": "h21",
           "text": "On the AGX Orin with no full agent configured, a fast-path prompt from the corpus produces a correct proposal, and a should-escalate prompt produces a plain 'no local answer and no full agent configured' message rather than a guess; the Orin Nano claim is stated as an estimate from these results until a Nano is measured.",
-          "status": "proposed",
+          "status": "confirmed",
           "instruction": ""
         }
       ],
@@ -36,18 +36,18 @@
       "kind": "audience",
       "text": "Operators working at a bash prompt on NVIDIA edge and desktop machines where a large model is slow, remote or absent \u2014 the design target is a Jetson Orin Nano (8 GB unified memory), and the machines measured in this spec are AGX Orin, AGX Thor and DGX Spark \u2014 plus the nvsh maintainers who must benchmark each tier before promoting it.",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "honesty_conditions": [
         {
           "id": "h2",
           "text": "The benchmark is actually run on an Orin Nano, an AGX Orin, an AGX Thor and a DGX Spark, and each device's results file is committed; a device that was not measured is listed as not measured.",
-          "status": "proposed",
+          "status": "rejected",
           "instruction": ""
         },
         {
           "id": "h22",
           "text": "The benchmark is run on an AGX Orin, an AGX Thor and a DGX Spark and each results file is committed; the AGX Orin file carries an 'Orin Nano estimate' section that states the scaling assumptions (8 GB shared memory, fewer CPU cores, smaller GPU) and is marked estimated, not measured.",
-          "status": "proposed",
+          "status": "confirmed",
           "instruction": ""
         }
       ],
@@ -67,12 +67,12 @@
       "kind": "before_state",
       "text": "Every request nvsh cannot answer from a slash command goes to one configured NvshAgent harness (pi, qwen, claude, codex, ...). A plain request like 'how hot is this machine' or 'restart vllm' pays a full agent turn \u2014 seconds to tens of seconds, and a network hop when the model is on another box \u2014 and a machine with no reachable large model gets no agent help at all.",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "honesty_conditions": [
         {
           "id": "h3",
           "text": "A timing of the same fast-path prompt through today's default full agent is recorded on at least one device, so the 'before' cost is a measured number and not an estimate.",
-          "status": "proposed",
+          "status": "confirmed",
           "instruction": ""
         }
       ],
@@ -86,12 +86,12 @@
       "kind": "why_it_matters",
       "text": "Most operator asks and many failures are routine: they map to one of a small set of deterministic operations. Answering those locally in milliseconds makes nvsh feel like a shell feature instead of a chat round-trip, keeps air-gapped Jetsons useful, and saves the full agent for problems that need reasoning.",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "honesty_conditions": [
         {
           "id": "h4",
           "text": "The corpus run reports what share of requests were answered below Tier 3; if that share is small the results say so.",
-          "status": "proposed",
+          "status": "confirmed",
           "instruction": ""
         }
       ],
@@ -122,7 +122,7 @@
         {
           "id": "h5",
           "text": "One nvsh command prints per-tier counts, latency percentiles, escalation reasons and operator approve/decline rates from local records, with `--json`; every record passes through the existing redactor, and the raw request text is stored only when the operator has opted in.",
-          "status": "proposed",
+          "status": "confirmed",
           "instruction": ""
         }
       ],
@@ -136,12 +136,12 @@
       "kind": "after_state",
       "text": "A request or qualifying failure goes through tiers in order: Tier 0 shell and slash commands, Tier 1 Needle3 selecting one typed operation, Tier 2 a small resident LFM2.5 agent running a bounded inspect-interpret-propose loop, Tier 3 the configured full NvshAgent. Each tier either answers with a normal nvsh Proposal or declines, and a decline moves the request up one tier. A machine with only Tier 1 (or Tiers 1-2) installed is a supported configuration, not a degraded one.",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "honesty_conditions": [
         {
           "id": "h6",
           "text": "A test drives one request through each path with fixture tiers \u2014 answered at Tier 1, declined by 1 and answered at 2, declined by both and answered at 3 \u2014 and asserts that the audit log names the tier and the decline reason each time.",
-          "status": "proposed",
+          "status": "confirmed",
           "instruction": ""
         }
       ],
@@ -155,18 +155,18 @@
       "kind": "requirement",
       "text": "nvsh gains a typed operation table \u2014 the deterministic operator tools the issues assume but the code does not have yet. Each operation has a name, typed arguments, a read-only or mutating flag, and a per-platform implementation that renders to a concrete command. The table is modelled on the verb set the operator's device CLIs already share (`spark`, `thor`, `orin`): read-only operations render to `<device-cli> <verb> --json` when that CLI is on PATH and to a plain system command otherwise, so nvsh still works with no device CLI installed. The first table covers at least: `machine_status`, `memory_stats`, `gpu_stats`, `disk_stats`, `thermal_stats`, `container_list`, `network_info`, `process_list`, `power_get`, `swap_status`, `nvsh_doctor` (read-only), and `power_set`, `service_status`, `service_logs`, `service_restart`, `container_restart` (no device CLI has these yet; nvsh renders them to system commands). A verb that exists on at least one device CLI counts as available; where a sibling CLI lacks it, nvsh files an issue on that repo rather than working around it. nvsh detects `thor` and `orin` on PATH the way it already detects `spark`. One table serves all tiers and all device classes.",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "honesty_conditions": [
         {
           "id": "h7",
           "text": "Every operation in the table has a table test per platform kind asserting the exact rendered command, and an argument that could inject shell syntax (a service named `x; rm -rf /`) is refused by validation.",
-          "status": "proposed",
+          "status": "confirmed",
           "instruction": ""
         },
         {
           "id": "h20",
           "text": "For each read-only operation a test asserts the rendered command with the device CLI present and with it absent; the gaps found on 2026-09-19 (all machine verbs on `orin`; `power` on `spark`; service and container-restart verbs on all three) are filed as issues on the sibling repos and linked from the spec.",
-          "status": "proposed",
+          "status": "confirmed",
           "instruction": ""
         }
       ],
@@ -186,12 +186,12 @@
       "kind": "requirement",
       "text": "A local tier never executes anything and never emits a free-form shell string. It returns an operation name plus arguments; nvsh validates both against the operation table, renders the command itself, and hands the result to the existing approve/execute/verify loop as a normal `Proposal`. An unknown operation, an argument that fails validation, or a runtime error is a decline, never a guess. nvsh calls Needle's select-only `complete()` and never its executing `run()`.",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "honesty_conditions": [
         {
           "id": "h8",
           "text": "A test gives a fixture tier output naming an unknown operation, a bad argument and a raw shell string, and all three become declines; a grep-style test asserts nvsh's needle adapter never references `Needle.run`.",
-          "status": "proposed",
+          "status": "confirmed",
           "instruction": ""
         }
       ],
@@ -205,12 +205,12 @@
       "kind": "requirement",
       "text": "Confidence is recorded but is not the safety mechanism. A read-only operation selected by a tier may be proposed directly; a mutating operation selected by a tier always shows the operator the interpreted operation and arguments and needs approval exactly as today. Thresholds for declining are configuration, tuned from measured data, and the design works for a fine-tuned Needle model that reports no confidence at all.",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "honesty_conditions": [
         {
           "id": "h9",
           "text": "A test with a fixture tier returning a wrong mutating operation at confidence 1.0 shows the interpreted operation in the panel and executes nothing without approval; the same flow passes with confidence set to None.",
-          "status": "proposed",
+          "status": "confirmed",
           "instruction": ""
         }
       ],
@@ -224,12 +224,12 @@
       "kind": "requirement",
       "text": "Tier 1 and Tier 2 ship as optional flavors (`nvsh[needle]`, `nvsh[lfm]`, and a combined one); `dependencies = []` stays empty, the hook and every existing verb work unchanged when no flavor is installed or a flavor's runtime is broken, and no tier code is imported on the success path or at hook time.",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "honesty_conditions": [
         {
           "id": "h10",
           "text": "CI installs the wheel with no extras and runs the full suite and the import-time test; a test with a deliberately broken flavor import shows the request reaching the full agent with one status line.",
-          "status": "proposed",
+          "status": "confirmed",
           "instruction": ""
         }
       ],
@@ -243,12 +243,12 @@
       "kind": "requirement",
       "text": "The tiers work fully offline once prefetched: an explicit nvsh command downloads the engine and model files ahead of time, reports where they are and how big, and after that no tier makes a network call. Third-party telemetry in a bundled runtime is switched off by nvsh (`NEEDLE_TELEMETRY=0`, `DO_NOT_TRACK=1`) before the runtime loads.",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "honesty_conditions": [
         {
           "id": "h11",
           "text": "After the prefetch command, the benchmark runs with networking blocked and passes; a test asserts the telemetry-off environment variables are set before the runtime is imported.",
-          "status": "proposed",
+          "status": "confirmed",
           "instruction": ""
         }
       ],
@@ -262,12 +262,12 @@
       "kind": "requirement",
       "text": "The resident models live in the per-user nvsh daemon, loaded on first use rather than at daemon start, and unloaded after an idle period; the one-shot client path asks the daemon rather than loading a model per call, and falls straight through to the full agent when the daemon is unavailable.",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "honesty_conditions": [
         {
           "id": "h12",
           "text": "Daemon memory is measured before first tier use, while resident, and after the idle unload, on each device; a request made with the daemon stopped reaches the full agent without loading a model in the client.",
-          "status": "proposed",
+          "status": "confirmed",
           "instruction": ""
         }
       ],
@@ -281,12 +281,12 @@
       "kind": "requirement",
       "text": "Each tier is reachable explicitly as a registered adapter (`@needle`, `@lfm`, `nvsh --agent needle`) as soon as its flavor is installed, is excluded from `nvsh setup`'s default-agent probe, and is reported by `nvsh agent list --json` and `nvsh doctor`. Automatic tier routing is off until the operator enables it in config. An explicit `@target` naming another harness always bypasses the tiers.",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "honesty_conditions": [
         {
           "id": "h13",
           "text": "`@needle` and `@lfm` join the adapter conformance suite; a test asserts `nvsh setup`'s probe never offers them as the default agent, and that `@claude` sends a request past both tiers.",
-          "status": "proposed",
+          "status": "confirmed",
           "instruction": ""
         }
       ],
@@ -306,12 +306,12 @@
       "kind": "requirement",
       "text": "Tier 2 runs a bounded loop: at most 4 inspection rounds, read-only operations only inside the loop, a bounded context, and three possible outcomes \u2014 propose an operation, explain the failure in plain text, or escalate. Escalation hands the full agent what Tier 2 already inspected so the work is not repeated.",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "honesty_conditions": [
         {
           "id": "h14",
           "text": "A test with a fixture Tier 2 that never stops inspecting is cut off at 4 rounds and escalates; a mutating operation requested inside the loop is refused; the escalated request carries the inspection results.",
-          "status": "proposed",
+          "status": "confirmed",
           "instruction": ""
         }
       ],
@@ -325,12 +325,12 @@
       "kind": "requirement",
       "text": "A repeatable benchmark corpus and runner are committed: the prompts and failure cases from issues #30 and #31, each with its expected operation, arguments or expected escalation. One command runs it on a device and writes a results file with accuracy, argument accuracy, false-mutating-pick count, escalation precision and recall, cold and warm latency, and resident and peak memory. Results for each device are committed under docs/.",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "honesty_conditions": [
         {
           "id": "h15",
           "text": "Running the benchmark command twice on the same device and model gives the same accuracy numbers, and the results file records the model file hashes, nvsh version and device.",
-          "status": "proposed",
+          "status": "confirmed",
           "instruction": ""
         }
       ],
@@ -344,12 +344,12 @@
       "kind": "boundary",
       "text": "No new auto-apply: every mutating action still needs operator approval, sudo and destructive-command rules are unchanged, and the local tiers only ever reach commands that the operation table can render. nvsh itself never sends measurement data off the machine; the only way records leave is a redacted export file the operator creates and moves by hand.",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "honesty_conditions": [
         {
           "id": "h16",
           "text": "The existing approval, sudo and destructive-command tests pass unchanged with the tiers enabled, and a test asserts no tier code path opens a network socket other than to localhost.",
-          "status": "proposed",
+          "status": "confirmed",
           "instruction": ""
         }
       ],
@@ -369,7 +369,7 @@
       "kind": "non_goal",
       "text": "Fine-tuning is not part of this spec. It establishes the baseline with stock Needle3 and post-trained LFM2.5 checkpoints and collects the data a fine-tune would need; training an LFM2.5 Base or a Needle LoRA with unsloth-cli or `needle finetune` is a follow-up decided from the committed benchmark results.",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "honesty_conditions": [],
       "hard_questions": [],
       "links": [],
@@ -381,7 +381,7 @@
       "kind": "non_goal",
       "text": "The tiers are not served through the lobes gateway, a remote model server, or a hosted API, and nvsh does not become a general tool-calling framework: the operation table is for machine operation on NVIDIA devices only.",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "honesty_conditions": [],
       "hard_questions": [],
       "links": [],
@@ -393,12 +393,12 @@
       "kind": "success_signal",
       "text": "On the committed corpus, on each benchmarked device (AGX Orin, AGX Thor, DGX Spark): Tier 1 warm selection p95 < 150 ms; >= 90% of fast-path prompts get the correct operation and arguments; 0 wrong mutating operations proposed without the interpreted operation being shown; >= 80% of should-escalate prompts are declined by Tier 1; a command that succeeds still costs one bash function call and 0 forks. Memory: with both flavors resident the daemon adds < 1 GB to system memory as measured on the AGX Orin, which is the stand-in for the Orin Nano's 8 GB budget until a Nano is measured.",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "honesty_conditions": [
         {
           "id": "h17",
           "text": "Each number in the signal is produced by the committed benchmark command, not measured by hand; a missed target is reported as missed in the device's results file.",
-          "status": "proposed",
+          "status": "confirmed",
           "instruction": ""
         }
       ],
@@ -464,14 +464,20 @@
     {
       "id": "c25",
       "kind": "requirement",
-      "text": "Tier 2 talks to its model through one OpenAI-compatible localhost interface with tool-call support, and the runtime behind it is a config choice among `llama-server`, `vllm` and `sglang`: nvsh either starts and stops the runtime itself or attaches to one the operator already runs. The benchmark runner records speed and memory cost per runtime, so the default for each device class is picked from numbers, weighing footprint as heavily as latency.",
+      "text": "Tier 2 talks to its model through one OpenAI-compatible localhost interface with tool-call support. The runtime behind it runs as a Docker container that nvsh starts and stops with the NVIDIA container runtime (`--runtime nvidia`), the same way on DGX Spark, AGX Thor, AGX Orin and Orin Nano, with GPU acceleration as the target and a CPU-only run as the fallback when no GPU runtime is available. Which engine the container holds is a config choice among `llama-server`, `vllm` and `sglang`, and nvsh can instead attach to a runtime the operator already runs. The container publishes its port on localhost only. The benchmark runner records speed and memory cost per engine and per CPU/GPU mode, so each device class's default is picked from numbers, weighing footprint as heavily as latency.",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "honesty_conditions": [
         {
           "id": "h18",
           "text": "The benchmark is run with at least two runtimes on at least one device and both result sets are committed; switching runtime is a config change with no code change, shown by a test that points Tier 2 at a fixture HTTP server.",
-          "status": "proposed",
+          "status": "confirmed",
+          "instruction": ""
+        },
+        {
+          "id": "h23",
+          "text": "On the AGX Orin, which has no host CUDA toolkit, the Tier 2 container answers a corpus case with GPU offload confirmed by the engine's own log or by `tegrastats`; a test asserts the rendered `docker run` line binds 127.0.0.1 only, names a pinned image tag rather than `latest`, and that with Docker missing Tier 2 declines with one status line and the request reaches the full agent.",
+          "status": "confirmed",
           "instruction": ""
         }
       ],
@@ -483,6 +489,11 @@
           "text": "Tier 2 talks to its model through one OpenAI-compatible localhost interface with tool-call support, and the runtime behind it is a config choice among `llama-server`, `vllm` and `sglang`: nvsh either starts and stops the runtime itself or attaches to one the operator already runs. The benchmark runner records results per runtime so the default for each device class is picked from numbers.",
           "kind": "requirement",
           "reason": "operator: low memory impact; engines have different costs"
+        },
+        {
+          "text": "Tier 2 talks to its model through one OpenAI-compatible localhost interface with tool-call support, and the runtime behind it is a config choice among `llama-server`, `vllm` and `sglang`: nvsh either starts and stops the runtime itself or attaches to one the operator already runs. The benchmark runner records speed and memory cost per runtime, so the default for each device class is picked from numbers, weighing footprint as heavily as latency.",
+          "kind": "requirement",
+          "reason": "operator: GPU is a target; Docker is the general, cleaner solution"
         }
       ]
     },
@@ -496,7 +507,7 @@
         {
           "id": "h19",
           "text": "For every runtime and device benchmarked, the results file records idle resident memory, peak memory during a turn, memory reserved at startup (vLLM and SGLang pre-allocate a share of GPU or unified memory) and the slowdown of a concurrent primary workload; the per-device default is the runtime that meets the latency target with the smallest footprint, and a runtime that cannot fit the Orin Nano budget is recorded as not fitting rather than left out.",
-          "status": "proposed",
+          "status": "confirmed",
           "instruction": ""
         }
       ],
@@ -509,6 +520,18 @@
       "id": "c27",
       "kind": "decision",
       "text": "No Orin Nano is connected yet (the operator has one still to unbox), so measuring on it is parked. Until then the Orin Nano figures are estimates derived from the Jetson AGX Orin measurements \u2014 same tegra234 Ampere family, scaled for the Nano's 8 GB unified memory and smaller CPU/GPU \u2014 and are labelled as estimates wherever they appear.",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c28",
+      "kind": "decision",
+      "text": "GPU acceleration is a target for Tier 2, and the Tier 2 runtime is delivered as a Docker container on every device, not as an Orin-specific workaround: nvsh starts the runtime image with the NVIDIA container runtime, so no host needs a CUDA toolkit or a locally built inference engine. Tier 1 (Needle3) stays an in-process CPU engine.",
       "origin": "user",
       "status": "confirmed",
       "honesty_conditions": [],
@@ -599,7 +622,7 @@
     {
       "id": "s6",
       "surface": "pyproject.toml, scripts/scan-secrets.py, nvsh/installers.py, CI",
-      "finding": "Explored by qwen/worker, spot-checked by Claude: `dependencies = []` (pyproject.toml:16) and no `[project.optional-dependencies]` table exists yet, so an extra would be the repo's first; coverage gate `fail_under = 60`. scan-secrets only checks endpoints in JSON files and allows localhost/127.0.0.1/::1/0.0.0.0 (scripts/scan-secrets.py:189), so a committed localhost model-server URL passes. nvsh/installers.py only invokes apt-get/npm/snap and marks curl-pipe-sh steps `executable=False` \u2014 nvsh has no precedent for downloading a native binary or model weights itself. `PROBE_EXCLUDED = {openai-compat, demo}` (nvsh/agent/registry.py:59) is the existing way to keep an adapter out of `setup`'s probe. Adapter tests are named tests/test_agent_<name>.py and never need the real harness.",
+      "finding": "Explored by qwen/worker, spot-checked by Claude: `dependencies = []` (pyproject.toml:16) and no `[project.optional-dependencies]` table exists yet, so an extra would be the repo's first; coverage gate `fail_under = 60`. scan-secrets only checks endpoints in JSON files and allows localhost/127.0.0.1/::1/0.0.0.0 (scripts/scan-secrets.py:189), so a committed localhost model-server URL passes. nvsh/installers.py only invokes apt-get/npm/snap and marks curl-pipe-sh steps `executable=False` \u2014 nvsh has no precedent for downloading a native binary or model weights itself. `PROBE_EXCLUDED = {openai-compat, demo}` (nvsh/agent/registry.py:59) is the existing way to keep an adapter out of `setup`'s probe. Adapter tests are named `tests/test_agent_<name>.py` and never need the real harness.",
       "seeds": []
     },
     {
