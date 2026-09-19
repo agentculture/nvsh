@@ -552,12 +552,11 @@ def agent_override(config, name: str):
             ),
         )
     try:
-        ok = registry.installed(target.backend)
+        ok = registry.installed(target.backend, config=config)
     except Exception as exc:  # noqa: BLE001 - a broken probe is a plain refusal
         return None, None, f"nvsh: @{name} is not available: {exc}"
     if not ok:
-        binary = registry.ADAPTERS[target.backend].binary or target.backend
-        return None, None, f"nvsh: @{name} is not available: '{binary}' is not on PATH"
+        return None, None, f"nvsh: @{name} is not available: {_why_missing(target.backend)}"
     try:
         return client_transport.targeted_config(config, target), target, ""
     except Exception as exc:  # noqa: BLE001
@@ -1936,6 +1935,18 @@ def _show_inspection(panel: Panel, ran: Sequence[tuple[str, RunResult]]) -> None
             panel.write(result.stdout)
         if result.stderr:
             panel.write(result.stderr)
+
+
+def _why_missing(backend: str) -> str:
+    """Why an adapter is not installed: its binary, or the registry's own words
+    for an adapter that has none (a tier's flavor or its config key)."""
+    from nvsh.agent import registry
+
+    binary = registry.ADAPTERS[backend].binary
+    if binary is not None:
+        return f"'{binary}' is not on PATH"
+    what, how = registry.MISSING_WITHOUT_BINARY.get(backend, (f"{backend} is not installed", ""))
+    return f"{what} ({how})" if how else what
 
 
 def _render_tier_answer(

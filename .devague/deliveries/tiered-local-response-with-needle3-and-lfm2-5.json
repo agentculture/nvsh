@@ -2,7 +2,7 @@
   "plan_slug": "tiered-local-response-with-needle3-and-lfm2-5",
   "schema_version": 2,
   "created": "2026-09-19T14:14:40Z",
-  "updated": "2026-09-19T17:55:22Z",
+  "updated": "2026-09-19T21:33:28Z",
   "deviations": [
     {
       "id": "d1",
@@ -40,6 +40,33 @@
       "status": "approved",
       "classification": "acceptable",
       "seq": 2
+    },
+    {
+      "id": "d3",
+      "what": "PR C ships Tier 2 (LFM2.5) without a tuned Needle3: the tuned model is measured in JAX only and is not loaded by nvsh, and tuned-model loading (tuned pin, operation-table hash check) stays unbuilt until upstream fixes the export",
+      "task_ref": "t23",
+      "reason": "cactus-needle 3.0.2's 'needle build --lora' writes a .cact that does not behave like the trained weights (2 of 30 on its own training set through the engine, against 42 of 53 test picks in JAX); reported as cactus-compute/needle#134; nvsh can only load the exported file, so shipping a tuned Needle3 is blocked by an upstream fault, not by nvsh",
+      "affects": [
+        "t24"
+      ],
+      "origin": "llm",
+      "status": "approved",
+      "classification": "needs-follow-up",
+      "seq": 56
+    },
+    {
+      "id": "d4",
+      "what": "PR C ships Tier 2 with the STOCK LFM2.5-350M, which mostly answers in plain words and rarely uses propose or escalate (0 of 53 right proposals, 1 of 27 declines on the test fold; 1.2B-Instruct: 2 of 53, 5 of 27 at 3.4x the latency). Tier 2 stays opt-in and its accuracy targets are recorded as not met; fine-tuning the 350M to use the control tools is the follow-up",
+      "task_ref": "t18",
+      "reason": "measured 2026-09-19 through the real launcher and vLLM on the DGX Spark: the loop, the launcher and tool calling work, the stock model's judgement does not; the operator keeps the small model for its footprint and treats the 1.2B/2.6B as issue 33's full-agent replacement",
+      "affects": [
+        "t24",
+        "c20"
+      ],
+      "origin": "llm",
+      "status": "approved",
+      "classification": "needs-follow-up",
+      "seq": 57
     }
   ],
   "evidence": [
@@ -1046,6 +1073,450 @@
       "status": "proposed",
       "superseded": false,
       "seq": 55
+    },
+    {
+      "id": "e54",
+      "obligation_ref": "o19",
+      "test_ref": "tests/test_tier_lfm.py::test_the_cut_off_loop_runs_exactly_max_rounds_operations",
+      "behavior_text": "asserts a model that never stops inspecting gets exactly MAX_ROUNDS (4) operations run",
+      "contract_text": "Tier 2 runs a bounded loop: at most 4 inspection rounds, read-only operations only inside the loop, a bounded context, and three possible outcomes \u2014 propose an operation, explain the failure in plain text, or escalate. Escalation hands the full agent what Tier 2 already inspected so the work is not repeated.",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "the named test ran green at the named commit; its assertion was read before filing",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-19T21:32:25",
+        "commit": "c064d81"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 58
+    },
+    {
+      "id": "e55",
+      "obligation_ref": "o19",
+      "test_ref": "tests/test_tier_lfm.py::test_the_cut_off_loop_escalates",
+      "behavior_text": "asserts the cut-off loop returns a Decline with reason ESCALATED",
+      "contract_text": "Tier 2 runs a bounded loop: at most 4 inspection rounds, read-only operations only inside the loop, a bounded context, and three possible outcomes \u2014 propose an operation, explain the failure in plain text, or escalate. Escalation hands the full agent what Tier 2 already inspected so the work is not repeated.",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "the named test ran green at the named commit; its assertion was read before filing",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-19T21:32:25",
+        "commit": "c064d81"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 59
+    },
+    {
+      "id": "e56",
+      "obligation_ref": "o19",
+      "test_ref": "tests/test_tier_lfm.py::test_a_mutating_operation_in_the_loop_never_reaches_the_runner",
+      "behavior_text": "asserts the runner saw no call when the model asked for a mutating operation inside the loop",
+      "contract_text": "Tier 2 runs a bounded loop: at most 4 inspection rounds, read-only operations only inside the loop, a bounded context, and three possible outcomes \u2014 propose an operation, explain the failure in plain text, or escalate. Escalation hands the full agent what Tier 2 already inspected so the work is not repeated.",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "the named test ran green at the named commit; its assertion was read before filing",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-19T21:32:25",
+        "commit": "c064d81"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 60
+    },
+    {
+      "id": "e57",
+      "obligation_ref": "o19",
+      "test_ref": "tests/test_tier_lfm.py::test_select_returns_only_the_three_outcome_types",
+      "behavior_text": "asserts select() returns only TierDecision, Decline or Explanation across eleven fixture model behaviours",
+      "contract_text": "Tier 2 runs a bounded loop: at most 4 inspection rounds, read-only operations only inside the loop, a bounded context, and three possible outcomes \u2014 propose an operation, explain the failure in plain text, or escalate. Escalation hands the full agent what Tier 2 already inspected so the work is not repeated.",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "the named test ran green at the named commit; its assertion was read before filing",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-19T21:32:25",
+        "commit": "c064d81"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 61
+    },
+    {
+      "id": "e58",
+      "obligation_ref": "o19",
+      "test_ref": "tests/test_tier_lfm.py::test_an_escalation_carries_the_inspection_results",
+      "behavior_text": "asserts the escalation's inspections equal the (operation, result) pair that was run",
+      "contract_text": "Tier 2 runs a bounded loop: at most 4 inspection rounds, read-only operations only inside the loop, a bounded context, and three possible outcomes \u2014 propose an operation, explain the failure in plain text, or escalate. Escalation hands the full agent what Tier 2 already inspected so the work is not repeated.",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "the named test ran green at the named commit; its assertion was read before filing",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-19T21:32:25",
+        "commit": "c064d81"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 62
+    },
+    {
+      "id": "e59",
+      "obligation_ref": "o19",
+      "test_ref": "tests/test_tier_lfm.py::test_the_context_never_exceeds_the_budget_after_four_rounds",
+      "behavior_text": "asserts the largest message list over four maximum-size rounds stays within MAX_CONTEXT_CHARS",
+      "contract_text": "Tier 2 runs a bounded loop: at most 4 inspection rounds, read-only operations only inside the loop, a bounded context, and three possible outcomes \u2014 propose an operation, explain the failure in plain text, or escalate. Escalation hands the full agent what Tier 2 already inspected so the work is not repeated.",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "the named test ran green at the named commit; its assertion was read before filing",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-19T21:32:25",
+        "commit": "c064d81"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 63
+    },
+    {
+      "id": "e60",
+      "obligation_ref": "o19",
+      "test_ref": "tests/test_tier_lfm.py::test_a_key_block_opened_before_the_head_cut_leaves_no_key_material",
+      "behavior_text": "asserts no key material survives when the length cut splits a private-key block",
+      "contract_text": "Tier 2 runs a bounded loop: at most 4 inspection rounds, read-only operations only inside the loop, a bounded context, and three possible outcomes \u2014 propose an operation, explain the failure in plain text, or escalate. Escalation hands the full agent what Tier 2 already inspected so the work is not repeated.",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "the named test ran green at the named commit; its assertion was read before filing",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-19T21:32:25",
+        "commit": "c064d81"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 64
+    },
+    {
+      "id": "e61",
+      "obligation_ref": "o20",
+      "test_ref": "tests/test_tier_runtime_docker.py::test_spark_launch_line_uses_gpus_all",
+      "behavior_text": "asserts the rendered line contains '--gpus all' on a dgx-spark platform",
+      "contract_text": "Tier 2 talks to its model through one OpenAI-compatible localhost interface with tool-call support. The runtime behind it runs as a Docker container that nvsh starts and stops, on DGX Spark, AGX Thor, AGX Orin and Orin Nano alike, with GPU acceleration as the target and a CPU-only run as the fallback. nvsh detects how each machine exposes its GPU to Docker and renders the matching launch line \u2014 `-",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "the named test ran green at the named commit; its assertion was read before filing",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-19T21:32:25",
+        "commit": "c064d81"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 65
+    },
+    {
+      "id": "e62",
+      "obligation_ref": "o20",
+      "test_ref": "tests/test_tier_runtime_docker.py::test_jetson_launch_line_uses_runtime_nvidia",
+      "behavior_text": "asserts the rendered line contains '--runtime nvidia' on a jetson platform",
+      "contract_text": "Tier 2 talks to its model through one OpenAI-compatible localhost interface with tool-call support. The runtime behind it runs as a Docker container that nvsh starts and stops, on DGX Spark, AGX Thor, AGX Orin and Orin Nano alike, with GPU acceleration as the target and a CPU-only run as the fallback. nvsh detects how each machine exposes its GPU to Docker and renders the matching launch line \u2014 `-",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "the named test ran green at the named commit; its assertion was read before filing",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-19T21:32:25",
+        "commit": "c064d81"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 66
+    },
+    {
+      "id": "e63",
+      "obligation_ref": "o20",
+      "test_ref": "tests/test_tier_runtime_docker.py::test_port_is_published_on_loopback_only",
+      "behavior_text": "asserts the -p argument starts with 127.0.0.1:",
+      "contract_text": "Tier 2 talks to its model through one OpenAI-compatible localhost interface with tool-call support. The runtime behind it runs as a Docker container that nvsh starts and stops, on DGX Spark, AGX Thor, AGX Orin and Orin Nano alike, with GPU acceleration as the target and a CPU-only run as the fallback. nvsh detects how each machine exposes its GPU to Docker and renders the matching launch line \u2014 `-",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "the named test ran green at the named commit; its assertion was read before filing",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-19T21:32:25",
+        "commit": "c064d81"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 67
+    },
+    {
+      "id": "e64",
+      "obligation_ref": "o20",
+      "test_ref": "tests/test_tier_runtime_docker.py::test_image_is_named_by_digest",
+      "behavior_text": "asserts the @sha256 image reference is in the rendered argv",
+      "contract_text": "Tier 2 talks to its model through one OpenAI-compatible localhost interface with tool-call support. The runtime behind it runs as a Docker container that nvsh starts and stops, on DGX Spark, AGX Thor, AGX Orin and Orin Nano alike, with GPU acceleration as the target and a CPU-only run as the fallback. nvsh detects how each machine exposes its GPU to Docker and renders the matching launch line \u2014 `-",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "the named test ran green at the named commit; its assertion was read before filing",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-19T21:32:25",
+        "commit": "c064d81"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 68
+    },
+    {
+      "id": "e65",
+      "obligation_ref": "o20",
+      "test_ref": "tests/test_tier_runtime_docker.py::test_docker_not_on_path_declines_with_one_line",
+      "behavior_text": "asserts RuntimeUnavailable is raised with a single-line message when docker is not on PATH",
+      "contract_text": "Tier 2 talks to its model through one OpenAI-compatible localhost interface with tool-call support. The runtime behind it runs as a Docker container that nvsh starts and stops, on DGX Spark, AGX Thor, AGX Orin and Orin Nano alike, with GPU acceleration as the target and a CPU-only run as the fallback. nvsh detects how each machine exposes its GPU to Docker and renders the matching launch line \u2014 `-",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "the named test ran green at the named commit; its assertion was read before filing",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-19T21:32:25",
+        "commit": "c064d81"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 69
+    },
+    {
+      "id": "e66",
+      "obligation_ref": "o20",
+      "test_ref": "tests/test_tier_runtime_docker.py::test_attach_mode_runs_no_docker_commands",
+      "behavior_text": "asserts attach mode returns the base URL with a docker runner that fails the test if called",
+      "contract_text": "Tier 2 talks to its model through one OpenAI-compatible localhost interface with tool-call support. The runtime behind it runs as a Docker container that nvsh starts and stops, on DGX Spark, AGX Thor, AGX Orin and Orin Nano alike, with GPU acceleration as the target and a CPU-only run as the fallback. nvsh detects how each machine exposes its GPU to Docker and renders the matching launch line \u2014 `-",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "the named test ran green at the named commit; its assertion was read before filing",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-19T21:32:25",
+        "commit": "c064d81"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 70
+    },
+    {
+      "id": "e67",
+      "obligation_ref": "o20",
+      "test_ref": "manual run 2026-09-19 on the DGX Spark: DockerRuntime.ensure() with vllm/vllm-openai by digest and LiquidAI/LFM2.5-350M, then LfmTier.select() on three requests",
+      "behavior_text": "the container came up on 127.0.0.1:18400 in 238-254 s, the model made real tool calls through the lfm2 parser, an inspection ran and an explanation came back in 0.3-0.5 s warm; the container was stopped and removed afterwards",
+      "contract_text": "Tier 2 talks to its model through one OpenAI-compatible localhost interface with tool-call support. The runtime behind it runs as a Docker container that nvsh starts and stops, on DGX Spark, AGX Thor, AGX Orin and Orin Nano alike, with GPU acceleration as the target and a CPU-only run as the fallback. nvsh detects how each machine exposes its GPU to Docker and renders the matching launch line \u2014 `-",
+      "evidence_type": "observation",
+      "strength": "fidelity",
+      "strength_basis": "one device, one engine, run by the agent and not captured by an automated test; Thor, Orin and a second engine were not run",
+      "outcome": "pass",
+      "run": null,
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 71
+    },
+    {
+      "id": "e68",
+      "obligation_ref": "o21",
+      "test_ref": "tests/test_tier_runtime_docker.py::test_the_tier2_launcher_is_the_only_docker_run_in_nvsh",
+      "behavior_text": "asserts the set of files under nvsh/ containing a docker run is exactly the launcher",
+      "contract_text": "nvsh's use of Docker is fixed: it starts only its own pinned Tier 2 image with a launch line built from config and detection, never from model output, and no tier can select an operation that runs an arbitrary container. The operation table's container operations act only on containers that already exist.",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "the named test ran green at the named commit; its assertion was read before filing",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-19T21:32:25",
+        "commit": "c064d81"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 72
+    },
+    {
+      "id": "e69",
+      "obligation_ref": "o22",
+      "test_ref": "tests/test_cli_setup.py::test_uninstall_removes_tier_state_and_stops_the_container",
+      "behavior_text": "asserts the records, rotation, lock and cache are gone and docker saw exactly stop then rm for this user's container name",
+      "contract_text": "The tier measurement records are size-bounded with rotation, since nvsh's existing audit.jsonl is append-only with no cap. `nvsh uninstall` removes the tier records, prefetched engine and model files, and stops and removes the Tier 2 container, and says what it left (pulled images) and how to remove them.",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "the named test ran green at the named commit; its assertion was read before filing",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-19T21:32:25",
+        "commit": "c064d81"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 73
+    },
+    {
+      "id": "e70",
+      "obligation_ref": "o22",
+      "test_ref": "tests/test_cli_setup.py::test_uninstall_text_mode_names_the_leftover_image_and_removal_command",
+      "behavior_text": "asserts stdout names the image reference and 'docker image rm <ref>'",
+      "contract_text": "The tier measurement records are size-bounded with rotation, since nvsh's existing audit.jsonl is append-only with no cap. `nvsh uninstall` removes the tier records, prefetched engine and model files, and stops and removes the Tier 2 container, and says what it left (pulled images) and how to remove them.",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "the named test ran green at the named commit; its assertion was read before filing",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-19T21:32:25",
+        "commit": "c064d81"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 74
+    },
+    {
+      "id": "e71",
+      "obligation_ref": "o22",
+      "test_ref": "tests/test_cli_setup.py::test_remove_tier_cache_does_not_touch_a_relative_cache_dir",
+      "behavior_text": "asserts a relative cache directory (a checkout's nvsh/tiers) is left in place and nothing is reported removed",
+      "contract_text": "The tier measurement records are size-bounded with rotation, since nvsh's existing audit.jsonl is append-only with no cap. `nvsh uninstall` removes the tier records, prefetched engine and model files, and stops and removes the Tier 2 container, and says what it left (pulled images) and how to remove them.",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "the named test ran green at the named commit; its assertion was read before filing",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-19T21:32:25",
+        "commit": "c064d81"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 75
+    },
+    {
+      "id": "e72",
+      "obligation_ref": "o2",
+      "test_ref": "tests/test_daemon_tiers.py::test_a_failure_request_reaches_lfm_tier_first_when_configured",
+      "behavior_text": "asserts a FAILURE request with [tiers.lfm] model set is answered by tier 'lfm' with the runtime ensured once",
+      "contract_text": "An explicit operator request (`/ask`, Ctrl+G, a `?`-marked line) goes through tiers in order: Tier 0 shell and slash commands, Tier 1 Needle3 selecting one typed operation, Tier 2 a small resident LFM2.5 agent running a bounded inspect-interpret-propose loop, Tier 3 the configured full NvshAgent. A qualifying command FAILURE skips Tier 1 and starts at Tier 2, because Tier 1 selects an operation fr",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "the named test ran green at the named commit; its assertion was read before filing",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-19T21:32:25",
+        "commit": "c064d81"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 76
+    },
+    {
+      "id": "e73",
+      "obligation_ref": "o10",
+      "test_ref": "tests/test_agent_registry.py::test_lfm_is_probe_excluded",
+      "behavior_text": "asserts lfm is in PROBE_EXCLUDED and absent from the probe rows",
+      "contract_text": "Each tier is reachable explicitly as a registered adapter (`@needle`, `@lfm`, `nvsh --agent needle`) as soon as its flavor is installed, is excluded from `nvsh setup`'s default-agent probe, and is reported by `nvsh agent list --json` and `nvsh doctor`. Automatic tier routing is off until the operator enables it in config. An explicit `@target` naming another harness always bypasses the tiers.",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "the named test ran green at the named commit; its assertion was read before filing",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-19T21:32:25",
+        "commit": "c064d81"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 77
+    },
+    {
+      "id": "e74",
+      "obligation_ref": "o10",
+      "test_ref": "tests/test_demo_default_refused.py::test_agent_use_lfm_is_refused_like_needle",
+      "behavior_text": "asserts 'nvsh agent use lfm' is refused",
+      "contract_text": "Each tier is reachable explicitly as a registered adapter (`@needle`, `@lfm`, `nvsh --agent needle`) as soon as its flavor is installed, is excluded from `nvsh setup`'s default-agent probe, and is reported by `nvsh agent list --json` and `nvsh doctor`. Automatic tier routing is off until the operator enables it in config. An explicit `@target` naming another harness always bypasses the tiers.",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "the named test ran green at the named commit; its assertion was read before filing",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-19T21:32:25",
+        "commit": "c064d81"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 78
+    },
+    {
+      "id": "e75",
+      "obligation_ref": "o17",
+      "test_ref": "scratch bench around nvsh.tiers.bench.bench, Tier 2 alone, 80-entry fold, DGX Spark 2026-09-19 (docs/benchmarks/2026-09-19-dgx-spark-tier2.md)",
+      "behavior_text": "stock LFM2.5-350M proposed the right operation and arguments on 0 of 53 asks and escalated 1 of 27 should-escalate asks; 1.2B-Instruct 2 of 53 and 5 of 27; no wrong mutating proposal from either",
+      "contract_text": "On the committed corpus, on each benchmarked device (AGX Orin, AGX Thor, DGX Spark): Tier 1 warm selection p95 < 150 ms; >= 90% of fast-path prompts get the correct operation and arguments; 0 wrong mutating operations proposed without the interpreted operation being shown; >= 80% of should-escalate prompts are declined by Tier 1; a command that succeeds still costs one bash function call and 0 for",
+      "evidence_type": "observation",
+      "strength": "fidelity",
+      "strength_basis": "measured by the agent on one device with a scratch script, because 'nvsh tiers bench' has no Tier 2 option; the fold and the training data share an author",
+      "outcome": "fail",
+      "run": null,
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 79
+    },
+    {
+      "id": "e76",
+      "obligation_ref": "o17",
+      "test_ref": "nvsh tiers bench --tier needle on the 318-entry dev grid, DGX Spark 2026-09-19",
+      "behavior_text": "stock Needle3: 72 of 208 explicit asks right (35%) against a 90% target, 78 of 106 should-escalate asks declined (74%) against 80%, p95 70 ms",
+      "contract_text": "On the committed corpus, on each benchmarked device (AGX Orin, AGX Thor, DGX Spark): Tier 1 warm selection p95 < 150 ms; >= 90% of fast-path prompts get the correct operation and arguments; 0 wrong mutating operations proposed without the interpreted operation being shown; >= 80% of should-escalate prompts are declined by Tier 1; a command that succeeds still costs one bash function call and 0 for",
+      "evidence_type": "observation",
+      "strength": "fidelity",
+      "strength_basis": "the shipped bench command on one device; the held-out split is still empty, so this is the dev split",
+      "outcome": "fail",
+      "run": null,
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 80
+    },
+    {
+      "id": "e77",
+      "obligation_ref": "o16",
+      "test_ref": "manual: needle finetune (20 epochs) then needle build --lora, scored in JAX and through the engine, DGX Spark 2026-09-19; reported upstream as cactus-compute/needle#134",
+      "behavior_text": "the recipe's training step works (42 of 53 picks in JAX against stock's 11 of 53) but the exported archive gets 2 of 30 of its own training examples right, so the recipe cannot produce a model nvsh can load",
+      "contract_text": "nvsh ships a reproducible Needle3 fine-tune recipe: a dataset builder that turns the corpus development split (plus opted-in, redacted records) into the `needle finetune` JSONL format, the training command, and `needle build --lora` producing a `.cact` file whose hash is pinned like any other fetched file. The tuned model is adopted only if, on the held-out split, it beats stock Needle3 on correct",
+      "evidence_type": "observation",
+      "strength": "fidelity",
+      "strength_basis": "one run on one device by the agent; the fault is in the upstream export path and was reproduced with the prompt matched and truncation ruled out",
+      "outcome": "fail",
+      "run": null,
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 81
     }
   ],
   "deltas": [
@@ -1245,6 +1716,77 @@
         "e51",
         "e52",
         "e53"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    },
+    {
+      "id": "b14",
+      "kind": "amended",
+      "behavior_text": "PR C ships no tuned Needle3 and nvsh cannot load one: the fine-tune works in JAX but the upstream 'needle build --lora' export is faulty (cactus-compute/needle#134); the recipe documents settings that train and a check for the fault",
+      "caused_by": [
+        "d3"
+      ],
+      "evidence_refs": [
+        "e77"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    },
+    {
+      "id": "b15",
+      "kind": "amended",
+      "behavior_text": "Tier 2 ships with the stock LFM2.5-350M, which mostly answers in plain words and rarely proposes or escalates; both tiers' accuracy targets are recorded as not met and Tier 2 stays opt-in",
+      "caused_by": [
+        "d4"
+      ],
+      "evidence_refs": [
+        "e75",
+        "e76"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    },
+    {
+      "id": "b16",
+      "kind": "added",
+      "behavior_text": "Text is cut to a bound before it is redacted (the redactor is slow on long unbroken input), and a private-key block split by that cut is replaced whole by a fixed marker so no key body reaches the model or the full agent",
+      "caused_by": [
+        "c15"
+      ],
+      "evidence_refs": [
+        "e60"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    },
+    {
+      "id": "b17",
+      "kind": "added",
+      "behavior_text": "The launcher validates every [tiers.lfm] setting before building a launch line and gained three settings found necessary in the real run: gpu_memory_fraction (default 0.08), tool_call_parser (vLLM default lfm2) and hf_cache_dir (the engine runs as the operator so its cache stays removable)",
+      "caused_by": [
+        "c25"
+      ],
+      "evidence_refs": [
+        "e67"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    },
+    {
+      "id": "b18",
+      "kind": "added",
+      "behavior_text": "nvsh uninstall refuses to delete any tier path that is not absolute, and only removes a cache directory whose path ends in nvsh/tiers",
+      "caused_by": [
+        "c35"
+      ],
+      "evidence_refs": [
+        "e71"
       ],
       "origin": "llm",
       "status": "proposed",

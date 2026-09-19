@@ -655,8 +655,11 @@ timestamped backup instead, if the block was hand-edited since `setup` wrote
 it), deletes the rendered `$XDG_DATA_HOME/nvsh/shell/*.bash` files, removes
 `$XDG_RUNTIME_DIR/nvsh/*.log`, `*.notice` and `daemon.sock`, and stops a
 running daemon if a (parallel-task) `nvsh.daemon` module is present —
-detected with `importlib.util.find_spec`, never imported directly. A no-op
-(exit 0) when nothing was installed.
+detected with `importlib.util.find_spec`, never imported directly. It also
+stops and removes this user's Tier 2 container, deletes nvsh's own tier
+records and cache files, and reports which container images are still on
+this machine (never removed automatically). A no-op (exit 0) when nothing
+was installed.
 
 ## Usage
 

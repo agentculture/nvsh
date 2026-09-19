@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-09-19T11:10:08Z",
-  "updated": "2026-09-19T17:55:41Z",
+  "updated": "2026-09-19T21:33:47Z",
   "claims": [
     {
       "id": "c1",
@@ -1082,6 +1082,24 @@
       ],
       "origin": "llm",
       "status": "proposed"
+    },
+    {
+      "id": "l9",
+      "code": "provenance-missing",
+      "what": "PR C validation: e60 (a split private-key block leaves no key material) is filed under the c15 obligation although c15's text speaks of a bounded context, not of redaction; the plan's acceptance criterion ('bounded, redacted result') is what it backs. And the Tier 2 accuracy evidence e75 comes from a scratch script around the bench library, because 'nvsh tiers bench' has no Tier 2 option.",
+      "skipped_check": "",
+      "refs": [],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l10",
+      "code": "n-below-claim",
+      "what": "PR C accuracy figures rest on small, same-author samples: the Needle LoRA result (42 of 53 in JAX) and both Tier 2 baselines use an 80-entry fold cut from the dev grid the agent wrote in one sitting; the held-out split is still empty, so no figure here is a held-out measurement.",
+      "skipped_check": "",
+      "refs": [],
+      "origin": "llm",
+      "status": "proposed"
     }
   ],
   "obligations": [
@@ -1244,6 +1262,42 @@
       "seam": "nvsh tiers bench",
       "behavior": "a repeatable runner over a committed corpus that measures the tier and not the host, reports per-request rows, and never reports an unmeasured target as a pass",
       "source_text": "A repeatable benchmark corpus and runner are committed: the prompts and failure cases from issues #30 and #31, each with its expected operation, arguments or expected escalation. One command runs it on a device and writes a results file with accuracy, argument accuracy, false-mutating-pick count, escalation precision and recall, cold and warm latency, and resident and peak memory. Results for each device are committed under docs/.",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o19",
+      "claim_id": "c15",
+      "seam": "nvsh/tiers/lfm.py LfmTier.select",
+      "behavior": "at most 4 inspection rounds, only read-only operations ever reach the runner, the context stays under a fixed budget, the outcome is exactly propose / explain / escalate, and an escalation carries the inspection results",
+      "source_text": "Tier 2 runs a bounded loop: at most 4 inspection rounds, read-only operations only inside the loop, a bounded context, and three possible outcomes \u2014 propose an operation, explain the failure in plain text, or escalate. Escalation hands the full agent what Tier 2 already inspected so the work is not repeated.",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o20",
+      "claim_id": "c25",
+      "seam": "nvsh/tiers/runtime_docker.py render_launch / DockerRuntime / build_runtime",
+      "behavior": "the launch line uses --gpus all on a DGX Spark and --runtime nvidia on a Jetson, publishes on 127.0.0.1 only, names the image by digest; with Docker missing the runtime declines with one line; attach mode runs no docker command",
+      "source_text": "Tier 2 talks to its model through one OpenAI-compatible localhost interface with tool-call support. The runtime behind it runs as a Docker container that nvsh starts and stops, on DGX Spark, AGX Thor, AGX Orin and Orin Nano alike, with GPU acceleration as the target and a CPU-only run as the fallback. nvsh detects how each machine exposes its GPU to Docker and renders the matching launch line \u2014 `--gpus all` on the DGX Spark, which is what the operator's own containers already use, and `--runtime nvidia` on Jetson, where `--gpus all` is refused by the container toolkit's csv mode \u2014 and changes no Docker configuration on either \u2014 and records the detection source in docs/platforms.md. Which engine the container holds is a config choice among `llama-server`, `vllm` and `sglang`, and nvsh can instead attach to a runtime the operator already runs. The container publishes its port on localhost only. The benchmark runner records speed and memory cost per engine and per CPU/GPU mode, so each device class's default is picked from numbers, weighing footprint as heavily as latency.",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o21",
+      "claim_id": "c37",
+      "seam": "nvsh/tiers/runtime_docker.py is the only docker run",
+      "behavior": "the only 'docker run' under nvsh/ is the Tier 2 launcher, and render_launch takes settings, platform and uid only",
+      "source_text": "nvsh's use of Docker is fixed: it starts only its own pinned Tier 2 image with a launch line built from config and detection, never from model output, and no tier can select an operation that runs an arbitrary container. The operation table's container operations act only on containers that already exist.",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o22",
+      "claim_id": "c35",
+      "seam": "nvsh/cli/_commands/setup.py cmd_uninstall",
+      "behavior": "uninstall removes tier records (with rotations and lock) and the tier cache, stops and removes this user's Tier 2 container and no other, names the images it left and how to remove them, and never deletes a relative path",
+      "source_text": "The tier measurement records are size-bounded with rotation, since nvsh's existing audit.jsonl is append-only with no cap. `nvsh uninstall` removes the tier records, prefetched engine and model files, and stops and removes the Tier 2 container, and says what it left (pulled images) and how to remove them.",
       "origin": "llm",
       "status": "proposed"
     }

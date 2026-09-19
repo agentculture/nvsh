@@ -13,6 +13,9 @@ from pathlib import Path
 import pytest
 
 from nvsh.cli import main as cli_main
+from nvsh.cli._commands import setup as setup_mod
+from nvsh.platform._model import Platform
+from nvsh.tiers import runtime_docker as tier_runtime_docker
 
 UBUNTU_RC = """\
 # ~/.bashrc
@@ -25,6 +28,11 @@ esac
 
 HISTCONTROL=ignoredups
 """
+
+
+def _docker_missing(argv: list[str], timeout: float) -> tuple[int, str]:
+    """The default fake docker runner: no test spawns a real ``docker``."""
+    raise FileNotFoundError("docker: not found")
 
 
 @pytest.fixture(autouse=True)
@@ -57,6 +65,12 @@ def _isolated_env(tmp_path, monkeypatch):
         "_check_agent_reachable",
         lambda cfg: {"passed": True, "message": "stub: reachable"},
     )
+    # `uninstall` always tries to stop this user's Tier 2 container and to
+    # detect the platform for its image report: default both to fakes so no
+    # test spawns a real `docker` or reads the real machine, per-test
+    # overrides replace either.
+    monkeypatch.setattr(tier_runtime_docker, "_default_runner", _docker_missing)
+    monkeypatch.setattr(setup_mod, "_detect_platform", lambda: Platform(kind="unknown"))
 
 
 def _run(argv):
@@ -411,6 +425,239 @@ def test_uninstall_on_never_installed_rc_is_a_noop(tmp_path):
     code, out, err = _run(["uninstall", "--rc", str(rc), "--json"])
     assert code == 0, err
     assert rc.read_text() == UBUNTU_RC
+
+
+# --------------------------------------------------------------------------
+# uninstall: tier state (t21)
+# --------------------------------------------------------------------------
+
+_TIER_DIGEST = "sha256:" + "ab" * 32
+_TIER_IMAGE = "example.invalid/tier2@" + _TIER_DIGEST
+
+
+class _RecordingDocker:
+    """Records every argv it is handed; always answers success."""
+
+    def __init__(self) -> None:
+        self.calls: list[list[str]] = []
+
+    def __call__(self, argv: list[str], timeout: float) -> tuple[int, str]:
+        self.calls.append(list(argv))
+        return (0, "")
+
+
+def _write_tier_config(tmp_path: Path, image: str) -> None:
+    cfg_dir = tmp_path / "xdg-config" / "nvsh"
+    cfg_dir.mkdir(parents=True, exist_ok=True)
+    (cfg_dir / "config.toml").write_text(f'[tiers.lfm]\nimage = "{image}"\n')
+
+
+def _seed_tier_records(tmp_path: Path) -> Path:
+    state_dir = tmp_path / "home" / ".local" / "state" / "nvsh"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    (state_dir / "tiers.jsonl").write_text('{"tier": "needle"}\n')
+    (state_dir / "tiers.jsonl.1").write_text('{"tier": "needle"}\n')
+    (state_dir / "tiers.jsonl.lock").write_text("")
+    return state_dir
+
+
+def _seed_tier_cache(tmp_path: Path) -> Path:
+    cache_dir = tmp_path / "home" / ".cache" / "nvsh" / "tiers"
+    (cache_dir).mkdir(parents=True, exist_ok=True)
+    (cache_dir / "weights.gguf").write_text("weights")
+    staged_home = cache_dir / "needle-home" / "home"
+    staged_home.mkdir(parents=True, exist_ok=True)
+    (staged_home / "marker").write_text("x")
+    return cache_dir
+
+
+def test_uninstall_removes_tier_state_and_stops_the_container(tmp_path, monkeypatch):
+    rc = _rc(tmp_path)
+    rc.write_text(UBUNTU_RC)
+    _write_tier_config(tmp_path, _TIER_IMAGE)
+    state_dir = _seed_tier_records(tmp_path)
+    cache_dir = _seed_tier_cache(tmp_path)
+
+    docker = _RecordingDocker()
+    monkeypatch.setattr(tier_runtime_docker, "_default_runner", docker)
+    monkeypatch.setattr(setup_mod, "_detect_platform", lambda: Platform(kind="dgx-spark"))
+
+    code, out, err = _run(["uninstall", "--rc", str(rc), "--json"])
+    assert code == 0, err
+    payload = json.loads(out)
+
+    assert not (state_dir / "tiers.jsonl").exists()
+    assert not (state_dir / "tiers.jsonl.1").exists()
+    assert not (state_dir / "tiers.jsonl.lock").exists()
+    assert not cache_dir.exists()
+    assert payload["removed_tier_files"]
+
+    assert [call[:2] for call in docker.calls] == [["docker", "stop"], ["docker", "rm"]]
+    our_uid = os.getuid()
+    assert {call[-1] for call in docker.calls} == {f"nvsh-tier2-{our_uid}"}
+
+    assert payload["images_left"] == [_TIER_IMAGE]
+
+
+def test_uninstall_text_mode_names_the_leftover_image_and_removal_command(tmp_path, monkeypatch):
+    rc = _rc(tmp_path)
+    rc.write_text(UBUNTU_RC)
+    _write_tier_config(tmp_path, _TIER_IMAGE)
+
+    monkeypatch.setattr(tier_runtime_docker, "_default_runner", _RecordingDocker())
+    monkeypatch.setattr(setup_mod, "_detect_platform", lambda: Platform(kind="dgx-spark"))
+
+    code, out, err = _run(["uninstall", "--rc", str(rc)])
+    assert code == 0, err
+    assert _TIER_IMAGE in out
+    assert f"docker image rm {_TIER_IMAGE}" in out
+
+
+def test_tier_container_status_stops_the_container_even_when_config_load_raises(monkeypatch):
+    """finding 4054701421: config.load() and platform detection used to run
+    BEFORE stop_container, so a broken config.toml meant the container was
+    never stopped."""
+    docker = _RecordingDocker()
+    monkeypatch.setattr(tier_runtime_docker, "_default_runner", docker)
+
+    def _broken_load() -> None:
+        raise ValueError("malformed config.toml")
+
+    monkeypatch.setattr(setup_mod.nvsh_config, "load", _broken_load)
+
+    setup_mod._tier_container_status()
+
+    assert [call[:2] for call in docker.calls] == [["docker", "stop"], ["docker", "rm"]]
+
+
+def test_uninstall_in_attach_mode_reports_no_leftover_images(tmp_path, monkeypatch):
+    """finding 4054701435: image_refs() used to be called even when
+    [tiers.lfm] mode = "attach", so uninstall told the operator to remove an
+    image nvsh never started."""
+    rc = _rc(tmp_path)
+    rc.write_text(UBUNTU_RC)
+    cfg_dir = tmp_path / "xdg-config" / "nvsh"
+    cfg_dir.mkdir(parents=True, exist_ok=True)
+    # An `image` is set too, and would resolve just fine for a *managed*
+    # config -- so this only stays empty because attach mode is checked
+    # before image_refs runs, not because the image itself is unresolvable.
+    (cfg_dir / "config.toml").write_text(
+        '[tiers.lfm]\nmode = "attach"\nbase_url = "http://127.0.0.1:9"\n'
+        f'image = "{_TIER_IMAGE}"\n'
+    )
+
+    monkeypatch.setattr(tier_runtime_docker, "_default_runner", _RecordingDocker())
+    monkeypatch.setattr(setup_mod, "_detect_platform", lambda: Platform(kind="dgx-spark"))
+
+    code, out, err = _run(["uninstall", "--rc", str(rc), "--json"])
+    assert code == 0, err
+    payload = json.loads(out)
+    assert payload["images_left"] == []
+
+
+def test_uninstall_never_fails_when_docker_is_missing(tmp_path):
+    rc = _rc(tmp_path)
+    rc.write_text(UBUNTU_RC)
+    _seed_tier_records(tmp_path)
+
+    code, out, err = _run(["uninstall", "--rc", str(rc), "--json"])
+    assert code == 0, err
+    payload = json.loads(out)
+    assert (
+        "docker not available" in payload["tier_container"]
+        or "not found" in payload["tier_container"]
+    )
+    assert payload["removed_tier_files"]
+
+
+def test_uninstall_with_no_tier_state_reports_empty_fields(tmp_path):
+    rc = _rc(tmp_path)
+    rc.write_text(UBUNTU_RC)
+
+    code, out, err = _run(["uninstall", "--rc", str(rc), "--json"])
+    assert code == 0, err
+    payload = json.loads(out)
+    assert payload["removed_tier_files"] == []
+    assert payload["images_left"] == []
+
+
+def test_safe_tier_path_refuses_the_filesystem_root(tmp_path):
+    assert setup_mod._safe_tier_path(Path("/")) is False
+
+
+def test_safe_tier_path_refuses_home_itself(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    assert setup_mod._safe_tier_path(home) is False
+
+
+def test_safe_tier_path_accepts_an_nvsh_cache_path(tmp_path):
+    path = tmp_path / "home" / ".cache" / "nvsh" / "tiers"
+    assert setup_mod._safe_tier_path(path) is True
+
+
+def test_remove_tier_cache_unlinks_a_symlink_without_recursing(tmp_path, monkeypatch):
+    real_target = tmp_path / "elsewhere"
+    real_target.mkdir()
+    (real_target / "do-not-touch").write_text("keep me")
+
+    home = tmp_path / "home"
+    home.mkdir(exist_ok=True)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("XDG_CACHE_HOME", raising=False)
+    cache_parent = home / ".cache" / "nvsh"
+    cache_parent.mkdir(parents=True)
+    cache_link = cache_parent / "tiers"
+    cache_link.symlink_to(real_target)
+
+    removed = setup_mod._remove_tier_cache()
+
+    assert removed == [str(cache_link)]
+    assert not cache_link.exists()
+    assert (real_target / "do-not-touch").exists()
+
+
+def test_safe_tier_path_refuses_a_relative_path():
+    """finding 4054701415: a relative path with an 'nvsh' component used to
+    pass, so a relative XDG_CACHE_HOME/XDG_STATE_HOME resolving against the
+    process cwd (a checkout of this repo) could reach the repo's own
+    'nvsh' source directory."""
+    assert setup_mod._safe_tier_path(Path("nvsh/tiers")) is False
+
+
+def test_remove_tier_cache_does_not_touch_a_relative_cache_dir(tmp_path, monkeypatch):
+    """finding 4054701415: with XDG_CACHE_HOME="." and cwd inside a checkout
+    of this repo, default_cache_dir() used to resolve to "nvsh/tiers" and
+    _remove_tier_cache would shutil.rmtree the repository's own source
+    directory."""
+    repo = tmp_path / "checkout"
+    source_dir = repo / "nvsh" / "tiers"
+    source_dir.mkdir(parents=True)
+    (source_dir / "runtime_docker.py").write_text("# repo source, not a cache")
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("XDG_CACHE_HOME", ".")
+
+    removed = setup_mod._remove_tier_cache()
+
+    assert (source_dir / "runtime_docker.py").exists()
+    assert removed == []
+
+
+def test_remove_tier_records_does_not_touch_a_relative_state_dir(tmp_path, monkeypatch):
+    """finding 4054701415: the same relative-path hole for the tier records
+    path, driven by a relative XDG_STATE_HOME."""
+    repo = tmp_path / "checkout"
+    records_dir = repo / "nvsh"
+    records_dir.mkdir(parents=True)
+    records = records_dir / "tiers.jsonl"
+    records.write_text('{"tier": "needle"}\n')
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("XDG_STATE_HOME", ".")
+
+    removed = setup_mod._remove_tier_records()
+
+    assert records.exists()
+    assert removed == []
 
 
 # --------------------------------------------------------------------------
@@ -1209,3 +1456,13 @@ def test_setup_qwen_only_path_is_a_single_harness_and_never_prompts(tmp_path, mo
     assert [row["name"] for row in payload["agent"]["probe"]] == ["qwen"]
     assert payload["agent"]["name"] == "qwen"
     assert _default_alias() == "qwen"
+
+
+def test_uninstall_never_removes_a_cache_dir_it_did_not_name(tmp_path, monkeypatch):
+    from nvsh.tiers import fetch
+
+    other = tmp_path / "nvsh" / "projects"
+    other.mkdir(parents=True)
+    monkeypatch.setattr(fetch, "default_cache_dir", lambda env=None: other)
+    setup_mod._remove_tier_cache()
+    assert other.is_dir()

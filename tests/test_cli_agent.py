@@ -68,6 +68,7 @@ def test_agent_list_json_reports_all_adapters(capsys):
         "openai-compat",
         "demo",
         "needle",
+        "lfm",
     }
     for row in payload["adapters"]:
         assert "installed" in row

@@ -162,7 +162,7 @@ def test_setup_keeps_a_rich_default_alias_whose_backend_is_installed(
     monkeypatch.setenv("HOME", str(tmp_path))
     (tmp_path / ".bashrc").write_text("# rc\n", encoding="utf-8")
     monkeypatch.setattr(registry, "choose", lambda cfg, which=None, forced=None: ("pi", "test"))
-    monkeypatch.setattr(registry, "installed", lambda name, which=None: True)
+    monkeypatch.setattr(registry, "installed", lambda name, which=None, config=None: True)
     rc = main(["setup", "--json", "--no-install"])
     assert rc == 0
     text = (xdg / "nvsh" / "config.toml").read_text(encoding="utf-8")

@@ -43,6 +43,10 @@ class DeclineReason(enum.Enum):
     MEMORY_FLOOR = "memory_floor"
     NOT_GROUNDED = "not_grounded"
     LOOP_LIMIT = "loop_limit"
+    #: The tier itself asked for the full agent: Tier 2's ``escalate`` tool,
+    #: a turn that produced nothing usable, or a loop that ran out of rounds.
+    #: Not a fault -- escalation is one of Tier 2's three normal outcomes.
+    ESCALATED = "escalated"
     #: The operation validated and grounded, but no single non-shell command
     #: renders it on this platform (``nvsh.ops.render`` returned ``None``).
     NOT_RENDERABLE = "not_renderable"
@@ -232,7 +236,11 @@ def decide(
 
 
 class Tier(abc.ABC):
-    """A local response tier: proposes a decision, never executes anything.
+    """A local response tier: proposes a decision, never executes one.
+
+    What a tier *returns* is never run by the tier. Tier 2 does run read-only
+    operations from the table while it looks into a request (grounded,
+    rendered by ``nvsh.ops``, with a timeout); it never runs a mutating one.
 
     ``select()`` is the only way a tier speaks: it returns a
     :class:`TierDecision` or a :class:`Decline`, both inert data. No ``Tier``

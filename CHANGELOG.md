@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/). This project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.17.0] - 2026-09-19
+
+### Added
+
+- Tier 2 (opt-in): a small resident LFM2.5 runs a bounded inspect, then propose / explain / escalate loop (`nvsh/tiers/lfm.py`); a command failure starts there. Configure `[tiers.lfm] model` to switch it on. See `docs/tier2.md`.
+- Tier 2 container launcher (`nvsh/tiers/runtime_docker.py`): the only `docker run` in nvsh, built from config and platform detection only; localhost-only port, image by digest, per-user name and port, `--gpus all` on DGX Spark and `--runtime nvidia` on Jetson, engines `llama-server`, `vllm`, `sglang`, or attach to a server you already run.
+- `@lfm`, an eleventh adapter for Tier 2 alone; excluded from the setup probe and refused as a default, like `needle`.
+- `nvsh uninstall` removes tier records and prefetched files, stops and removes the Tier 2 container, and says which images it left.
+- `nvsh tiers bench` reports accuracy per expected operation and per phrasing class; the development corpus is now a 318-entry grid.
+- LFM2.5 fine-tune recipe and dataset builder (`docs/lfm-finetune.md`, written and not yet run), a reading of the LFM Open License (`docs/lfm-license-notes.md`), and DGX Spark baselines (`docs/benchmarks/`).
+
+### Changed
+
+- The delivery record for the tiered local response run now covers PR C: what was delivered, the two approved deviations (`d3`, `d4`), the accuracy targets recorded as not met, and what is left.
+- Text is bounded before it is redacted in the tier router and Tier 2, because the redactor is slow on very long unbroken input.
+- An unconfigured `@needle` or `@lfm` now says what is missing instead of naming a binary that is not on PATH.
+
+### Fixed
+
+- Measured and recorded: stock LFM2.5 models rarely use propose or escalate, and a LoRA-tuned Needle3 cannot ship until an upstream export fault is fixed (cactus-compute/needle#134). Both tiers stay opt-in.
+
 ## [0.16.1] - 2026-09-19
 
 ### Added

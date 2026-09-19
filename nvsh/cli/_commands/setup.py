@@ -685,6 +685,174 @@ def _remove_runtime_files() -> list[str]:
     return removed
 
 
+def _detect_platform():
+    """This machine's :class:`~nvsh.platform.Platform`.
+
+    Imported lazily -- :mod:`nvsh.platform` is only needed for the tier
+    container's image-ref report, never on the hot success path.
+    """
+    from nvsh.platform import detect
+
+    return detect()
+
+
+#: The last two components of the only directory ``uninstall`` removes whole.
+_TIER_CACHE_TAIL = ("nvsh", "tiers")
+
+
+def _safe_tier_path(path: Path) -> bool:
+    """Whether *path* is safe for ``uninstall`` to delete.
+
+    Computed from the path alone (never resolving a symlink -- a symlink
+    at the real location is unlinked, not followed, by the caller): must be
+    an ABSOLUTE path (checked on the un-normalised string -- a relative
+    ``XDG_CACHE_HOME``/``XDG_STATE_HOME`` such as ``"."`` must never resolve
+    against the current working directory, which can be a source checkout),
+    never the filesystem root, never the operator's home directory itself,
+    and somewhere under an ``nvsh`` directory. A misresolved
+    ``XDG_CACHE_HOME``/``XDG_STATE_HOME`` (empty, ``/``, or ``$HOME`` itself)
+    must never turn a tier-file cleanup into a wider deletion.
+    """
+    if not os.path.isabs(str(path)):
+        return False
+    normalized = Path(os.path.normpath(str(path)))
+    home = Path(os.path.normpath(os.path.expanduser("~")))
+    if normalized in (Path(normalized.anchor), home):
+        return False
+    return "nvsh" in normalized.parts
+
+
+def _stop_tier_container() -> str:
+    """Stop this OS user's Tier 2 container -- a safety net after the daemon
+    stop above, which already stops an attached container while it is alive.
+
+    Never raises: a missing/unreachable Docker folds into the returned
+    status line instead of failing ``uninstall``. Kept independent of config
+    loading and platform detection (see :func:`_tier_container_status`) so a
+    broken ``config.toml`` can never skip the actual ``docker stop``/``rm``.
+    """
+    try:
+        from nvsh.tiers import runtime_docker
+
+        return runtime_docker.stop_container(os.getuid())
+    except Exception as exc:  # noqa: BLE001 - tier cleanup must never abort uninstall
+        return f"tier container cleanup failed: {exc}"
+
+
+def _tier_image_refs() -> list[str]:
+    """Which pinned Tier 2 images this config/platform could have pulled.
+
+    Never raises: an unloadable config or an unresolvable image folds into
+    an empty list instead of failing ``uninstall``.
+    """
+    try:
+        from nvsh.tiers import runtime_docker
+
+        cfg = nvsh_config.load()
+        lfm_settings = cfg.tiers.get("lfm", {}) if isinstance(cfg.tiers, dict) else {}
+        platform = _detect_platform()
+        return runtime_docker.image_refs(lfm_settings, platform)
+    except Exception:  # noqa: BLE001 - tier cleanup must never abort uninstall
+        return []
+
+
+def _tier_container_status() -> tuple[str, list[str]]:
+    """Stop the container, then separately report leftover pinned images.
+
+    Two independent, guarded steps: the container stop must run even when
+    config loading or platform detection fails, and vice versa.
+    """
+    status = _stop_tier_container()
+    refs = _tier_image_refs()
+    return status, refs
+
+
+def _rotated_tier_paths(base: Path) -> list[Path]:
+    from nvsh.tiers.records import ROTATED_FILES
+
+    return [Path(f"{base}.{i}") for i in range(1, ROTATED_FILES)]
+
+
+def _remove_tier_records() -> list[str]:
+    """Delete the tier measurement log, its rotated siblings and the sidecar
+    lock file :mod:`nvsh.tiers.records` writes next to it -- resolved
+    through :func:`nvsh.tiers.records.default_records_path`, nvsh's own
+    paths only."""
+    from nvsh.tiers.records import default_records_path
+
+    base = default_records_path()
+    candidates = [base, *_rotated_tier_paths(base), base.with_name(base.name + ".lock")]
+    removed: list[str] = []
+    for path in candidates:
+        if _safe_tier_path(path) and (path.is_file() or path.is_symlink()):
+            path.unlink(missing_ok=True)
+            removed.append(str(path))
+    return removed
+
+
+def _remove_tier_cache() -> list[str]:
+    """Delete nvsh's tier cache directory -- prefetched engine/weights plus
+    the staged Needle3 home under it -- resolved through
+    :func:`nvsh.tiers.fetch.default_cache_dir`.
+
+    A symlink at that path is unlinked outright, never followed into with
+    ``shutil.rmtree``.
+    """
+    from nvsh.tiers.fetch import default_cache_dir
+
+    cache_dir = default_cache_dir()
+    # Only ever a directory nvsh itself named: ".../nvsh/tiers".
+    if not _safe_tier_path(cache_dir) or cache_dir.parts[-2:] != _TIER_CACHE_TAIL:
+        return []
+    if cache_dir.is_symlink():
+        cache_dir.unlink()
+        return [str(cache_dir)]
+    if not cache_dir.exists():
+        return []
+    shutil.rmtree(cache_dir)
+    return [str(cache_dir)]
+
+
+def _remove_tier_files() -> tuple[list[str], str | None]:
+    """Remove nvsh's own tier records and cache paths.
+
+    Never raises: an unexpected failure here is reported back as a status
+    line, never allowed to fail ``uninstall``.
+    """
+    try:
+        return _remove_tier_records() + _remove_tier_cache(), None
+    except Exception as exc:  # noqa: BLE001 - tier cleanup must never abort uninstall
+        return [], f"tier file cleanup failed: {exc}"
+
+
+def _tier_cleanup() -> dict:
+    """Stop the Tier 2 container, then remove nvsh's own tier state.
+
+    Runs after the rc hook and daemon are already gone, so nothing here can
+    block those; images are deliberately left in place (see
+    :func:`nvsh.tiers.runtime_docker.leftover_note`), and every step is
+    fault-tolerant on its own.
+    """
+    container_status, images_left = _tier_container_status()
+    removed_tier_files, file_error = _remove_tier_files()
+    if file_error:
+        container_status = f"{container_status}; {file_error}"
+    return {
+        "removed_tier_files": removed_tier_files,
+        "tier_container": container_status,
+        "images_left": images_left,
+    }
+
+
+def _leftover_images_note(refs: list[str]) -> str:
+    """The "left on this machine" block for text-mode output, or ``""``."""
+    if not refs:
+        return ""
+    from nvsh.tiers.runtime_docker import leftover_note
+
+    return leftover_note(refs)
+
+
 def cmd_uninstall(args: argparse.Namespace) -> int:
     rc_path = _rc_path(args)
     removed, edited, restored_from_backup = _restore_rc(rc_path)
@@ -696,6 +864,11 @@ def cmd_uninstall(args: argparse.Namespace) -> int:
     # `daemon stop` cannot connect and the orphan survives to its own timeout.
     daemon_stopped = _stop_daemon(render.resolve_nvsh_bin())
 
+    # Stop/remove a Tier 2 container and nvsh's own tier files *after* the
+    # daemon: the daemon's own close() already stops an attached container
+    # while it is alive, so this is a safety net for an orphaned one.
+    tier = _tier_cleanup()
+
     removed_runtime = _remove_runtime_files()
 
     result = {
@@ -706,18 +879,26 @@ def cmd_uninstall(args: argparse.Namespace) -> int:
         "removed_files": removed_files,
         "removed_runtime": removed_runtime,
         "daemon_stopped": daemon_stopped,
+        "removed_tier_files": tier["removed_tier_files"],
+        "tier_container": tier["tier_container"],
+        "images_left": tier["images_left"],
     }
 
     if bool(getattr(args, "json", False)):
         emit_result(result, json_mode=True)
     else:
+        total_removed = len(removed_files) + len(removed_runtime) + len(tier["removed_tier_files"])
         lines = [
             f"rc: {result['rc']}",
             f"block removed: {removed}",
             f"restored from backup: {restored_from_backup}",
-            f"removed files: {len(removed_files) + len(removed_runtime)}",
+            f"removed files: {total_removed}",
             f"daemon stopped: {daemon_stopped}",
+            f"tier container: {tier['tier_container']}",
         ]
+        leftover = _leftover_images_note(tier["images_left"])
+        if leftover:
+            lines.append(leftover)
         emit_result("\n".join(lines), json_mode=False)
     return 0
 

@@ -243,7 +243,7 @@ def test_keep_existing_default_never_keeps_needle():
 
 
 def _uninstalled(monkeypatch) -> None:
-    monkeypatch.setattr(registry, "installed", lambda name, which=None: False)
+    monkeypatch.setattr(registry, "installed", lambda name, which=None, config=None: False)
 
 
 def _no_binary(_name: str) -> None:

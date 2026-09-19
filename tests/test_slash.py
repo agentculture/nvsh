@@ -462,7 +462,7 @@ def test_dispatch_ask_without_the_flag_keeps_the_whole_question(xdg, monkeypatch
 def test_ask_with_an_unavailable_agent_prints_one_line(xdg, monkeypatch):
     from nvsh.agent import registry
 
-    monkeypatch.setattr(registry, "installed", lambda name, which=None: name == "pi")
+    monkeypatch.setattr(registry, "installed", lambda name, which=None, config=None: name == "pi")
     monkeypatch.setattr(client_transport, "send", _stub_send([]))
     monkeypatch.setattr(client_transport, "one_shot", _stub_send([]))
     p = _panel()

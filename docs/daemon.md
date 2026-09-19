@@ -228,7 +228,9 @@ of loading anything of its own.
   `TierManager.sweep()`, which closes the tiers — killing the Needle child —
   after `[tiers] idle_unload_seconds` (default 900) with no tier request.
   `0` means never. The next request rebuilds. There is no thread of the
-  tiers' own. Teardown closes them too: no Needle child outlives the daemon.
+  tiers' own. Teardown closes them too: no Needle child outlives the daemon,
+  and a managed Tier 2 container (`docs/tier2.md`) is stopped and removed by
+  the same sweep and the same teardown.
 - **Answered before the run lock.** A `tier` request is handled in
   `handle_message` *before* `_run`, and never takes `_run_lock`, so a Tier 1
   answer (milliseconds) never queues behind another shell's full-agent turn.

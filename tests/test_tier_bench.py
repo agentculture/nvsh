@@ -530,6 +530,8 @@ def test_bench_results_include_every_required_metric():
     assert set(result) == {
         "corpus",
         "accuracy",
+        "accuracy_by_operation",
+        "accuracy_by_class",
         "items",
         "accuracy_by_kind",
         "escalation",
@@ -699,3 +701,46 @@ def test_accuracy_is_also_reported_per_request_kind():
         loaded.entries, split="dev", tier1=bench_mod.UnavailableTier(), platform=Platform("test")
     )
     assert sorted(result["accuracy_by_kind"]) == ["explicit", "failure"]
+
+
+# ---------------------------------------------------------------------------
+# Per-operation and per-phrasing-class breakdowns
+# ---------------------------------------------------------------------------
+
+
+def _breakdown_items():
+    gpu = {"operation": "gpu_stats", "args": {}}
+    asked = bench_mod.CorpusEntry("g1", "explicit", "show gpu", gpu, "test", phrasing="imperative")
+    terse = bench_mod.CorpusEntry("g2", "explicit", "gpu?", gpu, "test", phrasing="terse")
+    decline = _entry("x1", "explicit", "why did it crash", {"escalate": True})
+    picked = bench_mod.TierOutcome(handled_by="needle", operation="gpu_stats", args={})
+    wrong = bench_mod.TierOutcome(handled_by="needle", operation="disk_stats", args={})
+    return [_item(asked, picked), _item(terse, wrong), _item(decline, wrong)]
+
+
+def test_accuracy_by_operation_groups_by_the_expected_operation():
+    rows = bench_mod.accuracy_by_operation(_breakdown_items())
+    assert rows["gpu_stats"] == {"total": 2, "correct": 1, "missed": ["g2"]}
+
+
+def test_accuracy_by_operation_puts_should_declines_under_one_label():
+    rows = bench_mod.accuracy_by_operation(_breakdown_items())
+    assert rows[bench_mod.ESCALATE_LABEL] == {"total": 1, "correct": 0, "missed": ["x1"]}
+
+
+def test_accuracy_by_class_groups_by_phrasing_and_names_the_unclassed():
+    rows = bench_mod.accuracy_by_class(_breakdown_items())
+    assert sorted(rows) == sorted(["imperative", "terse", bench_mod.NO_CLASS_LABEL])
+
+
+def test_load_corpus_reads_the_class_field(tmp_path):
+    path = tmp_path / "c.json"
+    entry = {"id": "a", "kind": "explicit", "text": "gpu?", "class": "terse"}
+    entry["expect"] = {"operation": "gpu_stats", "args": {}}
+    path.write_text(json.dumps({"entries": [entry]}), encoding="utf-8")
+    assert bench_mod.load_corpus(path).entries[0].phrasing == "terse"
+
+
+def test_bench_result_carries_both_breakdowns():
+    result = _run_bench()
+    assert {"accuracy_by_operation", "accuracy_by_class"} <= set(result)

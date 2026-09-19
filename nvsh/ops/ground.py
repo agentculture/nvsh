@@ -105,6 +105,7 @@ def default_runner(argv: list[str], timeout: float) -> tuple[int, str]:
         proc = subprocess.run(  # noqa: S603
             argv,
             capture_output=True,
+            stdin=subprocess.DEVNULL,  # a lookup must never wait on a terminal
             text=True,
             timeout=timeout,
             check=False,

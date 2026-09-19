@@ -123,7 +123,9 @@ def _run_marked(xdg, monkeypatch, line, *, adapters=("pi", "qwen"), installed=("
     monkeypatch.setattr(client_transport, "one_shot", one_shot)
     monkeypatch.setattr(client_transport, "send", send)
     monkeypatch.setattr(registry, "ADAPTERS", {name: registry.ADAPTERS[name] for name in adapters})
-    monkeypatch.setattr(registry, "installed", lambda name, which=None: name in installed)
+    monkeypatch.setattr(
+        registry, "installed", lambda name, which=None, config=None: name in installed
+    )
     out = io.StringIO()
     panel = panel_mod.Panel(out=out, in_=io.StringIO(), env={}, isatty=False)
     rc = client_mod.handle_failure(_args(xdg, line, 127), panel=panel)
@@ -189,3 +191,17 @@ def test_an_unmarked_sentence_still_pays_the_rate_limit(xdg, monkeypatch, capsys
     )
     client_mod.handle_failure(_args(xdg, "why is the gpu slow", 127), panel=panel)
     assert "held back" in capsys.readouterr().err
+
+
+def test_an_unconfigured_tier_adapter_names_its_config_key_not_a_binary(xdg, monkeypatch):
+    _rc, _captured, _configs, out = _run_marked(
+        xdg, monkeypatch, "@lfm why did that fail?", adapters=("pi", "lfm"), installed=("pi",)
+    )
+    assert "[tiers.lfm] model" in out
+
+
+def test_an_unconfigured_tier_adapter_never_says_not_on_path(xdg, monkeypatch):
+    _rc, _captured, _configs, out = _run_marked(
+        xdg, monkeypatch, "@lfm why did that fail?", adapters=("pi", "lfm"), installed=("pi",)
+    )
+    assert "PATH" not in out

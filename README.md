@@ -34,7 +34,7 @@ It never wraps bash and never becomes your login shell.
 | `nvsh setup` | Probes `PATH` for installed harnesses. One hit becomes the default; several hits prompt you once. |
 | `nvsh setup --agent claude` | Picks Claude Code explicitly, no prompt. |
 | `nvsh setup --agent codex` | Picks Codex explicitly, no prompt. |
-| `nvsh agent list` | All ten adapters: `pi`, `qwen`, `qwen-p`, `claude`, `codex`, `agy`, `kiro`, `openai-compat`, `demo`, `needle`. |
+| `nvsh agent list` | All eleven adapters: `pi`, `qwen`, `qwen-p`, `claude`, `codex`, `agy`, `kiro`, `openai-compat`, `demo`, `needle`, `lfm`. |
 | `nvsh agent use <name>` | Change the default afterwards. |
 | `nvsh uninstall` | Remove the rc block, hook files, sockets, logs and daemon. |
 | `NVSH_DISABLE=1`, `nvsh off` / `nvsh on` | Kill switches for the current shell. |
