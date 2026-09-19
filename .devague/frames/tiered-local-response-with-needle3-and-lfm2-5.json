@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-09-19T11:10:08Z",
-  "updated": "2026-09-19T12:01:10Z",
+  "updated": "2026-09-19T12:39:10Z",
   "claims": [
     {
       "id": "c1",
@@ -373,14 +373,20 @@
     {
       "id": "c18",
       "kind": "non_goal",
-      "text": "Fine-tuning is not part of this spec. It establishes the baseline with stock Needle3 and post-trained LFM2.5 checkpoints and collects the data a fine-tune would need; training an LFM2.5 Base or a Needle LoRA with unsloth-cli or `needle finetune` is a follow-up decided from the committed benchmark results.",
+      "text": "LFM2.5 fine-tuning is not part of this spec. It establishes the Tier 2 baseline with post-trained LFM2.5 checkpoints and collects the data a fine-tune would need; training an LFM2.5 Base checkpoint with unsloth-cli is a follow-up decided from the committed benchmark results. (A Needle3 LoRA fine-tune IS in scope \u2014 see the Needle fine-tune requirement.)",
       "origin": "llm",
-      "status": "confirmed",
+      "status": "proposed",
       "honesty_conditions": [],
       "hard_questions": [],
       "links": [],
       "instruction": "",
-      "revisions": []
+      "revisions": [
+        {
+          "text": "Fine-tuning is not part of this spec. It establishes the baseline with stock Needle3 and post-trained LFM2.5 checkpoints and collects the data a fine-tune would need; training an LFM2.5 Base or a Needle LoRA with unsloth-cli or `needle finetune` is a follow-up decided from the committed benchmark results.",
+          "kind": "non_goal",
+          "reason": "q5 decision"
+        }
+      ]
     },
     {
       "id": "c19",
@@ -729,6 +735,37 @@
       "origin": "llm",
       "status": "proposed",
       "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c39",
+      "kind": "decision",
+      "text": "A Needle3 LoRA fine-tune is in scope: trained with `needle finetune` on the development split of the corpus and adopted only if it beats stock Needle3 on the held-out split. LFM2.5 fine-tuning stays a follow-up.",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c40",
+      "kind": "requirement",
+      "text": "nvsh ships a reproducible Needle3 fine-tune recipe: a dataset builder that turns the corpus development split (plus opted-in, redacted records) into the `needle finetune` JSONL format, the training command, and `needle build --lora` producing a `.cact` file whose hash is pinned like any other fetched file. The tuned model is adopted only if, on the held-out split, it beats stock Needle3 on correct-operation rate and proposes no more wrong mutating operations than stock. Because a tuned Needle reports no confidence, every decline for the tuned model rests on the single-call rule, table validation and argument grounding. Training needs the `cactus-needle[train]` extra on a development machine, never on the operator's device at runtime.",
+      "origin": "llm",
+      "status": "proposed",
+      "honesty_conditions": [
+        {
+          "id": "h33",
+          "text": "The committed results show stock and tuned Needle3 side by side on the same held-out split with the dataset hash and training command recorded; if the tuned model does not win, the results say so and stock ships.",
+          "status": "proposed",
+          "instruction": ""
+        }
+      ],
       "hard_questions": [],
       "links": [],
       "instruction": "",
