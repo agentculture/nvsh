@@ -466,6 +466,34 @@ def leftover_note(refs: Sequence[str]) -> str:
     return "\n".join(lines)
 
 
+def stop_container(
+    uid: int, runner: RunnerFn | None = None, *, timeout: float = _DOCKER_TIMEOUT
+) -> str:
+    """Stop and remove this OS user's Tier 2 container: ``nvsh uninstall``'s
+    safety net, run *after* the daemon is stopped (the daemon's own
+    ``close()`` already stops an attached container while it is alive).
+
+    Touches :func:`container_name`'s name and nothing else -- exactly a
+    ``docker stop`` then a ``docker rm``, never any other container, never
+    ``docker rmi``, never ``docker system prune``. Never raises: a missing
+    docker binary or an unreachable daemon folds into the returned one-line
+    status instead of failing the caller, so a Docker-less uninstall still
+    exits clean.
+    """
+    runner = runner if runner is not None else _default_runner
+    name = container_name(uid)
+    try:
+        stop_code, _stop_out = runner([DOCKER, "stop", name], timeout)
+        rm_code, rm_out = runner([DOCKER, "rm", name], timeout)
+    except Exception as exc:  # noqa: BLE001 - docker missing/broken must not fail uninstall
+        return f"docker not available: {exc}"
+    if rm_code == 0:
+        return f"stopped and removed {name}"
+    if stop_code != 0 and rm_code != 0:
+        return f"no container named {name}"
+    return f"docker rm {name} failed: {_tail(rm_out)}"
+
+
 # -- defaults for the injected seams --------------------------------------
 
 

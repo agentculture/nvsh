@@ -768,6 +768,44 @@ def test_status_starts_nothing():
     assert runtime(ExplodingDocker()).status()
 
 
+# -- stop_container() (``nvsh uninstall``'s safety net) --------------------
+
+
+def test_stop_container_stops_and_removes_by_name():
+    docker = FakeDocker()
+    status = rd.stop_container(1000, docker)
+    assert docker.verbs == ["stop", "rm"]
+    assert {call[-1] for call in docker.calls} == {"nvsh-tier2-1000"}
+    assert "nvsh-tier2-1000" in status
+
+
+def test_stop_container_never_raises_when_docker_is_missing():
+    def missing(argv, timeout):
+        raise OSError("docker: command not found")
+
+    status = rd.stop_container(1000, missing)
+    assert "docker not available" in status
+
+
+def test_stop_container_reports_no_such_container():
+    docker = FakeDocker(
+        [
+            (("docker", "stop"), (1, "Error: No such container")),
+            (("docker", "rm"), (1, "Error: No such container")),
+        ]
+    )
+    status = rd.stop_container(1000, docker)
+    assert "no container named nvsh-tier2-1000" in status
+
+
+def test_stop_container_touches_only_stop_and_rm():
+    docker = FakeDocker()
+    rd.stop_container(1000, docker)
+    assert docker.verbs == ["stop", "rm"]
+    assert "run" not in docker.verbs
+    assert "rmi" not in docker.verbs
+
+
 def test_status_names_the_container_and_url():
     assert "nvsh-tier2-1000" in runtime(ExplodingDocker()).status()
 
