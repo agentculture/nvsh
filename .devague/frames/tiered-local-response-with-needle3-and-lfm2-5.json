@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "drafting",
   "created": "2026-09-19T11:10:08Z",
-  "updated": "2026-09-19T11:43:22Z",
+  "updated": "2026-09-19T11:45:25Z",
   "claims": [
     {
       "id": "c1",
@@ -18,6 +18,12 @@
           "text": "On an Orin Nano with no full agent configured, a fast-path prompt from the corpus produces a correct proposal, and a should-escalate prompt produces a plain 'no local answer and no full agent configured' message rather than a guess.",
           "status": "proposed",
           "instruction": ""
+        },
+        {
+          "id": "h21",
+          "text": "On the AGX Orin with no full agent configured, a fast-path prompt from the corpus produces a correct proposal, and a should-escalate prompt produces a plain 'no local answer and no full agent configured' message rather than a guess; the Orin Nano claim is stated as an estimate from these results until a Nano is measured.",
+          "status": "proposed",
+          "instruction": ""
         }
       ],
       "hard_questions": [],
@@ -28,7 +34,7 @@
     {
       "id": "c2",
       "kind": "audience",
-      "text": "Operators working at a bash prompt on NVIDIA edge and desktop machines where a large model is slow, remote or absent \u2014 first of all a Jetson Orin Nano (8 GB unified memory), then AGX Orin, AGX Thor and DGX Spark \u2014 plus the nvsh maintainers who must benchmark each tier before promoting it.",
+      "text": "Operators working at a bash prompt on NVIDIA edge and desktop machines where a large model is slow, remote or absent \u2014 the design target is a Jetson Orin Nano (8 GB unified memory), and the machines measured in this spec are AGX Orin, AGX Thor and DGX Spark \u2014 plus the nvsh maintainers who must benchmark each tier before promoting it.",
       "origin": "llm",
       "status": "proposed",
       "honesty_conditions": [
@@ -37,12 +43,24 @@
           "text": "The benchmark is actually run on an Orin Nano, an AGX Orin, an AGX Thor and a DGX Spark, and each device's results file is committed; a device that was not measured is listed as not measured.",
           "status": "proposed",
           "instruction": ""
+        },
+        {
+          "id": "h22",
+          "text": "The benchmark is run on an AGX Orin, an AGX Thor and a DGX Spark and each results file is committed; the AGX Orin file carries an 'Orin Nano estimate' section that states the scaling assumptions (8 GB shared memory, fewer CPU cores, smaller GPU) and is marked estimated, not measured.",
+          "status": "proposed",
+          "instruction": ""
         }
       ],
       "hard_questions": [],
       "links": [],
       "instruction": "",
-      "revisions": []
+      "revisions": [
+        {
+          "text": "Operators working at a bash prompt on NVIDIA edge and desktop machines where a large model is slow, remote or absent \u2014 first of all a Jetson Orin Nano (8 GB unified memory), then AGX Orin, AGX Thor and DGX Spark \u2014 plus the nvsh maintainers who must benchmark each tier before promoting it.",
+          "kind": "audience",
+          "reason": "operator: no Orin Nano connected; park it, estimate from AGX Orin"
+        }
+      ]
     },
     {
       "id": "c3",
@@ -373,7 +391,7 @@
     {
       "id": "c20",
       "kind": "success_signal",
-      "text": "On the committed corpus, on each benchmarked device: Tier 1 warm selection p95 < 150 ms; >= 90% of fast-path prompts get the correct operation and arguments; 0 wrong mutating operations proposed without the interpreted operation being shown; >= 80% of should-escalate prompts are declined by Tier 1; with both flavors resident the daemon adds < 1 GB to system memory on an Orin Nano; a command that succeeds still costs one bash function call and 0 forks.",
+      "text": "On the committed corpus, on each benchmarked device (AGX Orin, AGX Thor, DGX Spark): Tier 1 warm selection p95 < 150 ms; >= 90% of fast-path prompts get the correct operation and arguments; 0 wrong mutating operations proposed without the interpreted operation being shown; >= 80% of should-escalate prompts are declined by Tier 1; a command that succeeds still costs one bash function call and 0 forks. Memory: with both flavors resident the daemon adds < 1 GB to system memory as measured on the AGX Orin, which is the stand-in for the Orin Nano's 8 GB budget until a Nano is measured.",
       "origin": "llm",
       "status": "proposed",
       "honesty_conditions": [
@@ -387,7 +405,13 @@
       "hard_questions": [],
       "links": [],
       "instruction": "",
-      "revisions": []
+      "revisions": [
+        {
+          "text": "On the committed corpus, on each benchmarked device: Tier 1 warm selection p95 < 150 ms; >= 90% of fast-path prompts get the correct operation and arguments; 0 wrong mutating operations proposed without the interpreted operation being shown; >= 80% of should-escalate prompts are declined by Tier 1; with both flavors resident the daemon adds < 1 GB to system memory on an Orin Nano; a command that succeeds still costs one bash function call and 0 forks.",
+          "kind": "success_signal",
+          "reason": "operator: Orin Nano parked; AGX Orin is the stand-in"
+        }
+      ]
     },
     {
       "id": "c21",
@@ -480,6 +504,18 @@
       "links": [],
       "instruction": "",
       "revisions": []
+    },
+    {
+      "id": "c27",
+      "kind": "decision",
+      "text": "No Orin Nano is connected yet (the operator has one still to unbox), so measuring on it is parked. Until then the Orin Nano figures are estimates derived from the Jetson AGX Orin measurements \u2014 same tegra234 Ampere family, scaled for the Nano's 8 GB unified memory and smaller CPU/GPU \u2014 and are labelled as estimates wherever they appear.",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
     }
   ],
   "open_vagueness": [
@@ -514,6 +550,15 @@
       "id": "v4",
       "text": "LFM Open License terms (attribution, commercial revenue threshold) need a read before nvsh documents or prefetches LFM2.5 weights; nvsh would download from the publisher, never redistribute.",
       "kind": "unknown_nonblocking",
+      "claim_id": null,
+      "resolved": false,
+      "resolution": "",
+      "resolution_claim_id": null
+    },
+    {
+      "id": "v5",
+      "text": "Measure the tiers on a real Jetson Orin Nano once the operator's unit is set up and reachable, and replace the AGX-Orin-derived estimates with the measured numbers.",
+      "kind": "follow_up",
       "claim_id": null,
       "resolved": false,
       "resolution": "",
