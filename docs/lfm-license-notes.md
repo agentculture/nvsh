@@ -46,12 +46,17 @@ publishing anything.
   card say so plainly. Tier 1 (Needle3, Apache-2.0) has no such limit, and
   nvsh works with Tier 2 absent.
 
-## Open question for the operator
+## Who publishes (answered by the operator, 2026-09-19)
 
-**Who is the "Legal Entity" behind the `jetson-ai-lab` organisation?**
-Publishing a free fine-tune is arguably not commercial use, but "indirect
-commercial advantage" is broad, and common control counts. If the
-organisation is tied to a company above the threshold, get that company's
-answer before a tuned LFM2.5 is uploaded there. Until this is answered, nvsh
-publishes the **data set and the recipe** (which are nvsh's own) and the
-tuned **Needle3** (Apache-2.0) only. Nothing in nvsh uploads by itself.
+The `jetson-ai-lab` organisation is a small non-profit community, not a
+company and not under a company's control, so it is far below the threshold
+and a free fine-tune published there is within the licence as read above. A
+tuned LFM2.5 may therefore be published under `jetson-ai-lab`, with the model
+card duties listed in the previous section. Two things stay true:
+
+- the threshold still applies to each **user** of the tuned model, and the
+  model card says so;
+- if the organisation's standing changes (it comes under a company's
+  control), this reading must be redone before the next upload.
+
+Nothing in nvsh uploads by itself; publishing is an operator action.
