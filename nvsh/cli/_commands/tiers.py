@@ -241,7 +241,13 @@ def _prefetch_rows(items) -> list[dict]:
 
 
 def _prefetch_text(rows: list[dict], problems: list[dict]) -> str:
-    lines = ["would fetch:" if any(not r["present"] for r in rows) else "nothing to fetch:"]
+    lines = [
+        (
+            "still missing:"
+            if any(not r["present"] for r in rows)
+            else "all pinned tier files are present:"
+        )
+    ]
     for row in rows:
         status = "present" if row["present"] else "missing"
         lines.append(f"  [{row['kind']}] {row['name']}: {row['size_bytes']} bytes ({status})")
@@ -279,6 +285,9 @@ def cmd_tiers_prefetch(args: argparse.Namespace) -> int:
     if missing:
         confirm = _yes_confirm if yes else _interactive_confirm
         problems = [dataclasses.asdict(p) for p in run_prefetch(items, confirm=confirm)]
+        # Plan again so the report shows what is on disk now, not what was
+        # missing before the download.
+        rows = _prefetch_rows(plan_prefetch())
 
     if json_mode:
         emit_result({"items": rows, "problems": problems}, json_mode=True)
