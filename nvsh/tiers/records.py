@@ -60,6 +60,9 @@ class TierRecord:
     escalated_to: str | None = None
     operator_decision: str | None = None  # "approved", "declined" or None
     request_text: str | None = None
+    #: The optional second-opinion check's numbers (``verifier_action``,
+    #: ``p_yes``, ``calibrated``); empty when no verifier ran.
+    verifier: dict[str, float | str] = field(default_factory=dict)
 
 
 def _redact_str(value: str) -> str:

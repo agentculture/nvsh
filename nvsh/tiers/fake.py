@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from ..agent.base import AgentContext, AgentRequest
-from .base import Decline, Tier, TierDecision, decide
+from .base import Decline, Explanation, Tier, TierDecision, decide
 
 
 class FakeTier(Tier):
@@ -29,7 +29,9 @@ class FakeTier(Tier):
         self.requests_seen: list[AgentRequest] = []
         self.closed = False
 
-    def select(self, request: AgentRequest, context: AgentContext) -> TierDecision | Decline:
+    def select(
+        self, request: AgentRequest, context: AgentContext
+    ) -> TierDecision | Decline | Explanation:
         self.requests_seen.append(request)
         if self._index >= len(self._script):
             raise IndexError(f"{self.name}: script exhausted after {self._index} call(s)")
@@ -38,7 +40,7 @@ class FakeTier(Tier):
 
         if isinstance(item, BaseException):
             raise item
-        if isinstance(item, (TierDecision, Decline)):
+        if isinstance(item, (TierDecision, Decline, Explanation)):
             return item
         return decide(item)
 

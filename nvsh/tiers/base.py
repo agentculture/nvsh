@@ -43,6 +43,9 @@ class DeclineReason(enum.Enum):
     MEMORY_FLOOR = "memory_floor"
     NOT_GROUNDED = "not_grounded"
     LOOP_LIMIT = "loop_limit"
+    #: The operation validated and grounded, but no single non-shell command
+    #: renders it on this platform (``nvsh.ops.render`` returned ``None``).
+    NOT_RENDERABLE = "not_renderable"
 
 
 @dataclass(frozen=True)
@@ -63,10 +66,32 @@ class TierDecision:
 
 @dataclass(frozen=True)
 class Decline:
-    """A tier's output could not become a decision."""
+    """A tier's output could not become a decision.
+
+    ``inspections`` carries what the tier already found out before giving up
+    -- pairs of ``(operation, result excerpt)`` -- so the next tier, or the
+    full agent, does not repeat the same read-only work. It is empty for a
+    tier that inspects nothing (Tier 1 never does). The excerpts are the
+    tier's own text; the router redacts and bounds them before they leave
+    the process.
+    """
 
     reason: DeclineReason
     detail: str = ""
+    inspections: tuple[tuple[str, str], ...] = ()
+
+
+@dataclass(frozen=True)
+class Explanation:
+    """A tier answered in plain words instead of proposing a command.
+
+    Tier 2's third outcome (propose / explain / escalate): ``text`` is the
+    explanation to show the operator, ``inspections`` the read-only work it
+    did to get there, in the same shape as :attr:`Decline.inspections`.
+    """
+
+    text: str
+    inspections: tuple[tuple[str, str], ...] = ()
 
 
 def _coerce_confidence(confidence: object) -> float | None:
@@ -219,8 +244,15 @@ class Tier(abc.ABC):
     name: str
 
     @abc.abstractmethod
-    def select(self, request: AgentRequest, context: AgentContext) -> TierDecision | Decline:
-        """Propose a decision for *request* given *context*. Never executes it."""
+    def select(
+        self, request: AgentRequest, context: AgentContext
+    ) -> TierDecision | Decline | Explanation:
+        """Propose a decision for *request* given *context*. Never executes it.
+
+        A tier that can answer in plain words (Tier 2) may return an
+        :class:`Explanation` instead; a tier that only selects operations
+        (Tier 1) returns a :class:`TierDecision` or a :class:`Decline`.
+        """
         raise NotImplementedError
 
     @abc.abstractmethod
