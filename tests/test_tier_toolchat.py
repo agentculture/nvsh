@@ -2,11 +2,13 @@
 
 Covers spec targets c25, h18: parsed tool_calls (streamed and non-streamed),
 raw-fallback parsing, localhost-only enforcement, and stop-unblock semantics.
+Plus d1: next-token log-probability scoring and yes/no probability helpers.
 """
 
 from __future__ import annotations
 
 import json
+import math
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -17,8 +19,10 @@ from nvsh.tiers.toolchat import (
     ToolCall,
     ToolChat,
     ToolChatError,
+    calibrated_logit,
     parse_raw_tool_calls,
     require_localhost,
+    yes_no_probability,
 )
 
 # -- shared handler state --
@@ -35,6 +39,7 @@ class _ServerHandler(BaseHTTPRequestHandler):
     """A single handler class that produces different responses based on _RESPONSE_TYPE."""
 
     _request_body: str | None = None  # set during do_POST for test inspection
+    _request_path: str | None = None  # set during do_POST for test inspection
 
     def do_POST(self) -> None:
         length = int(self.headers.get("Content-Length", 0))
@@ -64,6 +69,16 @@ class _ServerHandler(BaseHTTPRequestHandler):
             self._send(500, "internal error")
         elif rt == "stalled":
             self._stalled()
+        elif rt == "score_shape_l":
+            self._reply_score_shape_l()
+        elif rt == "score_shape_c":
+            self._reply_score_shape_c()
+        elif rt == "score_no_logprobs":
+            self._reply_score_no_logprobs()
+        elif rt == "score_mixed_valid":
+            self._reply_score_mixed_valid()
+        elif rt == "score_body_path":
+            self._reply_score_body_path()
 
     def _reply_non_streamed(
         self, text: str, calls: list[tuple[str, dict]], extra_content: str = ""
@@ -228,6 +243,84 @@ class _ServerHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json")
         self.end_headers()
         self.wfile.write(body.encode("utf-8"))
+
+    def _reply_score_shape_l(self) -> None:
+        # Shape L (legacy): choices[0].logprobs.top_logprobs is a LIST,
+        # each item is a dict {token: logprob}.
+        body = {
+            "choices": [
+                {
+                    "message": {"content": ""},
+                    "logprobs": {
+                        "top_logprobs": [
+                            {" yes": -0.2},
+                            {" no": -1.8},
+                            {"Maybe": -4.0},
+                        ]
+                    },
+                }
+            ]
+        }
+        self._send(200, json.dumps(body))
+
+    def _reply_score_shape_c(self) -> None:
+        # Shape C (content): choices[0].logprobs.content is a LIST,
+        # each item has key "top_logprobs" = LIST of
+        # {"token": str, "logprob": float}.
+        body = {
+            "choices": [
+                {
+                    "message": {"content": ""},
+                    "logprobs": {
+                        "content": [
+                            {
+                                "top_logprobs": [
+                                    {"token": " yes", "logprob": -0.2},
+                                    {"token": " no", "logprob": -1.8},
+                                    {"token": "Maybe", "logprob": -4.0},
+                                ]
+                            }
+                        ]
+                    },
+                }
+            ]
+        }
+        self._send(200, json.dumps(body))
+
+    def _reply_score_no_logprobs(self) -> None:
+        body = {"choices": [{"message": {"content": ""}, "logprobs": None}]}
+        self._send(200, json.dumps(body))
+
+    def _reply_score_mixed_valid(self) -> None:
+        # One entry has logprob "x" (str), one has true (bool) — both skipped.
+        body = {
+            "choices": [
+                {
+                    "message": {"content": ""},
+                    "logprobs": {
+                        "top_logprobs": [
+                            {" yes": "x"},
+                            {" no": True},
+                            {"Maybe": -4.0},
+                        ]
+                    },
+                }
+            ]
+        }
+        self._send(200, json.dumps(body))
+
+    def _reply_score_body_path(self) -> None:
+        # _request_body is already set by do_POST above.
+        _ServerHandler._request_path = self.path  # type: ignore[attr-defined]
+        body = {
+            "choices": [
+                {
+                    "message": {"content": ""},
+                    "logprobs": {"top_logprobs": [{" yes": -0.2}]},
+                }
+            ]
+        }
+        self._send(200, json.dumps(body))
 
     def log_message(self, fmt, *args):  # noqa: ARG002
         pass
@@ -549,3 +642,131 @@ def test_raw_shape_a_two_calls_and_a_brace_inside_a_string() -> None:
         ToolCall(name="service_logs", arguments={"service": "a}b"}),
         ToolCall(name="gpu_stats", arguments={}),
     )
+
+
+# ------------------------------------------------------------------
+# d1-score: next-token log-probability scoring
+# ------------------------------------------------------------------
+
+
+def test_score_next_token_shape_l(server) -> None:
+    global _RESPONSE_TYPE
+    _RESPONSE_TYPE = "score_shape_l"
+    srv = server
+    chat = _make_toolchat(srv.port, stream=False)
+    result = chat.score_next_token("Is the sky blue?")
+    expected = {" yes": -0.2, " no": -1.8, "Maybe": -4.0}
+    assert result == expected
+
+
+def test_score_next_token_shape_c(server) -> None:
+    global _RESPONSE_TYPE
+    _RESPONSE_TYPE = "score_shape_c"
+    srv = server
+    chat = _make_toolchat(srv.port, stream=False)
+    result = chat.score_next_token("Is the sky blue?")
+    expected = {" yes": -0.2, " no": -1.8, "Maybe": -4.0}
+    assert result == expected
+
+
+def test_score_request_body_and_path(server) -> None:
+    global _RESPONSE_TYPE
+    _RESPONSE_TYPE = "score_body_path"
+    _ServerHandler._request_body = None
+    _ServerHandler._request_path = None
+    srv = server
+    chat = _make_toolchat(srv.port, stream=False)
+    chat.score_next_token("test prompt")
+    body = json.loads(_ServerHandler._request_body)  # type: ignore[arg-type]
+    assert _ServerHandler._request_path.endswith("/completions")  # type: ignore[arg-type]
+    assert "/chat/" not in _ServerHandler._request_path  # type: ignore[arg-type]
+    assert body["max_tokens"] == 1
+    assert body["temperature"] == 0
+    assert body["logprobs"] == 20
+    assert body["prompt"] == "test prompt"
+    assert body["model"] == "test-model"
+
+
+def test_score_no_logprobs_raises_toolchaterror(server) -> None:
+    global _RESPONSE_TYPE
+    _RESPONSE_TYPE = "score_no_logprobs"
+    srv = server
+    chat = _make_toolchat(srv.port, stream=False)
+    with pytest.raises(ToolChatError, match="server returned no log-probabilities"):
+        chat.score_next_token("hello")
+
+
+def test_score_skips_non_numeric_logprob(server) -> None:
+    global _RESPONSE_TYPE
+    _RESPONSE_TYPE = "score_mixed_valid"
+    srv = server
+    chat = _make_toolchat(srv.port, stream=False)
+    result = chat.score_next_token("hello")
+    # " yes" has str logprob, " no" has bool logprob — both skipped
+    assert result == {"Maybe": -4.0}
+
+
+def test_score_connection_refused_raises_toolchaterror() -> None:
+    """Point at a port with no server → ToolChatError."""
+    chat = _make_toolchat(19998, stream=False)
+    with pytest.raises(ToolChatError):
+        chat.score_next_token("hello")
+
+
+# ------------------------------------------------------------------
+# d1-score: yes_no_probability
+# ------------------------------------------------------------------
+
+
+def test_yes_no_probability_sums_token_variants() -> None:
+    import math as _math
+
+    tokens = {
+        " yes": _math.log(0.3),
+        "Yes": _math.log(0.2),
+        " no": _math.log(0.25),
+        "NO": _math.log(0.25),
+    }
+    p_yes, mass = yes_no_probability(tokens)
+    assert p_yes == pytest.approx(0.5)
+    assert mass == pytest.approx(1.0)
+
+
+def test_yes_no_probability_without_yes_or_no() -> None:
+    tokens = {"maybe": -0.1}
+    p_yes, mass = yes_no_probability(tokens)
+    assert p_yes is None
+    assert mass == 0.0
+
+
+@pytest.mark.parametrize(
+    "tokens",
+    [
+        {},
+        {"yes": float("-inf")},
+        {"": -1.0},
+    ],
+)
+def test_yes_no_probability_never_raises(tokens) -> None:
+    # Should never raise for any input
+    p_yes, mass = yes_no_probability(tokens)
+    assert isinstance(p_yes, (float, type(None)))
+    assert isinstance(mass, float)
+
+
+# ------------------------------------------------------------------
+# d1-score: calibrated_logit
+# ------------------------------------------------------------------
+
+
+def test_calibrated_logit_zero_when_equal_and_positive_when_higher() -> None:
+    assert calibrated_logit(0.5, 0.5) == pytest.approx(0.0)
+    assert calibrated_logit(0.8, 0.5) > 0
+    assert calibrated_logit(0.2, 0.5) < 0
+
+
+def test_calibrated_logit_clamps_extremes() -> None:
+    # p_yes = 1.0 and baseline = 0.0 must return a finite float
+    result = calibrated_logit(1.0, 0.0)
+    assert isinstance(result, float)
+    assert math.isfinite(result)
