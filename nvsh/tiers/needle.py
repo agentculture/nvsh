@@ -34,6 +34,7 @@ import select
 import struct
 import subprocess  # nosec B404 - fixed argv list below, no shell=True
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Callable, Mapping
@@ -53,10 +54,16 @@ MAX_FRAME_BYTES = 1024 * 1024
 _HEADER = struct.Struct(">I")
 HEADER_BYTES = _HEADER.size
 
-#: How long the parent waits for one reply by default. Generous because the
-#: first request pays the engine's cold load (measured 5.7 s on a DGX Spark,
-#: spike s13); the router gives it a tighter budget when it has one.
-DEFAULT_TIMEOUT_SECONDS = 30.0
+#: How long the parent waits for one reply by default. This tier exists to
+#: be fast: a warm selection is tens of milliseconds and even the cold load
+#: measured 5.7 s on a DGX Spark (spike s13), so ten seconds is generous for
+#: a working child and short enough that a broken one does not hold the
+#: operator's prompt. The router may give it a tighter budget still.
+DEFAULT_TIMEOUT_SECONDS = 10.0
+
+#: Upper bound on the prompt handed to the selector. Tier 1 is for short
+#: operator asks; anything longer belongs to a tier that can read it.
+MAX_PROMPT_CHARS = 4000
 
 AvailabilityFn = Callable[[], str | None]
 FloorFn = Callable[[], FloorResult]
@@ -94,6 +101,7 @@ class NeedleTier(Tier):
         self,
         *,
         weights_path: str | Path | None = None,
+        tuned: bool = False,
         worker_argv: list[str] | None = None,
         timeout: float = DEFAULT_TIMEOUT_SECONDS,
         min_confidence: float = 0.0,
@@ -105,9 +113,12 @@ class NeedleTier(Tier):
 
         The child starts on the first :meth:`select`. ``worker_argv`` and
         ``availability`` are injectable so tests drive a fake worker and
-        never need ``cactus-needle`` installed.
+        never need ``cactus-needle`` installed. ``tuned`` says the weights
+        are a fine-tune rather than the stock model: the library then
+        reports no confidence at all, so it stays off by default.
         """
         self._weights_path = str(weights_path) if weights_path is not None else None
+        self._tuned = bool(tuned)
         self._worker_argv = list(worker_argv) if worker_argv else default_worker_argv()
         self._timeout = float(timeout)
         self._min_confidence = float(min_confidence)
@@ -116,13 +127,18 @@ class NeedleTier(Tier):
         self._env = dict(env) if env is not None else None
         self._proc: subprocess.Popen | None = None
         self._next_id = 0
+        self._home: object = None  # a needle_home.NeedleHome once staged
+        # One turn at a time: the daemon shares a tier across handler threads
+        # and two interleaved writes would splice two frames into nonsense.
+        self._lock = threading.Lock()
 
     # -- public surface --
 
     def select(self, request: AgentRequest, context: AgentContext) -> TierDecision | Decline:
         """Propose one operation for *request*, or decline. Never raises."""
         try:
-            return self._select(request)
+            with self._lock:
+                return self._select(request)
         except Exception as exc:  # the child is untrusted; so is its timing
             self._shutdown()
             return Decline(
@@ -159,15 +175,20 @@ class NeedleTier(Tier):
             return started
 
         self._next_id += 1
-        message = {
-            "id": self._next_id,
-            "op": "select",
-            "text": _prompt_text(request),
-            "weights": self._weights_path,
-        }
+        message = {"id": self._next_id, "op": "select", "text": _prompt_text(request)}
+        message.update(self._engine_fields())
         reply = self._exchange(started, message)
         if isinstance(reply, Decline):
             return reply
+        if reply.get("id") != self._next_id:
+            # A reply that does not answer this request means the stream is
+            # out of step; nothing on it can be trusted from here on.
+            self._shutdown()
+            return Decline(
+                reason=DeclineReason.TIER_ERROR,
+                detail=f"needle worker answered request {reply.get('id')!r}, expected"
+                f" {self._next_id}",
+            )
         if not reply.get("ok"):
             return Decline(
                 reason=DeclineReason.TIER_ERROR,
@@ -188,13 +209,15 @@ class NeedleTier(Tier):
                 reason=DeclineReason.TIER_ERROR, detail="needle worker has no pipes to speak on"
             )
         try:
-            _write_all(proc.stdin.fileno(), pack_frame(message))
+            sent = _write_all(proc.stdin.fileno(), pack_frame(message), deadline)
         except (OSError, ValueError) as exc:
             self._shutdown()
             return Decline(
                 reason=DeclineReason.TIER_ERROR,
                 detail=f"needle worker could not be reached: {exc}",
             )
+        if not sent:
+            return self._dead_child(_TIMEOUT)
         return self._receive(proc.stdout.fileno(), deadline)
 
     def _receive(self, fd: int, deadline: float) -> dict | Decline:
@@ -279,28 +302,50 @@ class NeedleTier(Tier):
         for stream in (proc.stdin, proc.stdout):
             _close_quietly(stream)
 
+    # -- the staged engine --
+
+    def _engine_fields(self) -> dict[str, object]:
+        """What the request frame tells the child about its engine."""
+        home = self._home
+        return {
+            "lib": str(getattr(home, "lib", "")) or None,
+            "weights": str(getattr(home, "weights", "") or self._weights_path or "") or None,
+            "home": str(getattr(home, "home", "")) or None,
+            "tuned": self._tuned,
+        }
+
     # -- availability --
 
     def _default_availability(self) -> str | None:
         """Why Tier 1 cannot run right now, or ``None`` when it can.
 
         Reports *every* problem found in one line, so an operator missing
-        both the package and the weights is told both at once.
+        both the package and the staged files is told both at once.
         """
-        problems = [problem for problem in (_engine_problem(), self._weights_problem()) if problem]
+        problems = [problem for problem in (_engine_problem(), self._staging_problem()) if problem]
         return "; ".join(problems) or None
 
-    def _weights_problem(self) -> str | None:
+    def _staging_problem(self) -> str | None:
+        """Stage the pinned engine and weights, or say what is in the way.
+
+        An explicitly configured ``weights_path`` is taken at its word (an
+        operator pointing at their own file, and what the tests use); the
+        default path goes through :func:`nvsh.tiers.needle_home.stage`,
+        which extracts the pinned engine and never opens a socket.
+        """
+        if self._home is not None:
+            return None
         if self._weights_path is not None:
             if Path(self._weights_path).is_file():
                 return None
             return f"needle weights not found: {self._weights_path}"
-        from . import fetch  # lazy: fetch pulls urllib, the hot path must not
+        from . import needle_home  # lazy: zipfile/urllib must stay off the hot path
 
-        resolved = fetch.resolve("weights")
-        if isinstance(resolved, fetch.FetchProblem):
-            return f"needle weights unusable: {resolved.message}"
-        self._weights_path = str(resolved)
+        staged = needle_home.stage()
+        if isinstance(staged, needle_home.FetchProblem):
+            return f"needle engine files unusable: {staged.message}"
+        self._home = staged
+        self._weights_path = str(staged.weights)
         return None
 
 
@@ -318,8 +363,14 @@ def _engine_problem() -> str | None:
 
 
 def _prompt_text(request: AgentRequest) -> str:
-    """What the selector is shown: the operator's own words, nothing else."""
-    return request.prompt or request.ask or ""
+    """What the selector is shown: the operator's own words, clamped.
+
+    Tier 1 answers short operator asks; a selector prompt is never pages
+    long. Clamping here also keeps the request frame small enough that
+    writing it cannot sit in the pipe behind a child that has stopped
+    reading (the write has a deadline, but a small frame never reaches it).
+    """
+    return (request.prompt or request.ask or "")[:MAX_PROMPT_CHARS]
 
 
 # -- raw pipe I/O --
@@ -329,11 +380,24 @@ _TIMEOUT = "timeout"
 _EOF = "eof"
 
 
-def _write_all(fd: int, payload: bytes) -> None:
-    """Write every byte of *payload* to *fd* (raw pipes do short writes)."""
+def _write_all(fd: int, payload: bytes, deadline: float) -> bool:
+    """Write every byte of *payload* to *fd* before *deadline*.
+
+    Raw pipes do short writes, and a child that has stopped reading fills
+    the pipe buffer -- at which point an unguarded ``os.write`` blocks
+    forever. So writability is waited for with ``select`` too. ``False``
+    means the deadline passed with bytes still unwritten.
+    """
     view = memoryview(payload)
     while view:
+        budget = deadline - time.monotonic()
+        if budget <= 0:
+            return False
+        _, ready, _ = select.select([], [fd], [], budget)
+        if not ready:
+            return False
         view = view[os.write(fd, view) :]
+    return True
 
 
 def _read_exact(fd: int, size: int, deadline: float) -> bytes | str:

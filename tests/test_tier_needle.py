@@ -17,17 +17,26 @@ import os
 import re
 import stat
 import sys
+import threading
 import time
+import zipfile
 from pathlib import Path
 
 import pytest
 
 from nvsh.agent.base import AgentContext, AgentRequest, RequestKind
 from nvsh.ops import table as ops_table
-from nvsh.tiers import needle_worker
+from nvsh.tiers import needle_home, needle_worker
 from nvsh.tiers.base import Decline, DeclineReason, TierDecision
+from nvsh.tiers.fetch import FetchProblem
 from nvsh.tiers.memfloor import FloorResult
-from nvsh.tiers.needle import MAX_FRAME_BYTES, NeedleTier, pack_frame
+from nvsh.tiers.needle import (
+    DEFAULT_TIMEOUT_SECONDS,
+    MAX_FRAME_BYTES,
+    MAX_PROMPT_CHARS,
+    NeedleTier,
+    pack_frame,
+)
 
 NVSH_ROOT = Path(__file__).resolve().parent.parent / "nvsh"
 FAKE_WORKER = Path(__file__).resolve().parent / "fakes" / "needle_worker"
@@ -215,6 +224,46 @@ def test_missing_worker_command_declines(tmp_path, closing):
     assert isinstance(result, Decline) and result.reason is DeclineReason.TIER_UNAVAILABLE
 
 
+# -- hardening: one turn at a time, matched replies, bounded prompts --
+
+
+def test_concurrent_selects_do_not_interleave(tmp_path, closing):
+    """Two threads share one tier (as the daemon does) and both get decisions."""
+    tier = _tier(tmp_path, [[{"calls": [GOOD_CALL], "delay": 0.2}]], timeout=5.0)
+    closing(tier)
+    results: list[object] = []
+    threads = [
+        threading.Thread(target=lambda: results.append(tier.select(_request(), _context())))
+        for _ in range(2)
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=20)
+    assert [isinstance(result, TierDecision) for result in results] == [True, True]
+
+
+def test_mismatched_reply_id_declines(tmp_path, closing):
+    """A reply that answers another request means the stream is out of step."""
+    tier = _tier(tmp_path, [["wrong_id"]], timeout=2.0)
+    closing(tier)
+    result = tier.select(_request(), _context())
+    assert isinstance(result, Decline) and result.reason is DeclineReason.TIER_ERROR
+
+
+def test_prompt_is_clamped_on_the_wire(tmp_path, closing):
+    """A huge prompt is cut to the bound before the frame is built."""
+    tier = _tier(tmp_path, [["echo"]], timeout=5.0)
+    closing(tier)
+    result = tier.select(_request("x" * (MAX_PROMPT_CHARS * 3)), _context())
+    assert result.args == {"service": str(MAX_PROMPT_CHARS)}
+
+
+def test_default_timeout_keeps_the_prompt_responsive():
+    """Tier 1 exists to be fast: a broken child must not hold the prompt for long."""
+    assert DEFAULT_TIMEOUT_SECONDS <= 10.0
+
+
 # -- criterion 3: cactus-needle absent --
 
 
@@ -245,6 +294,13 @@ def test_default_availability_reports_missing_weights(tmp_path):
     assert "absent.cact" in (tier.status() or "")
 
 
+def test_default_availability_reports_an_unstaged_cache(tmp_path, monkeypatch):
+    """With nothing prefetched, the stock probe says so and never downloads."""
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+    tier = NeedleTier()
+    assert "needle engine files unusable" in tier.status()
+
+
 def test_memory_floor_declines(tmp_path, closing):
     """An injected floor check that says no is a MEMORY_FLOOR decline."""
     floor = FloorResult(ok=False, available_mb=100, status="too little memory")
@@ -272,24 +328,40 @@ def test_pack_frame_refuses_an_oversized_message():
 # -- criterion 2: the worker's offline environment and tool schemas --
 
 
-def test_worker_hardens_env_before_importing_needle(monkeypatch):
-    """The three offline variables are set in os.environ *before* the import."""
+def _env_at_import(monkeypatch, spec: needle_worker.EngineSpec) -> dict[str, str]:
+    """os.environ as the worker had it at the moment ``needle`` was imported."""
     monkeypatch.setenv("NEEDLE_TELEMETRY", "1")
-    monkeypatch.delenv("DO_NOT_TRACK", raising=False)
-    monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
+    # Recorded through monkeypatch so the real HOME comes back at teardown,
+    # even though the worker sets it through os.environ itself.
+    monkeypatch.setenv("HOME", os.environ.get("HOME", "/nonexistent"))
+    for key in ("DO_NOT_TRACK", "HF_HUB_OFFLINE", "NEEDLE3_LIB_PATH"):
+        monkeypatch.delenv(key, raising=False)
     seen: dict[str, str] = {}
 
     def importer():
         seen.update(os.environ)
         return _FakeNeedleModule()
 
-    needle_worker.build_engine(None, importer=importer)
+    needle_worker.build_engine(spec, importer=importer, linker=lambda _module, path: path)
+    return seen
+
+
+def test_worker_hardens_env_before_importing_needle(monkeypatch):
+    """The three offline variables are set in os.environ *before* the import."""
+    seen = _env_at_import(monkeypatch, needle_worker.EngineSpec())
     keys = ("NEEDLE_TELEMETRY", "DO_NOT_TRACK", "HF_HUB_OFFLINE")
     assert {key: seen.get(key) for key in keys} == {
         "NEEDLE_TELEMETRY": "0",
         "DO_NOT_TRACK": "1",
         "HF_HUB_OFFLINE": "1",
     }
+
+
+def test_worker_points_home_and_lib_at_the_staged_files(monkeypatch, tmp_path):
+    """$HOME and NEEDLE3_LIB_PATH are in place before the library can look."""
+    spec = needle_worker.EngineSpec(lib=str(tmp_path / "libneedle3.so"), home=str(tmp_path))
+    seen = _env_at_import(monkeypatch, spec)
+    assert (seen.get("HOME"), seen.get("NEEDLE3_LIB_PATH")) == (spec.home, spec.lib)
 
 
 class _FakeNeedle:
@@ -308,11 +380,37 @@ class _FakeNeedle:
         self.resets += 1
 
 
-class _FakeNeedleModule:
-    """Stands in for the ``needle`` module."""
+class _FakeFetch:
+    """Stands in for ``needle.agent.fetch``: where the base archive lives."""
 
-    def __init__(self) -> None:
+    def __init__(self, cache: Path) -> None:
+        self._cache = cache
+
+    def cache_dir(self, _generation: int) -> str:
+        return str(self._cache)
+
+    def base_weights(self, _generation: int) -> str:
+        return "needle3.cact"
+
+
+class _FakeAgent:
+    def __init__(self, fetch: _FakeFetch) -> None:
+        self.fetch = fetch
+
+
+class _FakeNeedleModule:
+    """Stands in for the ``needle`` module.
+
+    ``broken=True`` drops the ``agent.fetch`` layout entirely and names a
+    module that cannot be imported, standing in for a future cactus-needle
+    whose internals moved.
+    """
+
+    def __init__(self, cache_dir: Path | None = None, broken: bool = False) -> None:
         self.instances: list[_FakeNeedle] = []
+        self.__name__ = "nvsh_not_a_real_module" if broken else "needle"
+        if not broken:
+            self.agent = _FakeAgent(_FakeFetch(cache_dir or Path("/nonexistent")))
 
     def Needle(self, **kwargs: object) -> _FakeNeedle:  # noqa: N802 - mirrors the real name
         engine = _FakeNeedle(**kwargs)
@@ -320,12 +418,56 @@ class _FakeNeedleModule:
         return engine
 
 
-def test_worker_passes_the_weights_path(tmp_path):
-    """The verified local weights file is what the engine is built from."""
+def test_stock_weights_are_linked_not_passed(monkeypatch, tmp_path):
+    """Stock weights go in through the library's own cache, so confidence survives.
+
+    Passing ``weights=`` would mark the model "tuned": the library then
+    reports ``confidence: None`` and starts a nested subprocess of its own.
+    """
+    monkeypatch.setenv("HOME", str(tmp_path))
     module = _FakeNeedleModule()
-    weights = tmp_path / "needle3.cact"
-    needle_worker.build_engine(str(weights), importer=lambda: module)
+    spec = needle_worker.EngineSpec(weights=str(tmp_path / "needle3.cact"), home=str(tmp_path))
+    needle_worker.build_engine(spec, importer=lambda: module, linker=lambda _m, path: path)
+    assert "weights" not in module.instances[0].kwargs
+
+
+def test_tuned_weights_are_passed_through(monkeypatch, tmp_path):
+    """A fine-tune is handed to the library as ``weights=``, as it expects."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    module = _FakeNeedleModule()
+    weights = tmp_path / "tuned.cact"
+    spec = needle_worker.EngineSpec(weights=str(weights), tuned=True)
+    needle_worker.build_engine(spec, importer=lambda: module)
     assert module.instances[0].kwargs["weights"] == str(weights)
+
+
+def test_base_weights_are_symlinked_into_the_library_cache(tmp_path):
+    """The verified file becomes the base archive, without a copy or a download."""
+    weights = tmp_path / "needle3.cact"
+    weights.write_bytes(b"pinned bytes")
+    module = _FakeNeedleModule(cache_dir=tmp_path / "cache" / "v3")
+    linked = needle_worker.link_base_weights(module, str(weights))
+    assert Path(linked).resolve() == weights.resolve()
+
+
+def test_link_replaces_a_stale_link(tmp_path):
+    """A link left pointing at other weights is repointed, not trusted."""
+    cache = tmp_path / "cache" / "v3"
+    cache.mkdir(parents=True)
+    stale = cache / "needle3.cact"
+    stale.symlink_to(tmp_path / "somewhere-else.cact")
+    weights = tmp_path / "needle3.cact"
+    weights.write_bytes(b"pinned bytes")
+    module = _FakeNeedleModule(cache_dir=cache)
+    needle_worker.link_base_weights(module, str(weights))
+    assert stale.resolve() == weights.resolve()
+
+
+def test_link_failure_is_a_clean_error(tmp_path):
+    """A library whose layout moved raises, so the request fails with an error reply."""
+    module = _FakeNeedleModule(broken=True)
+    with pytest.raises(RuntimeError):
+        needle_worker.link_base_weights(module, str(tmp_path / "needle3.cact"))
 
 
 def test_worker_builds_one_tool_per_operation():
@@ -353,20 +495,33 @@ def test_tool_functions_carry_their_schema():
     assert [fn._needle_tool["name"] for fn in functions] == list(ops_table.names())
 
 
+def _session(module: _FakeNeedleModule) -> needle_worker.EngineSession:
+    return needle_worker.EngineSession(builder=lambda spec: module.Needle(spec=spec))
+
+
 def test_engine_session_resets_between_requests():
     """reset() is called before every request after the first."""
     module = _FakeNeedleModule()
-    session = needle_worker.EngineSession(builder=lambda weights: module.Needle(weights=weights))
-    session.select(None, "first")
-    session.select(None, "second")
+    session = _session(module)
+    session.select(needle_worker.EngineSpec(), "first")
+    session.select(needle_worker.EngineSpec(), "second")
     assert module.instances[0].resets == 1
 
 
 def test_engine_session_returns_calls_and_confidence():
     """The worker forwards the engine's raw calls plus its confidence, unvalidated."""
-    module = _FakeNeedleModule()
-    session = needle_worker.EngineSession(builder=lambda weights: module.Needle(weights=weights))
-    assert session.select(None, "text") == ([GOOD_CALL], 0.75)
+    session = _session(_FakeNeedleModule())
+    assert session.select(needle_worker.EngineSpec(), "text") == ([GOOD_CALL], 0.75)
+
+
+def test_engine_spec_is_read_off_the_request_frame():
+    """The child takes its paths from the frame, coercing whatever arrives."""
+    spec = needle_worker.EngineSpec.from_request(
+        {"lib": "/lib.so", "weights": "/w.cact", "home": "/home", "tuned": 1}
+    )
+    assert spec == needle_worker.EngineSpec(
+        lib="/lib.so", weights="/w.cact", home="/home", tuned=True
+    )
 
 
 @pytest.mark.parametrize(
@@ -409,3 +564,105 @@ def test_worker_does_not_import_needle_at_module_level():
 def test_fake_worker_is_executable():
     """The fake is run through the interpreter, but stays a runnable script."""
     assert stat.S_IMODE(FAKE_WORKER.stat().st_mode) & stat.S_IXUSR
+
+
+# -- staging the pinned engine into a private home (nvsh/tiers/needle_home.py) --
+
+
+def _staged_cache(tmp_path: Path, members: dict[str, bytes]) -> Path:
+    """A tiers cache holding a pinned weights file and a wheel of *members*."""
+    cache = tmp_path / "nvsh" / "tiers"
+    cache.mkdir(parents=True)
+    (cache / "needle3.cact").write_bytes(b"pinned weights")
+    wheel = cache / "cactus_needle.whl"
+    with zipfile.ZipFile(wheel, "w") as archive:
+        for name, payload in members.items():
+            archive.writestr(name, payload)
+    return cache
+
+
+def _stage(cache: Path, monkeypatch) -> object:
+    """Run stage() with fetch.resolve() answering from *cache*, never the network."""
+
+    def resolve(kind, **_kwargs):
+        return cache / ("needle3.cact" if kind == "weights" else "cactus_needle.whl")
+
+    monkeypatch.setattr(needle_home.fetch, "resolve", resolve)
+    return needle_home.stage(cache)
+
+
+def test_stage_extracts_the_engine(tmp_path, monkeypatch):
+    """The one needle/libneedle*.so member lands in nvsh's own cache."""
+    cache = _staged_cache(tmp_path, {"needle/libneedle3.so": b"ELF-ish", "x/RECORD": b""})
+    home = _stage(cache, monkeypatch)
+    assert home.lib.read_bytes() == b"ELF-ish"
+
+
+def test_stage_reports_a_home_directory(tmp_path, monkeypatch):
+    """The worker gets a $HOME inside the cache, created and private."""
+    cache = _staged_cache(tmp_path, {"needle/libneedle3.so": b"ELF-ish"})
+    home = _stage(cache, monkeypatch)
+    assert home.home.is_dir()
+
+
+def test_stage_is_idempotent(tmp_path, monkeypatch):
+    """An unchanged wheel is not extracted twice."""
+    cache = _staged_cache(tmp_path, {"needle/libneedle3.so": b"ELF-ish"})
+    first = _stage(cache, monkeypatch)
+    stamped = first.lib.stat().st_mtime_ns
+    second = _stage(cache, monkeypatch)
+    assert second.lib.stat().st_mtime_ns == stamped
+
+
+def test_stage_re_extracts_when_the_wheel_changes(tmp_path, monkeypatch):
+    """A different wheel under the same name is staged again, not reused."""
+    cache = _staged_cache(tmp_path, {"needle/libneedle3.so": b"ELF-ish"})
+    _stage(cache, monkeypatch)
+    replaced = _staged_cache(tmp_path / "second", {"needle/libneedle3.so": b"NEWER"})
+    (cache / "cactus_needle.whl").write_bytes((replaced / "cactus_needle.whl").read_bytes())
+    home = _stage(cache, monkeypatch)
+    assert home.lib.read_bytes() == b"NEWER"
+
+
+def test_stage_refuses_a_wheel_without_an_engine(tmp_path, monkeypatch):
+    """No engine member -> a problem, not a guess at which file to use."""
+    cache = _staged_cache(tmp_path, {"needle/tools.py": b"print()"})
+    assert isinstance(_stage(cache, monkeypatch), FetchProblem)
+
+
+def test_stage_refuses_two_engines(tmp_path, monkeypatch):
+    """Two candidate members -> a problem; nvsh never picks one arbitrarily."""
+    members = {"needle/libneedle3.so": b"a", "needle/libneedle2.so": b"b"}
+    cache = _staged_cache(tmp_path, members)
+    assert isinstance(_stage(cache, monkeypatch), FetchProblem)
+
+
+def test_stage_ignores_a_traversing_member(tmp_path, monkeypatch):
+    """A member reaching outside the package never matches the engine pattern."""
+    members = {"needle/../../evil.so": b"nope", "needle/libneedle3.so": b"ELF-ish"}
+    cache = _staged_cache(tmp_path, members)
+    home = _stage(cache, monkeypatch)
+    assert home.lib.name == "libneedle3.so"
+
+
+def test_stage_refuses_an_oversized_engine(tmp_path, monkeypatch):
+    """A member past the size bound is refused before it fills the cache."""
+    monkeypatch.setattr(needle_home, "MAX_LIB_BYTES", 8)
+    cache = _staged_cache(tmp_path, {"needle/libneedle3.so": b"much longer than eight"})
+    assert isinstance(_stage(cache, monkeypatch), FetchProblem)
+
+
+def test_stage_passes_through_a_missing_pin(tmp_path, monkeypatch):
+    """Nothing prefetched -> fetch's own problem, unchanged and unraised."""
+    cache = _staged_cache(tmp_path, {"needle/libneedle3.so": b"ELF-ish"})
+    problem = FetchProblem(item="weights", code="missing", message="needle3.cact not cached")
+    monkeypatch.setattr(needle_home.fetch, "resolve", lambda kind, **_kw: problem)
+    assert needle_home.stage(cache) is problem
+
+
+def test_stage_never_opens_a_socket(tmp_path, monkeypatch):
+    """Staging is zipfile and os over already-verified files, nothing else."""
+    source = (NVSH_ROOT / "tiers" / "needle_home.py").read_text(encoding="utf-8")
+    imports = [line for line in source.splitlines() if line.startswith(("import ", "from "))]
+    networking = ("urllib", "socket", "http", "requests")
+    assert not [line for line in imports if any(word in line for word in networking)]

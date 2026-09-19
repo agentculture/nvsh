@@ -17,6 +17,13 @@ Three things this module is careful about:
   nothing, built from :data:`nvsh.ops.table.OPERATIONS`, and only
   ``complete()`` is ever called -- never ``run()``, which executes those
   callables. ``reset()`` clears the session between requests.
+* **Staged, never downloaded.** ``$HOME`` and ``NEEDLE3_LIB_PATH`` are
+  pointed at the files :mod:`nvsh.tiers.needle_home` staged from the pinned
+  wheel and weights, again *before* the import, and the verified base
+  weights are symlinked where the library looks for them. Changing ``HOME``
+  is safe because it only ever affects this child, which exists for nothing
+  else. If the library's layout is not what nvsh staged for, the request
+  fails with a clean error -- it never falls back to a download.
 * **A clean protocol stream.** The real stdout fd is duplicated for frames
   and fd 1 is then pointed at stderr, so anything the native engine prints
   lands in the child's stderr (which the parent discards) instead of
@@ -25,11 +32,14 @@ Three things this module is careful about:
 
 from __future__ import annotations
 
+import importlib
 import json
 import os
 import struct
 import sys
-from typing import Any, Callable, Iterable, MutableMapping
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Callable, Iterable, Mapping, MutableMapping
 
 from ..ops import table as ops_table
 from ..ops._model import ArgSpec, Operation
@@ -118,6 +128,38 @@ def tool_functions(operations: Iterable[Operation] | None = None) -> list[Callab
 # -- the engine --
 
 
+@dataclass(frozen=True)
+class EngineSpec:
+    """Where this child finds its engine: all of it staged and verified.
+
+    ``tuned`` picks between the two ways cactus-needle can be given
+    weights. Stock (``tuned=False``) loads the base model through its own
+    cache -- which is why ``home`` exists -- and reports a real confidence.
+    Tuned weights are passed as ``weights=``, which routes through the
+    library's own ``FineTuneWorker`` subprocess and reports no confidence
+    at all (``if self._tuned: response["confidence"] = None``).
+    """
+
+    lib: str | None = None
+    weights: str | None = None
+    home: str | None = None
+    tuned: bool = False
+
+    @classmethod
+    def from_request(cls, request: Mapping[str, Any]) -> "EngineSpec":
+        """Read a spec out of a request frame. Untrusted input: types are coerced."""
+        return cls(
+            lib=_as_text(request.get("lib")),
+            weights=_as_text(request.get("weights")),
+            home=_as_text(request.get("home")),
+            tuned=bool(request.get("tuned")),
+        )
+
+
+def _as_text(value: object) -> str | None:
+    return str(value) if isinstance(value, str) and value else None
+
+
 def _import_needle() -> Any:  # pragma: no cover - needs cactus-needle installed
     """Import ``needle``. Never called at module scope."""
     import needle  # noqa: PLC0415 - deliberately lazy: see the module docstring
@@ -125,18 +167,81 @@ def _import_needle() -> Any:  # pragma: no cover - needs cactus-needle installed
     return needle
 
 
+def apply_engine_env(spec: EngineSpec, environ: MutableMapping[str, str] | None = None) -> None:
+    """Point cactus-needle at the staged files -- before it is imported.
+
+    ``$HOME`` is redirected because the library derives its weights cache
+    from ``~``; changing it here only affects this child process, which
+    exists for nothing else. ``NEEDLE3_LIB_PATH`` is the library's own
+    override for the native engine, so it never looks in (or downloads to)
+    its cache. The offline switches go on last and unconditionally.
+    """
+    target = os.environ if environ is None else environ
+    if spec.home:
+        target["HOME"] = spec.home
+    if spec.lib:
+        target["NEEDLE3_LIB_PATH"] = spec.lib
+    harden_env(target)
+
+
+def _library_fetch(module: Any) -> Any:
+    """``needle.agent.fetch``, whether or not the package imported it already."""
+    fetch = getattr(getattr(module, "agent", None), "fetch", None)
+    if fetch is not None:
+        return fetch
+    return importlib.import_module(f"{module.__name__}.agent.fetch")
+
+
+def link_base_weights(module: Any, weights_path: str) -> str:
+    """Make the verified weights the base archive cactus-needle loads.
+
+    The library has no override for the base weights path: it reads
+    ``cache_dir(3)/base_weights(3)`` and downloads when that is missing.
+    With ``$HOME`` already pointed at the staged home, that path is inside
+    nvsh's cache, so a symlink to the pinned, sha256-verified file is
+    enough -- and the download never happens.
+
+    Raises ``RuntimeError`` when the library's layout is not what was
+    measured. The caller turns that into an error reply; it never falls
+    back to letting the library fetch (``HF_HUB_OFFLINE=1`` stays set).
+    """
+    try:
+        fetch = _library_fetch(module)
+        cache = Path(fetch.cache_dir(3))
+        target = cache / fetch.base_weights(3)
+    except (ImportError, AttributeError, TypeError, ValueError) as exc:
+        raise RuntimeError(f"cactus-needle layout is not what nvsh staged for: {exc}") from exc
+
+    verified = Path(weights_path).resolve()
+    try:
+        cache.mkdir(parents=True, exist_ok=True)
+        if target.is_symlink() or target.exists():
+            if target.resolve() == verified:
+                return str(target)
+            target.unlink()
+        target.symlink_to(verified)
+    except OSError as exc:
+        raise RuntimeError(f"could not stage the base weights at {target}: {exc}") from exc
+    return str(target)
+
+
 def build_engine(
-    weights_path: str | None,
+    spec: EngineSpec,
     *,
     importer: Callable[[], Any] = _import_needle,
     operations: Iterable[Operation] | None = None,
+    linker: Callable[[Any, str], str] = link_base_weights,
 ) -> Any:
-    """Build the engine, with the offline environment applied *first*."""
-    harden_env()
+    """Build the engine for *spec*, with the environment applied *first*."""
+    apply_engine_env(spec)
     module = importer()
     kwargs: dict[str, Any] = {"tools": tool_functions(operations)}
-    if weights_path:
-        kwargs["weights"] = str(weights_path)
+    if spec.tuned:
+        if not spec.weights:
+            raise RuntimeError("tuned weights were asked for but no path was given")
+        kwargs["weights"] = spec.weights
+    elif spec.weights:
+        linker(module, spec.weights)
     return module.Needle(**kwargs)
 
 
@@ -160,14 +265,14 @@ def extract_selection(envelope: object) -> tuple[list, object]:
 class EngineSession:
     """Holds the engine across requests, resetting it between them."""
 
-    def __init__(self, builder: Callable[[str | None], Any] | None = None) -> None:
+    def __init__(self, builder: Callable[[EngineSpec], Any] | None = None) -> None:
         self._builder = builder if builder is not None else build_engine
         self._engine: Any = None
 
-    def select(self, weights_path: str | None, text: str) -> tuple[list, object]:
+    def select(self, spec: EngineSpec, text: str) -> tuple[list, object]:
         """One selection. Loads the engine on first use, resets it after that."""
         if self._engine is None:
-            self._engine = self._builder(weights_path)
+            self._engine = self._builder(spec)
         else:
             self._engine.reset()
         return extract_selection(self._engine.complete(text))
@@ -226,7 +331,9 @@ def handle(session: EngineSession, request: dict) -> dict:
     if request.get("op") != "select":
         return {"id": request_id, "ok": False, "error": f"unknown op {request.get('op')!r}"}
     try:
-        calls, confidence = session.select(request.get("weights"), str(request.get("text") or ""))
+        calls, confidence = session.select(
+            EngineSpec.from_request(request), str(request.get("text") or "")
+        )
     except Exception as exc:  # the engine is native code: nothing may escape
         return {"id": request_id, "ok": False, "error": f"{type(exc).__name__}: {exc}"}
     return {"id": request_id, "ok": True, "calls": calls, "confidence": confidence}

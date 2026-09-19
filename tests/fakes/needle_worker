@@ -21,10 +21,17 @@ A behaviour is either an object (answered as
 ``{"ok": false, "error": ...}`` when it carries ``"error"``) or one of the
 strings:
 
-* ``"die"``     -- exit without answering (the child dies mid-request);
-* ``"hang"``    -- never answer (the child hangs);
-* ``"garbage"`` -- answer with a well-framed payload that is not JSON;
-* ``"huge"``    -- answer with a length header far beyond the frame bound.
+* ``"die"``      -- exit without answering (the child dies mid-request);
+* ``"hang"``     -- never answer (the child hangs);
+* ``"garbage"``  -- answer with a well-framed payload that is not JSON;
+* ``"huge"``     -- answer with a length header far beyond the frame bound;
+* ``"wrong_id"`` -- answer a request nobody made;
+* ``"echo"``     -- answer with a call whose argument is the length of the
+  text that crossed the pipe, so a test can see what was really sent.
+
+An object behaviour may also carry ``"delay"`` (seconds to wait before
+answering), which is how a test keeps one request in flight while another
+arrives.
 """
 
 from __future__ import annotations
@@ -74,12 +81,27 @@ def write_frame(stream, message: dict) -> None:
     stream.flush()
 
 
-def answer(stream, request_id, behaviour) -> None:
+def answer(stream, request, behaviour) -> None:
+    request_id = request.get("id")
     if behaviour == "die":
         sys.exit(9)
     if behaviour == "hang":
         while True:
             time.sleep(0.05)
+    if behaviour == "wrong_id":
+        write_frame(stream, {"id": 999999, "ok": True, "calls": []})
+        return
+    if behaviour == "echo":
+        length = str(len(request.get("text") or ""))
+        write_frame(
+            stream,
+            {
+                "id": request_id,
+                "ok": True,
+                "calls": [{"name": "service_status", "arguments": {"service": length}}],
+            },
+        )
+        return
     if behaviour == "garbage":
         payload = b"not json at all"
         stream.write(HEADER.pack(len(payload)) + payload)
@@ -89,6 +111,8 @@ def answer(stream, request_id, behaviour) -> None:
         stream.write(HEADER.pack(64 * 1024 * 1024))
         stream.flush()
         return
+    if behaviour.get("delay"):
+        time.sleep(float(behaviour["delay"]))
     if "error" in behaviour:
         write_frame(stream, {"id": request_id, "ok": False, "error": behaviour["error"]})
         return
@@ -114,7 +138,7 @@ def main() -> int:
             return 0
         behaviour = script[min(seen, len(script) - 1)]
         seen += 1
-        answer(out, request.get("id"), behaviour)
+        answer(out, request, behaviour)
 
 
 if __name__ == "__main__":
