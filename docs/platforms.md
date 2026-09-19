@@ -161,6 +161,46 @@ the verifying command below produced.
 | `orin_cli` | present (`orin 0.5.0`; `{whoami,learn,explain,overview,doctor,cli}` only — no machine verbs yet, confirming `nvsh/ops/render.py`'s empty `DEVICE_CLI_VERBS["orin"]`) | `which orin && orin --version && orin --help` |
 | `thor_cli` | absent | `which thor` |
 
+## Docker GPU path
+
+Tier 2 runs its model server in a container nvsh starts and stops
+(`nvsh/tiers/runtime_docker.py`). How a machine exposes its GPU to that
+container is **not** uniform across the fleet, so nvsh detects it rather
+than assuming one launch form. The mapping lives in one table,
+`runtime_docker.GPU_FLAGS`, keyed by the same `Platform.kind` values the
+rest of this document uses; a kind that is not in the table gets no GPU
+flag at all and the container runs on the CPU. `[tiers.lfm] gpu = "off"`
+forces that CPU path on any machine.
+
+| `Platform.kind` | Rendered flag | Detection source | Checked |
+|---|---|---|---|
+| `dgx-spark` | `--gpus all` | `docker info` on the Spark lists **no** `nvidia` runtime — only CDI devices (`nvidia.com/gpu=all`) — and the operator's own running vLLM container uses the default `runc` runtime with a `--gpus all` device request | 2026-09-19, DGX Spark, Docker 29.1.3 (spec s17/s21) |
+| `jetson` | `--runtime nvidia` | `--gpus all` is refused on Jetson: *"invoking the NVIDIA Container Runtime Hook directly (e.g. specifying the docker --gpus flag) is not supported. Please use the NVIDIA Container Runtime"* (container toolkit in csv mode). `--runtime nvidia` works and exposes `/dev/nvgpu` and `/dev/nvhost-gpu`. `docker info` shows the `nvidia` runtime registered on both Jetsons — default on Thor, `runc`-by-default on Orin | 2026-09-19, AGX Orin (L4T R39.2) and AGX Thor (L4T R38.2) (spec s17/s21) |
+| anything else / `unknown` | *(none — CPU)* | no probe: nvsh does not guess a GPU wiring it has not measured | — |
+
+Two things this deliberately does **not** do:
+
+- **nvsh changes no Docker configuration.** It does not write
+  `/etc/docker/daemon.json`, register a runtime, or set a default runtime.
+  It only picks which flag to put on its own launch line; the `daemon_json`
+  value in the tables above is read for *reporting* only.
+- **nvsh runs no container but its own.** The launch line is built from
+  `[tiers.lfm]` config plus the detection above and nothing else — never
+  from request text or model output — and it names the image by `@sha256:`
+  digest, publishes on `127.0.0.1` only, and names the container
+  `nvsh-tier2-<uid>` on a port derived from the same uid so two operators on
+  one machine do not collide. A test asserts the launcher is the only place
+  under `nvsh/` that starts a container.
+
+Host CUDA is not a prerequisite: the AGX Orin has a working GPU driver and
+the `nvidia` container runtime but **no** host CUDA toolkit (no
+`/usr/local/cuda`, no `nvcc`) and no host `llama-server`/`vllm`/`sglang`
+binary, which is exactly why the runtime is delivered as a container.
+Container images for these engines are large (llama.cpp server-cuda 6.7 GB,
+jetson `llama_cpp` 23 GB, vllm-openai 30–33 GB as measured on the fleet) —
+that is disk, not memory; resident memory is the engine process, the
+weights, the KV cache and whatever the engine reserves up front.
+
 ## Redaction
 
 Platform detection reads only version/capability facts (release files,

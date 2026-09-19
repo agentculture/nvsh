@@ -83,11 +83,28 @@ _VALID_TIERS_KEYS = {
     "lfm",
 }
 
-#: Keys recognized inside ``[tiers.lfm]``.
-_VALID_TIERS_LFM_KEYS = {"engine", "mode", "base_url", "model"}
+#: Keys recognized inside ``[tiers.lfm]``. The second group is read by the
+#: managed (Docker) runtime only -- see ``nvsh/tiers/runtime_docker.py``,
+#: which validates each one at launch time and declines with one line.
+_VALID_TIERS_LFM_KEYS = {
+    "engine",
+    "mode",
+    "base_url",
+    "model",
+    "gpu",
+    "image",
+    "model_dir",
+    "port",
+    "ctx",
+    "startup_timeout_seconds",
+}
 
 #: Accepted engines for ``[tiers.lfm]``.
 _TIERS_LFM_ENGINES = ("llama-server", "vllm", "sglang")
+
+#: Accepted values for ``[tiers.lfm] gpu``: ``off`` forces a CPU-only
+#: container on a machine whose GPU nvsh would otherwise pass through.
+_TIERS_LFM_GPU = ("auto", "off")
 
 #: Hosts a ``[tiers.lfm] base_url`` may name.
 _LOCALHOST_NAMES = frozenset({"127.0.0.1", "localhost", "::1"})
@@ -482,6 +499,7 @@ def _apply_tiers_lfm(lfm_input: object, merged: dict[str, object]) -> None:
     _reject_unknown(lfm_input, _VALID_TIERS_LFM_KEYS, "[tiers.lfm]")
     _check_tiers_lfm_choice("engine", lfm_input.get("engine"), _TIERS_LFM_ENGINES)
     _check_tiers_lfm_choice("mode", lfm_input.get("mode"), _TIERS_LFM_MODES)
+    _check_tiers_lfm_choice("gpu", lfm_input.get("gpu"), _TIERS_LFM_GPU)
     lfm_base_url = lfm_input.get("base_url")
     if lfm_base_url is not None:
         _require_localhost_url(lfm_base_url)
