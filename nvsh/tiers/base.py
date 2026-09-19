@@ -43,6 +43,10 @@ class DeclineReason(enum.Enum):
     MEMORY_FLOOR = "memory_floor"
     NOT_GROUNDED = "not_grounded"
     LOOP_LIMIT = "loop_limit"
+    #: The tier itself asked for the full agent: Tier 2's ``escalate`` tool,
+    #: a turn that produced nothing usable, or a loop that ran out of rounds.
+    #: Not a fault -- escalation is one of Tier 2's three normal outcomes.
+    ESCALATED = "escalated"
     #: The operation validated and grounded, but no single non-shell command
     #: renders it on this platform (``nvsh.ops.render`` returned ``None``).
     NOT_RENDERABLE = "not_renderable"
