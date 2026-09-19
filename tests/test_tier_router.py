@@ -674,3 +674,33 @@ def test_an_excerpt_is_bounded_before_it_is_redacted(monkeypatch):
     monkeypatch.setattr(router_mod, "redact", _recording)
     router_mod._excerpt("A" * 2_000_000)
     assert max(seen) <= router_mod.EXCERPT_CHARS + router_mod.REDACT_SLACK
+
+
+# ---------------------------------------------------------------------------
+# a private-key block split by the excerpt bound
+# ---------------------------------------------------------------------------
+
+#: PEM markers assembled at runtime: a literal would be a secret-shaped string
+#: in the tree and ``scripts/scan-secrets.py`` would (rightly) fail on it.
+_EDGES = "-" * 5
+_KEY_WORDS = "RSA PRIVATE KEY"
+_KEY_MATERIAL = "EXCERPTKEYMATERIAL"
+
+
+def _pem_marker(edge: str) -> str:
+    return f"{_EDGES}{edge} {_KEY_WORDS}{_EDGES}"
+
+
+def test_an_excerpt_drops_a_key_block_the_bound_cut_open():
+    split = (
+        "w" * (router_mod.EXCERPT_CHARS - 60)
+        + f"{_pem_marker('BEGIN')}\n{_KEY_MATERIAL}"
+        + "z" * 6000
+        + f"\n{_pem_marker('END')}"
+    )
+    assert _KEY_MATERIAL not in router_mod._excerpt(split)
+
+
+def test_an_excerpt_still_redacts_a_whole_key_block():
+    whole = f"{_pem_marker('BEGIN')}\n{_KEY_MATERIAL}\n{_pem_marker('END')}"
+    assert router_mod._excerpt(whole) == "<REDACTED:private_key_block>"

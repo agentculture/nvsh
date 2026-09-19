@@ -49,6 +49,7 @@ from ..ops._model import Operation
 from ..ops.render import render as render_argv
 from ..platform._model import Platform
 from ..redact import redact
+from ._bounded import bounded_cut
 from .base import Decline, DeclineReason, Explanation, Tier, TierDecision
 from .records import TierRecord, TierRecords
 from .toolchat import calibrated_logit, yes_no_probability
@@ -252,8 +253,10 @@ def _excerpt(text: object) -> str:
     raw = text if isinstance(text, str) else str(text)
     # Bound first: the redactor's cost grows much faster than its input, so a
     # tier handing over a megabyte must not stall the request. A secret cut
-    # by the excerpt limit lies inside the slack and is still seen whole.
-    raw = raw[: EXCERPT_CHARS + REDACT_SLACK]
+    # by the excerpt limit lies inside the slack and is still seen whole --
+    # except a multi-line private-key block, which bounded_cut replaces with a
+    # placeholder rather than leave the redactor half a block it cannot match.
+    raw = bounded_cut(raw, EXCERPT_CHARS + REDACT_SLACK)
     cleaned = redact(raw.encode("utf-8", "replace")).decode("utf-8", "replace")
     if len(cleaned) > EXCERPT_CHARS:
         return cleaned[: EXCERPT_CHARS - 3] + "..."

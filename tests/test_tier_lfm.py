@@ -32,6 +32,7 @@ from nvsh.tiers.lfm import (
     ESCALATE_TOOL,
     EXPLAIN_TOOL,
     EXPLANATION_CHARS,
+    LABEL_CHARS,
     MAX_CONTEXT_CHARS,
     MAX_ROUNDS,
     MUTATING_REFUSED,
@@ -595,6 +596,98 @@ def test_a_failure_output_keeps_its_tail() -> None:
     chat = _FakeChat([_text_reply("fine")])
     _tier(chat).select(_failure(), _ctx(output="q" * 40000 + "the real error"))
     assert chat.seen[0][1]["content"].endswith("the real error")
+
+
+# ---------------------------------------------------------------------------
+# a private-key block split by the bound never reaches the redactor in halves
+# ---------------------------------------------------------------------------
+
+#: The PEM markers, assembled at runtime from pieces: a literal one would be a
+#: secret-shaped string in the tree and ``scripts/scan-secrets.py`` would
+#: (rightly) fail on it.
+_EDGES = "-" * 5
+_KEY_WORDS = "RSA PRIVATE KEY"
+#: Long enough that the block's far marker falls outside any bound + slack.
+_KEY_BODY = "z" * 6000
+#: A distinctive stand-in for key material, so a test can assert it is gone.
+_KEY_HEAD = "HEADKEYMATERIAL"
+_KEY_TAIL = "TAILKEYMATERIAL"
+
+
+def _pem_marker(edge: str) -> str:
+    return f"{_EDGES}{edge} {_KEY_WORDS}{_EDGES}"
+
+
+def _split_at_head() -> str:
+    """A block that opens inside the explanation window and closes far past it."""
+    lead = "w" * (EXPLANATION_CHARS - 60)
+    return f"{lead}{_pem_marker('BEGIN')}\n{_KEY_HEAD}{_KEY_BODY}\n{_pem_marker('END')}"
+
+
+def _split_at_tail() -> str:
+    """A block that closes inside the output tail window and opens far before it."""
+    return (
+        f"{_pem_marker('BEGIN')}\n{_KEY_BODY}{_KEY_TAIL}\n" f"{_pem_marker('END')}\nthe real error"
+    )
+
+
+def test_a_key_block_opened_before_the_head_cut_leaves_no_key_material() -> None:
+    result = _tier(_FakeChat([_tool_reply(EXPLAIN_TOOL, text=_split_at_head())])).select(
+        _ask(), _ctx()
+    )
+    assert _KEY_HEAD not in result.text
+
+
+def test_a_key_block_closed_after_the_tail_cut_leaves_no_key_material() -> None:
+    chat = _FakeChat([_text_reply("fine")])
+    _tier(chat).select(_failure(), _ctx(output=_split_at_tail()))
+    assert _KEY_TAIL not in chat.seen[0][1]["content"]
+
+
+def test_a_whole_key_block_inside_the_window_is_still_redacted() -> None:
+    whole = f"{_pem_marker('BEGIN')}\n{_KEY_HEAD}\n{_pem_marker('END')}"
+    result = _tier(_FakeChat([_tool_reply(EXPLAIN_TOOL, text=whole)])).select(_ask(), _ctx())
+    assert result.text == "<REDACTED:private_key_block>"
+
+
+# ---------------------------------------------------------------------------
+# the echoed tool arguments stay valid JSON
+# ---------------------------------------------------------------------------
+
+
+def _echoed_arguments(messages: list[dict]) -> list[str]:
+    """Every ``function.arguments`` string in the assistant turns of *messages*."""
+    return [
+        call["function"]["arguments"]
+        for message in messages
+        if message["role"] == "assistant"
+        for call in message.get("tool_calls", ())
+    ]
+
+
+def _parses_as_json(raw: str) -> bool:
+    try:
+        json.loads(raw)
+    except ValueError:
+        return False
+    return True
+
+
+def _huge_argument_echo() -> list[str]:
+    """What the model is shown back after it called a tool with a huge argument."""
+    chat = _FakeChat([_tool_reply("memory_stats", note="v" * 50_000), _text_reply("fine")])
+    _tier(chat).select(_ask(), _ctx())
+    return _echoed_arguments(chat.seen[-1])
+
+
+def test_a_huge_tool_argument_is_echoed_back_as_valid_json() -> None:
+    echoed = _huge_argument_echo()
+    assert all(_parses_as_json(arguments) for arguments in echoed)
+
+
+def test_a_huge_tool_argument_echo_stays_within_the_label_bound() -> None:
+    echoed = _huge_argument_echo()
+    assert max(len(arguments) for arguments in echoed) <= LABEL_CHARS
 
 
 # ---------------------------------------------------------------------------
