@@ -301,6 +301,26 @@ def reject_bypass_args(extra_args: list[str], harness: str) -> None:
             raise ValueError(f"{harness}: extra_args may not bypass approval ({arg!r})")
 
 
+#: How long a dead child's stderr reader gets to reach end-of-file before its
+#: tail is quoted in an error message.
+STDERR_SETTLE_SECONDS = 0.5
+
+
+def settle_stderr(reader: threading.Thread | None) -> None:
+    """Let a dead child's stderr reader finish before its last words are quoted.
+
+    Every persistent adapter drains stderr on its own thread, so a CLI that
+    dies at launch can be noticed -- and the error built -- before the reason
+    it printed has been read; under load the operator then got "no stderr"
+    from a CLI that had said exactly what was wrong. Call this only once the
+    process has exited: its stderr is at end-of-file, so the reader is about
+    to return and the wait is short and bounded. Never joins itself.
+    """
+    if reader is None or reader is threading.current_thread():
+        return
+    reader.join(timeout=STDERR_SETTLE_SECONDS)
+
+
 def redacted_tail(tail: deque[str] | list[str]) -> str:
     """Join a stderr tail into one string, redacted before anyone sees it.
 

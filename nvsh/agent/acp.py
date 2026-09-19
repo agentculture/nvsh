@@ -45,7 +45,7 @@ from pathlib import Path
 from typing import Any, Iterator, Mapping, Sequence
 
 from ._env import child_env
-from ._subprocess import escalate_close, kill_tree, redacted_tail
+from ._subprocess import escalate_close, kill_tree, redacted_tail, settle_stderr
 from .base import (
     AgentContext,
     AgentEvent,
@@ -585,6 +585,8 @@ class AcpAgent(NvshAgent):
             return f" (no {self._name} process)"
         code = proc.poll()
         state = "still running" if code is None else f"exited with code {code}"
+        if code is not None:
+            settle_stderr(self._stderr_thread)
         stderr = redacted_tail(self._stderr_tail)
         tail = " | ".join(line.strip() for line in stderr.splitlines() if line.strip())
         if tail:

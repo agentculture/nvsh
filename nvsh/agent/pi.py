@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import Any, Iterator, Mapping
 
 from ..redact import redact
-from ._subprocess import escalate_close, kill_tree
+from ._subprocess import escalate_close, kill_tree, settle_stderr
 from .base import (
     AgentContext,
     AgentEvent,
@@ -508,6 +508,8 @@ class PiAgent(NvshAgent):
             return " (no pi process)"
         code = proc.poll()
         state = "still running" if code is None else f"exited with code {code}"
+        if code is not None:
+            settle_stderr(self._stderr_thread)
         stderr = self._stderr_text()
         if stderr:
             return f" (pi {state}; stderr tail: {stderr})"

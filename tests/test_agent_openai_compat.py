@@ -12,6 +12,7 @@ stream (and a 401 variant), and asserts:
 from __future__ import annotations
 
 import json
+import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -160,6 +161,7 @@ def test_capabilities_are_honest():
         cancellation=True,
         persistent_session=False,
         local_model=True,
+        thinking=True,
     )
 
 
@@ -420,3 +422,34 @@ def test_a_cancel_between_run_and_the_first_step_still_stops_that_turn(fake_serv
     finally:
         agent.close()
     assert [e for e in events if e.kind == EventKind.TEXT_DELTA] == []
+
+
+@pytest.mark.parametrize("field", ["reasoning", "reasoning_content"])
+def test_reasoning_deltas_stream_as_thinking_before_the_answer(fake_server, monkeypatch, field):
+    """vLLM streams a reasoning model's thoughts as ``delta.reasoning`` (older
+    builds and other servers: ``delta.reasoning_content``) ahead of any
+    ``content``. Dropping them left the panel on "waiting for the agent" for
+    the whole think -- over a minute on thor, indistinguishable from a hang."""
+    chunks = [
+        {"choices": [{"delta": {"role": "assistant", "content": ""}}]},
+        {"choices": [{"delta": {field: "let me "}}]},
+        {"choices": [{"delta": {field: "think"}}]},
+        {"choices": [{"delta": {"content": "answer"}}]},
+    ]
+    monkeypatch.setattr(sys.modules[__name__], "_SSE_CHUNKS", chunks)
+    agent = OpenAICompatAgent({"base_url": f"http://127.0.0.1:{fake_server.server_port}"})
+    agent.start()
+    try:
+        events = list(agent.run(_request(), _context()))
+    finally:
+        agent.close()
+    assert [(e.kind, e.text) for e in events[:-1]] == [
+        (EventKind.THINKING, "let me "),
+        (EventKind.THINKING, "think"),
+        (EventKind.TEXT_DELTA, "answer"),
+    ]
+    assert events[-1].kind == EventKind.DONE
+    # What it streams is what it declares.
+    assert agent.capabilities().thinking is True
+    # Thoughts are shown, never replayed: the steer context is the answer only.
+    assert agent._last_reply == "answer"  # noqa: SLF001

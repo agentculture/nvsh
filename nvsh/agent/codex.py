@@ -55,6 +55,7 @@ from ._subprocess import (
     kill_tree,
     redacted_tail,
     reject_bypass_args,
+    settle_stderr,
 )
 from .base import (
     AgentContext,
@@ -399,6 +400,8 @@ class CodexAgent(SubprocessAgent):
             return " (no codex app-server process)"
         code = proc.poll()
         state = "still running" if code is None else f"exited with code {code}"
+        if code is not None:
+            settle_stderr(self._stderr_reader)
         stderr = redacted_tail(self._stderr_tail)
         tail = " | ".join(line.strip() for line in stderr.splitlines() if line.strip())
         if tail:

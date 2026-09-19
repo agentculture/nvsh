@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/). This project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.14.3] - 2026-09-18
+
+### Changed
+
+- The conformance suite no longer tolerates a missing stderr tail for `qwen` and `kiro` (`STDERR_TAIL_RACE` is empty), and a new test makes the race certain instead of rare by delaying each adapter's stderr reader; it fails for `pi`, `qwen` and `kiro` without the fix.
+
+### Fixed
+
+- A harness that dies at launch no longer loses the reason it gave. `pi`, the ACP adapters (`qwen`, `kiro`) and the codex app-server read the child's stderr on a separate thread and built the launch-failure message as soon as they noticed the process was gone, so under load the message could read `exited with code 2; no stderr` although the CLI had said exactly what was wrong (about one whole-suite run in a dozen for `pi`, roughly one in ten for ACP; it failed CI on #22). They now wait, briefly and only once the process has exited, for the reader to reach end-of-file (`_subprocess.settle_stderr`).
+
+## [0.14.2] - 2026-09-18
+
+### Fixed
+
+- `openai-compat` shows a reasoning model's thoughts instead of looking hung. vLLM streams them as `delta.reasoning` (other servers: `delta.reasoning_content`) ahead of any `content`, and the adapter dropped every such chunk, so the panel sat on `... waiting for the agent` for the whole think — over a minute for Nemotron on thor on 2026-09-17, while 380 KB of stream arrived. They are now THINKING events, rendered as the same dimmed run the `claude` adapter already gets; they are never added to the reply kept for steer context. The adapter now declares `thinking=True` in its capabilities (shown by `nvsh agent list --json`) to match.
+
 ## [0.14.1] - 2026-09-18
 
 ### Changed
