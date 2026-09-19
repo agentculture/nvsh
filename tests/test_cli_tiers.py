@@ -365,6 +365,26 @@ def test_tiers_prefetch_json_flag_accepted(capsys):
     json.loads(capsys.readouterr().err)
 
 
+def test_parent_json_flag_before_the_verb_still_selects_json_output(capsys):
+    """``nvsh tiers --json stats`` (parent-level ``--json``, before the verb)
+    must emit JSON, not text: each sub-subparser's own ``--json`` used a
+    plain ``store_true`` default of ``False``, which argparse re-applies on
+    top of the parent's already-parsed namespace and silently discards it."""
+    rc = main(["tiers", "--json", "stats"])
+    assert rc == 0
+    json.loads(capsys.readouterr().out)  # would be plain text, not JSON, before the fix
+
+
+def test_parent_json_flag_before_prefetch_hits_the_json_refusal_branch(capsys):
+    """Same bug, via ``prefetch``: with the parent-level ``--json`` lost,
+    ``nvsh tiers --json prefetch`` fell through to the *interactive* refusal
+    branch (empty stdout) instead of the JSON one (a JSON error on stderr)."""
+    rc = main(["tiers", "--json", "prefetch"])
+    assert rc != 0
+    err = json.loads(capsys.readouterr().err)
+    assert "--yes" in err["remediation"]
+
+
 def test_explain_catalog_has_every_tiers_entry():
     for path in [("tiers",), ("tiers", "stats"), ("tiers", "export"), ("tiers", "prefetch")]:
         assert path in ENTRIES
@@ -390,3 +410,38 @@ def test_stats_survive_a_hand_edited_record_with_a_garbage_latency():
 
     stats = compute_stats([{"tier": "needle", "latency_ms": "fast"}, {"tier": "needle"}])
     assert stats["tiers"]["needle"] == {"count": 2, "latency_p50_ms": 0.0, "latency_p95_ms": 0.0}
+
+
+def test_stats_survive_malformed_non_object_json_lines():
+    """``TierRecords.read_all()`` accepts any value that parses as JSON, so a
+    torn or hand-edited line can decode to ``null``, a list or a bare
+    number, not just a dict with missing fields. ``compute_stats`` must not
+    raise ``AttributeError`` calling ``.get()`` on one of those."""
+    from nvsh.tiers.stats import compute_stats
+
+    records = [
+        None,
+        [],
+        42,
+        "a bare string",
+        {"tier": "needle", "latency_ms": 5.0},
+    ]
+    stats = compute_stats(records)
+    assert stats["total"] == 5
+    assert stats["tiers"] == {"needle": {"count": 1, "latency_p50_ms": 5.0, "latency_p95_ms": 5.0}}
+    assert stats["escalation_reasons"] == {}
+    assert stats["operator_decisions"]["approved"] == 0
+
+
+def test_tiers_stats_cli_survives_a_malformed_record_on_disk(tmp_path, capsys):
+    """End-to-end: a hand-edited ``tiers.jsonl`` line that is valid JSON but
+    not an object (e.g. ``null``) must not break ``nvsh tiers stats``."""
+    path = _records_path(tmp_path)
+    path.parent.mkdir(parents=True)
+    path.write_text('null\n{"tier": "needle", "latency_ms": 1.0}\n', encoding="utf-8")
+
+    rc = main(["tiers", "stats", "--json"])
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["total"] == 2
+    assert payload["tiers"]["needle"]["count"] == 1

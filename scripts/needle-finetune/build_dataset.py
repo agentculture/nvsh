@@ -164,6 +164,34 @@ def _add(example: dict, examples: list[dict], seen: set, counts: dict[str, int])
     counts["written"] += 1
 
 
+def _same_file(a: Path, b: Path) -> bool:
+    """Whether *a* and *b* name the same file: same resolved path, or (for two
+    existing paths) the same inode -- catches a symlink `os.path.resolve()`
+    itself would already have followed, plus a hardlink, which it would not.
+    """
+    if a.resolve() == b.resolve():
+        return True
+    try:
+        return a.exists() and b.exists() and a.samefile(b)
+    except OSError:
+        return False
+
+
+def _refuse_if_out_aliases_input(out: Path, corpus: Path, bundle: Path | None) -> str | None:
+    """``None`` if *out* is safe to truncate, else an error message.
+
+    ``--out`` truncates its destination. Without this check, passing the
+    same path (or an equivalent resolved path, or a symlink to it) as
+    ``--corpus``/``--bundle`` and ``--out`` reads the source and then
+    silently replaces it with generated JSONL.
+    """
+    if _same_file(out, corpus):
+        return f"--out would overwrite --corpus: {out} and {corpus} are the same file"
+    if bundle is not None and _same_file(out, bundle):
+        return f"--out would overwrite --bundle: {out} and {bundle} are the same file"
+    return None
+
+
 def main(argv: list[str] | None = None) -> int:
     """CLI entry point. Returns 0 on success, 2 on input errors."""
     parser = argparse.ArgumentParser(
@@ -216,6 +244,11 @@ def main(argv: list[str] | None = None) -> int:
             print(f"bundle file is not valid JSON: {exc}", file=sys.stderr)
             return 2
         bundle_path = args.bundle
+
+    alias_error = _refuse_if_out_aliases_input(args.out, args.corpus, bundle_path)
+    if alias_error is not None:
+        print(alias_error, file=sys.stderr)
+        return 2
 
     # Build examples.
     tools = tool_schemas()

@@ -48,6 +48,9 @@ from nvsh.cli._output import emit_result
 #: Help text every ``--json`` flag in this verb group shares.
 _JSON_HELP = "Emit structured JSON."
 
+#: A ``bench`` figure this run never measured (S1192: was duplicated 3x as a literal).
+_NOT_MEASURED = "not measured"
+
 
 def _is_interactive() -> bool:
     """Whether there is a terminal to ask the operator on.
@@ -373,15 +376,15 @@ def _bench_pins():
 
 
 def _fmt_pct(value) -> str:
-    return "not measured" if value is None else f"{value * 100:.1f}%"
+    return _NOT_MEASURED if value is None else f"{value * 100:.1f}%"
 
 
 def _fmt_ms(value) -> str:
-    return "not measured" if value is None else f"{value:.1f}ms"
+    return _NOT_MEASURED if value is None else f"{value:.1f}ms"
 
 
 def _fmt_mib(value) -> str:
-    return "not measured" if value is None else f"{value:.1f}MiB"
+    return _NOT_MEASURED if value is None else f"{value:.1f}MiB"
 
 
 def _bench_text(result: dict, split: str, entry_count: int, problem_count: int) -> str:
@@ -430,7 +433,14 @@ def cmd_tiers_bench(args: argparse.Namespace) -> int:
     from nvsh import __version__
     from nvsh import platform as platform_mod
     from nvsh.ops.ground import default_runner
-    from nvsh.tiers.bench import bench, load_corpus, load_world, world_platform, world_runner
+    from nvsh.tiers.bench import (
+        BenchOptions,
+        bench,
+        load_corpus,
+        load_world,
+        world_platform,
+        world_runner,
+    )
 
     split = getattr(args, "split", "dev") or "dev"
     corpus_path = _bench_corpus_path(split)
@@ -450,15 +460,17 @@ def cmd_tiers_bench(args: argparse.Namespace) -> int:
             split=split,
             tier1=tier1,
             platform=platform,
-            runner=runner,
-            mode="cpu" if tier_name == "needle" else "none",
-            grounding="live" if live else "fixture-world",
-            pins=_bench_pins(),
-            nvsh_version=__version__,
-            engine=tier_name,
-            concurrent_load=_bench_load_avg(),
-            timestamp=_bench_now_iso(),
-            corpus_problems=loaded.problems,
+            options=BenchOptions(
+                runner=runner,
+                mode="cpu" if tier_name == "needle" else "none",
+                grounding="live" if live else "fixture-world",
+                pins=_bench_pins(),
+                nvsh_version=__version__,
+                engine=tier_name,
+                concurrent_load=_bench_load_avg(),
+                timestamp=_bench_now_iso(),
+                corpus_problems=loaded.problems,
+            ),
         )
     finally:
         tier1.close()
@@ -495,10 +507,15 @@ def register(sub: argparse._SubParsersAction) -> None:
     p.set_defaults(func=_no_verb, json=False)
     noun_sub = p.add_subparsers(dest="tiers_command", parser_class=type(p))
 
+    # Every sub-subparser's own "--json" uses default=argparse.SUPPRESS: a
+    # plain store_true default (False) would win over an already-parsed
+    # `nvsh tiers --json <verb>` because argparse re-applies a subparser's own
+    # defaults on top of the parent namespace. SUPPRESS leaves the parent's
+    # value alone unless the verb's own "--json" is actually given.
     stats = noun_sub.add_parser(
         "stats", help="Per-tier counts, latency percentiles and decision rates."
     )
-    stats.add_argument("--json", action="store_true", help=_JSON_HELP)
+    stats.add_argument("--json", action="store_true", default=argparse.SUPPRESS, help=_JSON_HELP)
     stats.set_defaults(func=cmd_tiers_stats)
 
     export = noun_sub.add_parser("export", help="Write a redacted records bundle to a local file.")
@@ -506,14 +523,14 @@ def register(sub: argparse._SubParsersAction) -> None:
     export.add_argument(
         "--force", action="store_true", help="Overwrite the destination if it already exists."
     )
-    export.add_argument("--json", action="store_true", help=_JSON_HELP)
+    export.add_argument("--json", action="store_true", default=argparse.SUPPRESS, help=_JSON_HELP)
     export.set_defaults(func=cmd_tiers_export)
 
     prefetch = noun_sub.add_parser(
         "prefetch", help="Show what would be fetched, with sizes, and optionally fetch it."
     )
     prefetch.add_argument("--yes", action="store_true", help="Download without prompting.")
-    prefetch.add_argument("--json", action="store_true", help=_JSON_HELP)
+    prefetch.add_argument("--json", action="store_true", default=argparse.SUPPRESS, help=_JSON_HELP)
     prefetch.set_defaults(func=cmd_tiers_prefetch)
 
     bench = noun_sub.add_parser(
@@ -534,5 +551,5 @@ def register(sub: argparse._SubParsersAction) -> None:
         help="Ground and render against this machine instead of the corpus's fixture world.",
     )
     bench.add_argument("--out", help="Write the results JSON to this local file.")
-    bench.add_argument("--json", action="store_true", help=_JSON_HELP)
+    bench.add_argument("--json", action="store_true", default=argparse.SUPPRESS, help=_JSON_HELP)
     bench.set_defaults(func=cmd_tiers_bench)
