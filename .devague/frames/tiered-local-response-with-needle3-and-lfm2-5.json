@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "drafting",
   "created": "2026-09-19T11:10:08Z",
-  "updated": "2026-09-19T11:19:17Z",
+  "updated": "2026-09-19T11:19:34Z",
   "claims": [
     {
       "id": "c1",
@@ -428,13 +428,38 @@
     {
       "id": "c25",
       "kind": "requirement",
-      "text": "Tier 2 talks to its model through one OpenAI-compatible localhost interface with tool-call support, and the runtime behind it is a config choice among `llama-server`, `vllm` and `sglang`: nvsh either starts and stops the runtime itself or attaches to one the operator already runs. The benchmark runner records results per runtime so the default for each device class is picked from numbers.",
+      "text": "Tier 2 talks to its model through one OpenAI-compatible localhost interface with tool-call support, and the runtime behind it is a config choice among `llama-server`, `vllm` and `sglang`: nvsh either starts and stops the runtime itself or attaches to one the operator already runs. The benchmark runner records speed and memory cost per runtime, so the default for each device class is picked from numbers, weighing footprint as heavily as latency.",
       "origin": "llm",
       "status": "proposed",
       "honesty_conditions": [
         {
           "id": "h18",
           "text": "The benchmark is run with at least two runtimes on at least one device and both result sets are committed; switching runtime is a config change with no code change, shown by a test that points Tier 2 at a fixture HTTP server.",
+          "status": "proposed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": [
+        {
+          "text": "Tier 2 talks to its model through one OpenAI-compatible localhost interface with tool-call support, and the runtime behind it is a config choice among `llama-server`, `vllm` and `sglang`: nvsh either starts and stops the runtime itself or attaches to one the operator already runs. The benchmark runner records results per runtime so the default for each device class is picked from numbers.",
+          "kind": "requirement",
+          "reason": "operator: low memory impact; engines have different costs"
+        }
+      ]
+    },
+    {
+      "id": "c26",
+      "kind": "requirement",
+      "text": "Low memory impact is a first-class goal alongside speed. Inference engines have different costs, so each runtime is judged on its whole resident footprint \u2014 engine process, weights, KV cache and any memory it reserves up front \u2014 and on its effect on the machine's primary workload, not on tokens per second alone.",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h19",
+          "text": "For every runtime and device benchmarked, the results file records idle resident memory, peak memory during a turn, memory reserved at startup (vLLM and SGLang pre-allocate a share of GPU or unified memory) and the slowdown of a concurrent primary workload; the per-device default is the runtime that meets the latency target with the smallest footprint, and a runtime that cannot fit the Orin Nano budget is recorded as not fitting rather than left out.",
           "status": "proposed",
           "instruction": ""
         }
