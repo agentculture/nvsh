@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "drafting",
   "created": "2026-09-19T11:10:08Z",
-  "updated": "2026-09-19T11:19:34Z",
+  "updated": "2026-09-19T11:43:22Z",
   "claims": [
     {
       "id": "c1",
@@ -135,7 +135,7 @@
     {
       "id": "c8",
       "kind": "requirement",
-      "text": "nvsh gains a typed operation table \u2014 the deterministic operator tools the issues assume but the code does not have yet. Each operation has a name, typed arguments, a read-only or mutating flag, and a per-platform implementation that renders to a concrete command (through `jetson-cli` / `dgx-spark-cli` / `rtx-spark-cli` when installed, plain system tools otherwise). The first table covers at least: `device_info`, `system_stats`, `gpu_stats`, `power_get`, `power_set`, `service_status`, `service_restart`, `service_logs`, `docker_list`, `docker_restart`, `process_list`, `nvsh_doctor`. One table serves all tiers and all four device classes.",
+      "text": "nvsh gains a typed operation table \u2014 the deterministic operator tools the issues assume but the code does not have yet. Each operation has a name, typed arguments, a read-only or mutating flag, and a per-platform implementation that renders to a concrete command. The table is modelled on the verb set the operator's device CLIs already share (`spark`, `thor`, `orin`): read-only operations render to `<device-cli> <verb> --json` when that CLI is on PATH and to a plain system command otherwise, so nvsh still works with no device CLI installed. The first table covers at least: `machine_status`, `memory_stats`, `gpu_stats`, `disk_stats`, `thermal_stats`, `container_list`, `network_info`, `process_list`, `power_get`, `swap_status`, `nvsh_doctor` (read-only), and `power_set`, `service_status`, `service_logs`, `service_restart`, `container_restart` (no device CLI has these yet; nvsh renders them to system commands). A verb that exists on at least one device CLI counts as available; where a sibling CLI lacks it, nvsh files an issue on that repo rather than working around it. nvsh detects `thor` and `orin` on PATH the way it already detects `spark`. One table serves all tiers and all device classes.",
       "origin": "llm",
       "status": "proposed",
       "honesty_conditions": [
@@ -144,12 +144,24 @@
           "text": "Every operation in the table has a table test per platform kind asserting the exact rendered command, and an argument that could inject shell syntax (a service named `x; rm -rf /`) is refused by validation.",
           "status": "proposed",
           "instruction": ""
+        },
+        {
+          "id": "h20",
+          "text": "For each read-only operation a test asserts the rendered command with the device CLI present and with it absent; the gaps found on 2026-09-19 (all machine verbs on `orin`; `power` on `spark`; service and container-restart verbs on all three) are filed as issues on the sibling repos and linked from the spec.",
+          "status": "proposed",
+          "instruction": ""
         }
       ],
       "hard_questions": [],
       "links": [],
       "instruction": "",
-      "revisions": []
+      "revisions": [
+        {
+          "text": "nvsh gains a typed operation table \u2014 the deterministic operator tools the issues assume but the code does not have yet. Each operation has a name, typed arguments, a read-only or mutating flag, and a per-platform implementation that renders to a concrete command (through `jetson-cli` / `dgx-spark-cli` / `rtx-spark-cli` when installed, plain system tools otherwise). The first table covers at least: `device_info`, `system_stats`, `gpu_stats`, `power_get`, `power_set`, `service_status`, `service_restart`, `service_logs`, `docker_list`, `docker_restart`, `process_list`, `nvsh_doctor`. One table serves all tiers and all four device classes.",
+          "kind": "requirement",
+          "reason": "device CLI survey (s14): spark/thor verb set exists, orin is empty, no mutating verbs anywhere"
+        }
+      ]
     },
     {
       "id": "c9",
@@ -586,6 +598,14 @@
       "surface": "Needle3 spike on DGX Spark (cactus-needle 3.0.2, untuned base, 10-tool nvsh vocabulary from issue #30)",
       "finding": "Run 2026-09-19 in a scratch venv, CPU, telemetry off. Warm selection 28-57 ms per request; import+load 5.7 s cold; process peak RSS 179 MB; engine is `libneedle.so` loaded via ctypes, engine+weights fetched from Hugging Face on first use. `Needle.complete()` selects only; `Needle.run()` EXECUTES the tool functions, so nvsh must never call `run()`. Accuracy on issue #30's prompts: 7/9 fast-path prompts correct with correct arguments (`power_set(mode=max_performance)`, `service_restart(service=vLLM)`); 2 wrong \u2014 'How hot is this machine?' -> `power_get` at confidence 1.0, and 'Run nvsh doctor' -> `docker_restart(container=doctor)` at 0.66, a wrong MUTATING pick. Of 5 should-escalate prompts 3 returned an empty list; 'Figure out why CUDA initialization is failing' -> `device_info` at 0.98 and 'Fix this linker error' -> `nvsh_doctor` at 0.53. Conclusions: latency and footprint claims hold; confidence is NOT a safe gate on its own (a wrong pick scored 1.0); the package sets `confidence = None` for a fine-tuned model (needle/__init__.py, `if self._tuned`), so a tuned model has no confidence at all. Also: cactus-needle ships telemetry ON by default, posting an anonymous id, OS, arch, Python and engine version to a hosted endpoint on every `run`/`complete`; it is disabled by `NEEDLE_TELEMETRY=0` or `DO_NOT_TRACK`.",
       "seeds": []
+    },
+    {
+      "id": "s14",
+      "surface": "device CLIs: `spark` (dgx-spark-cli 0.7.0, this box), `thor` (jetson-thor-cli 0.5.0, ssh thor), `orin` (jetson-orin-cli 0.5.0, ssh orin)",
+      "finding": "Checked 2026-09-19 by running each CLI's `--help` and sampling `--json`. `spark` and `thor` share one read-only verb set with a uniform `--json` envelope `{subject, available, source, warnings, sections, data}`: status, memory, gpu, disk, thermal, containers, network, processes, monitor, swap; `thor` adds `power` (nvpmodel mode, jetson_clocks, per-rail draw). `orin` 0.5.0 has only the template verbs (whoami, learn, explain, overview, doctor, cli) \u2014 no machine verbs yet. None of the three has a mutating operation apart from `swap grow` (dry-run unless `--apply`): there is no service status/restart/logs, no container restart, no power-mode set. nvsh detects only `spark` on PATH (nvsh/platform/_detect.py:194); it does not look for `thor` or `orin`, and the Jetson playbook names raw `nvpmodel -q` / `tegrastats` instead. Operator's rule: 'exists on at least one of them' is enough \u2014 all three repos are the operator's, and gaps become issues on the sibling repo.",
+      "seeds": [
+        "c8"
+      ]
     }
   ],
   "lapses": [],
