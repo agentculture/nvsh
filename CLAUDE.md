@@ -72,7 +72,8 @@ and the verb still runs (`uv run --frozen nvsh --help`,
 `uv run --frozen nvsh doctor --json`) rather than assuming this paragraph
 stays accurate forever.
 
-nvsh registers ten harness adapters (nine harnesses plus the in-process `needle` tier adapter) in `nvsh/agent/registry.py`'s
+nvsh registers eleven harness adapters (nine harnesses plus the in-process
+`needle` and `lfm` tier adapters) in `nvsh/agent/registry.py`'s
 `ADAPTERS` table: `pi` (rpc), `qwen` (acp, `qwen --acp`, plan mode by
 default), `qwen-p` (stream-json print-mode, read-only fallback for when
 ACP is unavailable), `claude` (stream-json, `claude -p --output-format
@@ -99,7 +100,7 @@ session. See [`docs/shell-integration.md`](docs/shell-integration.md) for
 the full `@target` grammar and [`docs/daemon.md`](docs/daemon.md) for how
 the target travels on the wire.
 
-**Local tiers (nvsh 0.16.0, opt-in, off by default).** With `[tiers] enabled = true` a request typed at the prompt is first offered to Needle3 (Tier 1, a 121M local model run in its own child process by the daemon) which picks one typed operation from `nvsh/ops/table.py`; nvsh grounds the arguments, renders the command from the table and shows it as an ordinary proposal naming the operation it understood — approval, `sudo` and destructive-command handling are unchanged, a failed command never goes to Tier 1, and `@target` bypasses the tiers. `needle` is a tenth registered adapter (`@needle`, in-process, excluded from `setup`'s probe and refused as a persisted default like `demo`). `nvsh tiers stats|export|prefetch|bench` and three `doctor` checks cover it. Tier 2 (LFM2.5) is not built yet. Measured accuracy of stock Needle3 is about half of the target, so read `docs/tiers-improving-accuracy.md` and `docs/needle-finetune.md` before describing the tiers as good; never add code that switches on a specific operation name — the table is the only place operations are named.
+**Local tiers (nvsh 0.16.0, opt-in, off by default).** With `[tiers] enabled = true` a request typed at the prompt is first offered to Needle3 (Tier 1, a 121M local model run in its own child process by the daemon) which picks one typed operation from `nvsh/ops/table.py`; nvsh grounds the arguments, renders the command from the table and shows it as an ordinary proposal naming the operation it understood — approval, `sudo` and destructive-command handling are unchanged, a failed command never goes to Tier 1, and `@target` bypasses the tiers. `needle` is a tenth registered adapter (`@needle`, in-process, excluded from `setup`'s probe and refused as a persisted default like `demo`). `nvsh tiers stats|export|prefetch|bench` and three `doctor` checks cover it. `lfm` is an eleventh (`@lfm`, in-process, same exclusions): the explicit Tier-2-only counterpart to `needle`, usable once `[tiers.lfm] model` is set — with no model configured it explains that in one line rather than building a broken tier. `nvsh/tiers/manager.py`'s `TierManager._build` wires the same `LfmTier` into the daemon's automatic Tier 2 slot when no `tier2_factory` is injected and the flavor is configured, so a FAILURE request reaches it directly rather than Tier 1 (which never sees a FAILURE at all). Measured accuracy of stock Needle3 is about half of the target, so read `docs/tiers-improving-accuracy.md` and `docs/needle-finetune.md` before describing the tiers as good; never add code that switches on a specific operation name — the table is the only place operations are named.
 
 Approval channels differ per harness, and where none exists the harness
 runs read-only rather than getting nvsh's own auto-approve switches passed

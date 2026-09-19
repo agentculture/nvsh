@@ -44,25 +44,26 @@ PI_INSTALL_CMD = "npm install -g @earendil-works/pi-coding-agent"
 #: adapter speaks to its backend, independent of ``binary``/``hosted``.
 #: ``fixture`` is the demo adapter's: its "protocol" is a committed JSON
 #: file in the package. ``inproc`` is a local response tier's (``needle``,
-#: and ``lfm`` once task t19 registers it): it speaks to a child process
-#: this same daemon starts, not to a separately installed CLI.
+#: ``lfm``): it speaks to a child process/container this same daemon
+#: starts, not to a separately installed CLI.
 PATH_VALUES = {"rpc", "stream-json", "app-server", "acp", "http", "fixture", "inproc"}
 
 #: Adapters :func:`probe` never offers. ``openai-compat`` is excluded
 #: because it is always "installed" and would win every auto-pick; ``demo``
 #: for the same reason and a stronger one -- it answers from a fixture, so
 #: auto-picking it would silently replace the operator's harness with a
-#: canned reply. ``needle`` (and ``lfm``, task t19) is excluded because it
-#: is a single tier, not a full agent: it only ever answers
-#: instruction-shaped requests, so auto-picking it as the default would mean
-#: every ordinary failure silently gets a Tier-1-only answer instead of the
-#: full agent. ``demo``/``needle`` stay selectable *per request*
-#: (``--agent demo``, ``@needle``, an alias whose target is one of them),
-#: but ``nvsh agent use``/``nvsh setup --agent`` refuse to persist either as
-#: the default -- see :data:`NOT_PERSISTABLE_DEFAULT_REASONS` -- because
-#: that would make every ordinary failure replay a canned fixture or a
-#: Tier-1-only answer instead of calling a real backend.
-PROBE_EXCLUDED = frozenset({"openai-compat", "demo", "needle"})
+#: canned reply. ``needle`` and ``lfm`` are excluded because each is a
+#: single tier, not a full agent: they only ever answer instruction-shaped
+#: (and, for ``lfm``, failure) requests, so auto-picking either as the
+#: default would mean every ordinary failure silently gets a one-tier
+#: answer instead of the full agent. ``demo``/``needle``/``lfm`` stay
+#: selectable *per request* (``--agent demo``, ``@needle``, ``@lfm``, an
+#: alias whose target is one of them), but ``nvsh agent use``/``nvsh setup
+#: --agent`` refuse to persist any of them as the default -- see
+#: :data:`NOT_PERSISTABLE_DEFAULT_REASONS` -- because that would make every
+#: ordinary failure replay a canned fixture or a one-tier answer instead of
+#: calling a real backend.
+PROBE_EXCLUDED = frozenset({"openai-compat", "demo", "needle", "lfm"})
 
 #: Shared by every place that refuses to persist ``demo`` as the default
 #: backend (``nvsh agent use demo``, ``nvsh setup --agent demo``, and
@@ -94,14 +95,27 @@ NEEDLE_DEFAULT_HINT = (
     "run needle for one request with --agent needle or @needle instead"
 )
 
+#: Same refusal, for ``lfm`` (see ``nvsh/agent/lfm.py``'s module docstring):
+#: a Tier 2 bounded inspect-propose loop answers instruction-shaped and
+#: failure requests only, and declines anything past its round budget
+#: rather than calling a real harness -- exactly the wrong shape for the
+#: backend nvsh always falls back to.
+LFM_DEFAULT_MESSAGE = (
+    "lfm is a Tier 2 local-response model (bounded read-only inspection, no full turn); "
+    "it cannot be the persisted default agent"
+)
+LFM_DEFAULT_HINT = (
+    "choose a real backend with 'nvsh agent use <name>' (see 'nvsh agent list'); "
+    "run lfm for one request with --agent lfm or @lfm instead"
+)
+
 #: ``nvsh agent use``/``nvsh setup --agent``'s refusal table for adapters
 #: that must never be the *persisted default* (each stays selectable per
-#: request). One dict instead of a growing chain of ``if name == ...``:
-#: ``lfm`` (task t19) joins this the same way -- add its ``(message, hint)``
-#: pair here, no new branch.
+#: request). One dict instead of a growing chain of ``if name == ...``.
 NOT_PERSISTABLE_DEFAULT_REASONS: dict[str, tuple[str, str]] = {
     "demo": (DEMO_DEFAULT_MESSAGE, DEMO_DEFAULT_HINT),
     "needle": (NEEDLE_DEFAULT_MESSAGE, NEEDLE_DEFAULT_HINT),
+    "lfm": (LFM_DEFAULT_MESSAGE, LFM_DEFAULT_HINT),
 }
 
 #: The set form of :data:`NOT_PERSISTABLE_DEFAULT_REASONS`'s keys, for a
@@ -112,11 +126,12 @@ NOT_PERSISTABLE_DEFAULT = frozenset(NOT_PERSISTABLE_DEFAULT_REASONS)
 #: has no ``binary`` to name (``needle``: a Python flavor, not a CLI). Without
 #: this, :func:`_choose_forced` formatted ``spec.binary`` -- ``None`` -- and
 #: told the operator that "None is not installed; install None" (Qodo #13, PR
-#: review). ``(what is missing, how to get it)``; ``lfm`` (task t19) adds its
-#: pair here, no new branch. Adapters with no binary that are *always*
-#: installed (``openai-compat``, ``demo``) never reach this table.
+#: review). ``(what is missing, how to get it)``. Adapters with no binary
+#: that are *always* installed (``openai-compat``, ``demo``) never reach this
+#: table.
 MISSING_WITHOUT_BINARY: dict[str, tuple[str, str]] = {
     "needle": ("the needle flavor is not installed", "pip install 'nvsh[needle]'"),
+    "lfm": ("no model configured for the lfm tier", "set [tiers.lfm] model in config.toml"),
 }
 
 
@@ -139,7 +154,7 @@ class AdapterSpec:
     #: ``True`` when ``binary`` is ``None``) with a zero-arg predicate. Used
     #: by adapters with no binary at all whose "installed" question is not
     #: "always yes" (``openai-compat``/``demo``'s case) but "is the Python
-    #: flavor importable" -- ``needle`` (and ``lfm``, task t19).
+    #: flavor importable" (``needle``) or "is it configured" (``lfm``).
     installed_check: Callable[[], bool] | None = None
 
 
@@ -269,6 +284,39 @@ def _needle_flavor_installed() -> bool:
         return False
 
 
+def _make_lfm(config: Config) -> NvshAgent:
+    """The explicit Tier-2-only adapter (lazy import, see ``_make_qwen``).
+
+    Settings come from ``[tiers]``/``[tiers.lfm]``, not ``[agents.lfm]``:
+    Tier 2 has no harness-style knobs of its own.
+    """
+    from .lfm import LfmAgent
+
+    return LfmAgent(config.tiers)
+
+
+def _lfm_flavor_installed() -> bool:
+    """Whether ``lfm`` is usable: is ``[tiers.lfm] model`` set?
+
+    The ``lfm`` extra has no dependencies to import-check (unlike
+    ``needle``'s ``cactus-needle`` package) -- Tier 2 talks to a container
+    nvsh launches itself, not a locally-imported engine -- so its
+    "installed" question is really "is it configured at all". A malformed
+    ``config.toml`` (the one thing :func:`nvsh.config.load` can raise on)
+    reads the same as "not configured" here: this predicate only ever
+    answers ``installed()``'s yes/no question, never raises.
+    """
+    from ..config import ConfigError, load
+
+    try:
+        config = load()
+    except ConfigError:
+        return False
+    lfm_settings = config.tiers.get("lfm") if isinstance(config.tiers, dict) else None
+    model = lfm_settings.get("model") if isinstance(lfm_settings, dict) else None
+    return isinstance(model, str) and bool(model)
+
+
 #: Registered in the order 'nvsh agent list' reports them.
 ADAPTERS: dict[str, AdapterSpec] = {
     "pi": AdapterSpec(
@@ -361,6 +409,16 @@ ADAPTERS: dict[str, AdapterSpec] = {
         hosted=False,
         needs_node=False,
         installed_check=_needle_flavor_installed,
+    ),
+    "lfm": AdapterSpec(
+        name="lfm",
+        binary=None,
+        factory=_make_lfm,
+        description="LFM Tier 2, explicit-only (@lfm); local, bounded read-only inspect+propose.",
+        path="inproc",
+        hosted=False,
+        needs_node=False,
+        installed_check=_lfm_flavor_installed,
     ),
 }
 

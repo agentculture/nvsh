@@ -13,6 +13,11 @@ no answer, and ends the turn there. Escalating past a *failed* command is a
 different door entirely (``nvsh``'s normal failure flow, or a plain
 ``@<harness>``), not this one.
 
+The turn loop, decline-text formatting and lifecycle this adapter shares
+with :class:`~nvsh.agent.lfm.LfmAgent` (task t19) live in
+:mod:`nvsh.agent._tier_adapter`; this module only builds the Tier-1-only
+router and fills in the four hooks that module calls into.
+
 ``nvsh.tiers`` is a large, native-adjacent subtree (child processes,
 zipfile/urllib prefetch, ctypes-loaded engines) that must never load on the
 hot success path (CLAUDE.md's stdlib-only import-time contract). So, like
@@ -25,9 +30,10 @@ the handful of helpers :meth:`run` calls into.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable, Iterator, Mapping
+from typing import TYPE_CHECKING, Callable, Mapping
 
-from .base import AgentContext, AgentEvent, AgentRequest, Capabilities, EventKind, NvshAgent
+from ._tier_adapter import TierOnlyAdapter
+from .base import Capabilities
 
 if TYPE_CHECKING:  # pragma: no cover - typing only, never imported at runtime
     from ..platform._model import Platform
@@ -40,7 +46,8 @@ if TYPE_CHECKING:  # pragma: no cover - typing only, never imported at runtime
 #: (``unmediated_file_access=False``), and it has no mid-turn steering
 #: channel -- a Tier 1 selection is one request/response round trip, not an
 #: open conversation (``steer=False``, matching the design constraint that
-#: :meth:`NeedleAgent.steer` always returns ``False``).
+#: :class:`~nvsh.agent._tier_adapter.TierOnlyAdapter`'s ``steer`` always
+#: returns ``False``).
 NEEDLE_CAPABILITIES = Capabilities(
     streaming=True,
     tool_calling=True,
@@ -55,26 +62,6 @@ NEEDLE_CAPABILITIES = Capabilities(
     steer=False,
 )
 
-#: One-line, human-readable text for a :class:`~nvsh.tiers.base.DeclineReason`
-#: value the router reported (``TierOutcome.declines`` only carries the enum,
-#: not the tier's own detail string -- see :meth:`NeedleAgent._no_answer_text`).
-#: ``tier_unavailable`` is handled separately, from :meth:`NeedleTier.status`,
-#: because that is the one reason whose detail text nvsh already has to hand.
-_DECLINE_TEXT: dict[str, str] = {
-    "no_call": "needle had no operation to propose for this request",
-    "multiple_calls": "needle proposed more than one operation for this request",
-    "unknown_operation": "needle proposed an operation nvsh does not know",
-    "bad_argument": "needle's proposed arguments did not validate",
-    "raw_shell": "needle proposed a raw shell command, which nvsh refuses to run",
-    "malformed_output": "needle's output could not be understood",
-    "tier_error": "needle failed while answering",
-    "low_confidence": "needle was not confident enough in its answer",
-    "memory_floor": "needle was skipped: not enough free memory on this machine",
-    "not_grounded": "needle's proposed operation could not be grounded on this machine",
-    "loop_limit": "needle hit its loop limit",
-    "not_renderable": "needle's proposed operation has no single command on this platform",
-}
-
 #: Explanation given when Tier 1 was never even consulted: a FAILURE-kind
 #: request (a command that exited non-zero) is not the instruction-shaped ask
 #: Needle selects from (see ``nvsh/tiers/router.py``'s ``Route._order``).
@@ -85,7 +72,7 @@ _FAILURE_TEXT = "needle only answers instruction-shaped requests, not command fa
 _FULL_AGENT = "agent"
 
 
-class NeedleAgent(NvshAgent):
+class NeedleAgent(TierOnlyAdapter):
     """The explicit ``@needle`` adapter: Tier 1 only, propose-or-explain.
 
     ``config`` is the ``[tiers]`` table (:attr:`nvsh.config.Config.tiers`),
@@ -112,6 +99,7 @@ class NeedleAgent(NvshAgent):
         platform: "Platform | None" = None,
     ) -> None:
         """Cheap: only plain attributes. Spawns nothing, imports nothing heavy."""
+        super().__init__()
         settings = dict(config or {})
         self._min_confidence = _as_float(settings.get("needle_min_confidence"), 0.0)
         self._memory_floor_mb = _as_int(settings.get("memory_floor_mb"), 1024)
@@ -125,9 +113,7 @@ class NeedleAgent(NvshAgent):
         self._floor_reader = floor_reader
         self._runner = runner
         self._platform = platform
-        self._router = None  # a nvsh.tiers.router.TierRouter, built in start()
         self._tier = None  # the same object as self._router.tier1, kept for close()/status()
-        self._cancelled = False
 
     # -- lifecycle --
 
@@ -182,83 +168,19 @@ class NeedleAgent(NvshAgent):
             **router_kwargs,
         )
 
-    def close(self) -> None:
-        """Kill the Tier 1 child, if one is running. Idempotent."""
-        self._close_tier()
+    # -- TierOnlyAdapter hooks --
 
-    # -- one turn --
+    def _tier_label(self) -> str:
+        return "needle"
 
-    def run(self, request: AgentRequest, context: AgentContext) -> Iterator[AgentEvent]:
-        """Route *request* through Tier 1 only. Never reaches the full agent:
-        an escalation is turned into one explanatory event, then DONE."""
-        self._cancelled = False
-        return self._turn(request, context)
+    def _failure_text(self) -> str:
+        return _FAILURE_TEXT
 
-    def _turn(self, request: AgentRequest, context: AgentContext) -> Iterator[AgentEvent]:
-        self.start()
-        route = self._router.route(request, context)
-        for event in route:
-            if self._cancelled:
-                return
-            if event.args.get("tier") == _FULL_AGENT:
-                # The router's "asking the full agent" line: untrue here,
-                # because an explicit @needle request never goes on to one.
-                continue
-            yield event
-        # Route.outcome is only assigned *after* its generator's last yield
-        # (see nvsh/tiers/router.py's Route._run/_proposed/_explained), so it
-        # must not be read until the for-loop above has fully drained the
-        # generator -- reading it inside the loop, right after a yield,
-        # would still see the outcome from the *previous* turn.
-        outcome = route.outcome
-        if outcome is not None and outcome.escalated_to is not None:
-            # Tier 1 declined (or a FAILURE-kind request never reached it):
-            # the router's own generator ends here with no DONE, because a
-            # normal caller would go on to the full agent. This adapter
-            # never does that -- it is what the operator explicitly asked
-            # for -- so it closes the turn itself instead.
-            yield AgentEvent(
-                kind=EventKind.STATUS,
-                text=self._no_answer_text(outcome),
-                args={"tier": "needle"},
-            )
-            yield AgentEvent(kind=EventKind.DONE, args={"tier": "needle"})
+    def _unavailable_text(self) -> str:
+        return self._tier.status() if self._tier is not None else "needle tier unavailable"
 
-    def _no_answer_text(self, outcome) -> str:
-        if not outcome.declines:
-            return _FAILURE_TEXT
-        _tier_name, reason = outcome.declines[-1]
-        value = reason.value
-        if value == "tier_unavailable":
-            return self._tier.status() if self._tier is not None else "needle tier unavailable"
-        return _DECLINE_TEXT.get(value, f"needle declined: {value}")
-
-    def steer(self, text: str) -> bool:
-        """Never -- a Tier 1 selection is one request/response, not an open
-        turn a correction could land in."""
-        del text
-        return False
-
-    def cancel(self) -> None:
-        """Stop the in-flight selection by killing the Tier 1 child.
-
-        There is no cooperative interrupt point inside a blocking
-        ``select()`` on the worker pipe (see ``nvsh/tiers/needle.py``), so
-        "ask it to stop" and "kill it" are the same operation here -- the
-        next request gets a fresh child (:class:`~nvsh.tiers.needle.NeedleTier`
-        respawns lazily).
-        """
-        self._cancelled = True
-        self._close_tier()
-
-    def force_stop(self) -> None:
-        """Same as :meth:`cancel`: there is nothing gentler to escalate from."""
-        self.cancel()
-
-    def _close_tier(self) -> None:
-        tier = self._tier
-        if tier is not None:
-            tier.close()
+    def _active_tier(self) -> object | None:
+        return self._tier
 
     def capabilities(self) -> Capabilities:
         return NEEDLE_CAPABILITIES

@@ -40,6 +40,7 @@ _ALL_ADAPTER_NAMES = {
     "openai-compat",
     "demo",
     "needle",
+    "lfm",
 }
 
 
@@ -54,7 +55,7 @@ def _which_factory(present: set[str]):
     return _which
 
 
-def test_adapters_registry_has_all_ten_names():
+def test_adapters_registry_has_all_eleven_names():
     assert set(registry.ADAPTERS) == _ALL_ADAPTER_NAMES
 
 
@@ -208,7 +209,7 @@ def test_steer_capable_true_for_pi_and_codex():
     assert registry.steer_capable("codex", Config()) is True
 
 
-def test_available_adapters_reports_all_ten_with_installed_status():
+def test_available_adapters_reports_all_eleven_with_installed_status():
     which = _which_factory({"pi", "claude"})
     rows = registry.available_adapters(which=which)
     by_name = {row["name"]: row for row in rows}
@@ -281,6 +282,75 @@ def test_needle_factory_builds_needle_agent():
     assert caps.approval == "nvsh"
     assert caps.unmediated_file_access is False
     assert caps.path == "inproc"
+
+
+# -- lfm: installed_check, not `which` -----------------------------------
+
+
+def test_lfm_spec_shape():
+    spec = registry.ADAPTERS["lfm"]
+    assert spec.binary is None
+    assert spec.path == "inproc"
+    assert spec.hosted is False
+    assert spec.installed_check is not None
+
+
+def test_lfm_installed_uses_installed_check_not_which():
+    """`which` is passed but must never be consulted for lfm -- a `which`
+    that raises on any input proves that."""
+
+    def _which_raises(_name: str) -> str | None:
+        raise AssertionError("lfm.installed() must not call which()")
+
+    assert registry.installed("lfm", which=_which_raises) in (True, False)
+
+
+def test_lfm_installed_reflects_flavor_check(monkeypatch):
+    monkeypatch.setitem(
+        registry.ADAPTERS,
+        "lfm",
+        dataclasses.replace(registry.ADAPTERS["lfm"], installed_check=lambda: True),
+    )
+    assert registry.installed("lfm", which=_which_all_missing) is True
+
+    monkeypatch.setitem(
+        registry.ADAPTERS,
+        "lfm",
+        dataclasses.replace(registry.ADAPTERS["lfm"], installed_check=lambda: False),
+    )
+    assert registry.installed("lfm", which=_which_all_missing) is False
+
+
+def test_lfm_is_probe_excluded():
+    assert "lfm" in registry.PROBE_EXCLUDED
+    rows = registry.probe(_which_all_missing)
+    assert "lfm" not in {row["name"] for row in rows}
+
+
+def test_lfm_factory_builds_lfm_agent():
+    from nvsh.agent.lfm import LfmAgent
+
+    agent = registry.ADAPTERS["lfm"].factory(Config())
+    assert isinstance(agent, LfmAgent)
+    caps = agent.capabilities()
+    assert caps.local_model is True
+    assert caps.approval == "nvsh"
+    assert caps.unmediated_file_access is False
+    assert caps.path == "inproc"
+
+
+def test_lfm_installed_check_reads_model_from_config(tmp_path, monkeypatch):
+    """The real ``installed_check`` (unpatched): reads ``[tiers.lfm] model``
+    straight off disk, since ``installed()`` takes no config of its own."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    nvsh_dir = tmp_path / "nvsh"
+    nvsh_dir.mkdir()
+    assert registry.installed("lfm", which=_which_all_missing) is False
+
+    (nvsh_dir / "config.toml").write_text(
+        '[tiers.lfm]\nmodel = "lfm2-1.2b-instruct"\n', encoding="utf-8"
+    )
+    assert registry.installed("lfm", which=_which_all_missing) is True
 
 
 def test_choose_uses_configured_provider_when_installed():
