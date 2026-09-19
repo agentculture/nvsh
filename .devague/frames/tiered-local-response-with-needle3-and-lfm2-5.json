@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-09-19T11:10:08Z",
-  "updated": "2026-09-19T12:48:13Z",
+  "updated": "2026-09-19T13:35:36Z",
   "claims": [
     {
       "id": "c1",
@@ -1003,6 +1003,18 @@
       ],
       "origin": "llm",
       "status": "approved"
+    },
+    {
+      "id": "l3",
+      "code": "assumption-for-measurement",
+      "what": "My precision brief for t6 specified the localhost check as a string prefix match (startswith 'http://localhost'), which accepts http://localhost.example.com; I wrote a security boundary from intuition without testing the counter-example. Caught in my own review before merge and fixed with a parsed-hostname check and tests.",
+      "skipped_check": "try a hostile URL against the check before putting it in a literal-minded worker's brief",
+      "refs": [
+        "t6",
+        "c25"
+      ],
+      "origin": "llm",
+      "status": "proposed"
     }
   ],
   "obligations": []
