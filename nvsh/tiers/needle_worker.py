@@ -258,6 +258,14 @@ def extract_selection(envelope: object) -> tuple[list, object]:
     """
     if not isinstance(envelope, dict):
         return ([], None)
+    if envelope.get("type") != "call":
+        # A text (or any non-"call") envelope means the engine did not
+        # select anything -- even one that happens to carry a
+        # list-shaped "function_calls" field. Forwarding that field
+        # regardless of "type" would let a malformed or future text
+        # response reach the operator as a proposal instead of being
+        # declined (Qodo #4053821266).
+        return ([], None)
     calls = envelope.get("function_calls")
     return (calls if isinstance(calls, list) else [], envelope.get("confidence"))
 
@@ -320,7 +328,7 @@ def read_frame(stream: Any) -> dict | None:
         return None
     try:
         decoded = json.loads(payload.decode("utf-8"))
-    except (UnicodeDecodeError, ValueError):
+    except ValueError:
         return None
     return decoded if isinstance(decoded, dict) else None
 
@@ -349,7 +357,7 @@ def _send(frames: Any, response: dict) -> None:
     frames.write(payload)
 
 
-def main(argv: list[str] | None = None) -> int:
+def main() -> int:
     """Serve request frames until stdin closes or a shutdown is asked for."""
     frames = _protocol_stream()
     session = EngineSession()
