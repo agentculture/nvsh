@@ -37,7 +37,7 @@ import threading
 import time
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Callable, Iterator, Mapping, Optional, cast
+from typing import TYPE_CHECKING, Callable, Iterator, Mapping, Optional, cast
 
 from nvsh import __version__, runtimedir
 
@@ -53,6 +53,9 @@ from .agent.base import (
     target_to_dict,
 )
 from .config import DEFAULT_ALIAS, Config
+
+if TYPE_CHECKING:  # pragma: no cover - typing only, never imported at runtime
+    from .tiers.manager import TierAnswer, TierManager, TierSession
 
 #: Seconds with no request after which the daemon shuts itself down.
 DEFAULT_IDLE_TIMEOUT = 900.0
@@ -91,6 +94,25 @@ _BUSY_CHOICE_TIMEOUT = 60.0
 #: The answers a ``busy`` prompt accepts.
 BUSY_CHOICES = ("steer", "replace", "exit")
 
+#: The request kind that asks the daemon's resident local tiers -- and only
+#: them -- for an answer (task t12). Handled *before* and *without* the run
+#: lock: a Tier 1 answer is milliseconds of work and must never queue behind
+#: another shell's full-agent turn.
+TIER_KIND = "tier"
+
+#: The follow-up control naming what the operator did with a tier's proposal
+#: (``route_id`` + ``decision``), so the measurement log can attribute an
+#: approve/decline to the tier that proposed it.
+TIER_DECISION_KIND = "tier_decision"
+
+#: ``args`` key on the one frame that closes a ``tier`` exchange. Its value
+#: is :data:`TIER_HANDLED` or :data:`TIER_ESCALATE`; both must stay equal to
+#: ``nvsh.tiers.manager``'s own names (pinned by a test), which is what lets
+#: the client decode the frame without importing any tier module.
+TIER_OUTCOME_KEY = "tier_outcome"
+TIER_HANDLED = "handled"
+TIER_ESCALATE = "escalate"
+
 #: Control kinds that carry no agent request.
 _CONTROL_KINDS = frozenset(
     {
@@ -106,6 +128,7 @@ _CONTROL_KINDS = frozenset(
         "stop",
         "ping",
         "undo",
+        TIER_DECISION_KIND,
     }
 )
 
@@ -471,6 +494,27 @@ AgentFactory = Callable[[], NvshAgent]
 WhichFn = Callable[[str], Optional[str]]
 
 
+def _tier_answer_event(answer: "TierAnswer") -> AgentEvent:
+    """Encode how a ``tier`` exchange ended as one ``status`` frame.
+
+    The wire's whole view of the tiers: the client reads ``args`` -- never
+    the prose -- and either shows what a tier proposed or carries
+    ``escalation_context`` on to the full agent. Encoding it here, next to
+    the rest of the protocol, is what keeps ``nvsh.client_transport`` able to
+    decode a tier answer without importing a single tier module.
+    """
+    args: dict[str, object] = {TIER_OUTCOME_KEY: answer.outcome}
+    if answer.tier:
+        args["tier"] = answer.tier
+    if answer.route_id:
+        args["route_id"] = answer.route_id
+    if answer.declines:
+        args["declines"] = [[tier, reason] for tier, reason in answer.declines]
+    if answer.escalation_context:
+        args["escalation_context"] = [[op, excerpt] for op, excerpt in answer.escalation_context]
+    return AgentEvent(kind=EventKind.STATUS, text=answer.text, args=args)
+
+
 # --- the daemon ------------------------------------------------------------
 
 
@@ -530,6 +574,7 @@ class Daemon:
         idle_timeout: float = DEFAULT_IDLE_TIMEOUT,
         turn_timeout: float | None = None,
         which: WhichFn | None = None,
+        tier_manager: "TierManager | None" = None,
     ) -> None:
         self.config = config if config is not None else Config()
         self.env: Mapping[str, str] = dict(_resolve_env(env))
@@ -541,6 +586,11 @@ class Daemon:
         )
         self._agent_factory = agent_factory
         self._which = which
+        #: The local response tiers (task t12). ``None`` until the first
+        #: ``tier`` request builds one -- a daemon on a machine whose
+        #: operator never enabled the tiers pays nothing for them, and even
+        #: an enabled one loads no model until it is asked.
+        self._tiers: "TierManager | None" = tier_manager
 
         #: The ``nvsh`` version this daemon reports and compares clients
         #: against. An attribute rather than a module constant so a test can
@@ -691,6 +741,7 @@ class Daemon:
             time.sleep(_WATCHDOG_INTERVAL)
             if self._stopping:
                 return
+            self._sweep_tiers()
             if time.monotonic() - self._last_activity > self.idle_timeout:
                 self._log.info("idle for %.1fs; shutting down", self.idle_timeout)
                 self.shutdown()
@@ -712,6 +763,12 @@ class Daemon:
         self._stopping = True
         with self._lock:
             slots, self._slots = self._slots, []
+            tiers, self._tiers = self._tiers, None
+        if tiers is not None:
+            # The Needle child is the daemon's, not the request's: nothing
+            # it started may outlive the daemon that started it.
+            with _suppressed():
+                tiers.close()
         for slot in slots:
             try:
                 slot.agent.close()
@@ -1028,6 +1085,120 @@ class Daemon:
             return "refused"
         return self._force_stop_turn(turn, wait=wait)
 
+    # -- local tiers (task t12) --------------------------------------------
+
+    def _tier_manager(self) -> "TierManager":
+        """The tier manager, built on first use. Loads no model by itself.
+
+        Imported here rather than at module scope: ``nvsh.tiers`` pulls in
+        the operation table and the router, and neither may land on the
+        shell's startup or success path (``tests/test_flavors.py``).
+        """
+        with self._lock:
+            if self._tiers is None:
+                from .platform import detect
+                from .tiers.manager import TierManager
+
+                self._tiers = TierManager(self.config, detect(), env=self.env)
+            return self._tiers
+
+    def _sweep_tiers(self) -> None:
+        """Let the watchdog unload idle tier models. A no-op until one loads."""
+        tiers = self._tiers
+        if tiers is None:
+            return
+        try:
+            tiers.sweep()
+        except Exception as exc:  # noqa: BLE001 - the watchdog must never die
+            self._log.warning("unloading idle tiers failed: %s", exc)
+
+    def _tier_state(self) -> dict:
+        """What ``status`` reports about the tiers, without building them."""
+        tiers = self._tiers
+        if tiers is not None:
+            return tiers.status()
+        table = self.config.tiers if isinstance(self.config.tiers, Mapping) else {}
+        return {"enabled": bool(table.get("enabled", False)), "loaded": False, "problem": ""}
+
+    def _handle_tier(
+        self,
+        request: AgentRequest,
+        context: AgentContext,
+        connection: socket.socket | None = None,
+    ) -> Iterator[AgentEvent]:
+        """Answer one ``tier`` request: the tiers only, never the full agent.
+
+        Deliberately *not* behind :attr:`_run_lock`: a tier selection is a
+        child-process round trip measured in milliseconds, and making it
+        queue behind another shell's full-agent turn would defeat the whole
+        point (spec claim c32). The stream is the route's own events, then
+        one final frame naming the outcome, then ``done`` -- the client needs
+        the outcome *before* the terminal event, because a terminal event is
+        where it stops reading.
+
+        ``connection`` is watched for the length of the request the same way
+        an agent turn's is (:meth:`_watch_turn`): a client that times out or
+        exits while Tier 1 is loading or selecting cancels the session, so
+        the abandoned work stops at the next event boundary instead of
+        holding the tier's one-at-a-time lock for everyone behind it (Qodo
+        #14, PR review).
+        """
+        if _peer_is_gone(connection):
+            # Nothing to answer: never build or consult a tier for a client
+            # that has already gone.
+            return
+        session = self._tier_manager().open(request, context)
+        done: AgentEvent | None = None
+        finished = threading.Event()
+        if connection is not None:
+            # No socket, no watcher: an in-process caller has no peer that
+            # can leave, and a tier request must not pay for a thread it
+            # would never use.
+            threading.Thread(
+                target=self._watch_tier, args=(session, finished, connection), daemon=True
+            ).start()
+        try:
+            for event in session:
+                if event.kind is EventKind.DONE:
+                    done = event
+                    continue
+                yield event
+        finally:
+            finished.set()
+        yield _tier_answer_event(session.answer)
+        yield done if done is not None else AgentEvent(kind=EventKind.DONE)
+
+    def _watch_tier(
+        self,
+        session: "TierSession",
+        finished: threading.Event,
+        connection: socket.socket,
+    ) -> None:
+        """Cancel *session* when its client goes away. No timeout of its own:
+        a tier request has no turn cap -- Tier 1 enforces its own -- and the
+        thread that owns the request is parked inside the tier's blocking
+        call, so it cannot notice the departure itself."""
+        while not finished.wait(_TURN_WATCH_INTERVAL):
+            if _peer_is_gone(connection):
+                self._log.info("tier request cancelled: its client closed the connection")
+                session.cancel()
+                return
+
+    def _handle_tier_decision(
+        self, _shell: str, message: Mapping[str, object]
+    ) -> Iterator[AgentEvent]:
+        """Record what the operator did with a tier's proposal."""
+        route_id = str(message.get("route_id", "") or "")
+        decision = str(message.get("decision", "") or "")
+        tiers = self._tiers
+        if tiers is None or not tiers.record_decision(route_id, decision):
+            yield AgentEvent(
+                kind=EventKind.ERROR, error=f"no tier route {route_id!r} to record a decision for"
+            )
+            return
+        yield AgentEvent(kind=EventKind.STATUS, text=f"tier decision {decision} recorded")
+        yield AgentEvent(kind=EventKind.DONE)
+
     # -- the active turn (deviation d12) -----------------------------------
 
     def active_turn(self) -> dict | None:
@@ -1143,6 +1314,7 @@ class Daemon:
                 "turn_timeout": self.turn_timeout,
                 "active_turn": self._active.snapshot() if self._active is not None else None,
                 "queued": [waiter.snapshot() for waiter in self._waiting],
+                "tiers": self._tier_state(),
             }
 
     def handle_message(
@@ -1181,6 +1353,10 @@ class Daemon:
 
         request = request_from_dict(message.get("request"))  # type: ignore[arg-type]
         context = context_from_dict(message.get("context"))  # type: ignore[arg-type]
+        if kind == TIER_KIND:
+            # Before ``_run``, and before the run lock it takes (c32).
+            yield from self._handle_tier(request, context, connection)
+            return
         yield from self._run(shell, request, context, connection=connection)
 
     def _handle_register(self, shell: str) -> Iterator[AgentEvent]:
@@ -1221,6 +1397,7 @@ class Daemon:
             "kill": lambda sh, _msg: self._handle_kill(sh),
             "kill_active": lambda _sh, msg: self._handle_kill_active(msg),
             "busy_choice": self._handle_busy_choice,
+            TIER_DECISION_KIND: self._handle_tier_decision,
             "undo": lambda sh, _msg: self._handle_undo(sh),
             "ui_response": self._handle_ui_response,
             "steer": self._handle_steer,

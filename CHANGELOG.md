@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/). This project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.16.0] - 2026-09-19
+
+### Added
+
+- Tier 1 end to end (opt-in: `[tiers] enabled = true`, off by default). A request typed at the prompt (`/ask`, Ctrl+G) is first offered to Needle3, a 121M local model that picks one typed operation; nvsh grounds the arguments against the machine, renders the command from the operation table, and shows it as an ordinary proposal that states the operation and arguments it understood. Nothing runs without approval; `sudo` and destructive-command handling are unchanged. A failed command never goes to Tier 1, and `@target` / `--agent` requests bypass the tiers.
+- `nvsh[needle]`, `nvsh[lfm]` and `nvsh[tiers]` install flavors. The base install keeps zero runtime dependencies.
+- Needle3 runs in its own child process: started on first use, killed and restarted if it dies or hangs (10 s), unloaded when idle. Telemetry off, Hugging Face offline, `complete()` only. The pinned engine is extracted from the verified wheel and the verified stock weights are staged into an nvsh-owned directory, so a first request never downloads anything and the operator's own `cactus-needle` cache is never touched.
+- Tier router (`nvsh/tiers/router.py`): floor, table, grounding, rendering, then an optional yes/no log-probability check against a local LFM2.5 (deviation d1) whose per-operation baselines are measured from the table. Records name the tier, the decline reason and the check's numbers.
+- Daemon residency: a `tier` request is answered without taking the agent turn lock, so a Tier 1 answer returns while another shell's agent turn is running; models load on first use and unload after `idle_unload_seconds`. `nvsh daemon status` reports the tiers.
+- The panel header names who answered: `needle`, or `needle -> claude/...` when it was escalated. Declining a tier's proposal offers to send the same request to the full agent. The audit log names the tier that proposed a command.
+- `@needle` / `--agent needle`: an explicit Tier-1-only adapter. Excluded from `nvsh setup`'s probe and refused as a persisted default, like `demo`.
+- `nvsh tiers stats | export | prefetch | bench`. `bench` runs the committed corpus through the real router against a fixture machine declared in the corpus (`--live` for this host) and reports per-request rows, accuracy per request kind, escalation precision/recall, latency, memory, calibration of the check, and a pass/miss/not-measured line per target.
+- `nvsh doctor`: `tiers_configured`, `tier_files_present`, `tier_hashes_match`; a damaged pins file fails the check instead of crashing doctor.
+- Needle3 fine-tune recipe (`docs/needle-finetune.md`, `scripts/needle-finetune/build_dataset.py`, `try_table.py`) with the adoption rule (held-out only) and the `jetson-ai-lab` naming for published weights and data (deviation d2). `docs/tiers-improving-accuracy.md`: the measured baseline, what did not work, and the data plan.
+
+### Changed
+
+- Measured, not assumed: through the shipped path stock Needle3 picks the right operation on 4 to 5 of 9 explicit asks and declines 2 to 3 of 5 should-escalate asks (0 wrong mutating picks, warm p95 78 ms). Rewording descriptions and reordering tools do not move it. Routing therefore stays opt-in; accuracy work is data and fine-tuning, tracked in the docs above. Loading a tuned model (tuned pin, operation-table hash check, config override) is not built yet.
+
 ## [0.15.0] - 2026-09-19
 
 ### Added

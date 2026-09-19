@@ -67,6 +67,7 @@ def test_agent_list_json_reports_all_adapters(capsys):
         "kiro",
         "openai-compat",
         "demo",
+        "needle",
     }
     for row in payload["adapters"]:
         assert "installed" in row
@@ -208,10 +209,15 @@ def test_agent_use_writes_config(capsys, xdg_home):
     assert cfg.aliases[DEFAULT_ALIAS] == "claude"
 
 
-@pytest.mark.parametrize("name", [n for n in ADAPTER_NAMES if n != "demo"])
+@pytest.mark.parametrize(
+    "name", [n for n in ADAPTER_NAMES if n not in registry.NOT_PERSISTABLE_DEFAULT]
+)
 def test_agent_use_accepts_every_registered_adapter(capsys, xdg_home, name):
-    """Every adapter but ``demo`` can be the persisted default; ``demo`` is a
-    scripted fixture and is refused (covered by test_demo_default_refused.py)."""
+    """Every adapter but ``demo``/``needle`` can be the persisted default:
+    ``demo`` is a scripted fixture (covered by test_demo_default_refused.py)
+    and ``needle`` is a Tier-1-only local model (covered by
+    test_agent_needle.py) -- both refused via
+    ``registry.NOT_PERSISTABLE_DEFAULT``."""
     rc = main(["agent", "use", name, "--json"])
     assert rc == 0
     payload = json.loads(capsys.readouterr().out)

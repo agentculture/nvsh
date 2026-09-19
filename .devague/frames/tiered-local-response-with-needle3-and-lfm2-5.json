@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-09-19T11:10:08Z",
-  "updated": "2026-09-19T15:16:12Z",
+  "updated": "2026-09-19T16:40:44Z",
   "claims": [
     {
       "id": "c1",
@@ -1020,7 +1020,7 @@
         "c25"
       ],
       "origin": "llm",
-      "status": "proposed"
+      "status": "approved"
     },
     {
       "id": "l4",
@@ -1031,6 +1031,41 @@
         "t16",
         "d1",
         "PR #32"
+      ],
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "l5",
+      "code": "control-absent",
+      "what": "During the t13 live round trip I told the operator 'the live test found a real gap: the client never consulted the tiers' before checking my own instrument. The sandbox wrapper ran 'python -c' from the main checkout, so Python imported nvsh from the current directory (the integration branch without t13) instead of the t13 worktree on PYTHONPATH; the 'gap' was the wrong code under test. Run from the t13 checkout, the live path worked end to end (client -> daemon -> real Needle -> panel, tier ~47 ms warm). I corrected the statement in the next message.",
+      "skipped_check": "confirm which checkout the process imported (print nvsh.__file__) before reporting a behavioural finding from a sandbox",
+      "refs": [
+        "t13"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l6",
+      "code": "n-below-claim",
+      "what": "The /think spike reported stock Needle3 at 7 of 9 correct on explicit asks and that figure shaped c20's >= 90% target and the plan's expectation that Tier 1 would be close to usable; it was measured with hand-written tool functions on 9 prompts, not through the table-generated schemas that ship. Through the shipped path the same model scores 4-5 of 9, and prompt changes move single answers at random.",
+      "skipped_check": "measure through the shipped schema path, on a corpus large enough that one request is not 11 points, before setting a target from it",
+      "refs": [
+        "c20",
+        "r10"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l7",
+      "code": "control-absent",
+      "what": "Opened PR #34 after running a cognitive-complexity count only. SonarCloud then failed the gate on reliability with 25 issues I could have found locally: 15 composite assertions in tests (the same S9073 rule that failed PR #32, and which I had written into every brief as a rule but never checked for in the merged code), three return-type mismatches, a 21-parameter function, a backtracking regex, a float equality. Qodo found 14 more, two high (setup can persist needle as the default; the idle sweep can close tiers under an in-flight request). My pre-PR check repeated only the ONE failure class I remembered from #32's lesson instead of the rule list in my own handoff notes.",
+      "skipped_check": "grep the merged test files for tuple-comparison asserts and run the handoff note's full Sonar rule list before opening the PR",
+      "refs": [
+        "PR #34",
+        "l4"
       ],
       "origin": "llm",
       "status": "proposed"

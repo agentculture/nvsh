@@ -109,7 +109,7 @@ timed out`. Three behaviors make that impossible:
 
 **Control messages never queue behind a turn.** `status`, `ping`,
 `register`, `unregister`, `cancel`, `kill`, `busy_choice`, `kill_active`,
-`undo`, `ui_response` and `stop` are
+`undo`, `tier_decision`, `ui_response` and `stop` are
 answered without taking the run lock, so `nvsh daemon status` answers
 instantly on a busy daemon and an approval dialog can always be answered
 while the turn that raised it is still open. (This already held during d12
@@ -183,6 +183,8 @@ handshake. `kind` is one of:
 | kind | meaning |
 | --- | --- |
 | `failure` / `slash` / `explicit` | run an agent request (the `request`/`context` objects are required) |
+| `tier` | ask the resident local tiers only, never the full agent (see "Local tiers") |
+| `tier_decision` | record what the operator did with a tier's proposal: adds `route_id` and `decision` |
 | `register` | this shell is alive |
 | `unregister` | this shell exited; the last one stops the daemon |
 | `cancel` | ask this shell's running turn to stop (`[s]` chosen at the choice prompt, or Ctrl+C at another nvsh prompt) |
@@ -207,6 +209,75 @@ default-valued fields omitted:
 
 An unknown `kind` decodes to `status` rather than raising, so a newer daemon
 never breaks an older client.
+
+## Local tiers
+
+The local response tiers (Tier 1 Needle3, Tier 2 LFM2.5) are **resident in
+the daemon**, so a model is loaded once for every hooked shell rather than
+once per request — and the client asks for them over the same socket instead
+of loading anything of its own.
+
+- **Built on first use, never at daemon start.** `Daemon._tier_manager()`
+  constructs `nvsh.tiers.manager.TierManager` on the first `tier` request,
+  and the manager itself builds nothing until a request reaches it. A daemon
+  whose operator never enabled `[tiers] enabled` never imports a tier
+  module; `nvsh.tiers` is imported *inside* that method, because it pulls in
+  the operation table and the router and neither may land on the shell's
+  startup or success path.
+- **Unloaded when idle.** The existing watchdog (every 0.1 s) calls
+  `TierManager.sweep()`, which closes the tiers — killing the Needle child —
+  after `[tiers] idle_unload_seconds` (default 900) with no tier request.
+  `0` means never. The next request rebuilds. There is no thread of the
+  tiers' own. Teardown closes them too: no Needle child outlives the daemon.
+- **Answered before the run lock.** A `tier` request is handled in
+  `handle_message` *before* `_run`, and never takes `_run_lock`, so a Tier 1
+  answer (milliseconds) never queues behind another shell's full-agent turn.
+- **Off is off.** With `[tiers] enabled = false` the daemon answers a `tier`
+  request with an immediate `escalate` and loads nothing.
+
+The exchange streams the router's own `AgentEvent` lines — the same shapes
+an adapter yields, each carrying `args.tier` — then **one final `status`
+frame naming the outcome**, then `done`. The outcome frame comes before the
+terminal event because the terminal event is where the client stops reading:
+
+```json
+{"kind": "status", "text": "needle answered",
+ "args": {"tier_outcome": "handled", "tier": "needle", "route_id": "7"}}
+{"kind": "status", "text": "no local tier answered; asking the full agent",
+ "args": {"tier_outcome": "escalate",
+          "declines": [["needle", "low_confidence"]],
+          "escalation_context": [["memory_stats", "MemAvailable: ..."]]}}
+```
+
+`tier_outcome` is `handled` or `escalate` and is read off `args`, never off
+the prose. `escalation_context` is what the tiers already inspected
+(redacted and bounded by the router), so the full agent does not repeat it.
+`route_id` is the handle for the follow-up: once the operator has approved
+or declined, the client sends a `tier_decision` control with that `route_id`
+and `decision`, and the daemon writes the operator's answer into the tier
+measurement log against the tier that proposed it. The daemon keeps only the
+most recent 32 handled routes, and each one is recorded once — an unknown or
+already-reported route answers `error`, which costs a measurement and
+nothing else.
+
+`nvsh daemon status --json` reports `tiers`
+(`{enabled, loaded, problem}`) without building anything.
+
+Client side (`nvsh.client_transport`):
+
+```python
+reply = client_transport.ask_tiers(request, context, shell_id=shell_pid)
+if reply.handled:
+    for event in reply.events:
+        render(event)
+    client_transport.tier_decision(reply.route_id, "approved")
+```
+
+`ask_tiers` **never starts a daemon** and imports no tier module: with no
+daemon listening it returns `escalate` immediately and the caller goes on to
+the full agent through `send()`, which is the path that autostarts a daemon
+anyway. A daemon that errors, or one too old to know the `tier` kind, sends
+no outcome frame and is read the same way.
 
 ## Conversations and `sessions.max`
 

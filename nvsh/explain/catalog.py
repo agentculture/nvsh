@@ -956,6 +956,114 @@ Jetson-only stub, the `/clocks` twin of `/power` — see `nvsh explain power`.
     nvsh slash "/clocks"
 """
 
+_TIERS = """\
+# nvsh tiers
+
+Inspects, exports and prefetches the local response tiers (Needle3 tier 1,
+LFM2.5 tier 2, in front of the full agent tier). Read-only over
+`$XDG_STATE_HOME/nvsh/tiers.jsonl` (`nvsh.tiers.records.TierRecords`) and the
+pinned engine/weights/image cache (`nvsh.tiers.fetch`). `nvsh.tiers` is
+imported lazily inside each handler, never at CLI startup.
+
+## Usage
+
+    nvsh tiers stats
+    nvsh tiers export ./tiers-bundle.json
+    nvsh tiers prefetch --yes
+
+## See also
+
+- `nvsh explain tiers stats`
+- `nvsh explain tiers export`
+- `nvsh explain tiers prefetch`
+- `nvsh explain tiers bench`
+"""
+
+_TIERS_STATS = """\
+# nvsh tiers stats
+
+Aggregates `TierRecords.read_all()` (`nvsh.tiers.stats.compute_stats`) into
+per-tier counts, latency p50/p95 (nearest-rank, deterministic, empty-safe),
+an escalation/decline-reason histogram (from each record's
+`decline_reason`), and operator approve/decline rates (from
+`operator_decision`). Tier groups come from whichever `tier` values appear in
+the records — nothing here hard-codes a tier list. Also reports `dropped`:
+writes `TierRecords` counted as lost (disk full, a lock that would not
+open), from the live `TierRecords.dropped` counter.
+
+## Usage
+
+    nvsh tiers stats
+    nvsh tiers stats --json
+"""
+
+_TIERS_EXPORT = """\
+# nvsh tiers export <file>
+
+Writes a redacted bundle — the nvsh version, a platform-kind summary, and
+every record (re-redacted on the way out through `nvsh.redact.redact`,
+even though records are already redacted at write time) — to a **local file
+only**, mode `0600`. Refuses any target that looks like a URL
+(`scheme://...`) or an scp-style remote (`host:path`); refuses to overwrite
+an existing file without `--force`. Opens no socket.
+
+## Usage
+
+    nvsh tiers export ./tiers-bundle.json
+    nvsh tiers export ./tiers-bundle.json --force --json
+"""
+
+_TIERS_PREFETCH = """\
+# nvsh tiers prefetch
+
+Shows what `nvsh.tiers.fetch.plan_prefetch` says would be fetched — engine,
+weights, and any pinned container images — with sizes, and asks before
+downloading anything. Off a terminal, or under `--json` without `--yes`,
+it refuses outright: a `CliError` whose remediation names `--yes`, never a
+silent download. On an interactive terminal without `--yes` it prompts once
+per missing item. `--yes` downloads without asking. Tests inject
+`nvsh.tiers.fetch.prefetch`; nothing here ever reaches the real network in a
+test run.
+
+## Usage
+
+    nvsh tiers prefetch
+    nvsh tiers prefetch --yes
+    nvsh tiers prefetch --json
+"""
+
+_TIERS_BENCH = """\
+# nvsh tiers bench
+
+Runs the committed benchmark corpus (`nvsh/tiers/corpus/dev.json` or
+`held-out.json`) through a real `nvsh.tiers.router.TierRouter`
+(`nvsh.tiers.bench.bench`) — the same router that answers a live request —
+and reports accuracy, argument accuracy, a false-mutating-pick count,
+escalation precision/recall, cold/warm latency, idle/peak/reserved memory,
+image size, and a pass/miss line per spec-c20 success-signal target. A
+target that was not measured (no memory reading supplied, too few corpus
+items) prints "not measured", never "pass".
+
+`--split held-out` reports "held-out: 0 entries (operator has not added
+any)" until an operator adds entries there — held-out phrasings must not
+be authored alongside the dev-split operation descriptions in the same
+sitting (assumption c38), so the file ships empty on purpose.
+
+`--tier fixture` (the default) uses `nvsh.tiers.bench.UnavailableTier`,
+which declines every request, so the verb runs end to end with no model
+installed. `--tier needle` imports `nvsh.tiers.needle` lazily and, until
+that module ships, fails with a `CliError` naming `--tier fixture` as the
+remediation. Records written during a run go to a throwaway
+`TierRecords` in a temp directory, never `$XDG_STATE_HOME/nvsh/tiers.jsonl`.
+
+## Usage
+
+    nvsh tiers bench
+    nvsh tiers bench --split held-out
+    nvsh tiers bench --tier needle --out results.json
+    nvsh tiers bench --json
+"""
+
 ENTRIES: dict[tuple[str, ...], str] = {
     (): _ROOT,
     ("nvsh",): _ROOT,
@@ -1005,4 +1113,9 @@ ENTRIES: dict[tuple[str, ...], str] = {
     ("slash", "doctor"): _DOCTOR_SLASH,
     ("slash", "power"): _POWER,
     ("slash", "clocks"): _CLOCKS,
+    ("tiers",): _TIERS,
+    ("tiers", "stats"): _TIERS_STATS,
+    ("tiers", "export"): _TIERS_EXPORT,
+    ("tiers", "prefetch"): _TIERS_PREFETCH,
+    ("tiers", "bench"): _TIERS_BENCH,
 }

@@ -815,6 +815,88 @@ def _check_cli_harness_reachable(
     )
 
 
+def _tier_flavor_installed() -> bool:
+    """Is the ``needle`` flavor's Python package importable?
+
+    ``importlib.util.find_spec`` only locates the module -- it never
+    imports it, so this never runs needle's own module-level code, starts
+    its telemetry, or touches the network (task t15's "never import needle
+    in doctor" rule).
+    """
+    import importlib.util
+
+    return importlib.util.find_spec("needle") is not None
+
+
+def _tier_lfm_settings(config: Config) -> tuple[str, str]:
+    """``(engine, mode)`` from ``[tiers.lfm]``, defaulting like the config
+    module's own ``_DEFAULT_TIERS`` does."""
+    lfm = config.tiers.get("lfm") if isinstance(config.tiers, dict) else None
+    lfm = lfm if isinstance(lfm, dict) else {}
+    return lfm.get("engine", "llama-server"), lfm.get("mode", "managed")
+
+
+def _needle_adapter_reachable(config: Config, flavor_installed: Callable[[], bool]) -> dict:
+    """``needle``'s "reachability": is the flavor installed at all?
+
+    ``needle`` has no ``--version`` binary for
+    :func:`_check_cli_harness_reachable` to probe (task t14's adapter wraps
+    an in-process tier, not a CLI), so it is dispatched through this table
+    rather than ``_CLI_HARNESS_PROVIDERS`` -- without this entry it would
+    fall into the generic "no reachability probe" warning. ``lfm`` is not a
+    registered ``registry.ADAPTERS`` entry yet (task t19 lands its adapter);
+    it reaches this same table entry regardless. Detail
+    on the pinned files themselves (present/hash-verified) is
+    :func:`check_tier_files_present`/:func:`check_tier_hashes_match`'s job,
+    not this one's -- this only answers "is the Python package here".
+    """
+    del config  # unused, kept for the dispatch table's uniform signature
+    if not flavor_installed():
+        return _check(
+            "agent_reachable",
+            False,
+            "warning",
+            "needle adapter not reachable: the needle flavor is not installed",
+            "pip install 'nvsh[needle]'",
+        )
+    return _check(
+        "agent_reachable",
+        True,
+        "info",
+        "needle flavor installed; see tier_files_present/tier_hashes_match for weights status",
+        "",
+    )
+
+
+def _lfm_adapter_reachable(config: Config, flavor_installed: Callable[[], bool]) -> dict:
+    """``lfm``'s "reachability": report its configured engine/mode.
+
+    Tier 2 runs in a container (task t17), so there is no local Python
+    import to probe and doctor never starts a container itself -- this
+    reports the configured shape only; pinned-file status is
+    :func:`check_tier_files_present`/:func:`check_tier_hashes_match`'s job.
+    """
+    del flavor_installed  # unused, kept for the dispatch table's uniform signature
+    engine, mode = _tier_lfm_settings(config)
+    return _check(
+        "agent_reachable",
+        True,
+        "info",
+        f"lfm tier configured (engine={engine}, mode={mode}); pinned-file status is reported by "
+        "tier_files_present/tier_hashes_match",
+        "",
+    )
+
+
+#: check_agent_reachable dispatch for the not-yet-registered ``needle``/
+#: ``lfm`` adapter names -- a small table instead of scattered ifs, per
+#: task t15's instruction.
+_TIER_ADAPTER_REACHABLE: dict[str, Callable[[Config, Callable[[], bool]], dict]] = {
+    "needle": _needle_adapter_reachable,
+    "lfm": _lfm_adapter_reachable,
+}
+
+
 def check_agent_reachable(
     config: Config,
     which: Which = default_which,
@@ -822,6 +904,7 @@ def check_agent_reachable(
     timeout: float = 3.0,
     run: CliRunner = _default_cli_run,
     cli_timeout: float = CLI_PROBE_TIMEOUT,
+    tier_flavor_installed: Callable[[], bool] = _tier_flavor_installed,
 ) -> dict:
     home = home if home is not None else Path.home()
     provider = config.agent_provider
@@ -844,6 +927,8 @@ def check_agent_reachable(
         inputs = _openai_compat_probe_inputs(config)
     elif provider == "demo":
         return _check_demo_reachable(config)
+    elif provider in _TIER_ADAPTER_REACHABLE:
+        return _TIER_ADAPTER_REACHABLE[provider](config, tier_flavor_installed)
     elif provider in _CLI_HARNESS_PROVIDERS:
         spec = agent_registry.ADAPTERS.get(provider)
         binary = spec.binary if spec is not None else None
@@ -934,6 +1019,19 @@ def check_default_target_not_demo(config: Config | None) -> dict:
             False,
             "error",
             "[aliases].default resolves to demo, a scripted fixture -- not a real backend",
+            "run `nvsh agent use <name>` with a real backend (see `nvsh agent list`)",
+        )
+    if backend in agent_registry.NOT_PERSISTABLE_DEFAULT:
+        # The check keeps its id (consumers key on it), but the rule is the
+        # registry's: whatever may not be persisted as the default -- today
+        # also ``needle``, which answers only what Tier 1 can -- fails here
+        # when a hand-edited or older config names it.
+        message = agent_registry.NOT_PERSISTABLE_DEFAULT_REASONS[backend][0]
+        return _check(
+            "default_target_not_demo",
+            False,
+            "error",
+            f"[aliases].default resolves to {backend}: {message}",
             "run `nvsh agent use <name>` with a real backend (see `nvsh agent list`)",
         )
     return _check(
@@ -1056,6 +1154,176 @@ def check_agent_allowlist(home: Path | None = None) -> dict:
         "harness-side allowlist(s) let commands run without nvsh approve: " + ", ".join(found),
         "review and tighten the allowlist(s) yourself; nvsh never edits harness settings files",
     )
+
+
+# ---------------------------------------------------------------------------
+# tiers_configured / tier_files_present / tier_hashes_match (task t15)
+# ---------------------------------------------------------------------------
+
+#: Named once so every message pointing an operator at the fix stays in
+#: sync (acceptance: "a remediation naming the prefetch command").
+TIER_PREFETCH_REMEDIATION = "run `nvsh tiers prefetch` to fetch and verify the pinned tier files"
+
+
+#: What a damaged ``pins.json`` (or an unreadable cache entry) can raise out
+#: of ``nvsh.tiers.fetch``. Doctor is the tool an operator reaches for when
+#: something is broken, so it reports these as a failed check, never a crash.
+_TIER_PIN_ERRORS = (OSError, ValueError, KeyError, AttributeError, TypeError)
+
+
+def _tier_pins_unreadable(check_id: str, exc: BaseException) -> dict:
+    return _check(
+        check_id,
+        False,
+        "error",
+        f"tier pins could not be read: {type(exc).__name__}: {exc}",
+        "reinstall nvsh (its packaged nvsh/tiers/pins.json is damaged), then "
+        + TIER_PREFETCH_REMEDIATION,
+    )
+
+
+def check_tiers_configured(config: Config | None) -> dict:
+    """Report ``[tiers]``/``[tiers.lfm]`` routing state.
+
+    Always passes -- this is a state report, not a health gate:
+    ``[tiers] enabled = false`` is the default, intentional configuration
+    (routing stays off until the operator opts in), so it is never a
+    failure on its own.
+    """
+    if config is None:
+        return _check(
+            "tiers_configured", True, "info", "no config.toml loaded; tiers routing is off", ""
+        )
+    enabled = bool(config.tiers.get("enabled", False))
+    engine, mode = _tier_lfm_settings(config)
+    state = "enabled" if enabled else "disabled"
+    return _check(
+        "tiers_configured",
+        True,
+        "info",
+        f"tiers routing {state} ([tiers.lfm] engine={engine}, mode={mode})",
+        "",
+    )
+
+
+def check_tier_files_present(
+    *,
+    pins: dict | None = None,
+    cache_dir: Path | None = None,
+    platform_tag: str | None = None,
+) -> dict:
+    """Are the pinned engine+weights files present locally?
+
+    Lazily imports ``nvsh.tiers.fetch`` (see this module's own "import
+    nvsh.tiers lazily" rule). Uses ``plan_prefetch``'s cheap
+    existence-and-size check, never a hash -- that is
+    :func:`check_tier_hashes_match`'s job -- so this never reads the full
+    ~35 MB of weights just to answer "is it there". An item with no pin for
+    this platform (empty ``source``) is not "missing"; it simply has
+    nothing to fetch.
+    """
+    from nvsh.tiers import fetch as fetch_mod
+
+    try:
+        items = fetch_mod.plan_prefetch(pins, cache_dir=cache_dir, platform_tag=platform_tag)
+    except _TIER_PIN_ERRORS as exc:
+        return _tier_pins_unreadable("tier_files_present", exc)
+    pinned = [item for item in items if item.source]
+    missing = [item.name for item in pinned if not item.present]
+    if not pinned:
+        return _check(
+            "tier_files_present", True, "info", "no tier files are pinned for this platform", ""
+        )
+    if not missing:
+        return _check(
+            "tier_files_present", True, "info", "pinned tier files are present locally", ""
+        )
+    return _check(
+        "tier_files_present",
+        False,
+        "warning",
+        "missing pinned tier files: " + ", ".join(missing),
+        TIER_PREFETCH_REMEDIATION,
+    )
+
+
+def check_tier_hashes_match(
+    *,
+    pins: dict | None = None,
+    cache_dir: Path | None = None,
+    platform_tag: str | None = None,
+) -> dict:
+    """Do the cached tier files' sha256 sums still match ``pins.json``?
+
+    Local only -- :func:`nvsh.tiers.fetch.verify_all` never opens a socket,
+    never downloads and never starts a container; it relies on
+    ``fetch``'s own per-``(path, mtime, size)`` verification cache, so
+    hashing the ~35 MB weights file happens once per change, not once per
+    ``nvsh doctor`` run. Only a hash/size mismatch fails this check -- a
+    simply-missing file is :func:`check_tier_files_present`'s failure, not
+    this one's, so a fresh install with nothing cached yet does not
+    double-report the same gap.
+    """
+    from nvsh.tiers import fetch as fetch_mod
+
+    try:
+        problems = fetch_mod.verify_all(pins, cache_dir=cache_dir, platform_tag=platform_tag)
+    except _TIER_PIN_ERRORS as exc:
+        return _tier_pins_unreadable("tier_hashes_match", exc)
+    mismatches = [
+        problem for problem in problems if problem.code in ("hash_mismatch", "size_mismatch")
+    ]
+    if not mismatches:
+        return _check(
+            "tier_hashes_match", True, "info", "pinned tier files verified against pins.json", ""
+        )
+    names = ", ".join(f"{problem.item} ({problem.code})" for problem in mismatches)
+    return _check(
+        "tier_hashes_match",
+        False,
+        "error",
+        f"pinned tier file hash mismatch: {names}",
+        TIER_PREFETCH_REMEDIATION,
+    )
+
+
+def collect_tier_checks(
+    config: Config | None,
+    *,
+    flavor_installed: Callable[[], bool] | None = None,
+    pins: dict | None = None,
+    cache_dir: Path | None = None,
+    platform_tag: str | None = None,
+) -> list[dict]:
+    """The ``tiers_configured``/``tier_files_present``/``tier_hashes_match``
+    trio -- or a single collapsed info check when there is nothing to say.
+
+    With ``[tiers]`` disabled and no tier flavor installed, running the
+    file/hash checks would only ever report "nothing here" three times
+    over, so this reports exactly one info check instead (acceptance:
+    "with no flavor installed doctor reports one info check and stays
+    healthy"). ``flavor_installed`` resolves its default at call time
+    (rather than at def time) so ``collect_checks`` -- which never passes
+    one explicitly -- still picks up a monkeypatched module-level
+    :func:`_tier_flavor_installed` the way its sibling checks do.
+    """
+    flavor_installed = flavor_installed if flavor_installed is not None else _tier_flavor_installed
+    enabled = bool(config.tiers.get("enabled", False)) if config is not None else False
+    if not enabled and not flavor_installed():
+        return [
+            _check(
+                "tiers_configured",
+                True,
+                "info",
+                "tiers routing disabled and no tier flavor installed; nothing to check",
+                "",
+            )
+        ]
+    return [
+        check_tiers_configured(config),
+        check_tier_files_present(pins=pins, cache_dir=cache_dir, platform_tag=platform_tag),
+        check_tier_hashes_match(pins=pins, cache_dir=cache_dir, platform_tag=platform_tag),
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -1531,6 +1799,7 @@ def collect_checks(
         )
     checks.append(check_default_target_not_demo(config))
     checks.append(check_agent_allowlist(home=home))
+    checks.extend(collect_tier_checks(config))
     checks.append(check_hook_sourced(env, current_version))
     checks.append(check_hook_first_in_prompt_command(prompt_command_text))
     checks.append(check_bindings_present(bind_p_text, keymap))

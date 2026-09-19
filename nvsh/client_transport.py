@@ -24,7 +24,7 @@ import json
 import os
 import socket
 import time
-from dataclasses import asdict
+from dataclasses import asdict, dataclass, fields, replace
 from pathlib import Path
 from typing import Iterator, Mapping, cast
 
@@ -254,8 +254,6 @@ def targeted_config(cfg: Config, target: Target) -> Config:
     is how a resolved target's model and effort reach the adapter without
     the caller knowing which keyword each adapter takes.
     """
-    from dataclasses import replace
-
     settings = dict(cfg.agents.get(target.backend, {}))
     if target.model:
         settings["model"] = target.model
@@ -523,6 +521,138 @@ def _retry_after_mismatch(
     except OSError as exc:
         yield AgentEvent(kind=EventKind.STATUS, text=f"daemon connection lost: {exc}")
         yield from one_shot(request, context, config=config, responder=responder)
+
+
+#: How long the client waits for the daemon's tier answer. Far shorter than
+#: the agent stream timeout -- a tier that needs a minute is a tier that
+#: should have escalated -- but long enough for a cold Needle load (5.7 s
+#: measured on a DGX Spark, spike s13).
+_DEFAULT_TIER_TIMEOUT = 60.0
+
+
+@dataclass(frozen=True)
+class TierReply:
+    """How the daemon's local tiers answered one request (task t12).
+
+    ``outcome`` is ``nvsh.daemon.TIER_HANDLED`` -- a tier answered, and
+    ``events`` are its events to render -- or ``TIER_ESCALATE``, in which
+    case the caller goes on to the full agent and may hand it
+    ``escalation_context`` so the tiers' read-only work is not repeated.
+    """
+
+    outcome: str
+    tier: str = ""
+    route_id: str = ""
+    declines: tuple[tuple[str, str], ...] = ()
+    escalation_context: tuple[tuple[str, str], ...] = ()
+    events: tuple[AgentEvent, ...] = ()
+
+    @property
+    def handled(self) -> bool:
+        return self.outcome == _daemon.TIER_HANDLED
+
+
+#: What every "there was nothing to ask" path answers: no daemon, a daemon
+#: that errored, a daemon too old to know the ``tier`` kind at all.
+_ESCALATED = TierReply(outcome=_daemon.TIER_ESCALATE)
+
+
+def _pairs(raw: object) -> tuple[tuple[str, str], ...]:
+    """Decode a wire list of two-element lists, dropping anything malformed."""
+    if not isinstance(raw, list):
+        return ()
+    return tuple(
+        (str(item[0]), str(item[1]))
+        for item in raw
+        if isinstance(item, (list, tuple)) and len(item) == 2
+    )
+
+
+def _tier_reply(event: AgentEvent) -> TierReply | None:
+    """The tier outcome *event* carries, or ``None`` for any other event."""
+    args = event.args or {}
+    outcome = args.get(_daemon.TIER_OUTCOME_KEY)
+    if not isinstance(outcome, str) or not outcome:
+        return None
+    return TierReply(
+        outcome=outcome,
+        tier=str(args.get("tier") or ""),
+        route_id=str(args.get("route_id") or ""),
+        declines=_pairs(args.get("declines")),
+        escalation_context=_pairs(args.get("escalation_context")),
+    )
+
+
+def ask_tiers(
+    request: AgentRequest,
+    context: AgentContext | None = None,
+    *,
+    shell_id: str | int | None = None,
+    env: Mapping[str, str] | None = None,
+    timeout: float = _DEFAULT_TIER_TIMEOUT,
+) -> TierReply:
+    """Ask the daemon's resident tiers about *request*. Never raises.
+
+    The whole point of asking the daemon is that the models live *there*:
+    this function loads nothing, imports no tier module, and **never starts
+    a daemon**. With no daemon listening -- or one that answers anything
+    other than a tier outcome frame -- it returns ``escalate`` at once and
+    the caller goes to the full agent, which is the path that starts a
+    daemon anyway.
+
+    The answer is buffered rather than streamed: a tier answer is a handful
+    of events (a status, a proposal or a line of text) and the caller needs
+    the outcome before it can decide what to render.
+    """
+    sock = _connect(env, _CONNECT_TIMEOUT)
+    if sock is None:
+        return _ESCALATED
+    payload = _payload(request, context, shell_id) | {"kind": _daemon.TIER_KIND}
+    sock.settimeout(timeout)
+    events: list[AgentEvent] = []
+    reply: TierReply | None = None
+    try:
+        for event in _stream(sock, payload):
+            found = _tier_reply(event)
+            if found is not None:
+                reply = found
+                continue
+            events.append(event)
+    except OSError:
+        # A daemon that died mid-answer is a daemon that did not answer.
+        return _ESCALATED
+    if reply is None:
+        return _ESCALATED
+    # Built by name rather than with ``dataclasses.replace``, whose declared
+    # return type is a bare dataclass instance, not ``TierReply``.
+    values = {f.name: getattr(reply, f.name) for f in fields(TierReply)}
+    values["events"] = tuple(events)
+    return TierReply(**values)
+
+
+def tier_decision(
+    route_id: str,
+    decision: str,
+    *,
+    shell_id: str | int | None = None,
+    env: Mapping[str, str] | None = None,
+) -> bool:
+    """Tell the daemon what the operator did with a tier's proposal.
+
+    ``False`` when no daemon is listening, the route is unknown (the daemon
+    restarted, or unloaded its tiers) or the decision was already reported.
+    A lost measurement is never worth an error on the operator's prompt.
+    """
+    if not route_id or not decision:
+        return False
+    events = control(
+        _daemon.TIER_DECISION_KIND,
+        shell_id=shell_id,
+        env=env,
+        route_id=route_id,
+        decision=decision,
+    )
+    return any(event.kind is EventKind.STATUS for event in events)
 
 
 def control(

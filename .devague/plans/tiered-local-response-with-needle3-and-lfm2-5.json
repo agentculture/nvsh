@@ -5,7 +5,7 @@
   "schema_version": 5,
   "status": "exported",
   "created": "2026-09-19T12:48:24Z",
-  "updated": "2026-09-19T14:38:04Z",
+  "updated": "2026-09-19T16:04:39Z",
   "targets": [
     {
       "id": "c1",
@@ -1033,6 +1033,14 @@
       "text": "Design constraint from the operator (2026-09-19): the operation set will grow (interactive tools such as jtop, new device-CLI skills), and growth is NOT in this plan's scope \u2014 but nothing built here may force a redesign to add operations. Held so far: consumers use get()/names()/validate() rather than the OPERATIONS tuple; Operation is a dataclass so an 'interactive' flag is an additive field; rendering and the Needle tool schema are table-driven. Still to hold in later tasks: verifier baselines are computed per operation from names() at load, never hard-coded; the router (t11) must not switch on specific operation names; the benchmark corpus is keyed by operation name. Known scaling cost, unaddressed: Needle latency rose from ~40 ms to 45-170 ms going from 10 to 16 tools, so a much larger table needs an embedding shortlist (Needle's embed()) in front of selection \u2014 a follow-up.",
       "kind": "follow_up",
       "task_id": null,
+      "resolved": false,
+      "resolution": ""
+    },
+    {
+      "id": "r10",
+      "text": "Measured 2026-09-19 on the DGX Spark with the shipped path (real cactus-needle 3.0.2 engine, tool schemas generated from the operation table, dev corpus, fixture world): stock Needle3 picks the right operation on 4 of 9 explicit asks (the /think spike saw 7 of 9 with hand-written tools), proposes an operation for 2 of 5 should-escalate asks, 0 false mutating picks, warm p95 78 ms, cold 312 ms. The c20 target of >= 90% is not reachable with the stock model as wired; candidates, cheapest first: cactus-needle's per-tool 'triggers' phrases as a table field, sharper operation descriptions, the d1 verifier, the t23 LoRA. Per-item results are kept outside the repo in the session memory tools folder.",
+      "kind": "unknown_nonblocking",
+      "task_id": "t23",
       "resolved": false,
       "resolution": ""
     }

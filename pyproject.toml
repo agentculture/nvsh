@@ -1,6 +1,6 @@
 [project]
 name = "nvsh"
-version = "0.15.0"
+version = "0.16.0"
 description = "nvsh: an agent-first shell for NVIDIA Jetson, DGX Spark and RTX Spark. Runs your commands like a normal shell; when a command fails, it hands the error and context to an agent (shell -> agent) to diagnose and propose a fix."
 readme = "README.md"
 license = "Apache-2.0"
@@ -22,17 +22,37 @@ Issues = "https://github.com/agentculture/nvsh/issues"
 [project.scripts]
 nvsh = "nvsh.cli:main"
 
+[project.optional-dependencies]
+# Optional local response tiers. The base install stays dependency-free.
+# needle: the Tier 1 selector (CPU only). lfm: Tier 2 runs in a container
+# that nvsh starts, so it needs no Python package. tiers: both.
+needle = ["cactus-needle>=3.0.1,<3.1"]
+lfm = []
+tiers = ["cactus-needle>=3.0.1,<3.1"]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["nvsh"]
-include = ["nvsh/shell/*.bash", "nvsh/agent/pi_ext/*.ts", "nvsh/agent/*.json", "nvsh/tiers/*.json"]
+include = [
+    "nvsh/shell/*.bash",
+    "nvsh/agent/pi_ext/*.ts",
+    "nvsh/agent/*.json",
+    "nvsh/tiers/*.json",
+    "nvsh/tiers/corpus/*.json",
+]
 # The bash integration, the pi approval extension, the demo adapter's
-# fixture and the tier fetch pins are data, not Python: name them
-# explicitly or hatchling leaves them out of the wheel.
-artifacts = ["nvsh/shell/*.bash", "nvsh/agent/pi_ext/*.ts", "nvsh/agent/*.json", "nvsh/tiers/*.json"]
+# fixture, the tier fetch pins and the benchmark corpus are data, not
+# Python: name them explicitly or hatchling leaves them out of the wheel.
+artifacts = [
+    "nvsh/shell/*.bash",
+    "nvsh/agent/pi_ext/*.ts",
+    "nvsh/agent/*.json",
+    "nvsh/tiers/*.json",
+    "nvsh/tiers/corpus/*.json",
+]
 
 [dependency-groups]
 dev = [

@@ -10,6 +10,7 @@ covers the CLI wiring and the wheel-install branch.
 
 from __future__ import annotations
 
+import hashlib
 import http.server
 import json
 import os
@@ -841,6 +842,7 @@ def test_collect_checks_returns_every_new_check_id(tmp_path):
         "agent_reachable",
         "default_target_not_demo",
         "agent_allowlist",
+        "tiers_configured",
         "hook_sourced",
         "hook_first_in_prompt_command",
         "bindings_present",
@@ -1237,3 +1239,230 @@ def test_agent_allowlist_is_included_in_collect_checks(tmp_path):
     )
     check = _check(checks, "agent_allowlist")
     assert check["passed"] is True
+
+
+# ---------------------------------------------------------------------------
+# tiers_configured / tier_files_present / tier_hashes_match (task t15) ------
+# ---------------------------------------------------------------------------
+
+
+def _tiny_pins(content: bytes) -> dict:
+    """A minimal pins.json shape carrying one tiny weights entry -- never
+    the real 35 MB needle3 weights -- so hashing it in a test is instant."""
+    return {
+        "needle3": {
+            "repo": "example/needle3-fixture",
+            "revision": "deadbeef",
+            "weights": {
+                "filename": "tiny-weights.bin",
+                "sha256": hashlib.sha256(content).hexdigest(),
+                "size_bytes": len(content),
+            },
+        },
+        "images": [],
+    }
+
+
+def test_tiers_configured_reports_disabled_by_default():
+    check = doctor_checks.check_tiers_configured(Config())
+    assert check["id"] == "tiers_configured"
+    assert check["passed"] is True
+    assert check["severity"] == "info"
+    assert "disabled" in check["message"]
+
+
+def test_tiers_configured_reports_enabled_with_lfm_settings():
+    cfg = Config()
+    cfg.tiers = {**cfg.tiers, "enabled": True, "lfm": {"engine": "vllm", "mode": "attach"}}
+    check = doctor_checks.check_tiers_configured(cfg)
+    assert check["passed"] is True
+    assert "enabled" in check["message"]
+    assert "vllm" in check["message"]
+    assert "attach" in check["message"]
+
+
+def test_tiers_configured_handles_no_config_loaded():
+    check = doctor_checks.check_tiers_configured(None)
+    assert check["passed"] is True
+    assert check["severity"] == "info"
+
+
+def test_tier_files_present_passes_when_cached(tmp_path):
+    content = b"tiny needle weights fixture"
+    pins = _tiny_pins(content)
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    (cache_dir / "tiny-weights.bin").write_bytes(content)
+
+    check = doctor_checks.check_tier_files_present(
+        pins=pins, cache_dir=cache_dir, platform_tag="x86_64"
+    )
+
+    assert check["id"] == "tier_files_present"
+    assert check["passed"] is True
+
+
+def test_tier_files_present_fails_and_names_the_missing_file(tmp_path):
+    content = b"tiny needle weights fixture"
+    pins = _tiny_pins(content)
+    cache_dir = tmp_path / "cache"  # never created -- nothing cached yet
+
+    check = doctor_checks.check_tier_files_present(
+        pins=pins, cache_dir=cache_dir, platform_tag="x86_64"
+    )
+
+    assert check["passed"] is False
+    assert check["severity"] == "warning"
+    assert "tiny-weights.bin" in check["message"]
+
+
+def test_tier_hashes_match_passes_for_a_verified_file(tmp_path):
+    content = b"tiny needle weights fixture"
+    pins = _tiny_pins(content)
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    (cache_dir / "tiny-weights.bin").write_bytes(content)
+
+    check = doctor_checks.check_tier_hashes_match(
+        pins=pins, cache_dir=cache_dir, platform_tag="x86_64"
+    )
+
+    assert check["id"] == "tier_hashes_match"
+    assert check["passed"] is True
+
+
+def test_tier_hashes_match_fails_for_a_swapped_file_and_names_the_prefetch_command(tmp_path):
+    content = b"tiny needle weights fixture"
+    pins = _tiny_pins(content)
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    # Same length as the pinned file, different bytes -- a genuine hash
+    # mismatch rather than a size mismatch.
+    (cache_dir / "tiny-weights.bin").write_bytes(content[::-1])
+
+    check = doctor_checks.check_tier_hashes_match(
+        pins=pins, cache_dir=cache_dir, platform_tag="x86_64"
+    )
+
+    assert check["passed"] is False
+    assert check["severity"] == "error"
+    assert "nvsh tiers prefetch" in check["remediation"]
+
+
+def test_collect_tier_checks_collapses_to_one_info_check_when_disabled_and_no_flavor():
+    checks = doctor_checks.collect_tier_checks(Config(), flavor_installed=lambda: False)
+
+    assert len(checks) == 1
+    assert checks[0]["passed"] is True
+    assert checks[0]["severity"] == "info"
+
+
+def test_collect_tier_checks_runs_all_three_when_flavor_installed(tmp_path):
+    checks = doctor_checks.collect_tier_checks(
+        Config(),
+        flavor_installed=lambda: True,
+        pins=_tiny_pins(b"x"),
+        cache_dir=tmp_path,
+        platform_tag="x86_64",
+    )
+
+    assert [c["id"] for c in checks] == [
+        "tiers_configured",
+        "tier_files_present",
+        "tier_hashes_match",
+    ]
+
+
+def test_collect_tier_checks_runs_all_three_when_enabled(tmp_path):
+    cfg = Config()
+    cfg.tiers = {**cfg.tiers, "enabled": True}
+
+    checks = doctor_checks.collect_tier_checks(
+        cfg,
+        flavor_installed=lambda: False,
+        pins=_tiny_pins(b"x"),
+        cache_dir=tmp_path,
+        platform_tag="x86_64",
+    )
+
+    assert [c["id"] for c in checks] == [
+        "tiers_configured",
+        "tier_files_present",
+        "tier_hashes_match",
+    ]
+
+
+def test_collect_checks_reports_one_tier_check_with_tiers_disabled_and_no_flavor(
+    monkeypatch, tmp_path
+):
+    """End-to-end through collect_checks (acceptance criterion 2): with no
+    flavor installed doctor reports one info check and stays healthy."""
+    monkeypatch.setattr(doctor_checks, "_tier_flavor_installed", lambda: False)
+
+    checks = doctor_checks.collect_checks(
+        env={},
+        current_version="1.2.3",
+        config=Config(),
+        config_error=None,
+        platform=Platform(kind="generic", values=()),
+        which=lambda name: None,
+        home=tmp_path,
+    )
+
+    tier_ids = {"tiers_configured", "tier_files_present", "tier_hashes_match"}
+    tier_checks = [c for c in checks if c["id"] in tier_ids]
+    assert len(tier_checks) == 1
+    assert tier_checks[0]["passed"] is True
+    # The tier checks themselves never flip healthy -- they are the only
+    # info-severity checks here, so this only proves they didn't contribute
+    # a failure (unrelated checks in this synthetic env may still fail).
+    assert all(c["severity"] == "info" for c in tier_checks)
+
+
+# ---------------------------------------------------------------------------
+# check_agent_reachable's needle/lfm dispatch branch (task t15) ------------
+# ---------------------------------------------------------------------------
+
+
+def test_agent_reachable_needle_not_installed_is_a_warning_not_the_generic_message():
+    cfg = Config(agent_provider="needle")
+    check = doctor_checks.check_agent_reachable(cfg, tier_flavor_installed=lambda: False)
+    assert check["passed"] is False
+    assert check["severity"] == "warning"
+    assert "needle flavor is not installed" in check["message"]
+    assert "has no reachability probe" not in check["message"]
+
+
+def test_agent_reachable_needle_installed_reports_info():
+    cfg = Config(agent_provider="needle")
+    check = doctor_checks.check_agent_reachable(cfg, tier_flavor_installed=lambda: True)
+    assert check["passed"] is True
+    assert check["severity"] == "info"
+    assert "needle flavor installed" in check["message"]
+
+
+def test_agent_reachable_lfm_reports_configured_engine_and_mode():
+    cfg = Config()
+    cfg.tiers = {**cfg.tiers, "lfm": {"engine": "sglang", "mode": "attach"}}
+    cfg.aliases = {"default": "lfm"}
+    check = doctor_checks.check_agent_reachable(cfg, tier_flavor_installed=lambda: False)
+    assert check["passed"] is True
+    assert check["severity"] == "info"
+    assert "sglang" in check["message"]
+    assert "attach" in check["message"]
+    assert "has no reachability probe" not in check["message"]
+
+
+@pytest.mark.parametrize("pins", ["junk", {"images": [{"ref": 1}]}])
+@pytest.mark.parametrize(
+    "check", [doctor_checks.check_tier_files_present, doctor_checks.check_tier_hashes_match]
+)
+def test_damaged_tier_pins_fail_the_check_instead_of_crashing_doctor(check, pins, tmp_path):
+    result = check(pins=pins, cache_dir=tmp_path)
+    assert result["passed"] is False
+    assert result["severity"] == "error"
+
+
+def test_tier_files_present_says_so_when_nothing_is_pinned(tmp_path):
+    result = doctor_checks.check_tier_files_present(pins={}, cache_dir=tmp_path)
+    assert "no tier files are pinned" in result["message"]

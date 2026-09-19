@@ -283,3 +283,15 @@ def test_keep_existing_default_never_keeps_demo(tmp_path, monkeypatch):
 
     cfg = nvsh_config.Config(aliases={nvsh_config.DEFAULT_ALIAS: "demo"})
     assert _keep_existing_default(cfg, probe_rows=[]) is False
+
+
+def test_check_default_target_fails_when_default_is_needle():
+    cfg = Config(aliases={"default": "needle"})
+    check = doctor_checks.check_default_target_not_demo(cfg)
+    assert check["passed"] is False
+
+
+def test_check_default_target_names_needle_in_its_message():
+    cfg = Config(aliases={"default": "needle"})
+    check = doctor_checks.check_default_target_not_demo(cfg)
+    assert "needle" in check["message"]
