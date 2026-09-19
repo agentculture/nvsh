@@ -81,6 +81,10 @@ _DECLINE_TEXT: dict[str, str] = {
 _FAILURE_TEXT = "needle only answers instruction-shaped requests, not command failures"
 
 
+#: The tier name the router puts on its hand-off-to-the-full-agent status.
+_FULL_AGENT = "agent"
+
+
 class NeedleAgent(NvshAgent):
     """The explicit ``@needle`` adapter: Tier 1 only, propose-or-explain.
 
@@ -196,6 +200,10 @@ class NeedleAgent(NvshAgent):
         for event in route:
             if self._cancelled:
                 return
+            if event.args.get("tier") == _FULL_AGENT:
+                # The router's "asking the full agent" line: untrue here,
+                # because an explicit @needle request never goes on to one.
+                continue
             yield event
         # Route.outcome is only assigned *after* its generator's last yield
         # (see nvsh/tiers/router.py's Route._run/_proposed/_explained), so it

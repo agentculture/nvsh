@@ -27,6 +27,7 @@ from pathlib import Path
 
 import pytest
 
+from nvsh.agent import needle as needle_mod
 from nvsh.agent import registry
 from nvsh.agent.base import AgentContext, AgentRequest, EventKind, RequestKind
 from nvsh.agent.needle import NEEDLE_CAPABILITIES, NeedleAgent
@@ -192,6 +193,7 @@ def test_a_decline_explains_in_one_line_and_ends_with_done_never_escalating(tmp_
     assert EventKind.PROPOSAL not in kinds
     status_texts = " ".join(e.text for e in events if e.kind is EventKind.STATUS)
     assert "needle" in status_texts
+    assert "full agent" not in status_texts
 
 
 def test_an_unavailable_tier_reports_its_own_status_text(tmp_path):
@@ -259,3 +261,9 @@ def test_a_fresh_child_answers_the_next_request_after_close(tmp_path):
     assert second[-1].kind is EventKind.DONE
     proposals = [e for e in second if e.kind is EventKind.PROPOSAL]
     assert proposals, "the second turn, against a freshly-spawned child, must still propose"
+
+
+def test_an_explicit_needle_request_never_claims_to_ask_the_full_agent():
+    from nvsh.tiers import router
+
+    assert needle_mod._FULL_AGENT == router.AGENT
