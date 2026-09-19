@@ -517,6 +517,7 @@ class Route:
                 decline_reason=decline.reason.value if decline is not None else None,
                 escalated_to=escalated_to,
                 request_text=self._request_text(),
+                verifier=self._verdict_args() if tier is self._router.tier1 else {},
             )
         )
 

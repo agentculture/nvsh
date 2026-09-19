@@ -642,3 +642,19 @@ def test_a_failed_baseline_measurement_is_retried_on_the_next_request():
     first = verifier.verify("restart nginx", pick)
     second = verifier.verify("restart nginx", pick)
     assert (first, second is not None) == (None, True)
+
+
+def test_the_verifier_numbers_land_in_the_tier1_record(records):
+    verifier = _ScriptedVerifier(VerifierVerdict(p_yes=0.9, calibrated=1.5, action="propose"))
+    tier1 = FakeTier([_pick("memory_stats")], "needle")
+    list(_router(records, tier1, verifier=verifier).route(_request(), _context()))
+    assert records.read_all()[0]["verifier"] == {
+        "verifier_action": "propose",
+        "p_yes": 0.9,
+        "calibrated": 1.5,
+    }
+
+
+def test_fake_tier_passes_an_explanation_through():
+    explanation = Explanation(text="disk is full")
+    assert FakeTier([explanation]).select(_request(), _context()) is explanation
