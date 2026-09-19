@@ -696,6 +696,10 @@ def _detect_platform():
     return detect()
 
 
+#: The last two components of the only directory ``uninstall`` removes whole.
+_TIER_CACHE_TAIL = ("nvsh", "tiers")
+
+
 def _safe_tier_path(path: Path) -> bool:
     """Whether *path* is safe for ``uninstall`` to delete.
 
@@ -769,7 +773,8 @@ def _remove_tier_cache() -> list[str]:
     from nvsh.tiers.fetch import default_cache_dir
 
     cache_dir = default_cache_dir()
-    if not _safe_tier_path(cache_dir):
+    # Only ever a directory nvsh itself named: ".../nvsh/tiers".
+    if not _safe_tier_path(cache_dir) or cache_dir.parts[-2:] != _TIER_CACHE_TAIL:
         return []
     if cache_dir.is_symlink():
         cache_dir.unlink()

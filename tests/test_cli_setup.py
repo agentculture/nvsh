@@ -1371,3 +1371,13 @@ def test_setup_qwen_only_path_is_a_single_harness_and_never_prompts(tmp_path, mo
     assert [row["name"] for row in payload["agent"]["probe"]] == ["qwen"]
     assert payload["agent"]["name"] == "qwen"
     assert _default_alias() == "qwen"
+
+
+def test_uninstall_never_removes_a_cache_dir_it_did_not_name(tmp_path, monkeypatch):
+    from nvsh.tiers import fetch
+
+    other = tmp_path / "nvsh" / "projects"
+    other.mkdir(parents=True)
+    monkeypatch.setattr(fetch, "default_cache_dir", lambda env=None: other)
+    setup_mod._remove_tier_cache()
+    assert other.is_dir()
