@@ -280,3 +280,42 @@ def test_read_all_skips_a_torn_line(tmp_path):
         handle.write("{not json\n")
     records.write(TierRecord(tier="lfm", request_kind="failure"))
     assert [e["tier"] for e in records.read_all()] == ["needle", "lfm"]
+
+
+def test_a_lone_surrogate_never_raises_out_of_write(tmp_path):
+    """qodo 8 on PR #32: strict UTF-8 encoding raised UnicodeEncodeError."""
+    records = TierRecords(tmp_path / "state" / "tiers.jsonl", store_request_text=True)
+    records.write(
+        TierRecord(
+            tier="needle",
+            request_kind="explicit",
+            args={"service": "bad\udc80name"},
+            request_text="hot\udc80?",
+        )
+    )
+    assert len(records.read_all()) == 1
+
+
+def test_concurrent_writers_lose_no_records_and_stay_under_cap(tmp_path):
+    """qodo 10 on PR #32: rotate + append + cap raced across handler threads."""
+    import threading
+
+    path = tmp_path / "state" / "tiers.jsonl"
+    cap = 200_000  # roomy enough that nothing should rotate out
+    writers = [TierRecords(path, cap_bytes=cap) for _ in range(4)]  # separate objects
+
+    def burst(records: TierRecords, tag: str) -> None:
+        for index in range(100):
+            records.write(TierRecord(tier=tag, request_kind="explicit", operation=f"op{index}"))
+
+    threads = [
+        threading.Thread(target=burst, args=(records, f"t{number}"))
+        for number, records in enumerate(writers)
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+    entries = TierRecords(path, cap_bytes=cap).read_all()
+    assert len(entries) == 400
+    assert {entry["tier"] for entry in entries} == {"t0", "t1", "t2", "t3"}

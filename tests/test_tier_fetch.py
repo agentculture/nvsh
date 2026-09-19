@@ -235,7 +235,8 @@ def test_prefetch_reports_no_pin_for_platform_without_fetching(tmp_path):
         items, cache_dir=tmp_path, opener=_forbidden_opener, runner=lambda argv: 0
     )
     engine_problems = [p for p in problems if p.item.startswith("needle3-engine")]
-    assert engine_problems and engine_problems[0].code == "no_pin_for_platform"
+    assert engine_problems
+    assert engine_problems[0].code == "no_pin_for_platform"
 
 
 def test_prefetch_docker_pull_uses_exact_argv_with_digest(tmp_path):

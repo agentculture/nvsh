@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import math
+import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -327,6 +328,11 @@ def _make_server() -> tuple[ThreadingHTTPServer, int]:
     return srv, port
 
 
+def _serve(monkeypatch, response_type: str) -> None:
+    """Choose the canned reply for this test; undone automatically afterwards."""
+    monkeypatch.setattr(sys.modules[__name__], "_RESPONSE_TYPE", response_type)
+
+
 def _make_toolchat(port: int, *, stream: bool = True) -> ToolChat:
     return ToolChat(f"http://127.0.0.1:{port}", "test-model", stream=stream)
 
@@ -342,7 +348,7 @@ class _ServerInfo:
         self.port = port
 
 
-@pytest.fixture()
+@pytest.fixture
 def server():
     """One HTTP server on an ephemeral port, shut down after the test."""
     srv, port = _make_server()
@@ -359,9 +365,8 @@ def server():
 # ------------------------------------------------------------------
 
 
-def test_non_streamed_tool_calls(server) -> None:
-    global _RESPONSE_TYPE
-    _RESPONSE_TYPE = "tool_calls"
+def test_non_streamed_tool_calls(server, monkeypatch) -> None:
+    _serve(monkeypatch, "tool_calls")
     srv = server
     chat = _make_toolchat(srv.port, stream=False)
     reply = chat.complete([{"role": "user", "content": "check gpu"}], [])
@@ -374,9 +379,8 @@ def test_non_streamed_tool_calls(server) -> None:
 # ------------------------------------------------------------------
 
 
-def test_streamed_tool_calls_fragments_are_joined(server) -> None:
-    global _RESPONSE_TYPE
-    _RESPONSE_TYPE = "stream_fragments"
+def test_streamed_tool_calls_fragments_are_joined(server, monkeypatch) -> None:
+    _serve(monkeypatch, "stream_fragments")
     srv = server
     chat = _make_toolchat(srv.port, stream=True)
     reply = chat.complete([{"role": "user", "content": "check gpu"}], [])
@@ -389,9 +393,8 @@ def test_streamed_tool_calls_fragments_are_joined(server) -> None:
 # ------------------------------------------------------------------
 
 
-def test_streamed_two_parallel_tool_calls_by_index(server) -> None:
-    global _RESPONSE_TYPE
-    _RESPONSE_TYPE = "two_parallel"
+def test_streamed_two_parallel_tool_calls_by_index(server, monkeypatch) -> None:
+    _serve(monkeypatch, "two_parallel")
     srv = server
     chat = _make_toolchat(srv.port, stream=True)
     reply = chat.complete([{"role": "user", "content": "check"}], [])
@@ -405,9 +408,8 @@ def test_streamed_two_parallel_tool_calls_by_index(server) -> None:
 # ------------------------------------------------------------------
 
 
-def test_text_only_reply(server) -> None:
-    global _RESPONSE_TYPE
-    _RESPONSE_TYPE = "text_only"
+def test_text_only_reply(server, monkeypatch) -> None:
+    _serve(monkeypatch, "text_only")
     srv = server
     chat = _make_toolchat(srv.port, stream=False)
     reply = chat.complete([{"role": "user", "content": "hi"}], [])
@@ -420,9 +422,8 @@ def test_text_only_reply(server) -> None:
 # ------------------------------------------------------------------
 
 
-def test_raw_fallback_shape_a(server) -> None:
-    global _RESPONSE_TYPE
-    _RESPONSE_TYPE = "raw_shape_a"
+def test_raw_fallback_shape_a(server, monkeypatch) -> None:
+    _serve(monkeypatch, "raw_shape_a")
     srv = server
     chat = _make_toolchat(srv.port, stream=False)
     reply = chat.complete([{"role": "user", "content": "check"}], [])
@@ -434,9 +435,8 @@ def test_raw_fallback_shape_a(server) -> None:
 # ------------------------------------------------------------------
 
 
-def test_raw_fallback_shape_b(server) -> None:
-    global _RESPONSE_TYPE
-    _RESPONSE_TYPE = "raw_shape_b"
+def test_raw_fallback_shape_b(server, monkeypatch) -> None:
+    _serve(monkeypatch, "raw_shape_b")
     srv = server
     chat = _make_toolchat(srv.port, stream=False)
     reply = chat.complete([{"role": "user", "content": "check"}], [])
@@ -448,9 +448,8 @@ def test_raw_fallback_shape_b(server) -> None:
 # ------------------------------------------------------------------
 
 
-def test_invalid_arguments_json_is_skipped(server) -> None:
-    global _RESPONSE_TYPE
-    _RESPONSE_TYPE = "invalid_args"
+def test_invalid_arguments_json_is_skipped(server, monkeypatch) -> None:
+    _serve(monkeypatch, "invalid_args")
     srv = server
     chat = _make_toolchat(srv.port, stream=False)
     reply = chat.complete([{"role": "user", "content": "check"}], [])
@@ -462,9 +461,8 @@ def test_invalid_arguments_json_is_skipped(server) -> None:
 # ------------------------------------------------------------------
 
 
-def test_request_body_has_model_messages_tools(server) -> None:
-    global _RESPONSE_TYPE
-    _RESPONSE_TYPE = "record_body"
+def test_request_body_has_model_messages_tools(server, monkeypatch) -> None:
+    _serve(monkeypatch, "record_body")
     _ServerHandler._request_body = None
     srv = server
     chat = _make_toolchat(srv.port, stream=False)
@@ -522,7 +520,7 @@ def test_require_localhost_accepts_local_hosts(url) -> None:
 # ------------------------------------------------------------------
 
 
-def test_changing_port_is_config_only() -> None:
+def test_changing_port_is_config_only(monkeypatch) -> None:
     """Two separate servers on different ports; two ToolChat objects; both work."""
     srv_a, port_a = _make_server()
     srv_b, port_b = _make_server()
@@ -532,8 +530,7 @@ def test_changing_port_is_config_only() -> None:
     t_b.start()
 
     try:
-        global _RESPONSE_TYPE
-        _RESPONSE_TYPE = "echo"
+        _serve(monkeypatch, "echo")
         chat_a = _make_toolchat(port_a, stream=False)
         chat_b = _make_toolchat(port_b, stream=False)
         reply_a = chat_a.complete([{"role": "user", "content": "a"}], [])
@@ -562,9 +559,8 @@ def test_connection_refused_raises_toolchaterror() -> None:
 # ------------------------------------------------------------------
 
 
-def test_http_500_raises_toolchaterror(server) -> None:
-    global _RESPONSE_TYPE
-    _RESPONSE_TYPE = "http_500"
+def test_http_500_raises_toolchaterror(server, monkeypatch) -> None:
+    _serve(monkeypatch, "http_500")
     srv = server
     chat = _make_toolchat(srv.port, stream=False)
     with pytest.raises(ToolChatError):
@@ -595,15 +591,14 @@ def test_parse_raw_never_raises(text) -> None:
 # ------------------------------------------------------------------
 
 
-def test_stop_unblocks_a_stalled_read() -> None:
+def test_stop_unblocks_a_stalled_read(monkeypatch) -> None:
     """Handler sends headers then sleeps 5 s; stop() must unblock in <2 s."""
     srv, port = _make_server()
     t_srv = threading.Thread(target=srv.serve_forever, daemon=True)
     t_srv.start()
 
     try:
-        global _RESPONSE_TYPE
-        _RESPONSE_TYPE = "stalled"
+        _serve(monkeypatch, "stalled")
         chat = _make_toolchat(port, stream=False)
         errors: list[ToolChatError] = []
 
@@ -640,9 +635,8 @@ def test_raw_shape_a_two_calls_and_a_brace_inside_a_string() -> None:
 # ------------------------------------------------------------------
 
 
-def test_score_next_token_shape_l(server) -> None:
-    global _RESPONSE_TYPE
-    _RESPONSE_TYPE = "score_shape_l"
+def test_score_next_token_shape_l(server, monkeypatch) -> None:
+    _serve(monkeypatch, "score_shape_l")
     srv = server
     chat = _make_toolchat(srv.port, stream=False)
     result = chat.score_next_token("Is the sky blue?")
@@ -650,9 +644,8 @@ def test_score_next_token_shape_l(server) -> None:
     assert result == expected
 
 
-def test_score_next_token_shape_c(server) -> None:
-    global _RESPONSE_TYPE
-    _RESPONSE_TYPE = "score_shape_c"
+def test_score_next_token_shape_c(server, monkeypatch) -> None:
+    _serve(monkeypatch, "score_shape_c")
     srv = server
     chat = _make_toolchat(srv.port, stream=False)
     result = chat.score_next_token("Is the sky blue?")
@@ -660,9 +653,8 @@ def test_score_next_token_shape_c(server) -> None:
     assert result == expected
 
 
-def test_score_request_body_and_path(server) -> None:
-    global _RESPONSE_TYPE
-    _RESPONSE_TYPE = "score_body_path"
+def test_score_request_body_and_path(server, monkeypatch) -> None:
+    _serve(monkeypatch, "score_body_path")
     _ServerHandler._request_body = None
     _ServerHandler._request_path = None
     srv = server
@@ -678,18 +670,16 @@ def test_score_request_body_and_path(server) -> None:
     assert body["model"] == "test-model"
 
 
-def test_score_no_logprobs_raises_toolchaterror(server) -> None:
-    global _RESPONSE_TYPE
-    _RESPONSE_TYPE = "score_no_logprobs"
+def test_score_no_logprobs_raises_toolchaterror(server, monkeypatch) -> None:
+    _serve(monkeypatch, "score_no_logprobs")
     srv = server
     chat = _make_toolchat(srv.port, stream=False)
     with pytest.raises(ToolChatError, match="server returned no log-probabilities"):
         chat.score_next_token("hello")
 
 
-def test_score_skips_non_numeric_logprob(server) -> None:
-    global _RESPONSE_TYPE
-    _RESPONSE_TYPE = "score_mixed_valid"
+def test_score_skips_non_numeric_logprob(server, monkeypatch) -> None:
+    _serve(monkeypatch, "score_mixed_valid")
     srv = server
     chat = _make_toolchat(srv.port, stream=False)
     result = chat.score_next_token("hello")

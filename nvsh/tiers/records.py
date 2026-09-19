@@ -7,12 +7,15 @@ XDG_STATE_HOME/nvsh.
 
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import json
 import os
+import threading
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Callable, Mapping
+from typing import Callable, Iterator, Mapping
 
 from ..redact import redact
 
@@ -61,7 +64,9 @@ class TierRecord:
 
 def _redact_str(value: str) -> str:
     """Redact a single string value through the redaction pipeline."""
-    return redact(value.encode("utf-8")).decode("utf-8", "replace")
+    # "replace" on the way in as well: a lone surrogate (it can arrive from a
+    # terminal) must not raise out of a measurement write.
+    return redact(value.encode("utf-8", "replace")).decode("utf-8", "replace")
 
 
 def _redact_entry(entry: dict) -> dict:
@@ -97,6 +102,8 @@ class TierRecords:
         self._cap_bytes = cap_bytes
         self._store_request_text = store_request_text
         self._clock = clock
+        self._thread_lock = threading.Lock()
+        self._lock_path = self.path.with_name(self.path.name + ".lock")
         try:
             self._ensure_dir()
         except OSError:
@@ -108,28 +115,47 @@ class TierRecords:
         os.chmod(self.path.parent, 0o700)
 
     def write(self, record: TierRecord) -> None:
-        """Append one JSON line for *record*. Never raises on OSError."""
+        """Append one JSON line for *record*. Never raises: a failed
+        measurement must never break the shell."""
         try:
-            self._rotate_if_needed()
-            entry = asdict(record)
-            entry["ts"] = self._clock()
-
-            if not self._store_request_text:
-                entry.pop("request_text", None)
-                entry["request_chars"] = len(record.request_text or "")
-            else:
-                # Redacted text kept in the entry
-                entry["request_text"] = _redact_str(record.request_text or "")
-
-            entry = _redact_entry(entry)
-            line = json.dumps(entry, sort_keys=True)
-            with open(self.path, "a", encoding="utf-8") as handle:
-                handle.write(line + "\n")
-            os.chmod(self.path, 0o600)
-            self._enforce_cap()
-        except OSError:
-            # A failed measurement must never break the shell.
+            with self._locked():
+                self._write_locked(record)
+        except Exception:  # noqa: BLE001
             pass
+
+    @contextlib.contextmanager
+    def _locked(self) -> Iterator[None]:
+        """Serialise rotate + append + cap across threads AND processes.
+
+        The daemon's handler threads and a one-shot client can all write the
+        same files; without this, two writers rotate or delete the same file
+        and records are silently lost. ``flock`` on a sidecar lock file covers
+        processes, the ``threading.Lock`` covers threads sharing this object.
+        """
+        with self._thread_lock:
+            self._ensure_dir()
+            with open(self._lock_path, "a", encoding="utf-8") as handle:
+                os.chmod(self._lock_path, 0o600)
+                fcntl.flock(handle, fcntl.LOCK_EX)
+                try:
+                    yield
+                finally:
+                    fcntl.flock(handle, fcntl.LOCK_UN)
+
+    def _write_locked(self, record: TierRecord) -> None:
+        self._rotate_if_needed()
+        entry = asdict(record)
+        entry["ts"] = self._clock()
+        if self._store_request_text:
+            entry["request_text"] = record.request_text or ""
+        else:
+            entry.pop("request_text", None)
+            entry["request_chars"] = len(record.request_text or "")
+        line = json.dumps(_redact_entry(entry), sort_keys=True)
+        with open(self.path, "a", encoding="utf-8") as handle:
+            handle.write(line + "\n")
+        os.chmod(self.path, 0o600)
+        self._enforce_cap()
 
     def read_all(self) -> list[dict]:
         """Read back every recorded entry across rotated files, oldest first."""

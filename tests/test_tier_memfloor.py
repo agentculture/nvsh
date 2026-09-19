@@ -82,7 +82,15 @@ def test_below_floor_declines_with_one_status_line():
     assert str(floor_mb) in result.status
 
 
-def test_at_or_above_floor_passes():
+def test_above_floor_passes():
+    """Strictly above the floor (the old name promised this case and never ran it)."""
+    result = check_floor(512, _fake_reader("MemAvailable:   2097152 kB\n"))  # 2048 MB
+    assert result.ok is True
+    assert result.available_mb == 2048
+    assert result.status == ""
+
+
+def test_exactly_at_floor_passes():
     """available == floor passes (ok=True)."""
     text = "MemAvailable:    524288 kB\n"  # 512 MB
     reader = _fake_reader(text)
