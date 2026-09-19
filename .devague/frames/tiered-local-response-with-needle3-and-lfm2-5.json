@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "drafting",
   "created": "2026-09-19T11:10:08Z",
-  "updated": "2026-09-19T11:45:25Z",
+  "updated": "2026-09-19T11:47:30Z",
   "claims": [
     {
       "id": "c1",
@@ -650,6 +650,15 @@
       "finding": "Checked 2026-09-19 by running each CLI's `--help` and sampling `--json`. `spark` and `thor` share one read-only verb set with a uniform `--json` envelope `{subject, available, source, warnings, sections, data}`: status, memory, gpu, disk, thermal, containers, network, processes, monitor, swap; `thor` adds `power` (nvpmodel mode, jetson_clocks, per-rail draw). `orin` 0.5.0 has only the template verbs (whoami, learn, explain, overview, doctor, cli) \u2014 no machine verbs yet. None of the three has a mutating operation apart from `swap grow` (dry-run unless `--apply`): there is no service status/restart/logs, no container restart, no power-mode set. nvsh detects only `spark` on PATH (nvsh/platform/_detect.py:194); it does not look for `thor` or `orin`, and the Jetson playbook names raw `nvpmodel -q` / `tegrastats` instead. Operator's rule: 'exists on at least one of them' is enough \u2014 all three repos are the operator's, and gaps become issues on the sibling repo.",
       "seeds": [
         "c8"
+      ]
+    },
+    {
+      "id": "s15",
+      "surface": "GPU stack on the AGX Orin (ssh orin) and in the Needle engine",
+      "finding": "Checked 2026-09-19. AGX Orin, L4T R39.2: the GPU driver is present and working (nvidia-smi 595.78 reports 'Orin (nvgpu)', driver CUDA API 13.2, /dev/nvgpu/igpu0, packages nvidia-l4t-cuda*), and Docker has the `nvidia` runtime registered (default runtime is runc). But there is NO CUDA toolkit on the host \u2014 no /usr/local/cuda, no nvcc, no cuDNN or TensorRT packages \u2014 and no `llama-server`, `vllm` or `sglang` binary. So a GPU-accelerated Tier 2 runtime on this box today means either a container run with `--runtime nvidia` or installing the CUDA toolkit and building the runtime; CPU-only llama.cpp needs neither. The Needle engine is CPU-only: cactus-needle fetches a `manylinux2014_aarch64` `libneedle.so` and its code has no CUDA/GPU path, so Tier 1 never touches the GPU on any device (the Spark spike's 28-57 ms was CPU). Also seen: the Orin had 58 of 61 GB in use and ~2 GB available at check time, so benchmark numbers from it need the concurrent load recorded. And cactus-needle's fetch code calls `hf_hub_download(..., force_download=True)` on the engine repo's config.json as a download counter \u2014 a second network call, separate from telemetry, that the offline path must avoid.",
+      "seeds": [
+        "c12",
+        "c26"
       ]
     }
   ],
