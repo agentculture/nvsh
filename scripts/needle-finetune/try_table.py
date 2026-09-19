@@ -82,6 +82,25 @@ def verdict(entry: dict, picked) -> bool:
     return isinstance(picked, TierDecision) and picked.operation == expect["operation"]
 
 
+def score(engine, entry: dict) -> dict:
+    """One request through the engine: what was wanted, what came back, how long it took."""
+    started = time.monotonic()
+    engine.reset()
+    calls, confidence = extract_selection(engine.complete(entry["text"]))
+    picked = decide(calls, confidence)
+    chose = isinstance(picked, TierDecision)
+    return {
+        "id": entry["id"],
+        "text": entry["text"],
+        "want": entry["expect"].get("operation", "ESCALATE"),
+        "got": picked.operation if chose else picked.reason.value,
+        "args": picked.args if chose else {},
+        "confidence": confidence,
+        "ms": round((time.monotonic() - started) * 1000),
+        "ok": verdict(entry, picked),
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--corpus", type=Path, default=DEV_CORPUS)
@@ -91,26 +110,7 @@ def main(argv: list[str] | None = None) -> int:
 
     overrides = json.loads(args.overrides.read_text(encoding="utf-8")) if args.overrides else {}
     engine = build_engine(engine_spec(), operations=reworded(overrides))
-    rows = []
-    for entry in load_entries(args.corpus):
-        started = time.monotonic()
-        engine.reset()
-        calls, confidence = extract_selection(engine.complete(entry["text"]))
-        picked = decide(calls, confidence)
-        rows.append(
-            {
-                "id": entry["id"],
-                "text": entry["text"],
-                "want": entry["expect"].get("operation", "ESCALATE"),
-                "got": (
-                    picked.operation if isinstance(picked, TierDecision) else picked.reason.value
-                ),
-                "args": picked.args if isinstance(picked, TierDecision) else {},
-                "confidence": confidence,
-                "ms": round((time.monotonic() - started) * 1000),
-                "ok": verdict(entry, picked),
-            }
-        )
+    rows = [score(engine, entry) for entry in load_entries(args.corpus)]
     if args.json:
         print(json.dumps(rows, indent=2))
     else:

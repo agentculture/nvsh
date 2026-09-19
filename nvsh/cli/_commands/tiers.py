@@ -268,6 +268,20 @@ def _prefetch_text(rows: list[dict], problems: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def _confirmation_required(missing) -> CliError:
+    """The refusal for a download nobody confirmed: it states what and how much."""
+    total = sum(item.size_bytes for item in missing)
+    names = ", ".join(f"{item.name} ({item.size_bytes} bytes)" for item in missing)
+    return CliError(
+        code=EXIT_USER_ERROR,
+        message=(
+            f"prefetch would download {len(missing)} item(s), {total} bytes: {names}; "
+            "confirmation required"
+        ),
+        remediation="pass --yes to download without prompting",
+    )
+
+
 def cmd_tiers_prefetch(args: argparse.Namespace) -> int:
     from nvsh.tiers.fetch import plan_prefetch
     from nvsh.tiers.fetch import prefetch as run_prefetch
@@ -279,16 +293,7 @@ def cmd_tiers_prefetch(args: argparse.Namespace) -> int:
     yes = bool(getattr(args, "yes", False))
 
     if missing and not yes and (json_mode or not _is_interactive()):
-        total = sum(item.size_bytes for item in missing)
-        names = ", ".join(f"{item.name} ({item.size_bytes} bytes)" for item in missing)
-        raise CliError(
-            code=EXIT_USER_ERROR,
-            message=(
-                f"prefetch would download {len(missing)} item(s), {total} bytes: {names}; "
-                "confirmation required"
-            ),
-            remediation="pass --yes to download without prompting",
-        )
+        raise _confirmation_required(missing)
 
     problems = []
     if missing:
