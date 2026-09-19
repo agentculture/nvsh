@@ -5,7 +5,7 @@
   "schema_version": 5,
   "status": "exported",
   "created": "2026-09-19T12:48:24Z",
-  "updated": "2026-09-19T12:53:49Z",
+  "updated": "2026-09-19T13:55:08Z",
   "targets": [
     {
       "id": "c1",
@@ -1017,6 +1017,14 @@
       "text": "Measuring on a real Orin Nano (frame follow-up v5) and LFM2.5 fine-tuning (v3).",
       "kind": "follow_up",
       "task_id": null,
+      "resolved": false,
+      "resolution": ""
+    },
+    {
+      "id": "r8",
+      "text": "Without a device CLI, `thermal_stats` and `machine_status` render to nothing (no single exiting argv exists without a shell), and `power_set` renders only for max_performance on Jetson because nvpmodel mode ids differ per board. On the AGX Orin today \u2014 whose `orin` CLI has no machine verbs \u2014 'how hot is this machine' therefore declines and escalates until jetson-orin-cli grows its verbs (t25 files that issue) or nvsh gains an in-process thermal reader.",
+      "kind": "unknown_nonblocking",
+      "task_id": "t2",
       "resolved": false,
       "resolution": ""
     }
