@@ -12,7 +12,7 @@ from __future__ import annotations
 import pytest
 
 import nvsh.config
-from nvsh.config import Config, ConfigError, default_toml, load, save, set_provider
+from nvsh.config import Config, ConfigError, _dump_toml, default_toml, load, save, set_provider
 
 
 @pytest.fixture
@@ -650,3 +650,158 @@ def test_default_toml_documents_aliases():
     assert "default" in data_["aliases"]
     assert "reviewer" in data_["aliases"]
     assert "local" in data_["aliases"]
+
+
+# --- [tiers] table (task t6, c14, c10, c33) ---------------------------------
+
+
+def test_tiers_defaults_when_absent(xdg_home):
+    cfg_dir = xdg_home / "nvsh"
+    cfg_dir.mkdir(parents=True)
+    (cfg_dir / "config.toml").write_text(
+        '[agent]\nprovider = "pi"\n',
+        encoding="utf-8",
+    )
+    cfg = load()
+    assert cfg.tiers["enabled"] is False
+
+
+def test_tiers_parses_all_keys(xdg_home):
+    cfg_dir = xdg_home / "nvsh"
+    cfg_dir.mkdir(parents=True)
+    (cfg_dir / "config.toml").write_text(
+        """
+        [tiers]
+        enabled = true
+        needle_min_confidence = 0.85
+        memory_floor_mb = 2048
+        idle_unload_seconds = 600
+        records_cap_mb = 16
+        store_request_text = true
+
+        [tiers.lfm]
+        engine = "vllm"
+        mode = "attach"
+        base_url = "http://127.0.0.1:8000/v1"
+        model = "llama-3.1-8b"
+        """,
+        encoding="utf-8",
+    )
+    cfg = load()
+    assert cfg.tiers["enabled"] is True
+    assert cfg.tiers["needle_min_confidence"] == 0.85
+    assert cfg.tiers["memory_floor_mb"] == 2048
+    assert cfg.tiers["idle_unload_seconds"] == 600
+    assert cfg.tiers["records_cap_mb"] == 16
+    assert cfg.tiers["store_request_text"] is True
+    assert cfg.tiers["lfm"]["engine"] == "vllm"
+    assert cfg.tiers["lfm"]["mode"] == "attach"
+    assert cfg.tiers["lfm"]["base_url"] == "http://127.0.0.1:8000/v1"
+    assert cfg.tiers["lfm"]["model"] == "llama-3.1-8b"
+
+
+def test_tiers_unknown_key_rejected(xdg_home):
+    cfg_dir = xdg_home / "nvsh"
+    cfg_dir.mkdir(parents=True)
+    (cfg_dir / "config.toml").write_text(
+        '[tiers]\nbogus_key = "x"\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(ConfigError) as exc:
+        load()
+    assert "bogus_key" in str(exc.value)
+    assert "tiers" in str(exc.value).lower()
+
+
+def test_tiers_lfm_unknown_key_rejected(xdg_home):
+    cfg_dir = xdg_home / "nvsh"
+    cfg_dir.mkdir(parents=True)
+    (cfg_dir / "config.toml").write_text(
+        """
+        [tiers.lfm]
+        engine = "llama-server"
+        bogus_field = 42
+        """,
+        encoding="utf-8",
+    )
+    with pytest.raises(ConfigError) as exc:
+        load()
+    assert "bogus_field" in str(exc.value)
+
+
+def test_tiers_type_errors(xdg_home):
+    cfg_dir = xdg_home / "nvsh"
+    cfg_dir.mkdir(parents=True)
+    cases = [
+        ('[tiers]\nenabled = "yes"\n', "[tiers] enabled must be true or false"),
+        (
+            "[tiers]\nmemory_floor_mb = -1\n",
+            "[tiers] memory_floor_mb must be a non-negative integer",
+        ),
+        (
+            "[tiers]\nmemory_floor_mb = true\n",
+            "[tiers] memory_floor_mb must be a non-negative integer",
+        ),
+        (
+            "[tiers]\nneedle_min_confidence = 2\n",
+            "[tiers] needle_min_confidence must be between 0 and 1",
+        ),
+    ]
+    for toml_snippet, error_fragment in cases:
+        (cfg_dir / "config.toml").write_text(toml_snippet, encoding="utf-8")
+        with pytest.raises(ConfigError) as exc:
+            load()
+        msg = str(exc.value)
+        assert error_fragment in msg, f"{error_fragment!r} not in {msg!r} for {toml_snippet!r}"
+
+
+def test_tiers_lfm_engine_and_mode_validated(xdg_home):
+    cfg_dir = xdg_home / "nvsh"
+    cfg_dir.mkdir(parents=True)
+    (cfg_dir / "config.toml").write_text(
+        '[tiers.lfm]\nengine = "unknown"\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(ConfigError) as exc:
+        load()
+    assert "engine" in str(exc.value)
+
+    (cfg_dir / "config.toml").write_text(
+        '[tiers.lfm]\nengine = "llama-server"\nmode = "unknown"\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(ConfigError) as exc:
+        load()
+    assert "mode" in str(exc.value)
+
+
+def test_tiers_lfm_base_url_must_be_localhost(xdg_home):
+    cfg_dir = xdg_home / "nvsh"
+    cfg_dir.mkdir(parents=True)
+    (cfg_dir / "config.toml").write_text(
+        '[tiers.lfm]\nengine = "llama-server"\nbase_url = "http://example.com/v1"\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(ConfigError) as exc:
+        load()
+    assert "base_url" in str(exc.value)
+
+
+def test_tiers_roundtrip_through_save(xdg_home):
+    cfg_dir = xdg_home / "nvsh"
+    cfg_dir.mkdir(parents=True)
+    cfg = Config()
+    cfg.tiers["enabled"] = True
+    cfg.tiers["lfm"]["base_url"] = "http://127.0.0.1:8080/v1"
+    save(cfg)
+    reloaded = load()
+    assert reloaded.tiers["enabled"] is True
+    assert reloaded.tiers["lfm"]["base_url"] == "http://127.0.0.1:8080/v1"
+
+
+def test_config_without_tiers_dumps_unchanged():
+    """A config with no tiers table: _dump_toml output contains no '[tiers]'."""
+    cfg = Config()
+    cfg.agent_provider = "pi"
+    text = _dump_toml(cfg)
+    assert "[tiers]" not in text

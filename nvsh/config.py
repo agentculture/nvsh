@@ -21,6 +21,7 @@ file is a loud failure instead of a silently ignored setting.
 
 from __future__ import annotations
 
+import copy
 import os
 import re
 import stat
@@ -30,7 +31,7 @@ from pathlib import Path
 from typing import Mapping
 
 #: Top-level tables this config format recognizes.
-_VALID_TOP_KEYS = {"agent", "agents", "aliases", "sessions", "triggers"}
+_VALID_TOP_KEYS = {"agent", "agents", "aliases", "sessions", "tiers", "triggers"}
 
 #: Keys recognized inside ``[agent]``.
 _VALID_AGENT_KEYS = {"provider"}
@@ -69,6 +70,37 @@ _VALID_SESSIONS_KEYS = {"max"}
 
 #: Keys recognized inside ``[triggers]``.
 _VALID_TRIGGERS_KEYS = {"rate_window_seconds", "opt_in_patterns"}
+
+#: Keys recognized inside ``[tiers]``.
+_VALID_TIERS_KEYS = {
+    "enabled",
+    "needle_min_confidence",
+    "memory_floor_mb",
+    "idle_unload_seconds",
+    "records_cap_mb",
+    "store_request_text",
+    "lfm",
+}
+
+#: Keys recognized inside ``[tiers.lfm]``.
+_VALID_TIERS_LFM_KEYS = {"engine", "mode", "base_url", "model"}
+
+#: Accepted engines for ``[tiers.lfm]``.
+_TIERS_LFM_ENGINES = ("llama-server", "vllm", "sglang")
+
+#: Accepted modes for ``[tiers.lfm]``.
+_TIERS_LFM_MODES = ("managed", "attach")
+
+#: Default values for the ``[tiers]`` table.
+_DEFAULT_TIERS: dict[str, object] = {
+    "enabled": False,
+    "needle_min_confidence": 0.0,
+    "memory_floor_mb": 1024,
+    "idle_unload_seconds": 900,
+    "records_cap_mb": 8,
+    "store_request_text": False,
+    "lfm": {"engine": "llama-server", "mode": "managed"},
+}
 
 _DEFAULT_AGENTS: dict[str, dict[str, object]] = {
     "pi": {"provider": "nemotron", "model": "associate"},
@@ -109,6 +141,7 @@ class Config:
     aliases: dict[str, str] = field(default_factory=dict)
     sessions_max: int = 1
     triggers: dict[str, object] = field(default_factory=dict)
+    tiers: dict[str, object] = field(default_factory=lambda: copy.deepcopy(_DEFAULT_TIERS))
 
     def resolve_target(self, name: str) -> tuple[str, str | None, str | None, bool]:
         """Resolve *name* to ``(backend, model, effort, alias)``.
@@ -189,6 +222,22 @@ max = 1
 [triggers]
 rate_window_seconds = 60
 opt_in_patterns = []
+
+# [tiers]
+# Local response tiers (nvsh[needle], nvsh[lfm]). Routing is off until
+# enabled = true.
+# enabled = false                           # turn on tiers routing
+# needle_min_confidence = 0.0               # minimum confidence for needle match
+# memory_floor_mb = 1024                    # free memory threshold (MiB)
+# idle_unload_seconds = 900                 # idle time before unloading
+# records_cap_mb = 8                        # memory cap for records (MiB)
+# store_request_text = false                # persist full request text
+#
+# [tiers.lfm]
+# engine = "llama-server"                   # llama-server | vllm | sglang
+# mode = "managed"                          # managed | attach
+# base_url = "http://127.0.0.1:8080/v1"    # localhost URL for the LFM engine
+# model = ""                                # model name (optional)
 """
 
 
@@ -237,6 +286,27 @@ def _dump_toml(cfg: Config) -> str:
     for key, value in cfg.triggers.items():
         lines.append(f"{key} = {_toml_scalar(value)}")
     lines.append("")
+
+    # [tiers] — only when cfg.tiers differs from defaults.
+    if cfg.tiers != _DEFAULT_TIERS:
+        lines.append("[tiers]")
+        for key, value in cfg.tiers.items():
+            if key == "lfm":
+                continue
+            default_val = _DEFAULT_TIERS.get(key)
+            if value != default_val:
+                lines.append(f"{key} = {_toml_scalar(value)}")
+        lines.append("")
+
+        lfm_cfg = cfg.tiers.get("lfm", {})
+        lfm_default = _DEFAULT_TIERS.get("lfm", {})
+        if isinstance(lfm_cfg, dict) and lfm_cfg != lfm_default:
+            lines.append("[tiers.lfm]")
+            for key, value in lfm_cfg.items():
+                default_val = lfm_default.get(key) if isinstance(lfm_default, dict) else None
+                if value != default_val:
+                    lines.append(f"{key} = {_toml_scalar(value)}")
+            lines.append("")
 
     return "\n".join(lines)
 
@@ -357,6 +427,75 @@ def _apply_triggers(raw: dict, cfg: Config) -> None:
     cfg.triggers = dict(triggers_table)
 
 
+def _apply_tiers(raw: dict, cfg: Config) -> None:
+    tiers_table = _table(raw, "tiers", "[tiers] must be a table")
+    _reject_unknown(tiers_table, _VALID_TIERS_KEYS, "[tiers]")
+
+    # Merge with defaults, overwriting with provided values.
+    merged: dict[str, object] = copy.deepcopy(_DEFAULT_TIERS)
+
+    for key, value in tiers_table.items():
+        if key == "lfm":
+            # lfm sub-table merges over the default lfm sub-table.
+            lfm_input = tiers_table["lfm"]
+            if not isinstance(lfm_input, dict):
+                raise ConfigError("[tiers.lfm] must be a table")
+            _reject_unknown(lfm_input, _VALID_TIERS_LFM_KEYS, "[tiers.lfm]")
+            lfm_engine = lfm_input.get("engine")
+            if lfm_engine is not None and lfm_engine not in _TIERS_LFM_ENGINES:
+                allowed = ", ".join(sorted(_TIERS_LFM_ENGINES))
+                raise ConfigError(
+                    f"[tiers.lfm] engine={lfm_engine!r} is invalid " f"(valid values: {allowed})"
+                )
+            lfm_mode = lfm_input.get("mode")
+            if lfm_mode is not None and lfm_mode not in _TIERS_LFM_MODES:
+                allowed = ", ".join(sorted(_TIERS_LFM_MODES))
+                raise ConfigError(
+                    f"[tiers.lfm] mode={lfm_mode!r} is invalid " f"(valid values: {allowed})"
+                )
+            lfm_base_url = lfm_input.get("base_url")
+            if lfm_base_url is not None:
+                if not isinstance(lfm_base_url, str):
+                    raise ConfigError("[tiers.lfm] base_url must be a string")
+                if not (
+                    lfm_base_url.startswith("http://127.0.0.1")
+                    or lfm_base_url.startswith("http://localhost")
+                ):
+                    raise ConfigError("[tiers.lfm] base_url must be a localhost URL")
+            lfm_model = lfm_input.get("model")
+            if lfm_model is not None and not isinstance(lfm_model, str):
+                raise ConfigError("[tiers.lfm] model must be a string")
+            default_lfm = dict(merged["lfm"]) if isinstance(merged.get("lfm"), dict) else {}
+            default_lfm.update(lfm_input)
+            merged["lfm"] = default_lfm
+        else:
+            merged[key] = value
+
+    # Type-check every key.
+    # enabled and store_request_text must be bool.
+    for bool_key in ("enabled", "store_request_text"):
+        val = merged[bool_key]
+        if not isinstance(val, bool):
+            raise ConfigError(f"[tiers] {bool_key} must be true or false")
+
+    # needle_min_confidence must be int or float (not bool), between 0 and 1.
+    nmc = merged["needle_min_confidence"]
+    if isinstance(nmc, bool) or not isinstance(nmc, (int, float)):
+        raise ConfigError("[tiers] needle_min_confidence must be between 0 and 1")
+    if not (0 <= nmc <= 1):
+        raise ConfigError("[tiers] needle_min_confidence must be between 0 and 1")
+
+    # memory_floor_mb, idle_unload_seconds, records_cap_mb must be int (not bool) >= 0.
+    for int_key in ("memory_floor_mb", "idle_unload_seconds", "records_cap_mb"):
+        val = merged[int_key]
+        if isinstance(val, bool) or not isinstance(val, int):
+            raise ConfigError(f"[tiers] {int_key} must be a non-negative integer")
+        if val < 0:
+            raise ConfigError(f"[tiers] {int_key} must be a non-negative integer")
+
+    cfg.tiers = merged
+
+
 def _read_toml(target: Path) -> dict:
     try:
         return tomllib.loads(target.read_text(encoding="utf-8"))
@@ -386,6 +525,7 @@ def load(path: Path | None = None) -> Config:
     _apply_aliases(raw, cfg)
     _apply_sessions(raw, cfg)
     _apply_triggers(raw, cfg)
+    _apply_tiers(raw, cfg)
     return cfg
 
 
