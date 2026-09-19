@@ -1955,6 +1955,9 @@ def _render_tier_answer(
     """
     panel.set_target(None)
     panel.set_tier(reply.tier)
+    # The audit log names who proposed each command; for a tier's proposal
+    # that is the tier, stamped the same way a harness's target is.
+    audit = _targeted_audit(audit, Target(backend=reply.tier) if reply.tier else None)
     decisions: list[str] = []
     ran: list[tuple[str, RunResult]] = []
     on_proposal = None

@@ -388,3 +388,13 @@ def test_a_failure_to_report_never_breaks_the_turn(xdg, monkeypatch):
 
     monkeypatch.setattr(client_transport, "tier_decision", boom)
     assert client_mod.ask("why is it hot?", panel=_panel()) == 0
+
+
+def test_the_audit_log_names_the_tier_that_proposed_the_command(xdg, monkeypatch):
+    _tiers(xdg, True)
+    reply = _handled(events=_proposal_events(f"touch {xdg.tmp / 'ran'}"))
+    monkeypatch.setattr(client_transport, "send", _stub_send([]))
+    monkeypatch.setattr(client_transport, "ask_tiers", _stub_tiers([], reply))
+    client_mod.ask("fix it", panel=_panel("\n"))
+    audit_text = (xdg.state / "nvsh" / "audit.jsonl").read_text(encoding="utf-8")
+    assert '"needle"' in audit_text
