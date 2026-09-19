@@ -20,6 +20,7 @@ Usage::
 from __future__ import annotations
 
 import json
+import math
 import re
 import socket
 import urllib.error
@@ -194,22 +195,8 @@ class ToolChat:
                 "stream": self._stream,
             }
         ).encode("utf-8")
-        headers = {"Content-Type": "application/json"}
-        req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
 
-        try:
-            resp = urllib.request.urlopen(req, timeout=self._timeout)  # nosec B310
-        except urllib.error.HTTPError as exc:
-            raise ToolChatError(f"HTTP {exc.code}: {exc.reason}") from exc
-        except urllib.error.URLError as exc:
-            raise ToolChatError(f"connection failed: {exc.reason}") from exc
-        except OSError as exc:
-            raise ToolChatError(f"connection failed: {exc}") from exc
-        except TimeoutError:
-            raise ToolChatError("request timed out") from None
-        except ValueError as exc:
-            raise ToolChatError(f"HTTP error: {exc}") from exc
-
+        resp = self._http_post(url, payload)
         self._response = resp
         try:
             if self._stream:
@@ -254,6 +241,122 @@ class ToolChat:
         except (OSError, AttributeError):
             pass
         self._response = None
+
+    def _http_post(self, url: str, payload: bytes) -> Any:
+        """POST *payload* to *url* and return the open response.
+
+        Wraps every HTTP-layer exception in :class:`ToolChatError`.
+        """
+        headers = {"Content-Type": "application/json"}
+        req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
+
+        try:
+            return urllib.request.urlopen(req, timeout=self._timeout)  # nosec B310
+        except urllib.error.HTTPError as exc:
+            raise ToolChatError(f"HTTP {exc.code}: {exc.reason}") from exc
+        except urllib.error.URLError as exc:
+            raise ToolChatError(f"connection failed: {exc.reason}") from exc
+        except OSError as exc:
+            raise ToolChatError(f"connection failed: {exc}") from exc
+        except TimeoutError:
+            raise ToolChatError("request timed out") from None
+        except ValueError as exc:
+            raise ToolChatError(f"HTTP error: {exc}") from exc
+
+    def score_next_token(self, prompt: str, *, top: int = 20) -> dict[str, float]:
+        """Score the first generated token's log-probabilities.
+
+        POSTs to ``{base_url}/completions`` (not ``/chat/completions``).
+        Returns a dict mapping token text → log-probability (float, ≤ 0).
+
+        Raises ``ToolChatError`` on any client-side error or when the server
+        returns no log-probabilities.
+        """
+        self._cancelled = False
+        url = f"{self._base_url}/completions"
+        payload = json.dumps(
+            {
+                "model": self._model,
+                "prompt": prompt,
+                "max_tokens": 1,
+                "temperature": 0,
+                "logprobs": top,
+                "stream": False,
+            }
+        ).encode("utf-8")
+
+        resp = self._http_post(url, payload)
+        self._response = resp
+        try:
+            raw = resp.read().decode("utf-8")
+            try:
+                data = json.loads(raw)
+            except json.JSONDecodeError:
+                raise ToolChatError("response is not valid JSON")
+
+            choices = data.get("choices")
+            if not choices or not isinstance(choices, list):
+                raise ToolChatError("server returned no log-probabilities")
+
+            logprobs_section = choices[0].get("logprobs")
+            if not isinstance(logprobs_section, dict):
+                raise ToolChatError("server returned no log-probabilities")
+
+            result: dict[str, float] = {}
+
+            # Shape L (legacy): top_logprobs is a LIST of {token: logprob}.
+            if "top_logprobs" in logprobs_section:
+                raw_list = logprobs_section["top_logprobs"]
+                if isinstance(raw_list, list):
+                    for item in raw_list:
+                        if not isinstance(item, dict):
+                            continue
+                        for token, lp in item.items():
+                            if not isinstance(lp, (int, float)) or isinstance(lp, bool):
+                                continue
+                            if not isinstance(token, str):
+                                continue
+                            if isinstance(lp, float) and (
+                                lp != lp or lp == float("inf") or lp == float("-inf")
+                            ):
+                                continue
+                            result[token] = float(lp)
+
+            # Shape C (content): content[i].top_logprobs.
+            if not result and "content" in logprobs_section:
+                content_list = logprobs_section["content"]
+                if isinstance(content_list, list):
+                    for entry in content_list:
+                        if not isinstance(entry, dict):
+                            continue
+                        tl = entry.get("top_logprobs")
+                        if not isinstance(tl, list):
+                            continue
+                        for item in tl:
+                            if not isinstance(item, dict):
+                                continue
+                            token = item.get("token")
+                            lp = item.get("logprob")
+                            if not isinstance(token, str):
+                                continue
+                            if not isinstance(lp, (int, float)) or isinstance(lp, bool):
+                                continue
+                            if isinstance(lp, float) and (
+                                lp != lp or lp == float("inf") or lp == float("-inf")
+                            ):
+                                continue
+                            result[token] = float(lp)
+
+            if not result:
+                raise ToolChatError("server returned no log-probabilities")
+
+            return result
+        except ToolChatError:
+            raise
+        except Exception as exc:
+            raise ToolChatError(f"parse error: {exc}") from exc
+        finally:
+            self._close_response()
 
     def _parse_non_stream(self, resp: Any) -> ChatReply:
         """Parse a non-streamed (HTTP-level) ChatCompletion response."""
@@ -391,3 +494,49 @@ class ToolChat:
             tool_calls_tuple = parse_raw_tool_calls(text)
 
         return ChatReply(text=text, tool_calls=tool_calls_tuple)
+
+
+# -- yes/no probability helpers --
+
+
+def yes_no_probability(top_logprobs: dict[str, float]) -> tuple[float | None, float]:
+    """Return ``(yes_mass / mass, mass)`` for yes/no token variants.
+
+    For every token in *top_logprobs* compute ``word = token.strip().casefold()``.
+    ``yes_mass`` is the sum of ``math.exp(logprob)`` for tokens whose word is
+    ``"yes"``, and ``no_mass`` the same for ``"no"``.
+    Returns ``(None, 0.0)`` when *mass* is zero.  Never raises.
+    """
+    yes_mass = 0.0
+    no_mass = 0.0
+    for token, logprob in top_logprobs.items():
+        if not isinstance(token, str) or isinstance(logprob, bool):
+            continue
+        if not isinstance(logprob, (int, float)) or math.isnan(logprob) or logprob > 0:
+            continue  # a log-probability is never positive; skip junk, never raise
+        word = token.strip().casefold()
+        prob = math.exp(logprob)
+        if word == "yes":
+            yes_mass += prob
+        elif word == "no":
+            no_mass += prob
+    mass = yes_mass + no_mass
+    if mass > 0:
+        return (yes_mass / mass, mass)
+    return (None, 0.0)
+
+
+def calibrated_logit(p_yes: float, baseline_p_yes: float) -> float:
+    """Return ``logit(p_yes) - logit(baseline_p_yes)`` with clamping.
+
+    ``clamp(p) = min(max(p, 1e-6), 1 - 1e-6)``.  This is *how much more* the
+    model says yes for this request than it does for an empty request.
+    """
+
+    def _clamp(v: float) -> float:
+        return min(max(v, 1e-6), 1 - 1e-6)
+
+    def _logit(p: float) -> float:
+        return math.log(p / (1 - p))
+
+    return _logit(_clamp(p_yes)) - _logit(_clamp(baseline_p_yes))
