@@ -344,28 +344,29 @@ def prefetch(
     runner = runner if runner is not None else _default_runner
     confirm = confirm if confirm is not None else (lambda _item: True)
 
-    problems: list[FetchProblem] = []
-    for item in items:
-        if item.present:
-            continue
-        if not item.source:
-            problems.append(
-                FetchProblem(
-                    item=item.name,
-                    code="no_pin_for_platform",
-                    message=f"no pinned {item.kind} for this platform",
-                )
-            )
-            continue
-        if not confirm(item):
-            continue
-        if item.kind == "image":
-            problem = _pull_image(item, runner)
-        else:
-            problem = _download(item, cache_dir, opener)
-        if problem is not None:
-            problems.append(problem)
-    return problems
+    wanted = (item for item in items if not item.present)
+    found = (_fetch_one(item, cache_dir, opener, runner, confirm) for item in wanted)
+    return [problem for problem in found if problem is not None]
+
+
+def _fetch_one(
+    item: PrefetchItem,
+    cache_dir: Path,
+    opener: OpenerFn,
+    runner: RunnerFn,
+    confirm: ConfirmFn,
+) -> FetchProblem | None:
+    if not item.source:
+        return FetchProblem(
+            item=item.name,
+            code="no_pin_for_platform",
+            message=f"no pinned {item.kind} for this platform",
+        )
+    if not confirm(item):
+        return None
+    if item.kind == "image":
+        return _pull_image(item, runner)
+    return _download(item, cache_dir, opener)
 
 
 def _pull_image(item: PrefetchItem, runner: RunnerFn) -> FetchProblem | None:

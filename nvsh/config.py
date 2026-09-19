@@ -272,26 +272,23 @@ def _dump_tiers(cfg: Config) -> list[str]:
     if cfg.tiers == _DEFAULT_TIERS:
         return []
 
-    lines = ["[tiers]"]
-    for key, value in cfg.tiers.items():
-        if key == "lfm":
-            continue
-        default_val = _DEFAULT_TIERS.get(key)
-        if value != default_val:
-            lines.append(f"{key} = {_toml_scalar(value)}")
-    lines.append("")
+    top = {key: value for key, value in cfg.tiers.items() if key != "lfm"}
+    lines = ["[tiers]", *_changed_lines(top, _DEFAULT_TIERS), ""]
 
     lfm_cfg = cfg.tiers.get("lfm", {})
     lfm_default = _DEFAULT_TIERS.get("lfm", {})
-    if isinstance(lfm_cfg, dict) and lfm_cfg != lfm_default:
-        lines.append("[tiers.lfm]")
-        for key, value in lfm_cfg.items():
-            default_val = lfm_default.get(key) if isinstance(lfm_default, dict) else None
-            if value != default_val:
-                lines.append(f"{key} = {_toml_scalar(value)}")
-        lines.append("")
-
+    if isinstance(lfm_cfg, dict) and isinstance(lfm_default, dict) and lfm_cfg != lfm_default:
+        lines += ["[tiers.lfm]", *_changed_lines(lfm_cfg, lfm_default), ""]
     return lines
+
+
+def _changed_lines(table: dict[str, object], defaults: dict[str, object]) -> list[str]:
+    """``key = value`` lines for the entries of *table* that differ from *defaults*."""
+    return [
+        f"{key} = {_toml_scalar(value)}"
+        for key, value in table.items()
+        if value != defaults.get(key)
+    ]
 
 
 def _dump_toml(cfg: Config) -> str:

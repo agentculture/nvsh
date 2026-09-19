@@ -463,7 +463,7 @@ def test_invalid_arguments_json_is_skipped(server, monkeypatch) -> None:
 
 def test_request_body_has_model_messages_tools(server, monkeypatch) -> None:
     _serve(monkeypatch, "record_body")
-    _ServerHandler._request_body = None
+    monkeypatch.setattr(_ServerHandler, "_request_body", None)
     srv = server
     chat = _make_toolchat(srv.port, stream=False)
     tools = [{"type": "function", "function": {"name": "check", "parameters": {}}}]
@@ -655,8 +655,8 @@ def test_score_next_token_shape_c(server, monkeypatch) -> None:
 
 def test_score_request_body_and_path(server, monkeypatch) -> None:
     _serve(monkeypatch, "score_body_path")
-    _ServerHandler._request_body = None
-    _ServerHandler._request_path = None
+    monkeypatch.setattr(_ServerHandler, "_request_body", None)
+    monkeypatch.setattr(_ServerHandler, "_request_path", None)
     srv = server
     chat = _make_toolchat(srv.port, stream=False)
     chat.score_next_token("test prompt")
