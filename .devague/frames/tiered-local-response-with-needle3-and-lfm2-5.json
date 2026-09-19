@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-09-19T11:10:08Z",
-  "updated": "2026-09-19T12:39:10Z",
+  "updated": "2026-09-19T12:45:16Z",
   "claims": [
     {
       "id": "c1",
@@ -962,6 +962,15 @@
       "surface": "challenge pass / unexamined surfaces",
       "finding": "NOT examined in this pass, and why: Needle3 loading on the Jetsons' L4T userland (no install made on thor/orin \u2014 parked v2); any LFM2.5 inference at all (nothing run \u2014 parked v1, v6); RTX and x86 machines (none reachable); zsh (nvsh hooks bash only today); two OS users each running a daemon with a Tier 2 container on the same fixed localhost port (not checked \u2014 likely port clash); how the redactor behaves on the short Tier 1 prompt; non-English operator requests; the LFM Open License text (parked v4); power draw.",
       "seeds": []
+    },
+    {
+      "id": "s21",
+      "surface": "challenge pass / cheap-probe lens: Docker GPU flag per machine",
+      "finding": "Probed 2026-09-19. DGX Spark (Docker 29.1.3): the operator's running vLLM container uses the default `runc` runtime with a GPU device request (`--gpus all`), so the Spark needs no runtime change. AGX Orin: `docker run --gpus all` FAILS \u2014 'invoking the NVIDIA Container Runtime Hook directly (e.g. specifying the docker --gpus flag) is not supported. Please use the NVIDIA Container Runtime' (toolkit in csv mode) \u2014 while `--runtime nvidia` works and exposes /dev/nvgpu and /dev/nvhost-gpu. So there are exactly two launch forms: `--gpus all` on the Spark, `--runtime nvidia` on Jetson. nvsh changes no Docker configuration on either; it only picks the flag. Clarification of s17: a container image's 6.7-33 GB is DISK, not memory; resident memory is the engine process, weights, KV cache and whatever the engine reserves up front.",
+      "seeds": [
+        "c25",
+        "c34"
+      ]
     }
   ],
   "lapses": [
