@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-09-19T11:10:08Z",
-  "updated": "2026-09-19T16:40:44Z",
+  "updated": "2026-09-19T17:55:41Z",
   "claims": [
     {
       "id": "c1",
@@ -1044,7 +1044,7 @@
         "t13"
       ],
       "origin": "llm",
-      "status": "proposed"
+      "status": "approved"
     },
     {
       "id": "l6",
@@ -1056,7 +1056,7 @@
         "r10"
       ],
       "origin": "llm",
-      "status": "proposed"
+      "status": "approved"
     },
     {
       "id": "l7",
@@ -1068,8 +1068,184 @@
         "l4"
       ],
       "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "l8",
+      "code": "provenance-missing",
+      "what": "In /validate-delivery I attached evidence to behavioral deltas by convenience rather than by what the test asserts: b6 claimed five persistence paths on one setup test, b7 cited a dataset-builder test for a documentation convention, and b1-b4 cited whole-file or neighbouring records. A reviewer caught two; auditing the rest found four more. All six are superseded by deltas citing the specific tests (b8-b13), and the documentation-only claim is now filed at 'manual / coverage' strength instead of borrowing an automated test's strength.",
+      "skipped_check": "for each delta, read the cited test's assertion and check it states the delta's behaviour, before filing",
+      "refs": [
+        "PR #35",
+        "b6",
+        "b7"
+      ],
+      "origin": "llm",
       "status": "proposed"
     }
   ],
-  "obligations": []
+  "obligations": [
+    {
+      "id": "o1",
+      "claim_id": "c9",
+      "seam": "tier -> nvsh boundary (Tier.select, needle worker)",
+      "behavior": "a tier only returns an operation name plus arguments; nvsh never calls Needle.run and nothing a tier returns is executed or passed to a shell",
+      "source_text": "A local tier never executes anything and never emits a free-form shell string. It returns an operation name plus arguments; nvsh validates both against the operation table, renders the command itself, and hands the result to the existing approve/execute/verify loop as a normal `Proposal`. An unknown operation, an argument that fails validation, or a runtime error is a decline, never a guess. nvsh calls Needle's select-only `complete()` and never its executing `run()`.",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o2",
+      "claim_id": "c7",
+      "seam": "router request ordering",
+      "behavior": "a FAILURE request never reaches Tier 1; an explicit request tries Tier 1 first; an @target request bypasses the tiers",
+      "source_text": "An explicit operator request (`/ask`, Ctrl+G, a `?`-marked line) goes through tiers in order: Tier 0 shell and slash commands, Tier 1 Needle3 selecting one typed operation, Tier 2 a small resident LFM2.5 agent running a bounded inspect-interpret-propose loop, Tier 3 the configured full NvshAgent. A qualifying command FAILURE skips Tier 1 and starts at Tier 2, because Tier 1 selects an operation from a short intent and measurably mis-selects (including mutating operations) when shown command/exit/stderr text. Each tier either answers with a normal nvsh Proposal or declines, and a decline moves the request up one tier. A machine with only Tier 1 (or Tiers 1-2) installed is a supported configuration, not a degraded one.",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o3",
+      "claim_id": "c10",
+      "seam": "router proposal",
+      "behavior": "a mutating pick at confidence 1.0 or None becomes a FIX proposal that states the interpreted operation and arguments, and nothing executes without approval",
+      "source_text": "Confidence is recorded but is not the safety mechanism. A read-only operation selected by a tier may be proposed directly; a mutating operation selected by a tier always shows the operator the interpreted operation and arguments and needs approval exactly as today. Thresholds for declining are configuration, tuned from measured data, and the design works for a fine-tuned Needle model that reports no confidence at all.",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o4",
+      "claim_id": "c29",
+      "seam": "decide()",
+      "behavior": "Tier output is accepted only when it is exactly one call; zero or several is a decline",
+      "source_text": "Tier 1 output is accepted only when it is exactly one function call. Zero calls, or more than one, is a decline. (Needle3 returns several calls for some inputs \u2014 challenge probe s16.)",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o5",
+      "claim_id": "c30",
+      "seam": "ground() and render()",
+      "behavior": "argument values are untrusted: rendered as argv, never through a shell; an option-like or unprintable value renders nothing; an ambiguous name declines",
+      "source_text": "Argument values from a tier are untrusted text. nvsh renders operations as an argv list and never through a shell; a `service` or `container` argument must match a unit or container that a read-only lookup finds on the machine (case-insensitively, so 'vLLM' resolves to `vllm.service`), and anything that does not match is a decline with a one-line 'no such service' message. (Probe s16: 'restart the thing; rm -rf /' became `service_restart(service='rm -rf /')` at confidence 0.99.)",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o6",
+      "claim_id": "c32",
+      "seam": "NeedleTier child process",
+      "behavior": "the Needle engine runs in a child process; a dead or hung child costs one declined answer and the next request restarts it",
+      "source_text": "The Needle engine runs in a child process owned by the daemon, not inside the daemon itself, so a native crash or hang in `libneedle.so` costs one tier answer and a status line rather than the daemon and every shell's warm session. Tier 1 selection happens before the daemon's turn lock (`_run_lock`) is taken, so a Tier 1 answer never waits behind another shell's full-agent turn.",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o7",
+      "claim_id": "c12",
+      "seam": "needle worker env and staging",
+      "behavior": "third-party telemetry is off and nothing is downloaded at request time",
+      "source_text": "The tiers work fully offline once prefetched: an explicit nvsh command downloads the engine and model files ahead of time, reports where they are and how big, and after that no tier makes a network call. Third-party telemetry in a bundled runtime is switched off by nvsh (`NEEDLE_TELEMETRY=0`, `DO_NOT_TRACK=1`) before the runtime loads.",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o8",
+      "claim_id": "c13",
+      "seam": "daemon TierManager",
+      "behavior": "models load on first use, unload when idle, and a Tier 1 answer returns while another shell holds the agent turn lock",
+      "source_text": "The resident models live in the per-user nvsh daemon, loaded on first use rather than at daemon start, and unloaded after an idle period; the one-shot client path asks the daemon rather than loading a model per call, and falls straight through to the full agent when the daemon is unavailable.",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o9",
+      "claim_id": "c11",
+      "seam": "packaging",
+      "behavior": "dependencies stays empty and CLI startup imports no tier module",
+      "source_text": "Tier 1 and Tier 2 ship as optional flavors (`nvsh[needle]`, `nvsh[lfm]`, and a combined one); `dependencies = []` stays empty, the hook and every existing verb work unchanged when no flavor is installed or a flavor's runtime is broken, and no tier code is imported on the success path or at hook time.",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o10",
+      "claim_id": "c14",
+      "seam": "registry and setup",
+      "behavior": "needle is reachable explicitly, excluded from setup's probe and refused as a persisted default",
+      "source_text": "Each tier is reachable explicitly as a registered adapter (`@needle`, `@lfm`, `nvsh --agent needle`) as soon as its flavor is installed, is excluded from `nvsh setup`'s default-agent probe, and is reported by `nvsh agent list --json` and `nvsh doctor`. Automatic tier routing is off until the operator enables it in config. An explicit `@target` naming another harness always bypasses the tiers.",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o11",
+      "claim_id": "c36",
+      "seam": "panel header",
+      "behavior": "the panel names the tier that answered, including the escalated case",
+      "source_text": "The panel names the tier that answered (for example `needle`, `lfm`, or the full agent's name) in the same header position that shows the target today, so the operator always knows how much model stood behind a proposal.",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o12",
+      "claim_id": "c6",
+      "seam": "records, stats, audit",
+      "behavior": "every tier consulted writes a record naming the tier and decline reason; the audit log names the tier that proposed a command",
+      "source_text": "nvsh has proper telemetry, logging, observability and metrics for the tiered path, so the system can be measured and improved: every request records which tier answered, what it selected, its confidence, its latency, whether it escalated and why, and what the operator then did with the proposal.",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o13",
+      "claim_id": "c31",
+      "seam": "fetch pins and doctor",
+      "behavior": "fetched files are pinned by sha256 and a swapped file is detected",
+      "source_text": "nvsh pins what it fetches: the `cactus-needle` version range in the flavor, the sha256 of the Needle engine library and weights, and the Tier 2 container image by digest. A fetched file whose hash does not match is refused and reported by `nvsh doctor`. The prefetch command covers container images as well as engine and model files, and prints each item's size before downloading.",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o14",
+      "claim_id": "c23",
+      "seam": "nvsh tiers export",
+      "behavior": "the export is a local, redacted file and opens no socket",
+      "source_text": "Measurement records stay on the machine, and an operator-run export command bundles redacted records into a file for building fine-tune and benchmark data across the fleet. nvsh itself never sends data anywhere.",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o15",
+      "claim_id": "c33",
+      "seam": "memory floor",
+      "behavior": "below the MemAvailable floor the tier declines instead of loading",
+      "source_text": "Before loading a tier model or starting the Tier 2 container, nvsh reads available memory (`MemAvailable`) and declines that tier, with one status line, when it is below a configured floor \u2014 a tier must never be the thing that pushes a loaded machine into OOM. (Scope s15: the AGX Orin had about 2 GB available of 61 GB when checked.)",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o16",
+      "claim_id": "c40",
+      "seam": "fine-tune dataset builder",
+      "behavior": "the builder turns the dev split into needle finetune JSONL and refuses the held-out split",
+      "source_text": "nvsh ships a reproducible Needle3 fine-tune recipe: a dataset builder that turns the corpus development split (plus opted-in, redacted records) into the `needle finetune` JSONL format, the training command, and `needle build --lora` producing a `.cact` file whose hash is pinned like any other fetched file. The tuned model is adopted only if, on the held-out split, it beats stock Needle3 on correct-operation rate and proposes no more wrong mutating operations than stock. Because a tuned Needle reports no confidence, every decline for the tuned model rests on the single-call rule, table validation and argument grounding. Training needs the `cactus-needle[train]` extra on a development machine, never on the operator's device at runtime.",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o17",
+      "claim_id": "c20",
+      "seam": "nvsh tiers bench, real Needle3 engine, DGX Spark",
+      "behavior": "Tier 1 warm p95 < 150 ms; >= 90% correct operation and arguments; 0 wrong mutating operations without the interpretation shown; >= 80% of should-escalate prompts declined; < 1 GB added",
+      "source_text": "On the committed corpus, on each benchmarked device (AGX Orin, AGX Thor, DGX Spark): Tier 1 warm selection p95 < 150 ms; >= 90% of fast-path prompts get the correct operation and arguments; 0 wrong mutating operations proposed without the interpreted operation being shown; >= 80% of should-escalate prompts are declined by Tier 1; a command that succeeds still costs one bash function call and 0 forks. Memory: with both flavors resident the daemon adds < 1 GB to system memory as measured on the AGX Orin, which is the stand-in for the Orin Nano's 8 GB budget until a Nano is measured.",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o18",
+      "claim_id": "c16",
+      "seam": "nvsh tiers bench",
+      "behavior": "a repeatable runner over a committed corpus that measures the tier and not the host, reports per-request rows, and never reports an unmeasured target as a pass",
+      "source_text": "A repeatable benchmark corpus and runner are committed: the prompts and failure cases from issues #30 and #31, each with its expected operation, arguments or expected escalation. One command runs it on a device and writes a results file with accuracy, argument accuracy, false-mutating-pick count, escalation precision and recall, cold and warm latency, and resident and peak memory. Results for each device are committed under docs/.",
+      "origin": "llm",
+      "status": "proposed"
+    }
+  ]
 }
