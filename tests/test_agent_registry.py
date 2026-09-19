@@ -20,6 +20,8 @@ Acceptance criteria covered:
 
 from __future__ import annotations
 
+import dataclasses
+
 import pytest
 
 from nvsh.agent import registry
@@ -37,6 +39,7 @@ _ALL_ADAPTER_NAMES = {
     "kiro",
     "openai-compat",
     "demo",
+    "needle",
 }
 
 
@@ -51,7 +54,7 @@ def _which_factory(present: set[str]):
     return _which
 
 
-def test_adapters_registry_has_all_nine_names():
+def test_adapters_registry_has_all_ten_names():
     assert set(registry.ADAPTERS) == _ALL_ADAPTER_NAMES
 
 
@@ -205,7 +208,7 @@ def test_steer_capable_true_for_pi_and_codex():
     assert registry.steer_capable("codex", Config()) is True
 
 
-def test_available_adapters_reports_all_nine_with_installed_status():
+def test_available_adapters_reports_all_ten_with_installed_status():
     which = _which_factory({"pi", "claude"})
     rows = registry.available_adapters(which=which)
     by_name = {row["name"]: row for row in rows}
@@ -217,9 +220,67 @@ def test_available_adapters_reports_all_nine_with_installed_status():
     assert by_name["agy"]["installed"] is False
     assert by_name["kiro"]["installed"] is False
     assert by_name["openai-compat"]["installed"] is True
+    # needle's 'installed' never consults `which` at all -- see the
+    # dedicated installed_check tests below.
     for row in rows:
         assert "binary" in row
         assert "description" in row
+
+
+# -- needle: installed_check, not `which` -------------------------------------
+
+
+def test_needle_spec_shape():
+    spec = registry.ADAPTERS["needle"]
+    assert spec.binary is None
+    assert spec.path == "inproc"
+    assert spec.hosted is False
+    assert spec.installed_check is not None
+
+
+def test_needle_installed_uses_installed_check_not_which():
+    """`which` is passed but must never be consulted for needle -- a `which`
+    that raises on any input proves that (never called with 'None', either --
+    the bug installed() already guards against for binary=None adapters)."""
+
+    def _which_raises(_name: str) -> str | None:
+        raise AssertionError("needle.installed() must not call which()")
+
+    assert registry.installed("needle", which=_which_raises) in (True, False)
+
+
+def test_needle_installed_reflects_flavor_check(monkeypatch):
+    monkeypatch.setitem(
+        registry.ADAPTERS,
+        "needle",
+        dataclasses.replace(registry.ADAPTERS["needle"], installed_check=lambda: True),
+    )
+    assert registry.installed("needle", which=_which_all_missing) is True
+
+    monkeypatch.setitem(
+        registry.ADAPTERS,
+        "needle",
+        dataclasses.replace(registry.ADAPTERS["needle"], installed_check=lambda: False),
+    )
+    assert registry.installed("needle", which=_which_all_missing) is False
+
+
+def test_needle_is_probe_excluded():
+    assert "needle" in registry.PROBE_EXCLUDED
+    rows = registry.probe(_which_all_missing)
+    assert "needle" not in {row["name"] for row in rows}
+
+
+def test_needle_factory_builds_needle_agent():
+    from nvsh.agent.needle import NeedleAgent
+
+    agent = registry.ADAPTERS["needle"].factory(Config())
+    assert isinstance(agent, NeedleAgent)
+    caps = agent.capabilities()
+    assert caps.local_model is True
+    assert caps.approval == "nvsh"
+    assert caps.unmediated_file_access is False
+    assert caps.path == "inproc"
 
 
 def test_choose_uses_configured_provider_when_installed():

@@ -839,10 +839,13 @@ def _tier_lfm_settings(config: Config) -> tuple[str, str]:
 def _needle_adapter_reachable(config: Config, flavor_installed: Callable[[], bool]) -> dict:
     """``needle``'s "reachability": is the flavor installed at all?
 
-    ``needle``/``lfm`` are not registered ``registry.ADAPTERS`` entries yet
-    (t14/t19 land the real adapters), so there is no ``--version`` binary
-    for :func:`_check_cli_harness_reachable` to probe and this would
-    otherwise fall into the generic "no reachability probe" warning. Detail
+    ``needle`` has no ``--version`` binary for
+    :func:`_check_cli_harness_reachable` to probe (task t14's adapter wraps
+    an in-process tier, not a CLI), so it is dispatched through this table
+    rather than ``_CLI_HARNESS_PROVIDERS`` -- without this entry it would
+    fall into the generic "no reachability probe" warning. ``lfm`` is not a
+    registered ``registry.ADAPTERS`` entry yet (task t19 lands its adapter);
+    it reaches this same table entry regardless. Detail
     on the pinned files themselves (present/hash-verified) is
     :func:`check_tier_files_present`/:func:`check_tier_hashes_match`'s job,
     not this one's -- this only answers "is the Python package here".
