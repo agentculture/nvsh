@@ -877,3 +877,31 @@ def test_platforms_doc_records_the_spark_launch_form():
 
 def test_platforms_doc_records_the_jetson_launch_form():
     assert "`--runtime nvidia`" in _platforms_doc()
+
+
+# -- up-front GPU memory share (vLLM, SGLang) ------------------------------
+
+
+def _after(argv: list[str], flag: str) -> str:
+    return argv[argv.index(flag) + 1]
+
+
+def test_vllm_reserves_a_small_gpu_share_by_default():
+    argv = rd.render_launch(settings(engine="vllm"), SPARK, uid=1000)
+    assert _after(argv, "--gpu-memory-utilization") == str(rd.DEFAULT_GPU_FRACTION)
+
+
+def test_sglang_takes_the_configured_gpu_share():
+    argv = rd.render_launch(settings(engine="sglang", gpu_memory_fraction=0.2), SPARK, uid=1000)
+    assert _after(argv, "--mem-fraction-static") == "0.2"
+
+
+def test_llama_server_has_no_gpu_share_flag():
+    argv = rd.render_launch(settings(), SPARK, uid=1000)
+    assert "--gpu-memory-utilization" not in argv
+
+
+@pytest.mark.parametrize("value", [0, 1, 0.99, -0.5, "0.5", True, None.__class__])
+def test_a_bad_gpu_share_is_refused(value):
+    with pytest.raises(rd.RuntimeUnavailable, match="gpu_memory_fraction"):
+        rd.check_gpu_memory_fraction(value)

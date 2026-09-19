@@ -68,6 +68,11 @@ MODEL_MOUNT = "/models"
 
 DEFAULT_ENGINE = "llama-server"
 DEFAULT_CTX = 4096
+#: Up-front GPU memory share for engines that reserve one (vLLM, SGLang).
+#: Small on purpose: Tier 2 serves a sub-1B model beside the operator's own work.
+DEFAULT_GPU_FRACTION = 0.08
+MIN_GPU_FRACTION = 0.02
+MAX_GPU_FRACTION = 0.95
 DEFAULT_STARTUP_SECONDS = 120.0
 POLL_SECONDS = 1.0
 PROBE_SECONDS = 2.0
@@ -154,6 +159,8 @@ ENGINES: Mapping[str, EngineTemplate] = {
             "{port}",
             "--max-model-len",
             "{ctx}",
+            "--gpu-memory-utilization",
+            "{gpu_fraction}",
         ),
         needs_model_mount=False,
         health_path="/health",
@@ -169,6 +176,8 @@ ENGINES: Mapping[str, EngineTemplate] = {
             "{port}",
             "--context-length",
             "{ctx}",
+            "--mem-fraction-static",
+            "{gpu_fraction}",
         ),
         needs_model_mount=False,
         health_path="/health",
@@ -263,6 +272,19 @@ def _check_mounted_model(value: str) -> str:
     return value
 
 
+def check_gpu_memory_fraction(value: object) -> float:
+    """The share of GPU memory an engine may reserve up front.
+
+    vLLM and SGLang claim most of the GPU by default, which on a shared or
+    unified-memory machine is the opposite of a small resident tier.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise _refuse("gpu_memory_fraction", "must be a number from 0.02 to 0.95", value)
+    if not MIN_GPU_FRACTION <= float(value) <= MAX_GPU_FRACTION:
+        raise _refuse("gpu_memory_fraction", "must be a number from 0.02 to 0.95", value)
+    return float(value)
+
+
 #: Checks for the settings that are optional but, when present, must be
 #: well-formed. Keyed by setting name so adding one is a table entry.
 SETTING_CHECKS: Mapping[str, Callable[[object], object]] = {
@@ -270,6 +292,7 @@ SETTING_CHECKS: Mapping[str, Callable[[object], object]] = {
     "ctx": check_ctx,
     "startup_timeout_seconds": check_startup_timeout,
     "model_dir": check_model_dir,
+    "gpu_memory_fraction": check_gpu_memory_fraction,
 }
 
 
@@ -392,6 +415,13 @@ def _ctx(settings: Mapping[str, object]) -> int:
     return check_ctx(configured)
 
 
+def _gpu_fraction(settings: Mapping[str, object]) -> float:
+    configured = settings.get("gpu_memory_fraction")
+    if configured is None:
+        return DEFAULT_GPU_FRACTION
+    return check_gpu_memory_fraction(configured)
+
+
 def _mount_args(template: EngineTemplate, settings: Mapping[str, object]) -> list[str]:
     if not template.needs_model_mount:
         return []
@@ -403,6 +433,7 @@ def _engine_args(template: EngineTemplate, settings: Mapping[str, object]) -> li
         "model": _model_ref(template, settings),
         "port": str(template.port),
         "ctx": str(_ctx(settings)),
+        "gpu_fraction": str(_gpu_fraction(settings)),
     }
     return [arg.format(**values) for arg in template.args]
 

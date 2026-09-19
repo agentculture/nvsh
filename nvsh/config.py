@@ -97,6 +97,7 @@ _VALID_TIERS_LFM_KEYS = {
     "port",
     "ctx",
     "startup_timeout_seconds",
+    "gpu_memory_fraction",
 }
 
 #: Accepted engines for ``[tiers.lfm]``.
