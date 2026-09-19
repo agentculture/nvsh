@@ -77,16 +77,10 @@ def require_localhost(base_url: str) -> None:
 
 # -- raw tool-call parsing --
 
-# Shape A: ``name`` ``function`` ``arguments`` <json object> ````
-# The markers and JSON can be adjacent; backticks between them are shared.
-# We match any number of backticks around the keywords and a closing run.
-_RE_SHAPE_A = re.compile(
-    r"`+name`+"  # ``name`` or more
-    r"`+function`+"  # ``function`` or more
-    r"`+arguments`+"  # ``arguments`` or more
-    r"({.*?})"  # JSON object (non-greedy to match innermost {})
-    r"`+"  # closing ```` or more
-)
+# Shape A: <tool_call>{JSON object}</tool_call>. The body is taken between the
+# tags (non-greedy across the closing TAG, not across a brace), so nested
+# braces and a "}" inside a string value survive; json.loads does the rest.
+_RE_SHAPE_A = re.compile(r"<tool_call>(.*?)</tool_call>", re.DOTALL)
 
 # Shape B: <|tool_call_start|> [JSON array] <|tool_call_end|>
 _RE_SHAPE_B = re.compile(
@@ -100,7 +94,7 @@ def parse_raw_tool_calls(text: str) -> tuple[ToolCall, ...]:
 
     Supports two shapes anywhere in the text:
 
-    A. ``name`` ``function`` ``arguments`` {"name": "f", "arguments": {}} ````
+    A. <tool_call>{"name": "f", "arguments": {}}</tool_call>
 
     B. <|tool_call_start|>[{"name": "f", "arguments": {}}]<|tool_call_end|>
 
@@ -368,8 +362,10 @@ class ToolChat:
                     fn = frag.get("function")
                     if isinstance(fn, dict):
                         fn_name = fn.get("name")
-                        if isinstance(fn_name, str) and fn_name:
-                            acc["name"] += fn_name  # accumulate, not replace
+                        if isinstance(fn_name, str) and fn_name and not acc["name"]:
+                            # First non-empty name wins: some servers resend
+                            # the name on every chunk, which must not double it.
+                            acc["name"] = fn_name
                         fn_args = fn.get("arguments")
                         if isinstance(fn_args, str):
                             acc["arguments"] += fn_args  # accumulate, not replace

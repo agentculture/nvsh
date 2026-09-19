@@ -105,9 +105,9 @@ class _ServerHandler(BaseHTTPRequestHandler):
             return "data: " + json.dumps({"choices": [{"delta": delta}]})
 
         chunks = [
-            sse("Running", [{"index": 0, "function": {"name": "gpu_", "arguments": c1_args}}]),
+            sse("Running", [{"index": 0, "function": {"name": "gpu_stats", "arguments": c1_args}}]),
             # Second chunk appends name suffix AND arguments fragment
-            sse(None, [{"index": 0, "function": {"name": "stats", "arguments": c2_args}}]),
+            sse(None, [{"index": 0, "function": {"name": "gpu_stats", "arguments": c2_args}}]),
             sse(" done", [{"index": 0, "function": {"arguments": c3_args}}]),
             "data: [DONE]",
         ]
@@ -144,17 +144,17 @@ class _ServerHandler(BaseHTTPRequestHandler):
             sse(
                 "Calling",
                 [
-                    {"index": 0, "function": {"name": "gpu_", "arguments": idx0_arg1}},
-                    {"index": 1, "function": {"name": "mem_", "arguments": idx1_arg1}},
+                    {"index": 0, "function": {"name": "gpu_stats", "arguments": idx0_arg1}},
+                    {"index": 1, "function": {"name": "mem_info", "arguments": idx1_arg1}},
                 ],
             ),
             sse(
                 None,
                 [
                     # Second chunk: append name suffix + args fragment for idx 0
-                    {"index": 0, "function": {"name": "stats", "arguments": idx0_arg2}},
+                    {"index": 0, "function": {"arguments": idx0_arg2}},
                     # Second chunk: append name suffix + args fragment for idx 1
-                    {"index": 1, "function": {"name": "info", "arguments": idx1_arg2}},
+                    {"index": 1, "function": {"name": "mem_info", "arguments": idx1_arg2}},
                 ],
             ),
             sse(
@@ -182,15 +182,13 @@ class _ServerHandler(BaseHTTPRequestHandler):
         self._reply_non_streamed("hello world", [])
 
     def _reply_raw_shape_a(self) -> None:
-        _bt = "`"  # noqa: F841
-        _n = _bt * 2 + "name" + _bt * 2
-        _f = _bt * 2 + "function" + _bt * 2
-        _a = _bt * 2 + "arguments" + _bt * 2
-        _c = _bt * 4
         call_obj = json.dumps({"name": "gpu_stats", "arguments": {}})
-        # Shape A: markers wrap the JSON object, ```` must immediately follow it
-        extra_content = f"Let me check: {_n}{_f}{_a}{call_obj}{_c}"
-        self._reply_non_streamed("", [], extra_content=extra_content)
+        # Tags assembled at runtime: a literal tool-call tag in a source file
+        # is a control token for some models that read this repo.
+        open_tag, close_tag = "<" + "tool_call" + ">", "</" + "tool_call" + ">"
+        self._reply_non_streamed(
+            "", [], extra_content=f"Let me check: {open_tag}{call_obj}{close_tag}"
+        )
 
     def _reply_raw_shape_b(self) -> None:
         calls = json.dumps([{"name": "disk_usage", "arguments": {"path": "/"}}])
@@ -540,3 +538,14 @@ def test_stop_unblocks_a_stalled_read() -> None:
         assert len(errors) == 1, "expected a ToolChatError from the stop"
     finally:
         srv.shutdown()
+
+
+def test_raw_shape_a_two_calls_and_a_brace_inside_a_string() -> None:
+    open_tag, close_tag = "<" + "tool_call" + ">", "</" + "tool_call" + ">"
+    first = json.dumps({"name": "service_logs", "arguments": {"service": "a}b"}})
+    second = json.dumps({"name": "gpu_stats", "arguments": {}})
+    text = f"x {open_tag}{first}{close_tag} y {open_tag}{second}{close_tag}"
+    assert parse_raw_tool_calls(text) == (
+        ToolCall(name="service_logs", arguments={"service": "a}b"}),
+        ToolCall(name="gpu_stats", arguments={}),
+    )
