@@ -118,8 +118,32 @@ def test_init_never_raises_or_needs_a_runtime():
     assert isinstance(LfmAgent(), LfmAgent)
 
 
-def test_factory_from_config_is_cheap():
+def test_factory_from_config_is_cheap(monkeypatch):
+    """Building through the registry factory must never reach any of the
+    things ``start()``/``select()`` would need -- the runtime builder, Tier
+    2's chat factory, or a subprocess. Swap in fail-fast stand-ins for each
+    (they raise if called at all) so a factory that accidentally started
+    the router would blow up this test instead of silently passing."""
+    import subprocess
+
+    from nvsh.tiers.lfm import LfmTier
+
+    def _boom_runtime(*_args, **_kwargs):
+        raise AssertionError("lfm factory built a runtime")
+
+    def _boom_chat(*_args, **_kwargs):
+        raise AssertionError("lfm factory built a chat client")
+
+    def _boom_subprocess(*_args, **_kwargs):
+        raise AssertionError("lfm factory spawned a subprocess")
+
+    monkeypatch.setattr("nvsh.tiers.runtime_docker.build_runtime", _boom_runtime)
+    monkeypatch.setattr(LfmTier, "_default_chat", _boom_chat)
+    monkeypatch.setattr(subprocess, "run", _boom_subprocess)
+    monkeypatch.setattr(subprocess, "Popen", _boom_subprocess)
+
     agent = registry.ADAPTERS["lfm"].factory(Config())
+
     assert isinstance(agent, LfmAgent)
 
 
@@ -210,16 +234,33 @@ def test_a_propose_reply_proposes_and_ends_with_done():
     assert "lfm" in proposal.rationale
 
 
-def test_an_explain_reply_explains_and_ends_with_done():
+def _explain_reply_events() -> list:
     chat = _FakeChat([_tool_reply(EXPLAIN_TOOL, text="disk looks fine")])
     agent = _agent(chat)
     try:
-        events = list(agent.run(_request(), _context()))
+        return list(agent.run(_request(), _context()))
     finally:
         agent.close()
-    kinds = [e.kind for e in events]
+
+
+def test_an_explain_reply_ends_with_done():
+    kinds = [e.kind for e in _explain_reply_events()]
     assert kinds[-1] is EventKind.DONE
+
+
+def test_an_explain_reply_never_proposes():
+    kinds = [e.kind for e in _explain_reply_events()]
     assert EventKind.PROPOSAL not in kinds
+
+
+def test_an_explain_reply_reaches_the_event_stream_as_text():
+    """4054701413: the explanation text itself must reach the operator, not
+    just an empty STATUS/DONE pair -- ``TierOnlyAdapter._turn`` forwards the
+    router's events as-is, and the router yields the ``Explanation``'s text
+    as an ``EventKind.TEXT_DELTA`` (see ``nvsh/tiers/router.py``'s
+    ``_explained``)."""
+    text_deltas = [e.text for e in _explain_reply_events() if e.kind is EventKind.TEXT_DELTA]
+    assert text_deltas == ["disk looks fine"]
 
 
 def test_an_escalate_reply_declines_in_one_line_and_never_claims_to_ask_the_full_agent():
