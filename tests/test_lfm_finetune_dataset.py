@@ -11,11 +11,11 @@ import pytest
 from nvsh.ops import table as ops_table
 from nvsh.tiers import lfm
 from nvsh.tiers.bench import (
-    _context_for,
-    _request_for,
+    context_for,
     dev_corpus_path,
     held_out_corpus_path,
     load_corpus,
+    request_for,
 )
 
 _SCRIPT = Path(__file__).resolve().parents[1] / "scripts/lfm-finetune/build_dataset.py"
@@ -60,7 +60,7 @@ def test_a_failure_entrys_user_message_matches_what_the_tier_would_send():
     tail), not the corpus entry's raw text verbatim."""
     entries = load_corpus(dev_corpus_path()).entries
     failure_entry = next(entry for entry in entries if entry.kind == "failure")
-    expected = lfm._request_message(_request_for(failure_entry), _context_for(failure_entry))
+    expected = lfm.request_message(request_for(failure_entry), context_for(failure_entry))
 
     examples = _module().build(dev_corpus_path())
     by_entry_id = dict(zip((entry.id for entry in entries), examples))

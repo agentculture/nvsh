@@ -123,7 +123,9 @@ def _run_marked(xdg, monkeypatch, line, *, adapters=("pi", "qwen"), installed=("
     monkeypatch.setattr(client_transport, "one_shot", one_shot)
     monkeypatch.setattr(client_transport, "send", send)
     monkeypatch.setattr(registry, "ADAPTERS", {name: registry.ADAPTERS[name] for name in adapters})
-    monkeypatch.setattr(registry, "installed", lambda name, which=None: name in installed)
+    monkeypatch.setattr(
+        registry, "installed", lambda name, which=None, config=None: name in installed
+    )
     out = io.StringIO()
     panel = panel_mod.Panel(out=out, in_=io.StringIO(), env={}, isatty=False)
     rc = client_mod.handle_failure(_args(xdg, line, 127), panel=panel)

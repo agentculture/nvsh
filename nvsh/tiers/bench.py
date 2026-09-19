@@ -194,13 +194,13 @@ class ItemResult:
     latency_ms: float
 
 
-def _request_for(entry: CorpusEntry) -> AgentRequest:
+def request_for(entry: CorpusEntry) -> AgentRequest:
     if entry.kind == "failure":
         return AgentRequest(kind=RequestKind.FAILURE, command=entry.text, exit_code=1)
     return AgentRequest(kind=RequestKind.EXPLICIT, prompt=entry.text)
 
 
-def _context_for(entry: CorpusEntry) -> AgentContext:
+def context_for(entry: CorpusEntry) -> AgentContext:
     return AgentContext(output=entry.text if entry.kind == "failure" else "")
 
 
@@ -215,8 +215,8 @@ def run_items(
     """
     results: list[ItemResult] = []
     for entry in entries:
-        request = _request_for(entry)
-        context = _context_for(entry)
+        request = request_for(entry)
+        context = context_for(entry)
         started = clock()
         route = router.route(request, context)
         for _event in route:

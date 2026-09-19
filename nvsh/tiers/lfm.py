@@ -286,7 +286,7 @@ def system_brief(platform: Platform, max_rounds: int = MAX_ROUNDS) -> str:
     return _SYSTEM_BRIEF.format(kind=_clamp(str(platform.kind), KIND_CHARS), rounds=max_rounds)
 
 
-def _request_message(request: AgentRequest, context: AgentContext) -> str:
+def request_message(request: AgentRequest, context: AgentContext) -> str:
     """The request, bounded: a failure's command/status/output tail, or the ask."""
     if request.kind is RequestKind.FAILURE:
         tail = _redacted(context.output, OUTPUT_TAIL_CHARS, tail=True)
@@ -414,7 +414,7 @@ class LfmTier(Tier):
             return chat
 
         system = system_brief(self._platform, self._max_rounds)
-        ask = _request_message(request, context)
+        ask = request_message(request, context)
         tools = tools_for()
         rounds: list[_Round] = []
         started = self._clock()

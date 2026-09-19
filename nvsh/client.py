@@ -552,7 +552,7 @@ def agent_override(config, name: str):
             ),
         )
     try:
-        ok = registry.installed(target.backend)
+        ok = registry.installed(target.backend, config=config)
     except Exception as exc:  # noqa: BLE001 - a broken probe is a plain refusal
         return None, None, f"nvsh: @{name} is not available: {exc}"
     if not ok:

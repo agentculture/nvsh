@@ -32,19 +32,16 @@ from nvsh.platform._model import Platform  # noqa: E402
 from nvsh.tiers import lfm  # noqa: E402
 from nvsh.tiers.bench import (  # noqa: E402
     CorpusEntry,
-    _context_for,
-    _request_for,
+    context_for,
     load_corpus,
     load_world,
+    request_for,
     world_platform,
 )
 
-#: ``nvsh.tiers.bench``'s own request/context builders (private: leading
-#: underscore) -- reused here rather than reimplemented so a FAILURE entry's
-#: training user message is built the exact same way ``bench.py`` and Tier 2
-#: itself (``nvsh.tiers.lfm``'s ``_request_message``, also private) build it
-#: at run time. Both are imported anyway per this script's brief; the lead
-#: has been told to make them public.
+#: The request and context builders are ``nvsh.tiers.bench``'s own, and the
+#: user message is ``nvsh.tiers.lfm.request_message``: a FAILURE entry is
+#: trained on exactly the text Tier 2 sends for it at run time.
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -95,18 +92,18 @@ def user_message_for(entry: CorpusEntry) -> str:
     """The user message Tier 2 itself would see for *entry*'s request.
 
     A "failure" entry is built through ``nvsh.tiers.bench``'s own
-    ``_request_for``/``_context_for`` (the same construction ``bench.py``'s
-    ``run_items`` uses) and ``nvsh.tiers.lfm``'s ``_request_message`` (the
+    ``request_for``/``context_for`` (the same construction ``bench.py``'s
+    ``run_items`` uses) and ``nvsh.tiers.lfm``'s ``request_message`` (the
     function ``LfmTier.select`` calls) -- so its user message has the
     runtime shape (``command:``/``exit status:``/``output tail:``), not the
     corpus entry's raw text verbatim. An "explicit" entry's message is the
-    entry's text unchanged, matching what ``_request_message`` itself does
+    entry's text unchanged, matching what ``request_message`` itself does
     for a non-FAILURE request (modulo the redaction/length clamp it also
     applies at run time, deliberately not replayed here so training text
     stays exactly what a human wrote in the corpus).
     """
     if entry.kind == "failure":
-        return lfm._request_message(_request_for(entry), _context_for(entry))
+        return lfm.request_message(request_for(entry), context_for(entry))
     return entry.text
 
 
