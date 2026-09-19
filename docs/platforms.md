@@ -58,6 +58,20 @@ always present in `Platform.values`, whether found or not.
 | `pi` | path | `pi` on `PATH` | the Pi/associate agent harness |
 | `spark_cli` | path | `spark` on `PATH` | `dgx-spark-cli` |
 | `spark_status_available` | subprocess | `spark status --json` (`.available`) | only called when `spark_cli` is present; merged in, never required |
+| `thor_cli` | path | `thor` on `PATH` | `jetson-thor-cli`; reported the same way as `spark_cli` — a plain PATH check, no subprocess call, no `--help` probe |
+| `orin_cli` | path | `orin` on `PATH` | `jetson-orin-cli`; reported the same way as `spark_cli` — a plain PATH check, no subprocess call, no `--help` probe |
+
+Both `thor` and `orin` install to each board's per-user `.local/bin`
+directory (under the operator's home), same as `spark` does on the DGX
+Spark box: a non-interactive, non-login shell (e.g. `ssh host 'which
+thor'` in `BatchMode`) does not source the rc-file line that puts that
+directory on `PATH`, so `which` can miss it there even though the binary
+is installed — the same interactive-shell guard nvsh's own hook installer
+respects (see `CLAUDE.md`'s "Hook constraints"). `nvsh` runs `detect()`
+from the operator's already-interactive hooked shell, whose `PATH` does
+include that directory, so this does not affect real usage; it only means
+a bare non-interactive probe of the same command can look absent when the
+CLI is in fact installed.
 
 ## Unified memory and the CUDA-OOM signal
 
@@ -105,6 +119,7 @@ the verifying command below produced.
 | `pi` | present | `which pi` |
 | `spark_cli` | present | `which spark` |
 | `spark_status_available` | `true` | `spark status --json` |
+| `thor_cli`, `orin_cli` | absent (neither installed) | `which thor`; `which orin` |
 
 ### Jetson AGX Thor (`ssh thor`, L4T R38.2)
 
@@ -124,6 +139,8 @@ the verifying command below produced.
 | `dgx_name` | absent (not a DGX) | `cat /etc/dgx-release` |
 | `tmux` | present | `which tmux` |
 | `pi`, `spark_cli` | absent (neither installed) | `which pi`; `which spark` |
+| `thor_cli` | present (`thor 0.5.0`, verbs `status/memory/gpu/disk/thermal/containers/network/processes/power/monitor/swap`, each accepting `--json`; `swap status --json` is the read-only swap subcommand) | `which thor && thor --version && thor --help` |
+| `orin_cli` | absent | `which orin` |
 
 ### Jetson AGX Orin (`ssh orin`, L4T R39.2)
 
@@ -141,6 +158,8 @@ the verifying command below produced.
 | `nvpmodel_power_mode` | `MAXN` | `nvpmodel -q` |
 | `unified_memory` | `true` (`memory.total`/`memory.used` = `[N/A]`) | `nvidia-smi --query-gpu=name,memory.total,memory.used,driver_version --format=csv` |
 | `tmux`, `pi`, `spark_cli` | absent (none installed) | `which tmux`; `which pi`; `which spark` |
+| `orin_cli` | present (`orin 0.5.0`; `{whoami,learn,explain,overview,doctor,cli}` only — no machine verbs yet, confirming `nvsh/ops/render.py`'s empty `DEVICE_CLI_VERBS["orin"]`) | `which orin && orin --version && orin --help` |
+| `thor_cli` | absent | `which thor` |
 
 ## Redaction
 
