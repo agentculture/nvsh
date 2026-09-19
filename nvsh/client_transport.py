@@ -623,7 +623,11 @@ def ask_tiers(
         return _ESCALATED
     if reply is None:
         return _ESCALATED
-    return replace(reply, events=tuple(events))
+    # Annotated local: ``dataclasses.replace`` is typed as returning a bare
+    # ``DataclassInstance``, which does not match the declared return type
+    # (SonarCloud python:S5886).
+    answered: TierReply = replace(reply, events=tuple(events))
+    return answered
 
 
 def tier_decision(
