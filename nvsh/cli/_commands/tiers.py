@@ -20,20 +20,29 @@ contract in ``CLAUDE.md``.
   says would be fetched, with sizes, and asks before downloading anything:
   ``--yes`` downloads without asking; off a terminal or under ``--json``
   without ``--yes`` it refuses outright (a CliError naming ``--yes``, never
-  a silent download); on an interactive terminal it prompts per item. With nothing missing it just reports.
+  a silent download); on an interactive terminal it prompts per item. With
+  nothing missing it just reports.
+* ``nvsh tiers bench`` — (task t22) runs the committed corpus
+  (:mod:`nvsh.tiers.corpus`) through a real
+  :class:`~nvsh.tiers.router.TierRouter` via :func:`nvsh.tiers.bench.bench`,
+  and reports accuracy, escalation precision/recall, latency, memory and a
+  pass/miss line per spec-c20 target. ``--tier fixture`` (the default) uses
+  :class:`nvsh.tiers.bench.UnavailableTier`, which declines everything, so
+  the verb works with no model installed; ``--tier needle`` imports
+  :mod:`nvsh.tiers.needle` lazily and reports a remediation-carrying
+  ``CliError`` if that flavor is not on this install.
 
-Sub-subparser layout (``tiers <verb>``) matches ``nvsh agent`` — a later
-``nvsh tiers bench`` verb (task t22) is one more ``noun_sub.add_parser`` call
-away.
+Sub-subparser layout (``tiers <verb>``) matches ``nvsh agent``.
 """
 
 from __future__ import annotations
 
 import argparse
 import dataclasses
+import os
 import sys
 
-from nvsh.cli._errors import EXIT_USER_ERROR, CliError
+from nvsh.cli._errors import EXIT_ENV_ERROR, EXIT_USER_ERROR, CliError
 from nvsh.cli._output import emit_result
 
 #: Help text every ``--json`` flag in this verb group shares.
@@ -297,6 +306,162 @@ def cmd_tiers_prefetch(args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------------
+# bench
+# ---------------------------------------------------------------------------
+
+
+def _bench_corpus_path(split: str):
+    from nvsh.tiers.bench import dev_corpus_path, held_out_corpus_path
+
+    return dev_corpus_path() if split == "dev" else held_out_corpus_path()
+
+
+def _bench_tier(name: str):
+    from nvsh.tiers.bench import UnavailableTier
+
+    if name == "fixture":
+        return UnavailableTier()
+    if name == "needle":
+        return _bench_needle_tier()
+    raise CliError(
+        code=EXIT_USER_ERROR,
+        message=f"unknown --tier {name!r}",
+        remediation="pass --tier fixture or --tier needle",
+    )
+
+
+def _bench_needle_tier():
+    try:
+        from nvsh.tiers.needle import NeedleTier
+    except ImportError as exc:
+        raise CliError(
+            code=EXIT_ENV_ERROR,
+            message="nvsh.tiers.needle is not available in this install",
+            remediation=(
+                "install the 'needle' flavor once nvsh.tiers.needle ships, "
+                "or run 'nvsh tiers bench --tier fixture' instead"
+            ),
+        ) from exc
+    return NeedleTier()
+
+
+def _bench_load_avg():
+    try:
+        return os.getloadavg()
+    except (OSError, AttributeError):
+        return None
+
+
+def _bench_now_iso() -> str:
+    import datetime
+
+    return datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+
+def _bench_pins():
+    from nvsh.tiers.fetch import load_pins
+
+    try:
+        return load_pins()
+    except OSError:
+        return None
+
+
+def _fmt_pct(value) -> str:
+    return "not measured" if value is None else f"{value * 100:.1f}%"
+
+
+def _fmt_ms(value) -> str:
+    return "not measured" if value is None else f"{value:.1f}ms"
+
+
+def _fmt_mib(value) -> str:
+    return "not measured" if value is None else f"{value:.1f}MiB"
+
+
+def _bench_text(result: dict, split: str, entry_count: int, problem_count: int) -> str:
+    lines = [f"split: {split}  entries: {entry_count}  corpus problems: {problem_count}"]
+    if split == "held-out" and entry_count == 0:
+        lines.append("held-out: 0 entries (operator has not added any)")
+    accuracy = result["accuracy"]
+    lines.append(
+        f"accuracy: {_fmt_pct(accuracy['accuracy'])}  "
+        f"argument accuracy: {_fmt_pct(accuracy['argument_accuracy'])}"
+    )
+    lines.append(f"false mutating picks: {result['false_mutating_pick']['count']}")
+    escalation = result["escalation"]
+    lines.append(
+        f"escalation precision: {_fmt_pct(escalation['precision'])}  "
+        f"recall: {_fmt_pct(escalation['recall'])}"
+    )
+    latency = result["latency"]
+    lines.append(
+        f"latency: cold={_fmt_ms(latency['cold_ms'])} "
+        f"warm_median={_fmt_ms(latency['warm_median_ms'])} "
+        f"warm_p95={_fmt_ms(latency['warm_p95_ms'])}"
+    )
+    memory = result["memory"]
+    lines.append(
+        f"memory: idle={_fmt_mib(memory['idle_mib'])} peak={_fmt_mib(memory['peak_mib'])} "
+        f"reserved={_fmt_mib(memory['reserved_mib'])} added={_fmt_mib(memory['added_mib'])}"
+    )
+    lines.append(f"image size (bytes): {result['provenance']['image_size_bytes']!r}")
+    lines.append("")
+    lines.append("targets:")
+    for target in result["targets"]:
+        lines.append(f"  [{target['status']}] {target['target']} ({target['requirement']})")
+    return "\n".join(lines)
+
+
+def _write_bench_result(path: str, result: dict) -> None:
+    import json
+
+    with open(path, "w", encoding="utf-8") as handle:
+        json.dump(result, handle, indent=2, sort_keys=True)
+        handle.write("\n")
+
+
+def cmd_tiers_bench(args: argparse.Namespace) -> int:
+    from nvsh import __version__
+    from nvsh import platform as platform_mod
+    from nvsh.tiers.bench import bench, load_corpus
+
+    split = getattr(args, "split", "dev") or "dev"
+    loaded = load_corpus(_bench_corpus_path(split))
+    tier_name = getattr(args, "tier", "fixture") or "fixture"
+    tier1 = _bench_tier(tier_name)
+
+    try:
+        result = bench(
+            loaded.entries,
+            split=split,
+            tier1=tier1,
+            platform=platform_mod.detect(),
+            pins=_bench_pins(),
+            nvsh_version=__version__,
+            engine=tier_name,
+            concurrent_load=_bench_load_avg(),
+            timestamp=_bench_now_iso(),
+            corpus_problems=loaded.problems,
+        )
+    finally:
+        tier1.close()
+
+    out = getattr(args, "out", None)
+    if out:
+        _write_bench_result(out, result)
+
+    json_mode = bool(getattr(args, "json", False))
+    if json_mode:
+        emit_result(result, json_mode=True)
+    else:
+        emit_result(
+            _bench_text(result, split, len(loaded.entries), len(loaded.problems)), json_mode=False
+        )
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # register
 # ---------------------------------------------------------------------------
 
@@ -334,5 +499,19 @@ def register(sub: argparse._SubParsersAction) -> None:
     prefetch.add_argument("--yes", action="store_true", help="Download without prompting.")
     prefetch.add_argument("--json", action="store_true", help=_JSON_HELP)
     prefetch.set_defaults(func=cmd_tiers_prefetch)
-    # A later `nvsh tiers bench` verb (task t22) adds one more
-    # `noun_sub.add_parser(...)` call here.
+
+    bench = noun_sub.add_parser(
+        "bench", help="Run the benchmark corpus through the real tier router."
+    )
+    bench.add_argument(
+        "--split", choices=("dev", "held-out"), default="dev", help="Which corpus split to run."
+    )
+    bench.add_argument(
+        "--tier",
+        choices=("fixture", "needle"),
+        default="fixture",
+        help="Which Tier 1 implementation to bench.",
+    )
+    bench.add_argument("--out", help="Write the results JSON to this local file.")
+    bench.add_argument("--json", action="store_true", help=_JSON_HELP)
+    bench.set_defaults(func=cmd_tiers_bench)
