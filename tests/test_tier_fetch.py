@@ -19,6 +19,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import os
 import socket
 
 import pytest
@@ -485,3 +486,53 @@ def test_mid_stream_error_is_reported_not_raised(tmp_path):
     )
     assert [p.code for p in problems] == ["download_failed"]
     assert [p.name for p in tmp_path.iterdir()] == []
+
+
+def test_verdict_cache_is_not_fooled_by_a_same_size_same_mtime_swap(tmp_path):
+    """qodo 1 on PR #32: swapping bytes while restoring size and mtime must be caught."""
+    pins = _fake_pins()
+    target = tmp_path / "needle3.cact"
+    target.write_bytes(WEIGHTS_BYTES)
+    assert fetch.resolve("weights", pins=pins, cache_dir=tmp_path, platform_tag="aarch64") == target
+    before = target.stat()
+    target.write_bytes(bytes(len(WEIGHTS_BYTES)))  # same size, different content
+    os.utime(target, ns=(before.st_atime_ns, before.st_mtime_ns))
+    result = fetch.resolve("weights", pins=pins, cache_dir=tmp_path, platform_tag="aarch64")
+    assert isinstance(result, fetch.FetchProblem)
+    assert result.code == "hash_mismatch"
+
+
+class _IncompleteResponse:
+    def read(self, n=-1):
+        import http.client
+
+        raise http.client.IncompleteRead(b"partial")
+
+    def close(self):
+        pass
+
+
+def test_a_non_oserror_body_failure_is_reported_not_raised(tmp_path):
+    """qodo 5 on PR #32: IncompleteRead is an HTTPException, not an OSError."""
+    items = fetch.plan_prefetch(_fake_pins(), platform_tag="aarch64", cache_dir=tmp_path)
+    weights = [i for i in items if i.kind == "weights"]
+    problems = fetch.prefetch(
+        weights,
+        cache_dir=tmp_path,
+        opener=lambda request: _IncompleteResponse(),
+        runner=lambda a: 0,
+    )
+    assert [p.code for p in problems] == ["download_failed"]
+
+
+def test_redirects_are_followed_only_to_https():
+    """qodo 7 on PR #32: the CDN hop is allowed, a downgrade to http is not."""
+    from urllib.error import HTTPError
+    from urllib.request import Request
+
+    handler = fetch._HttpsOnlyRedirects()
+    request = Request("https://huggingface.co/x/resolve/abc/f.bin")
+    followed = handler.redirect_request(request, None, 302, "Found", {}, "https://cdn.example/f")
+    assert followed.full_url == "https://cdn.example/f"
+    with pytest.raises(HTTPError):
+        handler.redirect_request(request, None, 302, "Found", {}, "http://cdn.example/f")

@@ -110,7 +110,7 @@ def default_runner(argv: list[str], timeout: float) -> tuple[int, str]:
             check=False,
         )
         return (proc.returncode, proc.stdout)
-    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+    except (subprocess.TimeoutExpired, OSError):  # FileNotFoundError is an OSError
         return (127, "")
 
 
@@ -125,106 +125,82 @@ def _scrub(value: str) -> str:
     return cleaned[:40]
 
 
+_UNIT_SUFFIX = ".service"
+
+
 def _parse_services(output: str) -> list[str]:
-    """Extract service names from systemctl list-units output."""
-    candidates: list[str] = []
-    for line in output.splitlines():
-        stripped = line.strip()
-        if not stripped:
-            continue
-        token = stripped.split()[0]
-        if token.endswith(".service"):
-            candidates.append(token)
-    return candidates
+    """Unit names from ``systemctl list-units --plain`` output."""
+    tokens = (line.split()[0] for line in output.splitlines() if line.split())
+    return [token for token in tokens if token.endswith(_UNIT_SUFFIX)]
 
 
 def _parse_containers(output: str) -> list[str]:
-    """Extract container names from docker ps --format output."""
-    candidates: list[str] = []
-    for line in output.splitlines():
-        stripped = line.strip()
-        if stripped:
-            candidates.append(stripped)
-    return candidates
+    """Container names from ``docker ps --format {{.Names}}`` output."""
+    return [line.strip() for line in output.splitlines() if line.strip()]
 
 
-def _match_service(value: str, candidates: list[str]) -> Grounded | GroundDecline:
-    """Try to ground a service value against *candidates*.
+@dataclass(frozen=True)
+class _Kind:
+    """How one groundable argument is looked up, matched and reported."""
 
-    Collects ALL matching candidates (both direct and augmented forms),
-    then checks for ambiguity before deciding.
+    lookup_argv: tuple[str, ...]
+    parse: Callable[[str], list[str]]
+    wanted: Callable[[str], tuple[str, ...]]
+    noun: str
+    plural: str
+
+
+def _service_names(value: str) -> tuple[str, ...]:
+    """A service matches as given or with the unit suffix added ('vllm' -> 'vllm.service')."""
+    return (value, value + _UNIT_SUFFIX)
+
+
+_KINDS: dict[str, _Kind] = {
+    "service": _Kind(
+        tuple(SERVICE_LOOKUP_ARGV), _parse_services, _service_names, "service", "services"
+    ),
+    "container": _Kind(
+        tuple(CONTAINER_LOOKUP_ARGV),
+        _parse_containers,
+        lambda value: (value,),
+        "container",
+        "containers",
+    ),
+}
+
+
+def _match(value: str, candidates: list[str], kind: _Kind) -> str | GroundDecline:
+    """The machine's own spelling of *value*, or a decline.
+
+    Exact, case-insensitive comparison only -- no substring, prefix or fuzzy
+    match. EVERY candidate is examined before a match is returned, so two
+    names that differ only by case are reported as ambiguous instead of the
+    first one listed winning (which, for ``container_restart``, would let
+    ``docker ps`` ordering pick the target).
     """
-    value_folded = value.casefold()
-    all_matches: list[str] = []
-
-    # 1. Exact match (case-insensitive) of value against a candidate
-    for candidate in candidates:
-        if candidate.casefold() == value_folded:
-            all_matches.append(candidate)
-
-    # 2. For services: value + ".service" against a candidate
-    if not value.endswith(".service"):
-        augmented_folded = (value + ".service").casefold()
-        for candidate in candidates:
-            if candidate.casefold() == augmented_folded:
-                all_matches.append(candidate)
-
-    # Deduplicate while preserving order
-    seen: set[str] = set()
-    unique_matches: list[str] = []
-    for m in all_matches:
-        if m not in seen:
-            seen.add(m)
-            unique_matches.append(m)
-
-    # 3. Check for ambiguity
-    if len(unique_matches) > 1:
-        matches_sorted = sorted(unique_matches)
+    wanted = {name.casefold() for name in kind.wanted(value)}
+    matches = sorted({candidate for candidate in candidates if candidate.casefold() in wanted})
+    if len(matches) == 1:
+        return matches[0]
+    if matches:
         return GroundDecline(
-            code="ambiguous",
-            message=f"{value} matches: {', '.join(matches_sorted)}",
+            code="ambiguous", message=f"{_scrub(value)} matches: {', '.join(matches)}"
         )
-
-    # 4. Single match
-    if len(unique_matches) == 1:
-        return Grounded(args={"service": unique_matches[0]})
-
-    # 5. No match
-    shown = _scrub(value)
     return GroundDecline(
-        code="no_such_service",
-        message=f"no such service: {shown}",
+        code=f"no_such_{kind.noun}", message=f"no such {kind.noun}: {_scrub(value)}"
     )
 
 
-def _match_container(value: str, candidates: list[str]) -> Grounded | GroundDecline:
-    """Try to ground a container value against *candidates*."""
-    value_folded = value.casefold()
-
-    # Exact match (case-insensitive)
-    for candidate in candidates:
-        if candidate.casefold() == value_folded:
-            return Grounded(args={"container": candidate})
-
-    # Check for ambiguity
-    matches: list[str] = []
-    for candidate in candidates:
-        if candidate.casefold() == value_folded:
-            matches.append(candidate)
-
-    if len(matches) > 1:
-        matches_sorted = sorted(matches)
-        return GroundDecline(
-            code="ambiguous",
-            message=f"{value} matches: {', '.join(matches_sorted)}",
-        )
-
-    # No match
-    shown = _scrub(value)
-    return GroundDecline(
-        code="no_such_container",
-        message=f"no such container: {shown}",
-    )
+def _lookup(kind: _Kind, runner: Runner) -> list[str] | GroundDecline:
+    failed = GroundDecline(code="lookup_failed", message=f"could not list {kind.plural}")
+    try:
+        exit_code, output = runner(list(kind.lookup_argv), LOOKUP_TIMEOUT)
+    except Exception:  # noqa: BLE001
+        # The runner is injectable; whatever it raises is a failed lookup.
+        return failed
+    if exit_code != 0 or not isinstance(output, str):
+        return failed
+    return kind.parse(output)
 
 
 # ---------------------------------------------------------------------------
@@ -237,81 +213,28 @@ def ground(
     args: dict[str, str],
     runner: Runner = default_runner,
 ) -> Grounded | GroundDecline:
-    """Ground the *service* / *container* arguments on *operation*.
+    """Ground the ``service`` / ``container`` arguments *operation* declares.
 
-    Rules
-    -----
-    1. Only arguments named ``"service"`` and ``"container"`` are
-       grounded.  Every other argument is copied unchanged.
-    2. A ``"service"`` argument triggers a systemctl lookup;
-       a ``"container"`` argument triggers a docker lookup.
-    3. Matching is case-insensitive, exact only (no substring / fuzzy).
-    4. ``ground()`` never raises — the runner's exception is caught.
-    5. ``ground()`` never builds a shell string and never passes the
-       untrusted value to the runner.
+    Every other argument is copied unchanged, and an operation that declares
+    neither never calls the runner. The untrusted value is only ever COMPARED
+    with the lookup output: it is never passed to the runner and never put in
+    a shell string. Never raises.
     """
-    # Build the grounded result dict
+    declared = {spec.name for spec in operation.args}
     result: dict[str, str] = dict(args)
-    grounded_keys: list[str] = []
-
-    for key in ("service", "container"):
-        if key not in args:
+    for key, kind in _KINDS.items():
+        if key not in declared or key not in args:
             continue
-
         value = args[key]
-
-        # Non-string value — can't ground it; decline.
         if not isinstance(value, str):
             return GroundDecline(
-                code="lookup_failed",
-                message=f"grounding {key!r} requires a string value, not {type(value).__name__}",
+                code="lookup_failed", message=f"{key} must be a string to be grounded"
             )
-        grounded_keys.append(key)
-
-        # Select the right lookup argv
-        if key == "service":
-            lookup_argv = SERVICE_LOOKUP_ARGV
-        else:
-            lookup_argv = CONTAINER_LOOKUP_ARGV
-
-        # Run the lookup
-        try:
-            exit_code, output = runner(lookup_argv, LOOKUP_TIMEOUT)
-        except Exception:  # noqa: BLE001
-            # Runner itself failed → decline
-            return GroundDecline(
-                code="lookup_failed",
-                message=f"lookup failed for {key}",
-            )
-
-        # Non-zero exit → failure
-        if exit_code != 0:
-            if key == "service":
-                return GroundDecline(
-                    code="lookup_failed",
-                    message="could not list services",
-                )
-            else:
-                return GroundDecline(
-                    code="lookup_failed",
-                    message="could not list containers",
-                )
-
-        # Parse candidates
-        if key == "service":
-            candidates = _parse_services(output)
-        else:
-            candidates = _parse_containers(output)
-
-        # Match
-        if key == "service":
-            match_result = _match_service(value, candidates)
-        else:
-            match_result = _match_container(value, candidates)
-
-        if isinstance(match_result, GroundDecline):
-            return match_result
-        elif isinstance(match_result, Grounded):
-            result.update(match_result.args)
-
+        candidates = _lookup(kind, runner)
+        if isinstance(candidates, GroundDecline):
+            return candidates
+        matched = _match(value, candidates, kind)
+        if isinstance(matched, GroundDecline):
+            return matched
+        result[key] = matched
     return Grounded(args=result)

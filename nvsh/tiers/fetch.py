@@ -13,10 +13,13 @@ the upstream ``cactus-needle`` package downloads its weights via
 ``hf_hub_download(..., filename="config.json", force_download=True)``
 purely as a download counter (see the module docstring's scope note s15),
 and ships telemetry on by default. Pulling files ourselves with stdlib
-``urllib`` avoids both: nvsh only ever opens
+``urllib`` avoids both: nvsh only ever *requests*
 ``https://huggingface.co/<repo>/resolve/<revision>/<filename>`` URLs built
 from :data:`pins.json <PINS_PATH>`, and only when :func:`prefetch` is asked
-to fetch something missing.
+to fetch something missing. huggingface.co answers those with a redirect to
+its storage CDN, which is followed (https only); the bytes are trusted
+because their size and sha256 match the pin, not because of the host that
+served them.
 
 Cache layout: ``$XDG_CACHE_HOME/nvsh/tiers/`` (falling back to
 ``$HOME/.cache/nvsh/tiers/``), directory mode ``0700``. Downloads land in a
@@ -36,8 +39,9 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Mapping
+from urllib.error import HTTPError
 from urllib.parse import urlsplit
-from urllib.request import Request
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 PINS_PATH = Path(__file__).resolve().parent / "pins.json"
 
@@ -260,7 +264,8 @@ def _download(item: PrefetchItem, dest_dir: Path, opener: OpenerFn) -> FetchProb
         request = Request(item.source, headers={"User-Agent": "nvsh-tiers-fetch"})
         try:
             response = opener(request)  # nosec B310 - scheme/host validated above
-        except Exception as exc:  # noqa: BLE001 - any transport failure is reported, not raised
+        except Exception as exc:  # noqa: BLE001
+            # Any transport failure is reported, not raised.
             return FetchProblem(
                 item=item.name, code="download_failed", message=f"download failed: {exc}"
             )
@@ -280,7 +285,9 @@ def _download(item: PrefetchItem, dest_dir: Path, opener: OpenerFn) -> FetchProb
                         break
                     out.write(chunk)
                     digest.update(chunk)
-        except OSError as exc:
+        except Exception as exc:  # noqa: BLE001
+            # http.client.IncompleteRead and friends are not OSError; whatever
+            # breaks the body read is reported, never raised.
             return FetchProblem(
                 item=item.name, code="download_failed", message=f"download failed: {exc}"
             )
@@ -338,11 +345,9 @@ def prefetch(
     confirm = confirm if confirm is not None else (lambda _item: True)
 
     problems: list[FetchProblem] = []
-
     for item in items:
         if item.present:
             continue
-
         if not item.source:
             problems.append(
                 FetchProblem(
@@ -352,45 +357,52 @@ def prefetch(
                 )
             )
             continue
-
         if not confirm(item):
             continue
-
         if item.kind == "image":
-            ref, _, digest = item.source.partition("@")
-            argv = ["docker", "pull", f"{ref}@{digest}"]
-            try:
-                returncode = runner(argv)
-            except Exception as exc:  # noqa: BLE001 - report, never raise
-                problems.append(
-                    FetchProblem(
-                        item=item.name,
-                        code="download_failed",
-                        message=f"docker pull failed: {exc}",
-                    )
-                )
-                continue
-            if returncode != 0:
-                problems.append(
-                    FetchProblem(
-                        item=item.name,
-                        code="download_failed",
-                        message=f"docker pull exited {returncode}",
-                    )
-                )
-            continue
-
-        problem = _download(item, cache_dir, opener)
+            problem = _pull_image(item, runner)
+        else:
+            problem = _download(item, cache_dir, opener)
         if problem is not None:
             problems.append(problem)
-
     return problems
 
 
-def _default_opener(request: Request):  # pragma: no cover - exercised only via real network
-    from urllib.request import urlopen
+def _pull_image(item: PrefetchItem, runner: RunnerFn) -> FetchProblem | None:
+    ref, _, digest = item.source.partition("@")
+    try:
+        returncode = runner(["docker", "pull", f"{ref}@{digest}"])
+    except Exception as exc:  # noqa: BLE001
+        # Report, never raise.
+        return FetchProblem(
+            item=item.name, code="download_failed", message=f"docker pull failed: {exc}"
+        )
+    if returncode != 0:
+        return FetchProblem(
+            item=item.name, code="download_failed", message=f"docker pull exited {returncode}"
+        )
+    return None
 
-    return urlopen(request, timeout=60)  # nosec B310 - scheme/host validated in _download
+
+class _HttpsOnlyRedirects(HTTPRedirectHandler):
+    """Follow a redirect only to another https:// URL.
+
+    huggingface.co answers a ``resolve`` URL with a redirect to its storage
+    CDN, so redirects have to be followed and the final host is not pinned.
+    What is pinned is the content: the size and sha256 from ``pins.json`` are
+    checked before a file is accepted, whichever host served it. The scheme
+    is still held to https so the transfer cannot be downgraded to plain http.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: PLR0913
+        if urlsplit(newurl).scheme != "https":
+            raise HTTPError(newurl, code, "redirect to a non-https URL refused", headers, fp)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def _default_opener(request: Request):  # pragma: no cover - exercised only via real network
+    opener = build_opener(_HttpsOnlyRedirects)
+    return opener.open(request, timeout=60)  # nosec B310
 
 
 def _default_runner(argv: list[str]) -> int:  # pragma: no cover - exercised only with real docker
@@ -411,7 +423,10 @@ _verify_cache: dict[tuple[str, float, int], str] = {}
 
 def _verified_sha256(path: Path) -> str:
     stat = path.stat()
-    key = (str(path), stat.st_mtime, stat.st_size)
+    # st_ctime_ns and st_ino cannot be set from user space, unlike mtime: a
+    # file swapped or edited in place always changes at least one of them, so
+    # a cached verdict can never vouch for different bytes.
+    key = (str(path), stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
     cached = _verify_cache.get(key)
     if cached is not None:
         return cached
