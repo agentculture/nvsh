@@ -146,6 +146,16 @@ def _system_fallback(
     return None
 
 
+def _safe_argument(value: object) -> bool:
+    """True when *value* can sit in an argv slot without being read as an option."""
+    return (
+        isinstance(value, str)
+        and value != ""
+        and not value.startswith("-")
+        and all(ch.isprintable() for ch in value)
+    )
+
+
 def render(operation_name: str, args: dict[str, str], platform: Platform) -> list[str] | None:
     """Render *operation_name* with *args* into an argv list for *platform*.
 
@@ -153,6 +163,12 @@ def render(operation_name: str, args: dict[str, str], platform: Platform) -> lis
     single, non-shell, exiting command exists for this operation on this
     platform. ``args`` must already have passed ``nvsh.ops.table.validate()``.
     """
+    if not all(_safe_argument(value) for value in args.values()):
+        # Defence in depth behind grounding: a value that starts with "-"
+        # would be read as an OPTION by systemctl/docker/journalctl even
+        # though it is a single argv element.
+        return None
+
     if operation_name == "nvsh_doctor":
         # nvsh's own doctor verb: always available, never platform- or
         # device-CLI-dependent.

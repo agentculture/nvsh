@@ -370,3 +370,23 @@ def test_thermal_stats_is_none_without_a_device_cli_that_has_the_verb(platform):
 @pytest.mark.parametrize("platform", [SPARK_ABSENT, JETSON_ABSENT, RTX, GENERIC, ORIN_PRESENT])
 def test_machine_status_is_none_without_a_device_cli_that_has_the_verb(platform):
     assert render("machine_status", {}, platform) is None
+
+
+@pytest.mark.parametrize("value", ["-f", "--now", "-f --rm", "", "a\nb", "a\x00b"])
+@pytest.mark.parametrize(
+    ("operation", "arg"),
+    [
+        ("service_restart", "service"),
+        ("service_status", "service"),
+        ("service_logs", "service"),
+        ("container_restart", "container"),
+    ],
+)
+def test_option_like_or_unprintable_argument_renders_nothing(operation, arg, value):
+    """One argv element can still be read as an option; refuse it outright."""
+    assert render(operation, {arg: value}, _platform("jetson", thor=True)) is None
+
+
+def test_shell_metacharacters_stay_one_argv_element():
+    argv = render("service_restart", {"service": "x; rm -rf /"}, _platform("generic"))
+    assert argv == ["sudo", "systemctl", "restart", "x; rm -rf /"]
