@@ -387,7 +387,7 @@ that names the target:
 
 | What happened | Header |
 |---|---|
-| A tier answered | `needle` |
+| A tier answered | `needle`, or `lfm` for Tier 2 |
 | No tier answered | `needle -> claude/opus · stream-json · warm` |
 | The tiers were not consulted | `claude/opus · stream-json · warm` |
 
@@ -401,7 +401,11 @@ not repeated.
 **Nothing about approval changes.** A tier's proposal is rendered through the
 same panel and the same approve/execute/verify path an agent's proposal
 takes — the same keys, the same scope patterns, the same refusal of `sudo`
-and destructive commands. The tiers themselves never execute anything.
+and destructive commands. Tier 1 never executes anything. Tier 2, once you
+have configured it, runs **read-only** operations from the table on its own
+while it looks into a request (memory, disk, a unit's status or logs); it
+never runs a mutating one, and anything it wants changed comes to you as a
+proposal. See [`tier2.md`](tier2.md).
 
 **Declining sends it on, but only if you say so.** After you decline what a
 tier proposed, nvsh asks once, `nvsh: send the same request to the full

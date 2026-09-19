@@ -2,7 +2,7 @@
   "plan_slug": "tiered-local-response-with-needle3-and-lfm2-5",
   "schema_version": 2,
   "created": "2026-09-19T14:14:40Z",
-  "updated": "2026-09-19T17:55:22Z",
+  "updated": "2026-09-19T20:47:25Z",
   "deviations": [
     {
       "id": "d1",
@@ -40,6 +40,33 @@
       "status": "approved",
       "classification": "acceptable",
       "seq": 2
+    },
+    {
+      "id": "d3",
+      "what": "PR C ships Tier 2 (LFM2.5) without a tuned Needle3: the tuned model is measured in JAX only and is not loaded by nvsh, and tuned-model loading (tuned pin, operation-table hash check) stays unbuilt until upstream fixes the export",
+      "task_ref": "t23",
+      "reason": "cactus-needle 3.0.2's 'needle build --lora' writes a .cact that does not behave like the trained weights (2 of 30 on its own training set through the engine, against 42 of 53 test picks in JAX); reported as cactus-compute/needle#134; nvsh can only load the exported file, so shipping a tuned Needle3 is blocked by an upstream fault, not by nvsh",
+      "affects": [
+        "t24"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "classification": "needs-follow-up",
+      "seq": 56
+    },
+    {
+      "id": "d4",
+      "what": "PR C ships Tier 2 with the STOCK LFM2.5-350M, which mostly answers in plain words and rarely uses propose or escalate (0 of 53 right proposals, 1 of 27 declines on the test fold; 1.2B-Instruct: 2 of 53, 5 of 27 at 3.4x the latency). Tier 2 stays opt-in and its accuracy targets are recorded as not met; fine-tuning the 350M to use the control tools is the follow-up",
+      "task_ref": "t18",
+      "reason": "measured 2026-09-19 through the real launcher and vLLM on the DGX Spark: the loop, the launcher and tool calling work, the stock model's judgement does not; the operator keeps the small model for its footprint and treats the 1.2B/2.6B as issue 33's full-agent replacement",
+      "affects": [
+        "t24",
+        "c20"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "classification": "needs-follow-up",
+      "seq": 57
     }
   ],
   "evidence": [

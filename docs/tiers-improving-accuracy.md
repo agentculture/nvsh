@@ -172,8 +172,9 @@ file's `world` object, so a score measures the model, not the host it ran on.
 
 - Loading a tuned archive: the tuned pin, the operation-table hash check and
   the config override (`docs/needle-finetune.md`, "Pin it").
-- Tier 2 (the LFM2.5 loop, its container launcher, the `@lfm` adapter) and
-  the LFM2.5 fine-tune recipes — the next pull request.
+- Tier 2 is built (`docs/tier2.md`) but its stock models do not yet use the
+  control tools; the LFM2.5 fine-tune recipe (`docs/lfm-finetune.md`) is
+  written and has not been run. `nvsh tiers bench` has no Tier 2 option yet.
 - Memory measurements on an Orin-class device, and llama.cpp as the engine
   for the 8 GB budget.
 - The larger edge-agent goal (LFM2.5-1.2B/2.6B answering from a maintained

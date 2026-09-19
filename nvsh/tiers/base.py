@@ -236,7 +236,11 @@ def decide(
 
 
 class Tier(abc.ABC):
-    """A local response tier: proposes a decision, never executes anything.
+    """A local response tier: proposes a decision, never executes one.
+
+    What a tier *returns* is never run by the tier. Tier 2 does run read-only
+    operations from the table while it looks into a request (grounded,
+    rendered by ``nvsh.ops``, with a timeout); it never runs a mutating one.
 
     ``select()`` is the only way a tier speaks: it returns a
     :class:`TierDecision` or a :class:`Decline`, both inert data. No ``Tier``

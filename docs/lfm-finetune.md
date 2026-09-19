@@ -52,8 +52,11 @@ training. The builder refuses it by name.
 
 Start from the smallest post-trained LFM2.5 that passes the stock baseline
 (230M or 350M; 1.2B only if both fail), because Tier 2 must stay resident on
-an 8 GB device. Confirm the exact repository id on the publisher's Hugging
-Face page; do not guess it.
+an 8 GB device. Ids seen on the publisher's Hugging Face page on 2026-09-19:
+`LiquidAI/LFM2.5-230M`, `LiquidAI/LFM2.5-350M` (each with a `-Base` and a
+`-GGUF` sibling) and `LiquidAI/LFM2.5-1.2B-Instruct`. The stock baseline is in
+[`tier2.md`](tier2.md): both sizes fail the same way (they answer in words
+instead of calling `propose` or `escalate`), so tune the 350M.
 
 ## Route 1: unsloth (Python)
 
