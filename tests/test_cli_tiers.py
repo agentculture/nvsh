@@ -269,7 +269,8 @@ def test_tiers_export_force_tightens_a_wide_mode_file(tmp_path):
 def test_tiers_export_into_a_missing_directory_is_a_user_error(tmp_path, capsys):
     rc = main(["tiers", "export", str(tmp_path / "nope" / "bundle.json"), "--json"])
     err = json.loads(capsys.readouterr().err)
-    assert (rc, "hint" in err or "remediation" in err) == (1, True)
+    assert rc == 1
+    assert "remediation" in err
 
 
 # ---------------------------------------------------------------------------
@@ -402,7 +403,8 @@ def test_tiers_prefetch_with_nothing_missing_needs_no_confirmation(monkeypatch, 
 
     monkeypatch.setattr(fetch, "plan_prefetch", lambda *a, **k: [])
     rc = main(["tiers", "prefetch", "--json"])
-    assert (rc, json.loads(capsys.readouterr().out)) == (0, {"items": [], "problems": []})
+    assert rc == 0
+    assert json.loads(capsys.readouterr().out) == {"items": [], "problems": []}
 
 
 def test_stats_survive_a_hand_edited_record_with_a_garbage_latency():

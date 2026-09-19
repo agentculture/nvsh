@@ -394,7 +394,8 @@ def test_worker_points_home_and_lib_at_the_staged_files(monkeypatch, tmp_path):
     """$HOME and NEEDLE3_LIB_PATH are in place before the library can look."""
     spec = needle_worker.EngineSpec(lib=str(tmp_path / "libneedle3.so"), home=str(tmp_path))
     seen = _env_at_import(monkeypatch, spec)
-    assert (seen.get("HOME"), seen.get("NEEDLE3_LIB_PATH")) == (spec.home, spec.lib)
+    assert seen.get("HOME") == spec.home
+    assert seen.get("NEEDLE3_LIB_PATH") == spec.lib
 
 
 class _FakeNeedle:

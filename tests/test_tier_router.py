@@ -147,11 +147,9 @@ def test_tier1_decline_record_names_the_reason_and_the_next_tier(records):
     tier2 = FakeTier([_pick("service_restart", {"service": "nginx"})], name="lfm")
     list(_router(records, tier1, tier2).route(_request(), _context()))
     first = records.read_all()[0]
-    assert (first["tier"], first["decline_reason"], first["escalated_to"]) == (
-        "needle",
-        "no_call",
-        "lfm",
-    )
+    assert first["tier"] == "needle"
+    assert first["decline_reason"] == "no_call"
+    assert first["escalated_to"] == "lfm"
 
 
 def test_declined_by_both_escalates_to_the_full_agent(records):
@@ -159,7 +157,8 @@ def test_declined_by_both_escalates_to_the_full_agent(records):
     tier2 = FakeTier([Decline(DeclineReason.LOOP_LIMIT)], name="lfm")
     route = _router(records, tier1, tier2).route(_request(), _context())
     list(route)
-    assert (route.outcome.handled_by, route.outcome.escalated_to) == (None, AGENT)
+    assert route.outcome.handled_by is None
+    assert route.outcome.escalated_to == AGENT
 
 
 def test_declined_by_both_records_each_tier_with_its_reason(records):
@@ -502,7 +501,8 @@ def test_the_verifier_numbers_ride_the_status_event(records):
     tier1 = FakeTier([_pick("service_restart", {"service": "nginx"})], "needle")
     events = list(_router(records, tier1, verifier=verifier).route(_request(), _context()))
     status = [e for e in events if e.kind == EventKind.STATUS][0]
-    assert (status.args.get("p_yes"), status.args.get("calibrated")) == (0.9, 1.5)
+    assert status.args.get("p_yes") == 0.9
+    assert status.args.get("calibrated") == 1.5
 
 
 def test_the_verifier_is_not_consulted_for_tier2(records):
@@ -643,7 +643,8 @@ def test_a_failed_baseline_measurement_is_retried_on_the_next_request():
     pick = _pick("service_restart", {"service": "nginx.service"})
     first = verifier.verify("restart nginx", pick)
     second = verifier.verify("restart nginx", pick)
-    assert (first, second is not None) == (None, True)
+    assert first is None
+    assert second is not None
 
 
 def test_the_verifier_numbers_land_in_the_tier1_record(records):

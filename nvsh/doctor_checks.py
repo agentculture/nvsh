@@ -1021,6 +1021,19 @@ def check_default_target_not_demo(config: Config | None) -> dict:
             "[aliases].default resolves to demo, a scripted fixture -- not a real backend",
             "run `nvsh agent use <name>` with a real backend (see `nvsh agent list`)",
         )
+    if backend in agent_registry.NOT_PERSISTABLE_DEFAULT:
+        # The check keeps its id (consumers key on it), but the rule is the
+        # registry's: whatever may not be persisted as the default -- today
+        # also ``needle``, which answers only what Tier 1 can -- fails here
+        # when a hand-edited or older config names it.
+        message = agent_registry.NOT_PERSISTABLE_DEFAULT_REASONS[backend][0]
+        return _check(
+            "default_target_not_demo",
+            False,
+            "error",
+            f"[aliases].default resolves to {backend}: {message}",
+            "run `nvsh agent use <name>` with a real backend (see `nvsh agent list`)",
+        )
     return _check(
         "default_target_not_demo",
         True,

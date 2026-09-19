@@ -481,10 +481,8 @@ def test_a_disabled_daemon_answers_a_tier_request_with_escalate(tmp_path: Path) 
 
 
 def test_the_daemon_and_the_manager_agree_on_the_outcome_names() -> None:
-    assert (daemon_mod.TIER_HANDLED, daemon_mod.TIER_ESCALATE) == (
-        manager_mod.HANDLED,
-        manager_mod.ESCALATE,
-    )
+    assert daemon_mod.TIER_HANDLED == manager_mod.HANDLED
+    assert daemon_mod.TIER_ESCALATE == manager_mod.ESCALATE
 
 
 def test_a_tier_answer_returns_while_another_shell_holds_the_run_lock(tmp_path: Path) -> None:
@@ -639,7 +637,8 @@ def test_ask_tiers_over_the_socket_reports_the_tier_that_answered(tmp_path: Path
     next(server)
     reply = client_transport.ask_tiers(_request(), AgentContext(), env=daemon.env)
     next(server, None)
-    assert (reply.outcome, reply.tier) == (daemon_mod.TIER_HANDLED, "fake")
+    assert reply.outcome == daemon_mod.TIER_HANDLED
+    assert reply.tier == "fake"
 
 
 def test_ask_tiers_over_the_socket_streams_the_proposal(tmp_path: Path) -> None:

@@ -634,7 +634,8 @@ def test_cli_bench_needle_tier_without_its_files_escalates_everything(
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
     rc = main(["tiers", "bench", "--tier", "needle", "--json"])
     payload = json.loads(capsys.readouterr().out)
-    assert (rc, payload["accuracy"]["operation_correct"]) == (0, 0)
+    assert rc == 0
+    assert payload["accuracy"]["operation_correct"] == 0
 
 
 def test_cli_bench_unknown_tier_is_a_user_error():
@@ -676,7 +677,8 @@ def test_the_fixture_world_runs_nothing_else():
 
 def test_the_fixture_platform_carries_the_corpus_device_cli():
     platform = bench_mod.world_platform({"platform": "jetson", "device_cli": "thor"})
-    assert (platform.kind, platform.get("thor_cli").text) == ("jetson", "thor")
+    assert platform.kind == "jetson"
+    assert platform.get("thor_cli").text == "thor"
 
 
 def test_a_corpus_without_a_world_is_an_empty_world(tmp_path):
