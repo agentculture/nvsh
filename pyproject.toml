@@ -28,11 +28,11 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["nvsh"]
-include = ["nvsh/shell/*.bash", "nvsh/agent/pi_ext/*.ts", "nvsh/agent/*.json"]
-# The bash integration, the pi approval extension and the demo adapter's
-# fixture are data, not Python: name them explicitly or hatchling leaves
-# them out of the wheel.
-artifacts = ["nvsh/shell/*.bash", "nvsh/agent/pi_ext/*.ts", "nvsh/agent/*.json"]
+include = ["nvsh/shell/*.bash", "nvsh/agent/pi_ext/*.ts", "nvsh/agent/*.json", "nvsh/tiers/*.json"]
+# The bash integration, the pi approval extension, the demo adapter's
+# fixture and the tier fetch pins are data, not Python: name them
+# explicitly or hatchling leaves them out of the wheel.
+artifacts = ["nvsh/shell/*.bash", "nvsh/agent/pi_ext/*.ts", "nvsh/agent/*.json", "nvsh/tiers/*.json"]
 
 [dependency-groups]
 dev = [
