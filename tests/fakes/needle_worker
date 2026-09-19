@@ -1,0 +1,121 @@
+#!/usr/bin/env python3
+"""Fake Needle worker: speaks the length-prefixed JSON frame protocol.
+
+Never imports ``nvsh`` (so the protocol is proven independently of the
+parent's own codec) and never imports ``needle`` (so the tests run with
+``cactus-needle`` absent).
+
+Driven by two environment variables:
+
+* ``NVSH_TEST_NEEDLE_PIDS`` -- a file this worker appends its own pid to on
+  startup, one per line. The number of lines already present is this
+  worker's *launch index*, which is how a test tells a restarted child from
+  the first one.
+* ``NVSH_TEST_NEEDLE_SCRIPT`` -- a JSON array of arrays: one inner array of
+  behaviours per launch, one behaviour per request received. The last entry
+  of an inner array is reused once it runs out, and a launch index past the
+  end of the outer array reuses its last entry too.
+
+A behaviour is either an object (answered as
+``{"ok": true, "calls": ..., "confidence": ...}``, or as
+``{"ok": false, "error": ...}`` when it carries ``"error"``) or one of the
+strings:
+
+* ``"die"``     -- exit without answering (the child dies mid-request);
+* ``"hang"``    -- never answer (the child hangs);
+* ``"garbage"`` -- answer with a well-framed payload that is not JSON;
+* ``"huge"``    -- answer with a length header far beyond the frame bound.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import struct
+import sys
+import time
+
+HEADER = struct.Struct(">I")
+
+
+def launch_index() -> int:
+    """Append this pid to the pid file and return how many came before."""
+    path = os.environ["NVSH_TEST_NEEDLE_PIDS"]
+    existing = 0
+    if os.path.exists(path):
+        with open(path, encoding="utf-8") as handle:
+            existing = len([line for line in handle.read().splitlines() if line.strip()])
+    with open(path, "a", encoding="utf-8") as handle:
+        handle.write(f"{os.getpid()}\n")
+    return existing
+
+
+def behaviours(index: int) -> list:
+    script = json.loads(os.environ.get("NVSH_TEST_NEEDLE_SCRIPT", "[[{}]]"))
+    if not script:
+        return [{}]
+    return script[min(index, len(script) - 1)] or [{}]
+
+
+def read_frame(stream) -> dict | None:
+    header = stream.read(HEADER.size)
+    if not header or len(header) < HEADER.size:
+        return None
+    size = HEADER.unpack(header)[0]
+    payload = stream.read(size)
+    if payload is None or len(payload) < size:
+        return None
+    return json.loads(payload.decode("utf-8"))
+
+
+def write_frame(stream, message: dict) -> None:
+    payload = json.dumps(message).encode("utf-8")
+    stream.write(HEADER.pack(len(payload)) + payload)
+    stream.flush()
+
+
+def answer(stream, request_id, behaviour) -> None:
+    if behaviour == "die":
+        sys.exit(9)
+    if behaviour == "hang":
+        while True:
+            time.sleep(0.05)
+    if behaviour == "garbage":
+        payload = b"not json at all"
+        stream.write(HEADER.pack(len(payload)) + payload)
+        stream.flush()
+        return
+    if behaviour == "huge":
+        stream.write(HEADER.pack(64 * 1024 * 1024))
+        stream.flush()
+        return
+    if "error" in behaviour:
+        write_frame(stream, {"id": request_id, "ok": False, "error": behaviour["error"]})
+        return
+    write_frame(
+        stream,
+        {
+            "id": request_id,
+            "ok": True,
+            "calls": behaviour.get("calls", []),
+            "confidence": behaviour.get("confidence"),
+        },
+    )
+
+
+def main() -> int:
+    out = os.fdopen(os.dup(sys.stdout.fileno()), "wb", buffering=0)
+    os.dup2(sys.stderr.fileno(), sys.stdout.fileno())
+    script = behaviours(launch_index())
+    seen = 0
+    while True:
+        request = read_frame(sys.stdin.buffer)
+        if request is None or request.get("op") == "shutdown":
+            return 0
+        behaviour = script[min(seen, len(script) - 1)]
+        seen += 1
+        answer(out, request.get("id"), behaviour)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
