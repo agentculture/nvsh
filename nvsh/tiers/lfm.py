@@ -57,6 +57,7 @@ from ..ops._model import ArgSpec, Operation
 from ..ops.render import render as render_argv
 from ..platform._model import Platform
 from ..redact import redact
+from ._bounded import bounded_cut
 from .base import Decline, DeclineReason, Explanation, Tier, TierDecision, decide
 from .memfloor import FloorResult
 from .runtime import Runtime, RuntimeUnavailable
@@ -82,6 +83,10 @@ EXPLANATION_CHARS = 2000
 OUTPUT_TAIL_CHARS = 1500
 REQUEST_CHARS = 1500
 LABEL_CHARS = 200
+#: How much of one *argument value* survives when the serialised arguments do
+#: not fit :data:`LABEL_CHARS`. Small enough that several clamped values still
+#: fit the label bound together.
+ARG_VALUE_CHARS = 60
 COMMAND_CHARS = 400
 REASON_CHARS = 400
 KIND_CHARS = 64
@@ -120,6 +125,11 @@ _SYSTEM_BRIEF = (
 )
 
 _NO_USABLE_OUTPUT = "the model produced no usable output"
+
+#: What an assistant turn echoes when even the clamped arguments do not fit:
+#: valid JSON, so the conversation replays, and self-describing, so the model
+#: can see why its own call came back shortened.
+_DROPPED_ARGUMENTS = json.dumps({"_arguments_dropped": True})
 
 ChatFactory = Callable[[str], "ChatLike"]
 FloorFn = Callable[[], FloorResult]
@@ -166,10 +176,15 @@ def _redacted(text: object, limit: int, *, tail: bool = False) -> str:
     :data:`REDACT_SLACK` for why that order is not optional) and again after
     it. ``tail=True`` keeps the end of the text rather than its start, which
     is what a failed command's output needs: the error is at the bottom.
+
+    Cutting first would break the one redaction rule that needs a whole
+    multi-line structure, so the cut goes through
+    :func:`~nvsh.tiers._bounded.bounded_cut`, which replaces a private-key
+    block the cut split with a fixed placeholder.
     """
     raw = text if isinstance(text, str) else str(text)
     window = limit + REDACT_SLACK
-    cut = raw[-window:] if tail else raw[:window]
+    cut = bounded_cut(raw, window, tail=tail)
     cleaned = redact(cut.encode("utf-8", "replace")).decode("utf-8", "replace")
     return _clamp_tail(cleaned, limit) if tail else _clamp(cleaned, limit)
 
@@ -573,12 +588,40 @@ class LfmTier(Tier):
 # ---------------------------------------------------------------------------
 
 
+def _clamped_values(arguments: Mapping[str, Any]) -> dict[str, Any]:
+    """*arguments* with every long string value cut, keys and shape intact."""
+    return {
+        str(name): _clamp(value, ARG_VALUE_CHARS) if isinstance(value, str) else value
+        for name, value in arguments.items()
+    }
+
+
+def _bounded_arguments(arguments: object) -> str:
+    """The call's arguments as JSON that is **always parseable** and bounded.
+
+    Clamping the serialised form as plain text would cut mid-token and hand
+    the server invalid JSON in the assistant message replayed on the next
+    round, which a strict server may reject outright. So an oversized
+    argument set is re-serialised with its long string *values* clamped, and
+    if that is still too long it degrades to a valid one-key object saying
+    the arguments were dropped. ``json.loads`` succeeds on every branch.
+    """
+    raw = json.dumps(arguments, default=str)
+    if len(raw) <= LABEL_CHARS:
+        return raw
+    if isinstance(arguments, Mapping):
+        raw = json.dumps(_clamped_values(arguments), default=str)
+        if len(raw) <= LABEL_CHARS:
+            return raw
+    return _DROPPED_ARGUMENTS
+
+
 def _record(call: ToolCall, index: int, result: str, inspection: tuple[str, str] | None) -> _Round:
     """One round's echo and result, with every part already bounded."""
     return _Round(
         call_id=f"call_{index}",
         name=_clamp(str(call.name), LABEL_CHARS),
-        arguments=_clamp(json.dumps(call.arguments, default=str), LABEL_CHARS),
+        arguments=_bounded_arguments(call.arguments),
         result=result,
         inspection=inspection,
     )
