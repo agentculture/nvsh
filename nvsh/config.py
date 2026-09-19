@@ -26,6 +26,7 @@ import os
 import re
 import stat
 import tomllib
+import urllib.parse
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Mapping
@@ -87,6 +88,9 @@ _VALID_TIERS_LFM_KEYS = {"engine", "mode", "base_url", "model"}
 
 #: Accepted engines for ``[tiers.lfm]``.
 _TIERS_LFM_ENGINES = ("llama-server", "vllm", "sglang")
+
+#: Hosts a ``[tiers.lfm] base_url`` may name.
+_LOCALHOST_NAMES = frozenset({"127.0.0.1", "localhost", "::1"})
 
 #: Accepted modes for ``[tiers.lfm]``.
 _TIERS_LFM_MODES = ("managed", "attach")
@@ -230,7 +234,7 @@ opt_in_patterns = []
 # needle_min_confidence = 0.0               # minimum confidence for needle match
 # memory_floor_mb = 1024                    # free memory threshold (MiB)
 # idle_unload_seconds = 900                 # idle time before unloading
-# records_cap_mb = 8                        # memory cap for records (MiB)
+# records_cap_mb = 8                        # disk cap for tier records (MiB)
 # store_request_text = false                # persist full request text
 #
 # [tiers.lfm]
@@ -427,6 +431,24 @@ def _apply_triggers(raw: dict, cfg: Config) -> None:
     cfg.triggers = dict(triggers_table)
 
 
+def _require_localhost_url(value: object) -> None:
+    """Refuse a ``[tiers.lfm] base_url`` whose host is not this machine.
+
+    The host is parsed, never prefix-matched: ``http://localhost.example.com``
+    starts with ``http://localhost`` and is not local.
+    """
+    if not isinstance(value, str):
+        raise ConfigError("[tiers.lfm] base_url must be a string")
+    try:
+        parsed = urllib.parse.urlsplit(value)
+        host = parsed.hostname
+    except ValueError:
+        host = None
+        parsed = None
+    if parsed is None or parsed.scheme != "http" or host not in _LOCALHOST_NAMES:
+        raise ConfigError("[tiers.lfm] base_url must be a localhost URL")
+
+
 def _apply_tiers(raw: dict, cfg: Config) -> None:
     tiers_table = _table(raw, "tiers", "[tiers] must be a table")
     _reject_unknown(tiers_table, _VALID_TIERS_KEYS, "[tiers]")
@@ -455,13 +477,7 @@ def _apply_tiers(raw: dict, cfg: Config) -> None:
                 )
             lfm_base_url = lfm_input.get("base_url")
             if lfm_base_url is not None:
-                if not isinstance(lfm_base_url, str):
-                    raise ConfigError("[tiers.lfm] base_url must be a string")
-                if not (
-                    lfm_base_url.startswith("http://127.0.0.1")
-                    or lfm_base_url.startswith("http://localhost")
-                ):
-                    raise ConfigError("[tiers.lfm] base_url must be a localhost URL")
+                _require_localhost_url(lfm_base_url)
             lfm_model = lfm_input.get("model")
             if lfm_model is not None and not isinstance(lfm_model, str):
                 raise ConfigError("[tiers.lfm] model must be a string")

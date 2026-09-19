@@ -805,3 +805,32 @@ def test_config_without_tiers_dumps_unchanged():
     cfg.agent_provider = "pi"
     text = _dump_toml(cfg)
     assert "[tiers]" not in text
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://localhost.example.com/v1",
+        "http://127.0.0.1.example.com/v1",
+        "http://localhost@example.com/v1",
+        "https://localhost:8080/v1",
+        "http://[::1",
+        "localhost:8080",
+    ],
+)
+def test_tiers_lfm_base_url_host_is_parsed_not_prefix_matched(xdg_home, url):
+    cfg_dir = xdg_home / "nvsh"
+    cfg_dir.mkdir(parents=True)
+    (cfg_dir / "config.toml").write_text(f'[tiers.lfm]\nbase_url = "{url}"\n', encoding="utf-8")
+    with pytest.raises(ConfigError, match="localhost URL"):
+        load()
+
+
+@pytest.mark.parametrize(
+    "url", ["http://127.0.0.1:8080/v1", "http://localhost:9000/v1", "http://[::1]:8080/v1"]
+)
+def test_tiers_lfm_base_url_accepts_local_hosts(xdg_home, url):
+    cfg_dir = xdg_home / "nvsh"
+    cfg_dir.mkdir(parents=True)
+    (cfg_dir / "config.toml").write_text(f'[tiers.lfm]\nbase_url = "{url}"\n', encoding="utf-8")
+    assert load().tiers["lfm"]["base_url"] == url

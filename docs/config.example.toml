@@ -102,7 +102,7 @@ opt_in_patterns = []
 # needle_min_confidence = 0.0               # minimum confidence for needle match
 # memory_floor_mb = 1024                    # free memory threshold (MiB)
 # idle_unload_seconds = 900                 # idle time before unloading
-# records_cap_mb = 8                        # memory cap for records (MiB)
+# records_cap_mb = 8                        # disk cap for tier records (MiB)
 # store_request_text = false                # persist full request text
 #
 # [tiers.lfm]
