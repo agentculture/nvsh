@@ -704,12 +704,17 @@ def _safe_tier_path(path: Path) -> bool:
     """Whether *path* is safe for ``uninstall`` to delete.
 
     Computed from the path alone (never resolving a symlink -- a symlink
-    at the real location is unlinked, not followed, by the caller): never
-    the filesystem root, never the operator's home directory itself, and
-    somewhere under an ``nvsh`` directory. A misresolved ``XDG_CACHE_HOME``/
-    ``XDG_STATE_HOME`` (empty, ``/``, or ``$HOME`` itself) must never turn a
-    tier-file cleanup into a wider deletion.
+    at the real location is unlinked, not followed, by the caller): must be
+    an ABSOLUTE path (checked on the un-normalised string -- a relative
+    ``XDG_CACHE_HOME``/``XDG_STATE_HOME`` such as ``"."`` must never resolve
+    against the current working directory, which can be a source checkout),
+    never the filesystem root, never the operator's home directory itself,
+    and somewhere under an ``nvsh`` directory. A misresolved
+    ``XDG_CACHE_HOME``/``XDG_STATE_HOME`` (empty, ``/``, or ``$HOME`` itself)
+    must never turn a tier-file cleanup into a wider deletion.
     """
+    if not os.path.isabs(str(path)):
+        return False
     normalized = Path(os.path.normpath(str(path)))
     home = Path(os.path.normpath(os.path.expanduser("~")))
     if normalized in (Path(normalized.anchor), home):
@@ -717,14 +722,28 @@ def _safe_tier_path(path: Path) -> bool:
     return "nvsh" in normalized.parts
 
 
-def _tier_container_status() -> tuple[str, list[str]]:
+def _stop_tier_container() -> str:
     """Stop this OS user's Tier 2 container -- a safety net after the daemon
-    stop above, which already stops an attached container while it is alive
-    -- and report which pinned images are still on this machine.
+    stop above, which already stops an attached container while it is alive.
 
-    Never raises: a missing/unreachable Docker, an unloadable config, or an
-    unresolvable image folds into the returned status line and an empty
-    image list instead of failing ``uninstall``.
+    Never raises: a missing/unreachable Docker folds into the returned
+    status line instead of failing ``uninstall``. Kept independent of config
+    loading and platform detection (see :func:`_tier_container_status`) so a
+    broken ``config.toml`` can never skip the actual ``docker stop``/``rm``.
+    """
+    try:
+        from nvsh.tiers import runtime_docker
+
+        return runtime_docker.stop_container(os.getuid())
+    except Exception as exc:  # noqa: BLE001 - tier cleanup must never abort uninstall
+        return f"tier container cleanup failed: {exc}"
+
+
+def _tier_image_refs() -> list[str]:
+    """Which pinned Tier 2 images this config/platform could have pulled.
+
+    Never raises: an unloadable config or an unresolvable image folds into
+    an empty list instead of failing ``uninstall``.
     """
     try:
         from nvsh.tiers import runtime_docker
@@ -732,11 +751,21 @@ def _tier_container_status() -> tuple[str, list[str]]:
         cfg = nvsh_config.load()
         lfm_settings = cfg.tiers.get("lfm", {}) if isinstance(cfg.tiers, dict) else {}
         platform = _detect_platform()
-        status = runtime_docker.stop_container(os.getuid())
-        refs = runtime_docker.image_refs(lfm_settings, platform)
-        return status, refs
-    except Exception as exc:  # noqa: BLE001 - tier cleanup must never abort uninstall
-        return f"tier container cleanup failed: {exc}", []
+        return runtime_docker.image_refs(lfm_settings, platform)
+    except Exception:  # noqa: BLE001 - tier cleanup must never abort uninstall
+        return []
+
+
+def _tier_container_status() -> tuple[str, list[str]]:
+    """Stop the container, then separately report leftover pinned images.
+
+    Two independent, guarded steps: the container stop must run even when
+    config loading or platform detection fails, and vice versa -- see
+    finding 4054701421.
+    """
+    status = _stop_tier_container()
+    refs = _tier_image_refs()
+    return status, refs
 
 
 def _rotated_tier_paths(base: Path) -> list[Path]:

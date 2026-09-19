@@ -255,6 +255,12 @@ def test_an_explicit_port_overrides_the_derived_one():
     assert rd.host_port({"port": 9123}, 1000) == 9123
 
 
+def test_uids_a_thousand_apart_do_not_share_a_port():
+    """finding 4054701431: PORT_BASE + uid % PORT_SPAN with the old
+    PORT_SPAN=1000 gave uid 1000 and uid 2000 the same port."""
+    assert rd.host_port({}, 1000) != rd.host_port({}, 2000)
+
+
 def test_the_launch_line_names_this_users_container():
     argv = rd.render_launch(settings(), SPARK, uid=4321)
     assert argv[argv.index("--name") + 1] == "nvsh-tier2-4321"
@@ -577,6 +583,13 @@ def test_image_refs_is_empty_when_nothing_resolves():
     assert rd.image_refs({"engine": "llama-server"}, SPARK) == []
 
 
+def test_image_refs_is_empty_in_attach_mode():
+    """finding 4054701435: attach mode never started a container, so it
+    never pulled an image either -- reporting one would send the operator
+    to remove an image nvsh does not own."""
+    assert rd.image_refs(settings(mode="attach"), SPARK) == []
+
+
 def test_leftover_note_prints_a_removal_command():
     assert f"docker image rm {IMAGE}" in rd.leftover_note([IMAGE])
 
@@ -723,6 +736,23 @@ def test_a_failed_docker_run_declines_with_the_output_tail():
         subject.ensure()
 
 
+def test_a_port_conflict_tells_the_operator_to_set_the_port():
+    """finding 4054701431: when docker run fails because the host port is
+    already taken, the decline line should point at [tiers.lfm] port."""
+    docker = FakeDocker(
+        [
+            (("docker", "inspect"), (1, "")),
+            (
+                ("docker", "run"),
+                (125, "Bind for 127.0.0.1:18400 failed: port is already allocated"),
+            ),
+        ]
+    )
+    subject = runtime(docker)
+    with pytest.raises(RuntimeUnavailable, match=r"\[tiers\.lfm\] port"):
+        subject.ensure()
+
+
 # -- ensure(): readiness ---------------------------------------------------
 
 
@@ -845,6 +875,22 @@ def test_stop_container_touches_only_stop_and_rm():
     assert docker.verbs == ["stop", "rm"]
     assert "run" not in docker.verbs
     assert "rmi" not in docker.verbs
+
+
+def test_stop_container_still_calls_rm_when_stop_raises():
+    """finding 4054701423: docker stop and docker rm used to share one try,
+    so a stop that raises (a client-side timeout) skipped rm entirely."""
+    rm_calls: list[list[str]] = []
+
+    def flaky_stop(argv: list[str], timeout: float) -> tuple[int, str]:
+        if argv[1] == "stop":
+            raise TimeoutError("client-side timeout")
+        rm_calls.append(list(argv))
+        return (0, "")
+
+    rd.stop_container(1000, flaky_stop)
+
+    assert rm_calls == [["docker", "rm", "nvsh-tier2-1000"]]
 
 
 def test_status_names_the_container_and_url():

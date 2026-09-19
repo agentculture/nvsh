@@ -49,10 +49,14 @@ from .runtime import AttachedRuntime, Runtime, RuntimeUnavailable
 #: The one executable this module ever names.
 DOCKER = "docker"
 
-#: Container naming and port allocation, per OS user.
+#: Container naming and port allocation, per OS user. The span is as wide as
+#: the unprivileged port range allows above ``PORT_BASE`` (18400..58399, all
+#: <= 65535), so two ordinary uids far apart (uid 1000 and uid 2000, say) do
+#: not land on the same host port (finding 4054701431); ``[tiers.lfm] port``
+#: still overrides this for a site that needs a fixed number.
 NAME_PREFIX = "nvsh-tier2-"
 PORT_BASE = 18400
-PORT_SPAN = 1000
+PORT_SPAN = 40000
 
 #: The address the container publishes on, on the host. Nothing else.
 LOOPBACK = "127.0.0.1"
@@ -98,6 +102,9 @@ _STOPPED = "stopped"
 #: is refused by the same check; the leading character must be alphanumeric,
 #: so a ref can never arrive at docker looking like a flag.
 _DIGEST_RE = re.compile(r"\A[A-Za-z0-9][^@\s]*@sha256:[0-9a-f]{64}\Z")
+
+#: Docker's own wording for "the host port we asked to publish on is taken".
+_PORT_ALLOCATED_RE = re.compile(r"port is already allocated", re.IGNORECASE)
 
 #: Bounds for the numeric ``[tiers.lfm]`` settings the launch line reads.
 _PORT_MIN = 1024
@@ -537,8 +544,13 @@ def image_refs(settings: Mapping[str, object], platform: Platform) -> list[str]:
 
     ``[]`` when nothing resolves -- an unknown engine, no pin, a ref without
     a digest -- because in every one of those cases nvsh never pulled
-    anything either.
+    anything either. Also ``[]`` in ``[tiers.lfm] mode = "attach"``: nvsh
+    never started a container, so it never pulled an image either, and
+    reporting one would send the operator to remove an image nvsh does not
+    own.
     """
+    if str(settings.get("mode") or MANAGED) == ATTACH:
+        return []
     probe = dict(settings)
     probe.setdefault("model", _PROBE_MODEL)
     probe.setdefault("model_dir", _PROBE_DIR)
@@ -567,23 +579,45 @@ def stop_container(
 
     Touches :func:`container_name`'s name and nothing else -- exactly a
     ``docker stop`` then a ``docker rm``, never any other container, never
-    ``docker rmi``, never ``docker system prune``. Never raises: a missing
-    docker binary or an unreachable daemon folds into the returned one-line
-    status instead of failing the caller, so a Docker-less uninstall still
-    exits clean.
+    ``docker rmi``, never ``docker system prune``. ``rm`` is attempted even
+    when ``stop`` itself raises (a client-side timeout, say), so a container
+    that failed to stop cleanly is still reclaimed rather than left behind
+    (finding 4054701423). Never raises: a missing docker binary or an
+    unreachable daemon folds into the returned one-line status instead of
+    failing the caller, so a Docker-less uninstall still exits clean.
     """
     runner = runner if runner is not None else _default_runner
     name = container_name(uid)
+    stop_code, stop_exc = _try_stop(runner, name, timeout)
     try:
-        stop_code, _stop_out = runner([DOCKER, "stop", name], timeout)
         rm_code, rm_out = runner([DOCKER, "rm", name], timeout)
     except Exception as exc:  # noqa: BLE001 - docker missing/broken must not fail uninstall
-        return f"docker not available: {exc}"
+        if stop_exc is not None:
+            return f"docker not available: {exc}"
+        return f"docker rm not available: {exc}"
     if rm_code == 0:
+        if stop_exc is not None:
+            return f"docker stop failed ({stop_exc}); removed {name}"
         return f"stopped and removed {name}"
-    if stop_code != 0 and rm_code != 0:
+    if stop_code is not None and stop_code != 0 and rm_code != 0:
         return f"no container named {name}"
     return f"docker rm {name} failed: {_tail(rm_out)}"
+
+
+def _try_stop(runner: RunnerFn, name: str, timeout: float) -> tuple[int | None, Exception | None]:
+    """Run ``docker stop`` for *name*, never raising.
+
+    Returns ``(returncode, None)`` on an ordinary run, or ``(None, exc)``
+    when the runner itself raised (a client-side timeout, say) -- the
+    caller still goes on to attempt ``docker rm`` either way, so a
+    container that failed to stop cleanly is still reclaimed (finding
+    4054701423).
+    """
+    try:
+        stop_code, _stop_out = runner([DOCKER, "stop", name], timeout)
+        return stop_code, None
+    except Exception as exc:  # noqa: BLE001 - stop failing must not skip rm
+        return None, exc
 
 
 # -- defaults for the injected seams --------------------------------------
@@ -726,8 +760,15 @@ class DockerRuntime:
 
     def _launch(self, argv: list[str]) -> None:
         code, output = self._run(argv, timeout=_LAUNCH_TIMEOUT)
-        if code != 0:
-            raise RuntimeUnavailable(f"could not start the Tier 2 container: {_tail(output)}")
+        if code == 0:
+            return
+        tail = _tail(output)
+        if _PORT_ALLOCATED_RE.search(tail):
+            raise RuntimeUnavailable(
+                f"could not start the Tier 2 container: {tail} "
+                "-- set [tiers.lfm] port to an unused port"
+            )
+        raise RuntimeUnavailable(f"could not start the Tier 2 container: {tail}")
 
     def _await_ready(self) -> None:
         deadline = self._clock() + self._startup_seconds()
