@@ -383,3 +383,10 @@ def test_tiers_prefetch_with_nothing_missing_needs_no_confirmation(monkeypatch, 
     monkeypatch.setattr(fetch, "plan_prefetch", lambda *a, **k: [])
     rc = main(["tiers", "prefetch", "--json"])
     assert (rc, json.loads(capsys.readouterr().out)) == (0, {"items": [], "problems": []})
+
+
+def test_stats_survive_a_hand_edited_record_with_a_garbage_latency():
+    from nvsh.tiers.stats import compute_stats
+
+    stats = compute_stats([{"tier": "needle", "latency_ms": "fast"}, {"tier": "needle"}])
+    assert stats["tiers"]["needle"] == {"count": 2, "latency_p50_ms": 0.0, "latency_p95_ms": 0.0}

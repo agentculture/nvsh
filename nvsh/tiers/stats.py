@@ -30,6 +30,14 @@ def _nearest_rank_percentile(sorted_values: Sequence[float], pct: float) -> floa
     return float(sorted_values[rank - 1])
 
 
+def _latency(record: Mapping[str, object]) -> float:
+    """A record's latency, or 0.0 for a missing, non-numeric or non-finite value."""
+    value = record.get("latency_ms")
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 0.0
+    return float(value) if math.isfinite(value) else 0.0
+
+
 def _tier_stats(records: Sequence[Mapping[str, object]]) -> dict[str, dict[str, object]]:
     by_tier: dict[str, list[Mapping[str, object]]] = {}
     for record in records:
@@ -39,7 +47,7 @@ def _tier_stats(records: Sequence[Mapping[str, object]]) -> dict[str, dict[str, 
     result: dict[str, dict[str, object]] = {}
     for tier in sorted(by_tier):
         recs = by_tier[tier]
-        latencies = sorted(float(r.get("latency_ms") or 0.0) for r in recs)
+        latencies = sorted(_latency(r) for r in recs)
         result[tier] = {
             "count": len(recs),
             "latency_p50_ms": _nearest_rank_percentile(latencies, 50),
