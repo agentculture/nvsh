@@ -94,3 +94,19 @@ max = 1
 # and still exit 0 are opt-in, never on by default).
 rate_window_seconds = 60
 opt_in_patterns = []
+
+# [tiers]
+# Local response tiers (nvsh[needle], nvsh[lfm]). Routing is off until
+# enabled = true.
+# enabled = false                           # turn on tiers routing
+# needle_min_confidence = 0.0               # minimum confidence for needle match
+# memory_floor_mb = 1024                    # free memory threshold (MiB)
+# idle_unload_seconds = 900                 # idle time before unloading
+# records_cap_mb = 8                        # disk cap for tier records (MiB)
+# store_request_text = false                # persist full request text
+#
+# [tiers.lfm]
+# engine = "llama-server"                   # llama-server | vllm | sglang
+# mode = "managed"                          # managed | attach
+# base_url = "http://127.0.0.1:8080/v1"    # localhost URL for the LFM engine
+# model = ""                                # model name (optional)

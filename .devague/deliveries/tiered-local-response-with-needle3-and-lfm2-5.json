@@ -1,0 +1,31 @@
+{
+  "plan_slug": "tiered-local-response-with-needle3-and-lfm2-5",
+  "schema_version": 2,
+  "created": "2026-09-19T14:14:40Z",
+  "updated": "2026-09-19T14:14:40Z",
+  "deviations": [
+    {
+      "id": "d1",
+      "what": "Add a logprob verifier between Tier 1 and the proposal: after Needle3 selects an operation, a local LFM2.5 model is asked a fixed yes/no question ('For <request> the solution is <operation>. Correct?') and nvsh reads the next-token log-probabilities of yes vs no (one prefill, one token, nothing generated) as the confidence signal; a multiple-choice variant reads the next-token distribution over lettered operations plus 'none'. This replaces Needle's learned confidence head as the propose/ask/escalate signal, works for a fine-tuned Needle that reports no confidence, and is calibrated (temperature/Platt) on the corpus dev split. It is NOT the safety mechanism: approval, the single-call rule, table validation and grounding are unchanged. nvsh/tiers/toolchat.py gains a score() call returning next-token logprobs; the benchmark adds calibration metrics and compares Needle's own confidence vs yes/no vs multiple-choice, on base and post-trained LFM2.5; vLLM is tried before llama.cpp because prefill speed is what matters here.",
+      "task_ref": "t11",
+      "reason": "Measured: Needle3's confidence is a learned probe head, scored a wrong pick 1.0, is None for a fine-tuned model, and the shipped engine exposes no logits; LFM2.5 runtimes expose real token logprobs over the OpenAI-compatible API. Operator proposed the yes/no logit structure and approved this departure on 2026-09-19.",
+      "affects": [
+        "t16",
+        "t18",
+        "t19",
+        "t22",
+        "t24",
+        "c10",
+        "c20",
+        "c40"
+      ],
+      "origin": "user",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 1
+    }
+  ],
+  "evidence": [],
+  "deltas": [],
+  "supersessions": []
+}

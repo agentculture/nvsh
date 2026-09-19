@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/). This project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.15.0] - 2026-09-19
+
+### Added
+
+- Foundations for local response tiers (issues #30, #31): a spec, a challenged and converged plan, and the first ten tasks. Nothing here changes how nvsh behaves at the prompt yet — no tier is wired into a request, and `[tiers] enabled` defaults to `false`.
+- `nvsh/ops/`: a typed operation table (16 operations, each read-only or mutating, with typed arguments and a `validate()` that never raises), per-platform rendering of an operation to an argv list (through the `spark`/`thor`/`orin` device CLIs when they are on PATH, a plain system command otherwise, and nothing at all when no single exiting command exists), and argument grounding: a service or container name from a model is only ever compared with what `systemctl`/`docker` list, never passed to a command, and an option-like or unprintable value renders nothing.
+- `nvsh/tiers/`: the tier contract (`decide()` turns a model's raw calls into one validated decision or a decline with a reason; zero or several calls decline; a NaN or missing confidence counts as absent), tier measurement records (redacted, size-capped with rotation, request text stored only on opt-in), a memory floor read from `/proc/meminfo`, pinned fetch and prefetch (sha256- and size-checked downloads of the Needle3 engine and weights, bounded at the pinned size, resolved offline afterwards), and a stdlib tool-call chat client for an OpenAI-compatible server on localhost, with next-token log-probability scoring for a yes/no verifier.
+- `[tiers]` and `[tiers.lfm]` config tables: routing switch, confidence floor, memory floor, idle unload, records cap, and the Tier 2 engine (`llama-server`, `vllm` or `sglang`), mode and a base URL whose host must be this machine (parsed, not prefix-matched).
+- Platform detection reports the `thor` and `orin` device CLIs on PATH the way it already reported `spark`; sources are recorded in `docs/platforms.md`.
+- `docs/specs/2026-09-19-tiered-local-response-with-needle3-and-lfm2-5.md`, the matching plan and implementation split under `docs/plans/`, with the measurements behind them: Needle3 selects in 28-170 ms on a DGX Spark but mis-selects on failure text and can score a wrong pick 1.0, so confidence is recorded and never the safety mechanism.
+
 ## [0.14.3] - 2026-09-18
 
 ### Changed

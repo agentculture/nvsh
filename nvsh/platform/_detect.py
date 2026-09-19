@@ -193,6 +193,12 @@ def _path_values(run: subp.Runner, which: subp.Which) -> list[Value]:
     ]
     spark_value = _value_from_which("spark_cli", which, "spark")
     values.append(spark_value)
+    # thor_cli / orin_cli are reported the same way spark_cli is: a plain
+    # PATH presence check, no subprocess call, no --help probe at request
+    # time. nvsh/ops/render.py's static DEVICE_CLI_VERBS table decides what
+    # each CLI supports; detection here only answers "is it on PATH".
+    values.append(_value_from_which("thor_cli", which, "thor"))
+    values.append(_value_from_which("orin_cli", which, "orin"))
 
     spark_status_cmd = "spark status --json"
     spark_available = None

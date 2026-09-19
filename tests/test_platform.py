@@ -132,7 +132,8 @@ THOR_WHICH = {
     "nvpmodel": "/usr/sbin/nvpmodel",
     "dpkg-query": "/usr/bin/dpkg-query",
     "tmux": "/usr/bin/tmux",
-    # pi and spark absent on thor
+    "thor": "/usr/local/bin/thor",
+    # pi, spark and orin absent on thor
 }
 
 
@@ -173,6 +174,17 @@ def test_thor_nvpmodel_and_presence_flags():
     assert platform.get("spark_status_available").present is False
 
 
+def test_thor_cli_present_orin_cli_absent():
+    platform = _thor_platform()
+    thor_cli = platform.get("thor_cli")
+    assert thor_cli is not None
+    assert thor_cli.present is True
+    assert thor_cli.text == "/usr/local/bin/thor"
+    orin_cli = platform.get("orin_cli")
+    assert orin_cli is not None
+    assert orin_cli.present is False
+
+
 def test_thor_unified_memory():
     platform = _thor_platform()
     assert platform.get("unified_memory").text == "true"
@@ -185,7 +197,8 @@ ORIN_WHICH = {
     "nvidia-smi": "/usr/sbin/nvidia-smi",
     "nvpmodel": "/usr/sbin/nvpmodel",
     "dpkg-query": "/usr/bin/dpkg-query",
-    # tmux, pi, spark all absent on orin
+    "orin": "/usr/local/bin/orin",
+    # tmux, pi, spark and thor all absent on orin
 }
 
 
@@ -236,6 +249,17 @@ def test_orin_tmux_pi_spark_absent():
     assert platform.get("spark_cli").present is False
 
 
+def test_orin_cli_present_thor_cli_absent():
+    platform = _orin_platform()
+    orin_cli = platform.get("orin_cli")
+    assert orin_cli is not None
+    assert orin_cli.present is True
+    assert orin_cli.text == "/usr/local/bin/orin"
+    thor_cli = platform.get("thor_cli")
+    assert thor_cli is not None
+    assert thor_cli.present is False
+
+
 # --- GENERIC / EMPTY ROOT ----------------------------------------------------
 
 
@@ -267,6 +291,8 @@ def test_generic_root_reports_every_value_as_absent_not_omitted(tmp_path):
         "pi",
         "spark_cli",
         "spark_status_available",
+        "thor_cli",
+        "orin_cli",
     }
     assert expected <= names
     for value in platform.values:
