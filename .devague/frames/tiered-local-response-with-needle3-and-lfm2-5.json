@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-09-19T11:10:08Z",
-  "updated": "2026-09-19T15:32:20Z",
+  "updated": "2026-09-19T16:23:53Z",
   "claims": [
     {
       "id": "c1",
@@ -1034,6 +1034,29 @@
       ],
       "origin": "llm",
       "status": "approved"
+    },
+    {
+      "id": "l5",
+      "code": "control-absent",
+      "what": "During the t13 live round trip I told the operator 'the live test found a real gap: the client never consulted the tiers' before checking my own instrument. The sandbox wrapper ran 'python -c' from the main checkout, so Python imported nvsh from the current directory (the integration branch without t13) instead of the t13 worktree on PYTHONPATH; the 'gap' was the wrong code under test. Run from the t13 checkout, the live path worked end to end (client -> daemon -> real Needle -> panel, tier ~47 ms warm). I corrected the statement in the next message.",
+      "skipped_check": "confirm which checkout the process imported (print nvsh.__file__) before reporting a behavioural finding from a sandbox",
+      "refs": [
+        "t13"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l6",
+      "code": "n-below-claim",
+      "what": "The /think spike reported stock Needle3 at 7 of 9 correct on explicit asks and that figure shaped c20's >= 90% target and the plan's expectation that Tier 1 would be close to usable; it was measured with hand-written tool functions on 9 prompts, not through the table-generated schemas that ship. Through the shipped path the same model scores 4-5 of 9, and prompt changes move single answers at random.",
+      "skipped_check": "measure through the shipped schema path, on a corpus large enough that one request is not 11 points, before setting a target from it",
+      "refs": [
+        "c20",
+        "r10"
+      ],
+      "origin": "llm",
+      "status": "proposed"
     }
   ],
   "obligations": []
