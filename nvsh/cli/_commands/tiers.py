@@ -20,7 +20,7 @@ contract in ``CLAUDE.md``.
   says would be fetched, with sizes, and asks before downloading anything:
   ``--yes`` downloads without asking; off a terminal or under ``--json``
   without ``--yes`` it refuses outright (a CliError naming ``--yes``, never
-  a silent download); on an interactive terminal it prompts per item.
+  a silent download); on an interactive terminal it prompts per item. With nothing missing it just reports.
 
 Sub-subparser layout (``tiers <verb>``) matches ``nvsh agent`` — a later
 ``nvsh tiers bench`` verb (task t22) is one more ``noun_sub.add_parser`` call
@@ -177,7 +177,10 @@ def _write_bundle(path, bundle: dict, *, force: bool) -> None:
     import json
     import os
 
-    flags = os.O_WRONLY | os.O_CREAT | (os.O_TRUNC if force else os.O_EXCL)
+    # O_NOFOLLOW: --force must never write through a symlink someone planted
+    # at the destination. fchmod on the open descriptor (not chmod on the
+    # path) tightens a pre-existing, wider-mode file without a path race.
+    flags = os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW | (os.O_TRUNC if force else os.O_EXCL)
     try:
         fd = os.open(str(path), flags, 0o600)
     except FileExistsError as exc:
@@ -186,10 +189,16 @@ def _write_bundle(path, bundle: dict, *, force: bool) -> None:
             message=f"{path} already exists",
             remediation="pass --force to overwrite it",
         ) from exc
+    except OSError as exc:
+        raise CliError(
+            code=EXIT_USER_ERROR,
+            message=f"cannot write {path}: {exc.strerror or exc}",
+            remediation="pass a writable local file path in an existing directory",
+        ) from exc
     with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        os.fchmod(handle.fileno(), 0o600)
         json.dump(bundle, handle, ensure_ascii=False, sort_keys=True)
         handle.write("\n")
-    os.chmod(str(path), 0o600)
 
 
 def cmd_tiers_export(args: argparse.Namespace) -> int:
@@ -254,13 +263,14 @@ def cmd_tiers_prefetch(args: argparse.Namespace) -> int:
     json_mode = bool(getattr(args, "json", False))
     yes = bool(getattr(args, "yes", False))
 
-    if not yes and (json_mode or not _is_interactive()):
+    if missing and not yes and (json_mode or not _is_interactive()):
+        total = sum(item.size_bytes for item in missing)
+        names = ", ".join(f"{item.name} ({item.size_bytes} bytes)" for item in missing)
         raise CliError(
             code=EXIT_USER_ERROR,
             message=(
-                f"prefetch would download {len(missing)} item(s); confirmation required"
-                if missing
-                else "prefetch requires confirmation before it would download anything"
+                f"prefetch would download {len(missing)} item(s), {total} bytes: {names}; "
+                "confirmation required"
             ),
             remediation="pass --yes to download without prompting",
         )

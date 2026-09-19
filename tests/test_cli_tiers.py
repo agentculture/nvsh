@@ -249,6 +249,29 @@ def test_tiers_export_opens_no_socket(tmp_path, monkeypatch):
     assert rc == 0
 
 
+def test_tiers_export_force_never_writes_through_a_symlink(tmp_path):
+    victim = tmp_path / "victim.txt"
+    victim.write_text("keep me", encoding="utf-8")
+    dest = tmp_path / "bundle.json"
+    dest.symlink_to(victim)
+    main(["tiers", "export", str(dest), "--force"])
+    assert victim.read_text(encoding="utf-8") == "keep me"
+
+
+def test_tiers_export_force_tightens_a_wide_mode_file(tmp_path):
+    dest = tmp_path / "bundle.json"
+    dest.write_text("{}", encoding="utf-8")
+    dest.chmod(0o644)
+    main(["tiers", "export", str(dest), "--force"])
+    assert stat.S_IMODE(dest.stat().st_mode) == 0o600
+
+
+def test_tiers_export_into_a_missing_directory_is_a_user_error(tmp_path, capsys):
+    rc = main(["tiers", "export", str(tmp_path / "nope" / "bundle.json"), "--json"])
+    err = json.loads(capsys.readouterr().err)
+    assert (rc, "hint" in err or "remediation" in err) == (1, True)
+
+
 # ---------------------------------------------------------------------------
 # prefetch
 # ---------------------------------------------------------------------------
@@ -346,3 +369,17 @@ def test_explain_catalog_has_every_tiers_entry():
     for path in [("tiers",), ("tiers", "stats"), ("tiers", "export"), ("tiers", "prefetch")]:
         assert path in ENTRIES
         assert ENTRIES[path].strip()
+
+
+def test_tiers_prefetch_refusal_states_the_sizes_it_would_download(capsys):
+    main(["tiers", "prefetch", "--json"])
+    err = json.loads(capsys.readouterr().err)
+    assert "bytes" in err["message"]
+
+
+def test_tiers_prefetch_with_nothing_missing_needs_no_confirmation(monkeypatch, capsys):
+    import nvsh.tiers.fetch as fetch
+
+    monkeypatch.setattr(fetch, "plan_prefetch", lambda *a, **k: [])
+    rc = main(["tiers", "prefetch", "--json"])
+    assert (rc, json.loads(capsys.readouterr().out)) == (0, {"items": [], "problems": []})
