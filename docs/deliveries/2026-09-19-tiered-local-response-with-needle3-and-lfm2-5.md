@@ -101,7 +101,7 @@ The two `dN` entries are the approved deviation records, quoted as recorded (ang
 
 Read-only checks run for this summary, at commit `61f8c6d` (main `75c7461` plus ledger-only commits), 2026-09-19:
 
-- tests: the 20 test files covering the delivered tasks — 826 passed, 0 failed. Named node ids are in the evidence ledger (`devague evidence --list`, `e1`-`e32`).
+- tests: the 20 test files covering the delivered tasks — 826 passed, 0 failed. Named node ids are in the evidence ledger (`devague evidence --list`, `e1`-`e32`, and `e37`-`e53` added when review showed six behavioral deltas cited evidence that did not assert their behaviour; those deltas, `b1`-`b4`, `b6`, `b7`, are superseded by `b8`-`b13`, which cite the specific tests).
 - tests: full suite on the PR B branch before merge — 2958 passed, 8 skipped (live-harness and one known cross-repo skip).
 - lint: `black --check`, `isort --check-only`, `flake8 nvsh tests`, `bandit -r nvsh`, `scripts/scan-secrets.py`, `teken cli doctor . --strict`, `markdownlint-cli2`, `harness-smoke` — all clean on the PR B branch; cognitive complexity counted on every changed file, none over 15.
 - CI: PR #34 — every check green, SonarCloud gate OK with 0 open issues, 14 of 14 review threads answered and resolved.
@@ -125,7 +125,7 @@ Confidence follows the evidence ledger. Every record filed by the agent is `prop
 | Offline once prefetched; third-party telemetry off (c12) | medium | `e11`, `e12` · observed offline run. One machine, one architecture; no x86_64 engine pin exists. |
 | Daemon residency: lazy load, idle unload, answers without the agent turn lock (c13) | high | `e13`-`e16` |
 | Optional flavors; base install dependency-free; no tier import at startup (c5, c11) | high | `e17`, `e18` |
-| `@needle` is explicit-only and cannot become the default (c14, Tier 1 share) | high | `e19`, `e20` |
+| `@needle` is explicit-only and cannot become the default on any path: agent use, setup (flag, `@name`, alias, model-qualified), doctor (c14, Tier 1 share) | high | `e19`, `e20`, `e37`-`e41` |
 | The panel names the tier that answered; records and the audit log name the tier (c36, c6) | high | `e21`-`e24` |
 | Pinned fetch with hash verification; local redacted export that opens no socket (c31, c23) | high | `e25`-`e27` |
 | Memory floor declines instead of loading (c33) | medium | `e28` — fixture floor only; never exercised under real memory pressure. |
@@ -136,6 +136,7 @@ Confidence follows the evidence ledger. Every record filed by the agent is `prop
 | Less than 1 GB added memory (c20, c26) | unverified | not measured in the bench run; an earlier spike saw about 180 MB for Needle alone. |
 | The `d1` check improves the propose/decline decision | unverified | the code and its tests exist; it has never run against a model inside the router, and its thresholds are guesses. |
 | The fine-tune recipe produces a better model (c39, c40) | unverified | the builder is tested (`e29`, `e30`); no fine-tune has been run and the held-out split is empty. |
+| The `d2` publishing convention is written down | low | `e42` — a read of `docs/needle-finetune.md`; documentation only, nothing in nvsh implements it. |
 | Tier 2, the Docker runtime, `@lfm`, uninstall of tier state (c15, c24, c25, c28, c34, c35 second half, c37) | unverified | not built — PR C. |
 
 Lapse ledger evidence:
@@ -159,4 +160,4 @@ Lapse ledger evidence:
 - `t24` — benchmarks on AGX Thor and AGX Orin, memory and image-size figures, llama.cpp against the 8 GB budget, two engines, stock versus tuned; commit the results under `docs/benchmarks/`.
 - `t25` — sibling-repo issues (device-CLI verbs for `orin`, a `power` verb for `spark`, service and container-restart verbs) once the operator approves filing them; Tier 2 documentation.
 - Known limits to keep visible: `thermal_stats` and `machine_status` render to nothing without a device CLI (plan risk `r8`); a tier selection already in flight is not interrupted when its client leaves; there is no x86_64 engine pin.
-- The operator adjudicates the proposed ledger records from `/validate-delivery`: obligations `o1`-`o17`, evidence `e1`-`e36`, deltas `b1`-`b7`.
+- The operator adjudicates the proposed ledger records from `/validate-delivery`: obligations `o1`-`o18`, evidence `e1`-`e53`, deltas `b5` and `b8`-`b13` (`b1`-`b4`, `b6`, `b7` are superseded — reject them), and lapse `l8`.

@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-09-19T11:10:08Z",
-  "updated": "2026-09-19T17:48:11Z",
+  "updated": "2026-09-19T17:55:41Z",
   "claims": [
     {
       "id": "c1",
@@ -1069,6 +1069,19 @@
       ],
       "origin": "llm",
       "status": "approved"
+    },
+    {
+      "id": "l8",
+      "code": "provenance-missing",
+      "what": "In /validate-delivery I attached evidence to behavioral deltas by convenience rather than by what the test asserts: b6 claimed five persistence paths on one setup test, b7 cited a dataset-builder test for a documentation convention, and b1-b4 cited whole-file or neighbouring records. A reviewer caught two; auditing the rest found four more. All six are superseded by deltas citing the specific tests (b8-b13), and the documentation-only claim is now filed at 'manual / coverage' strength instead of borrowing an automated test's strength.",
+      "skipped_check": "for each delta, read the cited test's assertion and check it states the delta's behaviour, before filing",
+      "refs": [
+        "PR #35",
+        "b6",
+        "b7"
+      ],
+      "origin": "llm",
+      "status": "proposed"
     }
   ],
   "obligations": [
@@ -1222,6 +1235,15 @@
       "seam": "nvsh tiers bench, real Needle3 engine, DGX Spark",
       "behavior": "Tier 1 warm p95 < 150 ms; >= 90% correct operation and arguments; 0 wrong mutating operations without the interpretation shown; >= 80% of should-escalate prompts declined; < 1 GB added",
       "source_text": "On the committed corpus, on each benchmarked device (AGX Orin, AGX Thor, DGX Spark): Tier 1 warm selection p95 < 150 ms; >= 90% of fast-path prompts get the correct operation and arguments; 0 wrong mutating operations proposed without the interpreted operation being shown; >= 80% of should-escalate prompts are declined by Tier 1; a command that succeeds still costs one bash function call and 0 forks. Memory: with both flavors resident the daemon adds < 1 GB to system memory as measured on the AGX Orin, which is the stand-in for the Orin Nano's 8 GB budget until a Nano is measured.",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o18",
+      "claim_id": "c16",
+      "seam": "nvsh tiers bench",
+      "behavior": "a repeatable runner over a committed corpus that measures the tier and not the host, reports per-request rows, and never reports an unmeasured target as a pass",
+      "source_text": "A repeatable benchmark corpus and runner are committed: the prompts and failure cases from issues #30 and #31, each with its expected operation, arguments or expected escalation. One command runs it on a device and writes a results file with accuracy, argument accuracy, false-mutating-pick count, escalation precision and recall, cold and warm latency, and resident and peak memory. Results for each device are committed under docs/.",
       "origin": "llm",
       "status": "proposed"
     }

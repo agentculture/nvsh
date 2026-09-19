@@ -154,6 +154,6 @@ Anything predating this boundary, or belonging to an unledgered frame, is not re
 
 ## Ledger status
 
-- proposed deltas awaiting adjudication: 24
+- proposed deltas awaiting adjudication: 30
 - rejected deltas (excluded from this projection): 0
 - retired lineages (superseded with no live replacement): 0

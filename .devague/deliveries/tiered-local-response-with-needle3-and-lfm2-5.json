@@ -2,7 +2,7 @@
   "plan_slug": "tiered-local-response-with-needle3-and-lfm2-5",
   "schema_version": 2,
   "created": "2026-09-19T14:14:40Z",
-  "updated": "2026-09-19T17:48:36Z",
+  "updated": "2026-09-19T17:55:22Z",
   "deviations": [
     {
       "id": "d1",
@@ -726,6 +726,326 @@
       "status": "proposed",
       "superseded": false,
       "seq": 38
+    },
+    {
+      "id": "e37",
+      "obligation_ref": "o10",
+      "test_ref": "tests/test_agent_needle.py::test_agent_use_needle_is_refused_like_demo",
+      "behavior_text": "nvsh agent use needle is refused like demo",
+      "contract_text": "needle can never be persisted as the default agent, on any path",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "the named test ran green in the run at the named commit",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-19T17:54:34",
+        "commit": "aed4ad2"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 39
+    },
+    {
+      "id": "e38",
+      "obligation_ref": "o10",
+      "test_ref": "tests/test_agent_needle.py::test_setup_agent_at_needle_is_refused",
+      "behavior_text": "nvsh setup --agent @needle is refused",
+      "contract_text": "needle can never be persisted as the default agent, on any path",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "the named test ran green in the run at the named commit",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-19T17:54:34",
+        "commit": "aed4ad2"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 40
+    },
+    {
+      "id": "e39",
+      "obligation_ref": "o10",
+      "test_ref": "tests/test_agent_needle.py::test_setup_refuses_an_alias_whose_target_is_needle",
+      "behavior_text": "setup refuses an alias whose target is needle",
+      "contract_text": "needle can never be persisted as the default agent, on any path",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "the named test ran green in the run at the named commit",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-19T17:54:34",
+        "commit": "aed4ad2"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 41
+    },
+    {
+      "id": "e40",
+      "obligation_ref": "o10",
+      "test_ref": "tests/test_agent_needle.py::test_setup_refuses_a_model_qualified_needle_target",
+      "behavior_text": "setup refuses needle/<model>",
+      "contract_text": "needle can never be persisted as the default agent, on any path",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "the named test ran green in the run at the named commit",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-19T17:54:34",
+        "commit": "aed4ad2"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 42
+    },
+    {
+      "id": "e41",
+      "obligation_ref": "o10",
+      "test_ref": "tests/test_demo_default_refused.py::test_check_default_target_fails_when_default_is_needle",
+      "behavior_text": "doctor fails default_target_not_demo when a hand-edited default resolves to needle",
+      "contract_text": "needle can never be persisted as the default agent, on any path",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "the named test ran green in the run at the named commit",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-19T17:54:34",
+        "commit": "aed4ad2"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 43
+    },
+    {
+      "id": "e42",
+      "obligation_ref": "o16",
+      "test_ref": "docs/needle-finetune.md (sections 'Pin it' and 'Publish')",
+      "behavior_text": "the document states the jetson-ai-lab organisation, the <base>-nvsh-<task> repository names, the ops<N>-r<M> tags, and that tuned-model loading is not built",
+      "contract_text": "the publishing convention approved in d2 is written down; it is documentation, not program behaviour",
+      "evidence_type": "manual",
+      "strength": "coverage",
+      "strength_basis": "read the committed file; no test asserts documentation content, so this is the weakest strength and proves only that the text exists",
+      "outcome": "pass",
+      "run": null,
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 44
+    },
+    {
+      "id": "e43",
+      "obligation_ref": "o7",
+      "test_ref": "tests/test_tier_needle.py::test_stock_weights_are_linked_not_passed",
+      "behavior_text": "stock weights are symlinked into the library cache and Needle is built without weights=",
+      "contract_text": "stock weights are staged, not passed, so confidence stays real and nothing is downloaded",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "the named test ran green in the run at the named commit",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-19T18:20:00",
+        "commit": "aed4ad2"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 45
+    },
+    {
+      "id": "e44",
+      "obligation_ref": "o7",
+      "test_ref": "tests/test_tier_needle.py::test_base_weights_are_symlinked_into_the_library_cache",
+      "behavior_text": "the verified weights appear under the staged HOME's cactus-needle cache",
+      "contract_text": "stock weights are staged, not passed, so confidence stays real and nothing is downloaded",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "the named test ran green in the run at the named commit",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-19T18:20:00",
+        "commit": "aed4ad2"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 46
+    },
+    {
+      "id": "e45",
+      "obligation_ref": "o7",
+      "test_ref": "real-engine run, DGX Spark, empty HOME, offline env",
+      "behavior_text": "a select succeeded with confidence 1.0 / 0.99 / 0.92, nothing was downloaded, and the operator's own cactus-needle cache listing was byte-identical before and after",
+      "contract_text": "stock weights are staged, not passed, so confidence stays real and nothing is downloaded",
+      "evidence_type": "observation",
+      "strength": "execution",
+      "strength_basis": "run by the task agent with cactus-needle 3.0.2 and reported with measured latencies; one machine, aarch64 only",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-19T18:20:00",
+        "commit": "aed4ad2"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 47
+    },
+    {
+      "id": "e46",
+      "obligation_ref": "o3",
+      "test_ref": "tests/test_tier_router.py::test_a_pick_grounding_refuses_never_costs_a_verifier_call",
+      "behavior_text": "a pick that grounding refuses never calls the verifier",
+      "contract_text": "the d1 check runs after the deterministic checks, on grounded arguments, and a failed baseline is retried",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "the named test ran green in the run at the named commit",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-19T18:20:00",
+        "commit": "aed4ad2"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 48
+    },
+    {
+      "id": "e47",
+      "obligation_ref": "o3",
+      "test_ref": "tests/test_tier_router.py::test_the_verifier_is_asked_about_the_grounded_arguments",
+      "behavior_text": "the verifier sees nginx.service, the grounded spelling",
+      "contract_text": "the d1 check runs after the deterministic checks, on grounded arguments, and a failed baseline is retried",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "the named test ran green in the run at the named commit",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-19T18:20:00",
+        "commit": "aed4ad2"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 49
+    },
+    {
+      "id": "e48",
+      "obligation_ref": "o3",
+      "test_ref": "tests/test_tier_router.py::test_a_failed_baseline_measurement_is_retried_on_the_next_request",
+      "behavior_text": "a baseline that failed once is measured again on the next request",
+      "contract_text": "the d1 check runs after the deterministic checks, on grounded arguments, and a failed baseline is retried",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "the named test ran green in the run at the named commit",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-19T18:20:00",
+        "commit": "aed4ad2"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 50
+    },
+    {
+      "id": "e49",
+      "obligation_ref": "o8",
+      "test_ref": "tests/test_daemon_tiers.py::test_a_client_that_leaves_mid_request_cancels_the_session",
+      "behavior_text": "the session is cancelled when the peer leaves mid-request",
+      "contract_text": "a client that leaves cancels its tier session and a departed client builds no tier",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "the named test ran green in the run at the named commit",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-19T18:20:00",
+        "commit": "aed4ad2"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 51
+    },
+    {
+      "id": "e50",
+      "obligation_ref": "o8",
+      "test_ref": "tests/test_daemon_tiers.py::test_a_tier_request_from_a_departed_client_builds_no_tier",
+      "behavior_text": "a request whose peer is already gone builds nothing",
+      "contract_text": "a client that leaves cancels its tier session and a departed client builds no tier",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "the named test ran green in the run at the named commit",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-19T18:20:00",
+        "commit": "aed4ad2"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 52
+    },
+    {
+      "id": "e51",
+      "obligation_ref": "o18",
+      "test_ref": "tests/test_tier_bench.py::test_the_fixture_world_grounds_a_service_the_host_does_not_have",
+      "behavior_text": "grounding answers from the corpus's fixture world",
+      "contract_text": "the benchmark measures the tier, not the host, and never rounds 'not measured' up",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "the named test ran green in the run at the named commit",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-19T18:20:00",
+        "commit": "aed4ad2"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 53
+    },
+    {
+      "id": "e52",
+      "obligation_ref": "o18",
+      "test_ref": "tests/test_tier_bench.py::test_results_carry_one_row_per_corpus_entry",
+      "behavior_text": "one result row per corpus entry",
+      "contract_text": "the benchmark measures the tier, not the host, and never rounds 'not measured' up",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "the named test ran green in the run at the named commit",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-19T18:20:00",
+        "commit": "aed4ad2"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 54
+    },
+    {
+      "id": "e53",
+      "obligation_ref": "o18",
+      "test_ref": "tests/test_tier_bench.py::test_build_targets_reports_not_measured_when_nothing_was_measured",
+      "behavior_text": "an unmeasured target reads 'not measured'",
+      "contract_text": "the benchmark measures the tier, not the host, and never rounds 'not measured' up",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "the named test ran green in the run at the named commit",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-19T18:20:00",
+        "commit": "aed4ad2"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 55
     }
   ],
   "deltas": [
@@ -742,7 +1062,7 @@
       ],
       "origin": "llm",
       "status": "proposed",
-      "superseded": false
+      "superseded": true
     },
     {
       "id": "b2",
@@ -756,7 +1076,7 @@
       ],
       "origin": "llm",
       "status": "proposed",
-      "superseded": false
+      "superseded": true
     },
     {
       "id": "b3",
@@ -770,7 +1090,7 @@
       ],
       "origin": "llm",
       "status": "proposed",
-      "superseded": false
+      "superseded": true
     },
     {
       "id": "b4",
@@ -784,7 +1104,7 @@
       ],
       "origin": "llm",
       "status": "proposed",
-      "superseded": false
+      "superseded": true
     },
     {
       "id": "b5",
@@ -813,7 +1133,7 @@
       ],
       "origin": "llm",
       "status": "proposed",
-      "superseded": false
+      "superseded": true
     },
     {
       "id": "b7",
@@ -827,8 +1147,152 @@
       ],
       "origin": "llm",
       "status": "proposed",
+      "superseded": true
+    },
+    {
+      "id": "b8",
+      "kind": "added",
+      "behavior_text": "needle can never be persisted as the default agent: nvsh agent use, nvsh setup (flag, @name, model-qualified, alias) and nvsh doctor all read one registry table.",
+      "caused_by": [
+        "c14"
+      ],
+      "evidence_refs": [
+        "e19",
+        "e20",
+        "e37",
+        "e38",
+        "e39",
+        "e40",
+        "e41"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    },
+    {
+      "id": "b9",
+      "kind": "added",
+      "behavior_text": "Documentation only, not program behaviour: docs/needle-finetune.md records the d2 publishing convention (jetson-ai-lab organisation, <base>-nvsh-<task> names, ops<N>-r<M> tags). nvsh does not implement any of it yet: no tuned pin, no operation-table hash check, no config override, no upload.",
+      "caused_by": [
+        "d2"
+      ],
+      "evidence_refs": [
+        "e42"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    },
+    {
+      "id": "b10",
+      "kind": "added",
+      "behavior_text": "The pinned engine is extracted from the verified wheel and the verified stock weights are staged into an nvsh-owned HOME for the child only, so stock Needle3 keeps a real confidence, starts no nested subprocess and never downloads.",
+      "caused_by": [
+        "c12"
+      ],
+      "evidence_refs": [
+        "e11",
+        "e12",
+        "e43",
+        "e44",
+        "e45"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    },
+    {
+      "id": "b11",
+      "kind": "amended",
+      "behavior_text": "The d1 yes/no check runs last (after table, grounding and rendering) and is asked about the grounded arguments; a failed baseline measurement is retried instead of cached. Its thresholds are unmeasured placeholders and it has never run against a model inside the router.",
+      "caused_by": [
+        "d1"
+      ],
+      "evidence_refs": [
+        "e46",
+        "e47",
+        "e48"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    },
+    {
+      "id": "b12",
+      "kind": "added",
+      "behavior_text": "A tier request holds a lease from the moment it opens, so the idle sweep cannot close the tiers under an in-flight selection; a client that disconnects cancels its tier session (cooperatively: an in-flight select, bounded at 10 s, is not interrupted).",
+      "caused_by": [
+        "c13"
+      ],
+      "evidence_refs": [
+        "e15",
+        "e16",
+        "e49",
+        "e50"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    },
+    {
+      "id": "b13",
+      "kind": "added",
+      "behavior_text": "The benchmark grounds against a fixture machine declared in the corpus (--live for the host), reports one row per request and accuracy per request kind; a target that was not measured prints 'not measured', never pass.",
+      "caused_by": [
+        "c16"
+      ],
+      "evidence_refs": [
+        "e51",
+        "e52",
+        "e53"
+      ],
+      "origin": "llm",
+      "status": "proposed",
       "superseded": false
     }
   ],
-  "supersessions": []
+  "supersessions": [
+    {
+      "id": "s1",
+      "action": "supersede",
+      "target_ref": "b6",
+      "replacement_ref": "b8",
+      "origin": "llm"
+    },
+    {
+      "id": "s2",
+      "action": "supersede",
+      "target_ref": "b7",
+      "replacement_ref": "b9",
+      "origin": "llm"
+    },
+    {
+      "id": "s3",
+      "action": "supersede",
+      "target_ref": "b1",
+      "replacement_ref": "b10",
+      "origin": "llm"
+    },
+    {
+      "id": "s4",
+      "action": "supersede",
+      "target_ref": "b2",
+      "replacement_ref": "b11",
+      "origin": "llm"
+    },
+    {
+      "id": "s5",
+      "action": "supersede",
+      "target_ref": "b3",
+      "replacement_ref": "b12",
+      "origin": "llm"
+    },
+    {
+      "id": "s6",
+      "action": "supersede",
+      "target_ref": "b4",
+      "replacement_ref": "b13",
+      "origin": "llm"
+    }
+  ]
 }
