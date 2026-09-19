@@ -25,14 +25,22 @@ from nvsh.agent.base import AgentContext, AgentRequest, RequestKind
 from nvsh.ops import table as ops_table
 from nvsh.ops.render import render as render_argv
 from nvsh.platform._model import Platform
+from nvsh.tiers import lfm
 from nvsh.tiers.base import Decline, DeclineReason, Explanation, TierDecision
 from nvsh.tiers.lfm import (
+    COMMAND_CHARS,
     ESCALATE_TOOL,
     EXPLAIN_TOOL,
+    EXPLANATION_CHARS,
     MAX_CONTEXT_CHARS,
     MAX_ROUNDS,
     MUTATING_REFUSED,
+    OUTPUT_TAIL_CHARS,
     PROPOSE_TOOL,
+    REASON_CHARS,
+    REDACT_SLACK,
+    REQUEST_CHARS,
+    RESULT_CHARS,
     LfmTier,
     tools_for,
 )
@@ -498,6 +506,95 @@ def test_the_system_brief_names_the_platform_kind() -> None:
     chat = _FakeChat([_text_reply("fine")])
     _tier(chat).select(_ask(), _ctx())
     assert "generic machine" in chat.seen[0][0]["content"]
+
+
+# ---------------------------------------------------------------------------
+# every text reaches the redactor already bounded
+# ---------------------------------------------------------------------------
+
+#: Far larger than any bound, and unbroken: the shape that makes an unbounded
+#: redact() pass cost minutes rather than milliseconds.
+HUGE = "A" * 2_000_000
+
+
+class _RedactSpy:
+    """Wraps the real redactor and remembers the largest input it was given."""
+
+    def __init__(self, real) -> None:
+        self._real = real
+        self.largest = 0
+
+    def __call__(self, payload: bytes) -> bytes:
+        self.largest = max(self.largest, len(payload))
+        return self._real(payload)
+
+
+def _redact_spy(monkeypatch) -> _RedactSpy:
+    spy = _RedactSpy(lfm.redact)
+    monkeypatch.setattr(lfm, "redact", spy)
+    return spy
+
+
+def test_a_huge_explain_text_is_bounded_before_it_is_redacted(monkeypatch) -> None:
+    spy = _redact_spy(monkeypatch)
+    _tier(_FakeChat([_tool_reply(EXPLAIN_TOOL, text=HUGE)])).select(_ask(), _ctx())
+    assert spy.largest <= EXPLANATION_CHARS + REDACT_SLACK
+
+
+def test_a_huge_plain_reply_is_bounded_before_it_is_redacted(monkeypatch) -> None:
+    spy = _redact_spy(monkeypatch)
+    _tier(_FakeChat([_text_reply(HUGE)])).select(_ask(), _ctx())
+    assert spy.largest <= EXPLANATION_CHARS + REDACT_SLACK
+
+
+def test_a_huge_escalate_reason_is_bounded_before_it_is_redacted(monkeypatch) -> None:
+    spy = _redact_spy(monkeypatch)
+    _tier(_FakeChat([_tool_reply(ESCALATE_TOOL, reason=HUGE)])).select(_ask(), _ctx())
+    assert spy.largest <= REASON_CHARS + REDACT_SLACK
+
+
+def test_a_huge_inspection_result_is_bounded_before_it_is_redacted(monkeypatch) -> None:
+    spy = _redact_spy(monkeypatch)
+    chat = _FakeChat([_tool_reply("memory_stats"), _tool_reply(EXPLAIN_TOOL, text="fine")])
+    _tier(chat, runner=_Runner(output=HUGE)).select(_ask(), _ctx())
+    assert spy.largest <= RESULT_CHARS + REDACT_SLACK
+
+
+def test_a_huge_failure_output_is_bounded_before_it_is_redacted(monkeypatch) -> None:
+    spy = _redact_spy(monkeypatch)
+    _tier(_FakeChat([_text_reply("fine")])).select(_failure(), _ctx(output=HUGE))
+    assert spy.largest <= OUTPUT_TAIL_CHARS + REDACT_SLACK
+
+
+def test_a_huge_request_is_bounded_before_it_is_redacted(monkeypatch) -> None:
+    spy = _redact_spy(monkeypatch)
+    request = AgentRequest(kind=RequestKind.EXPLICIT, prompt=HUGE)
+    _tier(_FakeChat([_text_reply("fine")])).select(request, _ctx())
+    assert spy.largest <= REQUEST_CHARS + REDACT_SLACK
+
+
+def test_a_huge_failed_command_is_bounded_before_it_is_redacted(monkeypatch) -> None:
+    spy = _redact_spy(monkeypatch)
+    request = AgentRequest(kind=RequestKind.FAILURE, command=HUGE, exit_code=1)
+    _tier(_FakeChat([_text_reply("fine")])).select(request, _ctx())
+    assert spy.largest <= COMMAND_CHARS + REDACT_SLACK
+
+
+def test_a_secret_across_the_clamp_boundary_does_not_survive() -> None:
+    secret = "hf_" + "c" * 34  # assembled at runtime: never a literal in the tree
+    # The assignment starts just before the clamp cut and ends past it, so the
+    # secret straddles the boundary. REDACT_SLACK is what keeps the whole
+    # secret inside the window the redactor sees; the clamp can then only cut
+    # into the marker that replaced it.
+    text = "w" * (EXPLANATION_CHARS - 10) + f"HF_TOKEN={secret}" + "w" * 1000
+    result = _tier(_FakeChat([_tool_reply(EXPLAIN_TOOL, text=text)])).select(_ask(), _ctx())
+    assert secret[:12] not in result.text
+
+
+def test_a_failure_output_keeps_its_tail() -> None:
+    chat = _FakeChat([_text_reply("fine")])
+    _tier(chat).select(_failure(), _ctx(output="q" * 40000 + "the real error"))
+    assert chat.seen[0][1]["content"].endswith("the real error")
 
 
 # ---------------------------------------------------------------------------

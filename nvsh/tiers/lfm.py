@@ -83,7 +83,20 @@ OUTPUT_TAIL_CHARS = 1500
 REQUEST_CHARS = 1500
 LABEL_CHARS = 200
 COMMAND_CHARS = 400
+REASON_CHARS = 400
 KIND_CHARS = 64
+
+#: How much text past a bound is still handed to the redactor.
+#: :func:`nvsh.redact.redact` is quadratic on long unbroken input (40k
+#: characters measured at 0.8 s, 160k at 12.7 s), so nothing may be redacted
+#: at its full length: a model calling ``explain`` with a megabyte of text
+#: would otherwise hold this tier's lock for minutes. Every text is cut to
+#: ``limit + REDACT_SLACK`` *first*, redacted, and only then clamped to
+#: ``limit``. The slack is what makes that safe: a secret straddling the
+#: clamp cut lies wholly inside the slack, so the redactor still sees it
+#: whole and replaces it, and the clamp can then only cut into the marker
+#: that replaced it -- never back into the secret itself.
+REDACT_SLACK = 512
 
 #: Hard ceiling on the whole message list, measured as the JSON that goes on
 #: the wire. With the defaults the worst case is about 10.8k characters (a
@@ -134,15 +147,31 @@ def _clamp(text: str, limit: int) -> str:
     return text[: max(limit - 3, 0)] + "..."
 
 
+def _clamp_tail(text: str, limit: int) -> str:
+    """The LAST *limit* characters of *text*, with a leading ellipsis when cut."""
+    if len(text) <= limit:
+        return text
+    return "..." + text[-max(limit - 3, 0) :]
+
+
 def _one_line(text: object) -> str:
     """Collapse *text* to a single line so a fed-back error stays one line."""
     return " ".join(str(text).split())
 
 
-def _redacted(text: object) -> str:
-    """*text* with every secret shape replaced by a typed marker."""
+def _redacted(text: object, limit: int, *, tail: bool = False) -> str:
+    """*text* bounded to *limit*, with every secret shape replaced by a marker.
+
+    The bound is applied **before** the redactor runs (see
+    :data:`REDACT_SLACK` for why that order is not optional) and again after
+    it. ``tail=True`` keeps the end of the text rather than its start, which
+    is what a failed command's output needs: the error is at the bottom.
+    """
     raw = text if isinstance(text, str) else str(text)
-    return redact(raw.encode("utf-8", "replace")).decode("utf-8", "replace")
+    window = limit + REDACT_SLACK
+    cut = raw[-window:] if tail else raw[:window]
+    cleaned = redact(cut.encode("utf-8", "replace")).decode("utf-8", "replace")
+    return _clamp_tail(cleaned, limit) if tail else _clamp(cleaned, limit)
 
 
 def _describe(operation: str, args: Mapping[str, str]) -> str:
@@ -245,10 +274,10 @@ def _system_brief(platform: Platform, max_rounds: int) -> str:
 def _request_message(request: AgentRequest, context: AgentContext) -> str:
     """The request, bounded: a failure's command/status/output tail, or the ask."""
     if request.kind is RequestKind.FAILURE:
-        tail = _clamp(_redacted(context.output), OUTPUT_TAIL_CHARS)
-        command = _clamp(_redacted(request.command), COMMAND_CHARS)
+        tail = _redacted(context.output, OUTPUT_TAIL_CHARS, tail=True)
+        command = _redacted(request.command, COMMAND_CHARS)
         return f"command: {command}\nexit status: {request.exit_code}\noutput tail:\n{tail}"
-    return _clamp(_redacted(request.prompt or request.ask or request.command), REQUEST_CHARS)
+    return _redacted(request.prompt or request.ask or request.command, REQUEST_CHARS)
 
 
 def _messages(system: str, ask: str, rounds: list[_Round], keep_results: int) -> list[dict]:
@@ -414,17 +443,14 @@ class LfmTier(Tier):
 
     def _spoke(self, reply: ChatReply, rounds: list[_Round]) -> Decline | Explanation:
         """A reply with no tool call: plain words, or nothing usable at all."""
-        text = _redacted(reply.text).strip()
+        text = _redacted(reply.text, EXPLANATION_CHARS).strip()
         if not text:
             return Decline(
                 reason=DeclineReason.ESCALATED,
                 detail=_NO_USABLE_OUTPUT,
                 inspections=_inspections(rounds),
             )
-        return Explanation(
-            text=_clamp(text, EXPLANATION_CHARS),
-            inspections=_inspections(rounds),
-        )
+        return Explanation(text=text, inspections=_inspections(rounds))
 
     def _call(
         self, call: ToolCall, rounds: list[_Round]
@@ -434,7 +460,9 @@ class LfmTier(Tier):
             reason = call.arguments.get("reason")
             return Decline(
                 reason=DeclineReason.ESCALATED,
-                detail=_one_line(_redacted(reason)) if isinstance(reason, str) else "",
+                detail=(
+                    _one_line(_redacted(reason, REASON_CHARS)) if isinstance(reason, str) else ""
+                ),
                 inspections=_inspections(rounds),
             )
         if call.name == EXPLAIN_TOOL:
@@ -450,7 +478,7 @@ class LfmTier(Tier):
             self._feedback(call, rounds, f"{EXPLAIN_TOOL} needs a non-empty 'text' argument")
             return None
         return Explanation(
-            text=_clamp(_redacted(text).strip(), EXPLANATION_CHARS),
+            text=_redacted(text, EXPLANATION_CHARS).strip(),
             inspections=_inspections(rounds),
         )
 
@@ -484,7 +512,9 @@ class LfmTier(Tier):
             return
         argv, label = prepared
         exit_code, output = self._call_runner(argv)
-        result = _clamp(f"exit {exit_code}\n{_redacted(output)}", self._result_chars)
+        result = _clamp(
+            f"exit {exit_code}\n{_redacted(output, self._result_chars)}", self._result_chars
+        )
         rounds.append(_record(call, len(rounds), result, (label, result)))
 
     def _prepare(self, call: ToolCall) -> tuple[list[str], str] | str:
