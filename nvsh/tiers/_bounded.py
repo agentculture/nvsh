@@ -35,8 +35,8 @@ CUT_MARKER = "<CUT:private_key_block>"
 # Deliberately wider than nvsh.redact's own BEGIN/END alternation: this helper
 # must not miss a variant the redactor would have caught (and erring wide only
 # ever drops more, never less).
-_KEY_BEGIN = re.compile(r"-----BEGIN (?:[A-Z0-9]+[ ])*PRIVATE KEY-----")
-_KEY_END = re.compile(r"-----END (?:[A-Z0-9]+[ ])*PRIVATE KEY-----")
+_KEY_BEGIN = re.compile(r"-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----")
+_KEY_END = re.compile(r"-----END (?:[A-Z0-9]+ )*PRIVATE KEY-----")
 
 
 def _seal_opened(text: str) -> str:
