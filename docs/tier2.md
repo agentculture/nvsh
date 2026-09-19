@@ -66,7 +66,7 @@ status line and the request goes to the full agent.
 `nvsh/tiers/runtime_docker.py` holds the only `docker run` in nvsh, and its
 arguments come from config and platform detection only: never from a request
 and never from model output. It publishes on `127.0.0.1` only, names the
-container and the port per OS user (`nvsh-tier2-<uid>`, `18400 + uid % 1000`),
+container and the port per OS user (`nvsh-tier2-<uid>`, `18400 + uid % 40000`),
 passes `--gpus all` on a DGX Spark and `--runtime nvidia` on a Jetson (see
 `docs/platforms.md`, "Docker GPU path"), and changes no Docker configuration.
 An engine that downloads its model runs as you, not root, with its cache on
