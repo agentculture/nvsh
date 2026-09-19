@@ -79,6 +79,66 @@ _CLI_CANDIDATES: dict[str, tuple[str, ...]] = {
 _NVPMODEL_MAX_PERFORMANCE_MODE_ID = "0"
 
 
+# Argument-free operations that always fall back to the same static argv,
+# regardless of args or platform.
+_STATIC_FALLBACK_ARGV: dict[str, list[str]] = {
+    "memory_stats": ["free", "-m"],
+    "disk_stats": ["df", "-h"],
+    "container_list": ["docker", "ps"],
+    "network_info": ["ip", "-brief", "addr"],
+    "process_list": ["ps", "-eo", "pid,rss,comm", "--sort=-rss"],
+    "swap_status": ["swapon", "--show"],
+    # nvidia-smi with no flags is a single call that exits; it is present
+    # on dgx-spark, rtx and (per the thor/orin fixtures in
+    # tests/fixtures/platform) both Jetson boards nvsh targets.
+    "gpu_stats": ["nvidia-smi"],
+}
+
+
+def _fallback_service_status(args: dict[str, str]) -> list[str]:
+    return ["systemctl", "status", "--no-pager", args["service"]]
+
+
+def _fallback_service_logs(args: dict[str, str]) -> list[str]:
+    return ["journalctl", "-u", args["service"], "-n", "50", "--no-pager"]
+
+
+def _fallback_service_restart(args: dict[str, str]) -> list[str]:
+    return ["sudo", "systemctl", "restart", args["service"]]
+
+
+def _fallback_container_restart(args: dict[str, str]) -> list[str]:
+    return ["docker", "restart", args["container"]]
+
+
+# Operations whose fallback argv is static in shape but needs one arg value
+# substituted in.
+_ARG_FALLBACKS = {
+    "service_status": _fallback_service_status,
+    "service_logs": _fallback_service_logs,
+    "service_restart": _fallback_service_restart,
+    "container_restart": _fallback_container_restart,
+}
+
+
+def _fallback_power_get(platform: Platform) -> list[str] | None:
+    if platform.kind == "jetson":
+        return ["nvpmodel", "-q"]
+    # dgx-spark/rtx/generic: no nvpmodel, no other widely-present way to
+    # query a power mode without the device CLI.
+    return None
+
+
+def _fallback_power_set(args: dict[str, str], platform: Platform) -> list[str] | None:
+    mode = args.get("mode")
+    if platform.kind == "jetson" and mode == "max_performance":
+        return ["sudo", "nvpmodel", "-m", _NVPMODEL_MAX_PERFORMANCE_MODE_ID]
+    # balanced/low_power: mode id is per-board and unverified -- see the
+    # comment on _NVPMODEL_MAX_PERFORMANCE_MODE_ID above. Also covers
+    # dgx-spark/rtx/generic, which have no nvpmodel at all.
+    return None
+
+
 def _system_fallback(
     operation_name: str, args: dict[str, str], platform: Platform
 ) -> list[str] | None:
@@ -87,23 +147,12 @@ def _system_fallback(
     ``None`` means: no single, non-shell, exiting argv exists for this
     operation on this platform. Each ``None`` case below says why.
     """
-    if operation_name == "memory_stats":
-        return ["free", "-m"]
-    if operation_name == "disk_stats":
-        return ["df", "-h"]
-    if operation_name == "container_list":
-        return ["docker", "ps"]
-    if operation_name == "network_info":
-        return ["ip", "-brief", "addr"]
-    if operation_name == "process_list":
-        return ["ps", "-eo", "pid,rss,comm", "--sort=-rss"]
-    if operation_name == "swap_status":
-        return ["swapon", "--show"]
-    if operation_name == "gpu_stats":
-        # nvidia-smi with no flags is a single call that exits; it is
-        # present on dgx-spark, rtx and (per the thor/orin fixtures in
-        # tests/fixtures/platform) both Jetson boards nvsh targets.
-        return ["nvidia-smi"]
+    if operation_name in _STATIC_FALLBACK_ARGV:
+        return list(_STATIC_FALLBACK_ARGV[operation_name])
+
+    if operation_name in _ARG_FALLBACKS:
+        return _ARG_FALLBACKS[operation_name](args)
+
     if operation_name == "thermal_stats":
         # CPU/GPU/board temperatures live in several separate files under
         # /sys/class/thermal/thermal_zone*/temp; reading and labelling all
@@ -115,34 +164,20 @@ def _system_fallback(
         # nvsh runs without a device CLI: return None rather than invent
         # one.
         return None
+
     if operation_name == "machine_status":
         # "the current state of this machine" is exactly the composite
         # view a device CLI's `status` verb assembles; no single system
         # command produces the same summary, so there is nothing honest to
         # fall back to.
         return None
+
     if operation_name == "power_get":
-        if platform.kind == "jetson":
-            return ["nvpmodel", "-q"]
-        # dgx-spark/rtx/generic: no nvpmodel, no other widely-present way
-        # to query a power mode without the device CLI.
-        return None
+        return _fallback_power_get(platform)
+
     if operation_name == "power_set":
-        mode = args.get("mode")
-        if platform.kind == "jetson" and mode == "max_performance":
-            return ["sudo", "nvpmodel", "-m", _NVPMODEL_MAX_PERFORMANCE_MODE_ID]
-        # balanced/low_power: mode id is per-board and unverified -- see
-        # the comment on _NVPMODEL_MAX_PERFORMANCE_MODE_ID above. Also
-        # covers dgx-spark/rtx/generic, which have no nvpmodel at all.
-        return None
-    if operation_name == "service_status":
-        return ["systemctl", "status", "--no-pager", args["service"]]
-    if operation_name == "service_logs":
-        return ["journalctl", "-u", args["service"], "-n", "50", "--no-pager"]
-    if operation_name == "service_restart":
-        return ["sudo", "systemctl", "restart", args["service"]]
-    if operation_name == "container_restart":
-        return ["docker", "restart", args["container"]]
+        return _fallback_power_set(args, platform)
+
     return None
 
 

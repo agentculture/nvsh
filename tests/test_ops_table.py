@@ -193,10 +193,7 @@ def test_validate_bad_choice() -> None:
 )
 def test_validate_never_raises(name: object) -> None:
     """validate() never raises, no matter what is thrown at it."""
-    try:
-        result = validate(name, {})
-    except Exception:  # noqa: BLE001
-        pytest.fail(f"validate({name!r}, {{}}) raised")
+    result = validate(name, {})
     assert isinstance(result, (ValidationError, type(None)))
 
 
@@ -212,10 +209,7 @@ def test_validate_never_raises(name: object) -> None:
 )
 def test_validate_never_raises_args(args: object) -> None:
     """validate(name, weird_args) never raises either."""
-    try:
-        result = validate("machine_status", args)
-    except Exception:  # noqa: BLE001
-        pytest.fail(f"validate('machine_status', {args!r}) raised")
+    result = validate("machine_status", args)
     assert isinstance(result, (ValidationError, type(None)))
 
 
