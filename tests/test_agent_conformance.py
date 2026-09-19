@@ -902,8 +902,9 @@ def test_fake_agent_honours_a_cancel_that_lands_before_the_first_step():
 
 # ---------------------------------------------------------------------------
 # -- Capabilities.steer (stop-choice-prompt c5/c31): declared per registered
-# -- adapter, not per fake. Every one of the nine names in registry.ADAPTERS
-# -- is constructed with a bare Config and its declared capability read --
+# -- adapter, not per fake. Every name in registry.ADAPTERS (ten as of task
+# -- t14's needle) is constructed with a bare Config and its declared
+# -- capability read --
 # -- exactly the way registry._tool_calling already does it -- so this stays
 # -- honest against what 'nvsh agent list' actually reports.
 # ---------------------------------------------------------------------------

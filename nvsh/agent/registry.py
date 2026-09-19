@@ -43,20 +43,26 @@ PI_INSTALL_CMD = "npm install -g @earendil-works/pi-coding-agent"
 #: Valid ``AdapterSpec.path`` values -- the wire/transport protocol the
 #: adapter speaks to its backend, independent of ``binary``/``hosted``.
 #: ``fixture`` is the demo adapter's: its "protocol" is a committed JSON
-#: file in the package.
-PATH_VALUES = {"rpc", "stream-json", "app-server", "acp", "http", "fixture"}
+#: file in the package. ``inproc`` is a local response tier's (``needle``,
+#: and ``lfm`` once task t19 registers it): it speaks to a child process
+#: this same daemon starts, not to a separately installed CLI.
+PATH_VALUES = {"rpc", "stream-json", "app-server", "acp", "http", "fixture", "inproc"}
 
 #: Adapters :func:`probe` never offers. ``openai-compat`` is excluded
 #: because it is always "installed" and would win every auto-pick; ``demo``
 #: for the same reason and a stronger one -- it answers from a fixture, so
 #: auto-picking it would silently replace the operator's harness with a
-#: canned reply. ``demo`` stays selectable *per request* (``--agent demo``,
-#: ``@demo``, an alias whose target is ``demo``), but ``nvsh agent use
-#: demo`` and ``nvsh setup --agent demo`` refuse to persist it as the
-#: default -- see :data:`DEMO_DEFAULT_MESSAGE` -- because a demo default
-#: would make every ordinary failure replay a canned fixture instead of
-#: calling a real backend.
-PROBE_EXCLUDED = frozenset({"openai-compat", "demo"})
+#: canned reply. ``needle`` (and ``lfm``, task t19) is excluded because it
+#: is a single tier, not a full agent: it only ever answers
+#: instruction-shaped requests, so auto-picking it as the default would mean
+#: every ordinary failure silently gets a Tier-1-only answer instead of the
+#: full agent. ``demo``/``needle`` stay selectable *per request*
+#: (``--agent demo``, ``@needle``, an alias whose target is one of them),
+#: but ``nvsh agent use``/``nvsh setup --agent`` refuse to persist either as
+#: the default -- see :data:`NOT_PERSISTABLE_DEFAULT_REASONS` -- because
+#: that would make every ordinary failure replay a canned fixture or a
+#: Tier-1-only answer instead of calling a real backend.
+PROBE_EXCLUDED = frozenset({"openai-compat", "demo", "needle"})
 
 #: Shared by every place that refuses to persist ``demo`` as the default
 #: backend (``nvsh agent use demo``, ``nvsh setup --agent demo``, and
@@ -74,6 +80,34 @@ DEMO_DEFAULT_HINT = (
     "run the demo for one request with --agent demo or @demo instead"
 )
 
+#: Same refusal, for ``needle`` (see ``nvsh/agent/needle.py``'s module
+#: docstring): a Tier 1 tool-selecting model answers instruction-shaped
+#: requests only, and declines everything else rather than calling a real
+#: harness -- exactly the wrong shape for the backend nvsh always falls
+#: back to.
+NEEDLE_DEFAULT_MESSAGE = (
+    "needle is a Tier 1 local-response model (instruction-shaped requests only); "
+    "it cannot be the persisted default agent"
+)
+NEEDLE_DEFAULT_HINT = (
+    "choose a real backend with 'nvsh agent use <name>' (see 'nvsh agent list'); "
+    "run needle for one request with --agent needle or @needle instead"
+)
+
+#: ``nvsh agent use``/``nvsh setup --agent``'s refusal table for adapters
+#: that must never be the *persisted default* (each stays selectable per
+#: request). One dict instead of a growing chain of ``if name == ...``:
+#: ``lfm`` (task t19) joins this the same way -- add its ``(message, hint)``
+#: pair here, no new branch.
+NOT_PERSISTABLE_DEFAULT_REASONS: dict[str, tuple[str, str]] = {
+    "demo": (DEMO_DEFAULT_MESSAGE, DEMO_DEFAULT_HINT),
+    "needle": (NEEDLE_DEFAULT_MESSAGE, NEEDLE_DEFAULT_HINT),
+}
+
+#: The set form of :data:`NOT_PERSISTABLE_DEFAULT_REASONS`'s keys, for a
+#: plain membership check where the reason text isn't needed.
+NOT_PERSISTABLE_DEFAULT = frozenset(NOT_PERSISTABLE_DEFAULT_REASONS)
+
 
 @dataclass(frozen=True)
 class AdapterSpec:
@@ -90,6 +124,12 @@ class AdapterSpec:
     #: Whether the backend talks to a hosted (non-local) model/service.
     hosted: bool
     needs_node: bool = False
+    #: Overrides :func:`installed`'s default rule (``which(binary)``, or
+    #: ``True`` when ``binary`` is ``None``) with a zero-arg predicate. Used
+    #: by adapters with no binary at all whose "installed" question is not
+    #: "always yes" (``openai-compat``/``demo``'s case) but "is the Python
+    #: flavor importable" -- ``needle`` (and ``lfm``, task t19).
+    installed_check: Callable[[], bool] | None = None
 
 
 def _str_or_none(value: object) -> str | None:
@@ -192,6 +232,32 @@ def _make_openai_compat(config: Config) -> NvshAgent:
     return OpenAICompatAgent(config.agents.get("openai-compat", {}))
 
 
+def _make_needle(config: Config) -> NvshAgent:
+    """The explicit Tier-1-only adapter (lazy import, see ``_make_qwen``).
+
+    Settings come from ``[tiers]``, not ``[agents.needle]``: Tier 1 has no
+    harness-style knobs of its own, only the ones the tier ladder already
+    defines (``needle_min_confidence``, ``memory_floor_mb``, ...).
+    """
+    from .needle import NeedleAgent
+
+    return NeedleAgent(config.tiers)
+
+
+def _needle_flavor_installed() -> bool:
+    """Whether the ``needle`` (``cactus-needle``) Python package is
+    importable. ``find_spec`` only locates the module -- it is never
+    imported, so this never runs the native engine's own module-level code
+    (mirrors ``nvsh/doctor_checks.py``'s ``_tier_flavor_installed``).
+    """
+    import importlib.util
+
+    try:
+        return importlib.util.find_spec("needle") is not None
+    except (ImportError, ValueError):
+        return False
+
+
 #: Registered in the order 'nvsh agent list' reports them.
 ADAPTERS: dict[str, AdapterSpec] = {
     "pi": AdapterSpec(
@@ -275,15 +341,30 @@ ADAPTERS: dict[str, AdapterSpec] = {
         hosted=False,
         needs_node=False,
     ),
+    "needle": AdapterSpec(
+        name="needle",
+        binary=None,
+        factory=_make_needle,
+        description="Needle3 Tier 1, explicit-only (@needle); local, instruction-shaped requests.",
+        path="inproc",
+        hosted=False,
+        needs_node=False,
+        installed_check=_needle_flavor_installed,
+    ),
 }
 
 
 def installed(name: str, which: WhichFn = shutil.which) -> bool:
-    """Is adapter ``name`` usable right now? ``openai-compat`` and ``demo``
-    always are: neither has a binary, so ``which`` is not consulted at all
-    (never with ``None``, which would raise).
+    """Is adapter ``name`` usable right now?
+
+    ``spec.installed_check`` wins when set (``needle``'s: is the flavor
+    importable). Otherwise: ``openai-compat`` and ``demo`` always are --
+    neither has a binary, so ``which`` is not consulted at all (never with
+    ``None``, which would raise) -- and everything else is on PATH or not.
     """
     spec = ADAPTERS[name]
+    if spec.installed_check is not None:
+        return spec.installed_check()
     if spec.binary is None:
         return True
     return which(spec.binary) is not None
