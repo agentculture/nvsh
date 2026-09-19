@@ -106,13 +106,15 @@ def _run_bench(split="dev"):
         split=split,
         tier1=tier1,
         platform=_PLATFORM,
-        clock=_counter_clock(),
-        runner=_runner,
-        nvsh_version="9.9.9",
-        engine="fixture",
-        mode="cpu",
-        concurrent_load=(0.1, 0.2, 0.3),
-        timestamp="2026-09-19T00:00:00+00:00",
+        options=bench_mod.BenchOptions(
+            clock=_counter_clock(),
+            runner=_runner,
+            nvsh_version="9.9.9",
+            engine="fixture",
+            mode="cpu",
+            concurrent_load=(0.1, 0.2, 0.3),
+            timestamp="2026-09-19T00:00:00+00:00",
+        ),
     )
 
 
@@ -299,6 +301,24 @@ def test_calibration_auc_separates_correct_from_wrong_picks():
     assert calibration["auc"] == pytest.approx(1.0)
 
 
+def test_calibration_treats_a_wrong_argument_pick_as_incorrect():
+    """A pick naming the right operation but the wrong argument (e.g. the
+    wrong service) must count as a wrong pick in calibration/threshold
+    samples, exactly like ``compute_operation_accuracy`` already does --
+    matching the operation name alone would treat it as a positive."""
+    entry = _entry(
+        "a", "explicit", "restart it", {"operation": "service_restart", "args": {"service": "a"}}
+    )
+    outcome = bench_mod.TierOutcome(
+        operation="service_restart",
+        args={"service": "b"},  # wrong argument
+        verifier=VerifierVerdict(calibrated=5.0),
+        handled_by="needle",
+    )
+    samples = bench_mod._calibration_samples([_item(entry, outcome)])
+    assert samples == [(5.0, False)]
+
+
 def test_calibration_reports_not_enough_samples_rather_than_a_fake_score():
     calibration = bench_mod.compute_calibration([])
     assert calibration["auc"] is None
@@ -474,6 +494,34 @@ def test_bench_results_record_provenance():
         "ask_below": 0.0,
         "escalate_below": -2.0,
         "min_mass": 0.05,
+    }
+
+
+def test_bench_options_thresholds_and_min_confidence_reach_provenance():
+    """S107: ``bench``'s many optional knobs were grouped into ``BenchOptions``
+    (21 parameters -> a handful). This confirms the grouping still threads a
+    non-default ``min_confidence``/``thresholds`` through to the router build
+    and the reported provenance, not just the defaults ``_run_bench`` uses."""
+    tier1 = FakeTier(_script_for_entries())
+    result = bench_mod.bench(
+        _ENTRIES,
+        split="dev",
+        tier1=tier1,
+        platform=_PLATFORM,
+        options=bench_mod.BenchOptions(
+            clock=_counter_clock(),
+            runner=_runner,
+            min_confidence=0.42,
+            thresholds=bench_mod.VerifierThresholds(
+                ask_below=1.0, escalate_below=-1.0, min_mass=0.1
+            ),
+        ),
+    )
+    assert result["provenance"]["thresholds_in_force"] == {
+        "min_confidence": 0.42,
+        "ask_below": 1.0,
+        "escalate_below": -1.0,
+        "min_mass": 0.1,
     }
 
 

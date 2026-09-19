@@ -83,12 +83,17 @@ def compute_stats(records: Sequence[Mapping[str, object]], *, dropped: int = 0) 
 
     ``records`` is untrusted, already-redacted data read back from disk: no
     field is assumed present, and an empty list produces zeroed-out stats
-    rather than raising.
+    rather than raising. ``TierRecords.read_all()`` accepts any JSON value
+    that parses, so a hand-edited or torn line can decode to ``null``, a
+    list or a scalar; those are counted in ``total`` (they were valid JSON)
+    but excluded from every ``.get()``-based aggregate below, which would
+    otherwise raise ``AttributeError``.
     """
+    well_formed = [record for record in records if isinstance(record, Mapping)]
     return {
         "total": len(records),
         "dropped": dropped,
-        "tiers": _tier_stats(records),
-        "escalation_reasons": _escalation_reasons(records),
-        "operator_decisions": _operator_decisions(records),
+        "tiers": _tier_stats(well_formed),
+        "escalation_reasons": _escalation_reasons(well_formed),
+        "operator_decisions": _operator_decisions(well_formed),
     }

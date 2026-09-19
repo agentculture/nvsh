@@ -296,7 +296,12 @@ def test_duplicates_are_dropped(tmp_path: Path) -> None:
 
 
 def test_two_runs_write_identical_bytes(tmp_path: Path) -> None:
-    """Running build twice on the same input produces identical JSONL bytes."""
+    """Running ``main()`` twice on the same input writes byte-identical JSONL files.
+
+    Drives the real ``--out`` file-writing path (not just ``build()``'s
+    in-memory result), so an encoding, newline or byte-ordering regression in
+    ``main()``'s write loop would fail this test.
+    """
     entries: list[dict] = [
         {
             "id": "i01",
@@ -317,19 +322,16 @@ def test_two_runs_write_identical_bytes(tmp_path: Path) -> None:
     corpus_path = tmp_path / "corpus.json"
     corpus_path.write_text(json.dumps(corpus))
 
-    build(corpus_path, None, tools)
-    build(corpus_path, None, tools)
+    out1 = tmp_path / "out1.jsonl"
+    out2 = tmp_path / "out2.jsonl"
+    assert main(["--corpus", str(corpus_path), "--out", str(out1)]) == 0
+    assert main(["--corpus", str(corpus_path), "--out", str(out2)]) == 0
 
-    # Write via the same path twice and compare bytes.
-    lines1 = []
-    for ex in build(corpus_path, None, tools)[0]:
-        lines1.append(json.dumps(ex, sort_keys=True, ensure_ascii=False) + "\n")
-
-    lines2 = []
-    for ex in build(corpus_path, None, tools)[0]:
-        lines2.append(json.dumps(ex, sort_keys=True, ensure_ascii=False) + "\n")
-
-    assert lines1 == lines2
+    bytes1 = out1.read_bytes()
+    bytes2 = out2.read_bytes()
+    assert bytes1 == bytes2
+    assert bytes1.count(b"\n") == 2
+    assert bytes1.endswith(b"\n")
 
 
 # ---------------------------------------------------------------------------
@@ -386,3 +388,73 @@ def test_build_itself_refuses_the_held_out_split(tmp_path):
     held_out.write_text('{"entries": []}', encoding="utf-8")
     with pytest.raises(ValueError):
         _builder.build(held_out, None, [])
+
+
+# ---------------------------------------------------------------------------
+# --out must not alias --corpus/--bundle (QODO 4053821279)
+# ---------------------------------------------------------------------------
+
+
+def test_out_equal_to_corpus_is_refused_and_the_corpus_survives(tmp_path):
+    corpus_path = tmp_path / "corpus.json"
+    original = json.dumps(_tiny_corpus([]))
+    corpus_path.write_text(original, encoding="utf-8")
+
+    rc = main(["--corpus", str(corpus_path), "--out", str(corpus_path)])
+
+    assert rc == 2
+    assert corpus_path.read_text(encoding="utf-8") == original
+
+
+def test_out_equal_to_bundle_is_refused_and_the_bundle_survives(tmp_path):
+    corpus_path = tmp_path / "corpus.json"
+    corpus_path.write_text(json.dumps(_tiny_corpus([])), encoding="utf-8")
+    bundle_path = tmp_path / "bundle.json"
+    original = json.dumps(_tiny_bundle([]))
+    bundle_path.write_text(original, encoding="utf-8")
+
+    rc = main(
+        ["--corpus", str(corpus_path), "--bundle", str(bundle_path), "--out", str(bundle_path)]
+    )
+
+    assert rc == 2
+    assert bundle_path.read_text(encoding="utf-8") == original
+
+
+def test_out_via_a_symlink_to_corpus_is_also_refused(tmp_path):
+    corpus_path = tmp_path / "corpus.json"
+    original = json.dumps(_tiny_corpus([]))
+    corpus_path.write_text(original, encoding="utf-8")
+    alias = tmp_path / "alias.json"
+    alias.symlink_to(corpus_path)
+
+    rc = main(["--corpus", str(corpus_path), "--out", str(alias)])
+
+    assert rc == 2
+    assert corpus_path.read_text(encoding="utf-8") == original
+
+
+def test_a_genuinely_different_out_path_still_writes(tmp_path):
+    corpus_path = tmp_path / "corpus.json"
+    corpus_path.write_text(
+        json.dumps(
+            _tiny_corpus(
+                [
+                    {
+                        "id": "t01",
+                        "kind": "explicit",
+                        "text": "am I out of disk?",
+                        "expect": {"operation": "disk_stats", "args": {}},
+                        "source": "test",
+                    }
+                ]
+            )
+        ),
+        encoding="utf-8",
+    )
+    out_path = tmp_path / "out.jsonl"
+
+    rc = main(["--corpus", str(corpus_path), "--out", str(out_path)])
+
+    assert rc == 0
+    assert out_path.exists()

@@ -24,10 +24,9 @@ reports "0 entries" rather than a fabricated score.
 from __future__ import annotations
 
 import json
-import re
 import tempfile
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Mapping, Sequence
 
@@ -49,6 +48,8 @@ _WARM_P95_MS = 150.0
 _MIN_ACCURACY = 0.9
 _MIN_ESCALATION_RECALL = 0.8
 _MAX_ADDED_MIB = 1024.0
+#: Tolerance for the "zero" targets, which are always integer counts.
+_ZERO_COUNT_TOLERANCE = 0.5
 
 
 def dev_corpus_path() -> Path:
@@ -170,6 +171,7 @@ class UnavailableTier(Tier):
         return Decline(DeclineReason.TIER_UNAVAILABLE, "fixture tier: no local model configured")
 
     def close(self) -> None:
+        # Nothing to release: this tier holds no connection or subprocess.
         pass
 
 
@@ -208,6 +210,7 @@ def run_items(
         started = clock()
         route = router.route(request, context)
         for _event in route:
+            # drain: a Route is a generator; exhausting it drives the decision to completion
             pass
         elapsed_ms = (clock() - started) * 1000.0
         results.append(ItemResult(entry=entry, outcome=route.outcome, latency_ms=elapsed_ms))
@@ -399,16 +402,27 @@ def compute_escalation(items: Sequence[ItemResult]) -> dict:
 # ---------------------------------------------------------------------------
 
 
+def _pick_is_correct(entry: CorpusEntry, outcome: TierOutcome) -> bool:
+    """Same "correct" as :func:`compute_operation_accuracy`: operation AND args match.
+
+    Matching the operation name alone would count a pick that targets the
+    wrong service or container as a positive calibration/threshold sample,
+    even though the main accuracy score correctly marks it wrong.
+    """
+    if entry.expect.get("escalate"):
+        return False
+    if outcome.operation != entry.expect.get("operation"):
+        return False
+    return outcome.args == entry.expect.get("args", {})
+
+
 def _calibration_samples(items: Sequence[ItemResult]) -> list[tuple[float, bool]]:
     samples: list[tuple[float, bool]] = []
     for item in items:
         outcome = item.outcome
         if outcome is None or outcome.verifier is None or outcome.verifier.calibrated is None:
             continue
-        correct = not item.entry.expect.get(
-            "escalate"
-        ) and outcome.operation == item.entry.expect.get("operation")
-        samples.append((outcome.verifier.calibrated, correct))
+        samples.append((outcome.verifier.calibrated, _pick_is_correct(item.entry, outcome)))
     return samples
 
 
@@ -594,19 +608,41 @@ def read_proc_status(
 
 
 _MEM_UNIT_TO_MIB = {"b": 1.0 / (1024 * 1024), "kib": 1.0 / 1024, "mib": 1.0, "gib": 1024.0}
-_MEM_USAGE_RE = re.compile(r"([\d.]+)\s*([A-Za-z]+)\s*/\s*([\d.]+)\s*([A-Za-z]+)")
+
+
+def _split_number_unit(token: str) -> tuple[float, str] | None:
+    """Split ``"12.34MiB"`` into ``(12.34, "MiB")``. No regex: a hand-rolled
+    scan avoids the super-linear backtracking a ``[\\d.]+\\s*[A-Za-z]+``
+    pattern risks on adversarial input (S8786)."""
+    token = token.strip()
+    index = 0
+    length = len(token)
+    while index < length and (token[index].isdigit() or token[index] == "."):
+        index += 1
+    number_part, unit_part = token[:index], token[index:].strip()
+    if not number_part or not unit_part:
+        return None
+    try:
+        return float(number_part), unit_part
+    except ValueError:
+        return None
 
 
 def _parse_docker_mem_usage(raw: str) -> tuple[float, float] | None:
-    match = _MEM_USAGE_RE.search(raw.strip())
-    if match is None:
+    parts = raw.strip().split("/")
+    if len(parts) != 2:
         return None
-    used_value, used_unit, limit_value, limit_unit = match.groups()
+    used = _split_number_unit(parts[0])
+    limit = _split_number_unit(parts[1])
+    if used is None or limit is None:
+        return None
+    used_value, used_unit = used
+    limit_value, limit_unit = limit
     used_factor = _MEM_UNIT_TO_MIB.get(used_unit.lower())
     limit_factor = _MEM_UNIT_TO_MIB.get(limit_unit.lower())
     if used_factor is None or limit_factor is None:
         return None
-    return float(used_value) * used_factor, float(limit_value) * limit_factor
+    return used_value * used_factor, limit_value * limit_factor
 
 
 def _default_docker_stats(container: str) -> str | None:
@@ -712,7 +748,10 @@ def build_targets(
         _check(
             "zero_wrong_mutating_without_interpretation",
             float(without_interpretation),
-            lambda v: v == 0.0,
+            # `without_interpretation` is a non-negative integer count carried as a
+            # float only to share `_check`'s signature -- compare with a tolerance
+            # rather than `== 0.0` (S1244).
+            lambda v: v < _ZERO_COUNT_TOLERANCE,
             "== 0",
         ),
         _check(
@@ -772,48 +811,64 @@ class VerifierThresholds:
     min_mass: float = 0.05
 
 
+@dataclass(frozen=True)
+class BenchOptions:
+    """Everything :func:`bench` needs besides "what to run and against what".
+
+    Grouped out of ``bench``'s own signature (S107: 21 parameters was over
+    the 13-parameter limit) -- ``tier2``/``verifier``/``min_confidence``/
+    ``thresholds``/``clock``/``runner`` wire up the router the same way a
+    caller building one directly would; the rest
+    (``idle_memory``..``corpus_problems``) is reported provenance only, never
+    read to make a routing decision.
+    """
+
+    tier2: Tier | None = None
+    verifier: Verifier | None = None
+    min_confidence: float = 0.0
+    thresholds: VerifierThresholds = field(default_factory=VerifierThresholds)
+    clock: Callable[[], float] = time.monotonic
+    runner: ops_ground.Runner = ops_ground.default_runner
+    idle_memory: MemoryReading | None = None
+    peak_memory: MemoryReading | None = None
+    pins: Mapping[str, object] | None = None
+    platform_tag: str = ""
+    nvsh_version: str = ""
+    engine: str = "none"
+    mode: str = "unknown"
+    grounding: str = "unknown"
+    concurrent_load: tuple[float, float, float] | None = None
+    timestamp: str = ""
+    corpus_problems: Sequence[str] = ()
+
+
 def bench(
     entries: Sequence[CorpusEntry],
     *,
     split: str,
     tier1: Tier | None,
-    tier2: Tier | None = None,
     platform: Platform,
-    verifier: Verifier | None = None,
-    min_confidence: float = 0.0,
-    thresholds: VerifierThresholds = VerifierThresholds(),
-    clock: Callable[[], float] = time.monotonic,
-    runner: ops_ground.Runner = ops_ground.default_runner,
-    idle_memory: MemoryReading | None = None,
-    peak_memory: MemoryReading | None = None,
-    pins: Mapping[str, object] | None = None,
-    platform_tag: str = "",
-    nvsh_version: str = "",
-    engine: str = "none",
-    mode: str = "unknown",
-    grounding: str = "unknown",
-    concurrent_load: tuple[float, float, float] | None = None,
-    timestamp: str = "",
-    corpus_problems: Sequence[str] = (),
+    options: BenchOptions = BenchOptions(),
 ) -> dict:
     """Run *entries* through a real :class:`TierRouter` and return the results dict.
 
-    ``tier1``/``tier2`` are whatever the caller built -- a scripted
+    ``tier1``/``options.tier2`` are whatever the caller built -- a scripted
     :class:`~nvsh.tiers.fake.FakeTier` for a repeatable test, or a real tier
     for a device measurement. Everything but ``provenance.timestamp`` is
-    reproducible when *entries*, the tiers' scripted output and ``clock``
-    are held fixed (criterion 2).
+    reproducible when *entries*, the tiers' scripted output and
+    ``options.clock`` are held fixed (criterion 2).
     """
+    clock = options.clock
     with tempfile.TemporaryDirectory(prefix="nvsh-tiers-bench-") as tmp_dir:
         records = TierRecords(path=Path(tmp_dir) / "bench-records.jsonl")
         router = TierRouter(
             tier1,
-            tier2,
+            options.tier2,
             records,
             platform,
-            runner=runner,
-            verifier=verifier,
-            min_confidence=min_confidence,
+            runner=options.runner,
+            verifier=options.verifier,
+            min_confidence=options.min_confidence,
             clock=clock,
         )
         items = run_items(entries, router, clock)
@@ -833,11 +888,15 @@ def bench(
         }
     )
     latency = compute_latency(items)
-    memory = compute_memory(idle_memory, peak_memory)
+    memory = compute_memory(options.idle_memory, options.peak_memory)
     targets = build_targets(accuracy, latency, escalation, false_mutating, memory)
 
     return {
-        "corpus": {"split": split, "count": len(entries), "problems": list(corpus_problems)},
+        "corpus": {
+            "split": split,
+            "count": len(entries),
+            "problems": list(options.corpus_problems),
+        },
         "accuracy": accuracy,
         "accuracy_by_kind": accuracy_by_kind(items),
         "items": item_rows(items),
@@ -849,20 +908,22 @@ def bench(
         "memory": memory,
         "targets": targets,
         "provenance": {
-            "nvsh_version": nvsh_version,
+            "nvsh_version": options.nvsh_version,
             "device": platform.to_dict(),
-            "engine": engine,
-            "mode": mode,
-            "grounding": grounding,
-            "concurrent_load": list(concurrent_load) if concurrent_load is not None else None,
-            "model_hashes": model_hashes(pins, platform_tag=platform_tag),
-            "image_size_bytes": image_size_bytes(pins),
+            "engine": options.engine,
+            "mode": options.mode,
+            "grounding": options.grounding,
+            "concurrent_load": (
+                list(options.concurrent_load) if options.concurrent_load is not None else None
+            ),
+            "model_hashes": model_hashes(options.pins, platform_tag=options.platform_tag),
+            "image_size_bytes": image_size_bytes(options.pins),
             "thresholds_in_force": {
-                "min_confidence": min_confidence,
-                "ask_below": thresholds.ask_below,
-                "escalate_below": thresholds.escalate_below,
-                "min_mass": thresholds.min_mass,
+                "min_confidence": options.min_confidence,
+                "ask_below": options.thresholds.ask_below,
+                "escalate_below": options.thresholds.escalate_below,
+                "min_mass": options.thresholds.min_mass,
             },
-            "timestamp": timestamp,
+            "timestamp": options.timestamp,
         },
     }
