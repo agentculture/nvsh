@@ -142,12 +142,9 @@ def cmd_agent_use(args: argparse.Namespace) -> int:
             message=f"unknown agent '{name}'",
             remediation=f"choose one of: {_ADAPTER_NAMES}",
         )
-    if name == "demo":
-        raise CliError(
-            code=EXIT_USER_ERROR,
-            message=registry.DEMO_DEFAULT_MESSAGE,
-            remediation=registry.DEMO_DEFAULT_HINT,
-        )
+    if name in registry.NOT_PERSISTABLE_DEFAULT:
+        message, remediation = registry.NOT_PERSISTABLE_DEFAULT_REASONS[name]
+        raise CliError(code=EXIT_USER_ERROR, message=message, remediation=remediation)
     cfg = nvsh_config.set_provider(name)
     json_mode = bool(getattr(args, "json", False))
     result: dict = {"provider": cfg.agent_provider}
