@@ -54,6 +54,13 @@ def test_wheel_contains_tier_fetch_pins(built_wheel):
     assert "nvsh/tiers/pins.json" in names
 
 
+def test_wheel_contains_tier_bench_corpus(built_wheel):
+    with zipfile.ZipFile(built_wheel) as zf:
+        names = set(zf.namelist())
+    assert "nvsh/tiers/corpus/dev.json" in names
+    assert "nvsh/tiers/corpus/held-out.json" in names
+
+
 def test_wheel_contains_every_pi_ext_ts_file(built_wheel):
     pi_ext_dir = REPO_ROOT / "nvsh" / "agent" / "pi_ext"
     ts_files = sorted(pi_ext_dir.glob("*.ts")) if pi_ext_dir.is_dir() else []

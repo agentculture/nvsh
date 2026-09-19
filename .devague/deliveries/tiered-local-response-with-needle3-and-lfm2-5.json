@@ -2,7 +2,7 @@
   "plan_slug": "tiered-local-response-with-needle3-and-lfm2-5",
   "schema_version": 2,
   "created": "2026-09-19T14:14:40Z",
-  "updated": "2026-09-19T14:14:40Z",
+  "updated": "2026-09-19T15:58:08Z",
   "deviations": [
     {
       "id": "d1",
@@ -23,6 +23,23 @@
       "status": "approved",
       "classification": "acceptable",
       "seq": 1
+    },
+    {
+      "id": "d2",
+      "what": "Fine-tuning and sharing, for all tier models: (1) tuned weights and the training data are published under the public Hugging Face org jetson-ai-lab, hard-coded in nvsh's pins with a config override (repo + revision + sha256 together); names follow <base>-nvsh-<task>: models jetson-ai-lab/needle3-nvsh-ops and jetson-ai-lab/lfm2.5-350m-nvsh-triage (+ a -GGUF repo for the llama.cpp build), dataset jetson-ai-lab/nvsh-ops; version tags ops<N>-r<M>, nvsh pins by commit + sha256, and a tuned pin records the operation-table hash it was trained on (mismatch => doctor reports it and the tier falls back to stock). (2) LFM2.5 fine-tuning moves from non-goal (c18) to documented recipe: instructions for unsloth, unsloth-cli and a remote Hugging Face run; Needle keeps cactus-needle's own JAX LoRA path (unsloth cannot train it). nvsh ships recipes, the dataset exporter and the pins; it still runs no training itself and uploads nothing on its own -- publishing stays an operator action (c17 unchanged).",
+      "task_ref": "t23",
+      "reason": "Operator request 2026-09-19: created the jetson-ai-lab HF org, asked for unsloth/unsloth-cli/HF-remote fine-tune instructions, and to share data and weights with one naming format for all models. Unsloth targets HF-transformers models, so this necessarily brings LFM2.5 tuning into scope.",
+      "affects": [
+        "t25",
+        "t22",
+        "c18",
+        "c39",
+        "c40"
+      ],
+      "origin": "llm",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 2
     }
   ],
   "evidence": [],

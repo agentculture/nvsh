@@ -976,6 +976,7 @@ imported lazily inside each handler, never at CLI startup.
 - `nvsh explain tiers stats`
 - `nvsh explain tiers export`
 - `nvsh explain tiers prefetch`
+- `nvsh explain tiers bench`
 """
 
 _TIERS_STATS = """\
@@ -1031,6 +1032,38 @@ test run.
     nvsh tiers prefetch --json
 """
 
+_TIERS_BENCH = """\
+# nvsh tiers bench
+
+Runs the committed benchmark corpus (`nvsh/tiers/corpus/dev.json` or
+`held-out.json`) through a real `nvsh.tiers.router.TierRouter`
+(`nvsh.tiers.bench.bench`) — the same router that answers a live request —
+and reports accuracy, argument accuracy, a false-mutating-pick count,
+escalation precision/recall, cold/warm latency, idle/peak/reserved memory,
+image size, and a pass/miss line per spec-c20 success-signal target. A
+target that was not measured (no memory reading supplied, too few corpus
+items) prints "not measured", never "pass".
+
+`--split held-out` reports "held-out: 0 entries (operator has not added
+any)" until an operator adds entries there — held-out phrasings must not
+be authored alongside the dev-split operation descriptions in the same
+sitting (assumption c38), so the file ships empty on purpose.
+
+`--tier fixture` (the default) uses `nvsh.tiers.bench.UnavailableTier`,
+which declines every request, so the verb runs end to end with no model
+installed. `--tier needle` imports `nvsh.tiers.needle` lazily and, until
+that module ships, fails with a `CliError` naming `--tier fixture` as the
+remediation. Records written during a run go to a throwaway
+`TierRecords` in a temp directory, never `$XDG_STATE_HOME/nvsh/tiers.jsonl`.
+
+## Usage
+
+    nvsh tiers bench
+    nvsh tiers bench --split held-out
+    nvsh tiers bench --tier needle --out results.json
+    nvsh tiers bench --json
+"""
+
 ENTRIES: dict[tuple[str, ...], str] = {
     (): _ROOT,
     ("nvsh",): _ROOT,
@@ -1084,4 +1117,5 @@ ENTRIES: dict[tuple[str, ...], str] = {
     ("tiers", "stats"): _TIERS_STATS,
     ("tiers", "export"): _TIERS_EXPORT,
     ("tiers", "prefetch"): _TIERS_PREFETCH,
+    ("tiers", "bench"): _TIERS_BENCH,
 }
