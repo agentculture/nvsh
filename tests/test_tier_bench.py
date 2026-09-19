@@ -22,6 +22,7 @@ import pytest
 from nvsh.agent.base import AgentContext, AgentRequest, RequestKind
 from nvsh.cli import main
 from nvsh.explain.catalog import ENTRIES
+from nvsh.ops import ground as ops_ground
 from nvsh.ops import table as ops_table
 from nvsh.platform._model import Platform
 from nvsh.tiers import bench as bench_mod
@@ -481,6 +482,8 @@ def test_bench_results_include_every_required_metric():
     assert set(result) == {
         "corpus",
         "accuracy",
+        "items",
+        "accuracy_by_kind",
         "escalation",
         "false_mutating_pick",
         "calibration",
@@ -611,3 +614,38 @@ def test_unavailable_tier_declines_never_selects():
     assert isinstance(result, Decline)
     assert result.reason == DeclineReason.TIER_UNAVAILABLE
     tier.close()  # never raises
+
+
+def test_the_fixture_world_grounds_a_service_the_host_does_not_have():
+    runner = bench_mod.world_runner({"services": ["vllm.service"]})
+    grounded = ops_ground.ground(ops_table.get("service_restart"), {"service": "vllm"}, runner)
+    assert grounded.args == {"service": "vllm.service"}
+
+
+def test_the_fixture_world_runs_nothing_else():
+    assert bench_mod.world_runner({})(["rm", "-rf", "/"], 1.0) == (127, "")
+
+
+def test_the_fixture_platform_carries_the_corpus_device_cli():
+    platform = bench_mod.world_platform({"platform": "jetson", "device_cli": "thor"})
+    assert (platform.kind, platform.get("thor_cli").text) == ("jetson", "thor")
+
+
+def test_a_corpus_without_a_world_is_an_empty_world(tmp_path):
+    assert bench_mod.load_world(tmp_path / "missing.json") == {}
+
+
+def test_results_carry_one_row_per_corpus_entry():
+    loaded = bench_mod.load_corpus(bench_mod.dev_corpus_path())
+    result = bench_mod.bench(
+        loaded.entries, split="dev", tier1=bench_mod.UnavailableTier(), platform=Platform("test")
+    )
+    assert [row["id"] for row in result["items"]] == [entry.id for entry in loaded.entries]
+
+
+def test_accuracy_is_also_reported_per_request_kind():
+    loaded = bench_mod.load_corpus(bench_mod.dev_corpus_path())
+    result = bench_mod.bench(
+        loaded.entries, split="dev", tier1=bench_mod.UnavailableTier(), platform=Platform("test")
+    )
+    assert sorted(result["accuracy_by_kind"]) == ["explicit", "failure"]

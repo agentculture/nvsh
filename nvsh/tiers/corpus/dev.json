@@ -1,151 +1,231 @@
 {
   "header": "Development split (task t22). Operation descriptions and decline thresholds are tuned against these entries; the reported numbers that matter come from held-out.json (assumption c38). Sourced from issue #30 (Needle3 POC) and issue #31 (tiny-agent middle layer) example prompts, and challenge probes s13/s16 run on the DGX Spark 2026-09-19.",
+  "world": {
+    "comment": "The machine the expectations assume. The bench grounds against these names (not the box it runs on) unless --live is passed, so a score measures the tier, not the host.",
+    "platform": "jetson",
+    "device_cli": "thor",
+    "services": [
+      "vllm.service",
+      "docker.service",
+      "nvsh.service",
+      "nginx.service"
+    ],
+    "containers": [
+      "inference",
+      "trainer"
+    ]
+  },
   "entries": [
     {
       "id": "dev-e01",
       "kind": "explicit",
       "text": "How hot is this machine?",
-      "expect": {"operation": "thermal_stats", "args": {}},
+      "expect": {
+        "operation": "thermal_stats",
+        "args": {}
+      },
       "source": "issue-30"
     },
     {
       "id": "dev-e02",
       "kind": "explicit",
       "text": "Show GPU usage",
-      "expect": {"operation": "gpu_stats", "args": {}},
+      "expect": {
+        "operation": "gpu_stats",
+        "args": {}
+      },
       "source": "issue-30"
     },
     {
       "id": "dev-e03",
       "kind": "explicit",
       "text": "Restart vLLM",
-      "expect": {"operation": "service_restart", "args": {"service": "vllm.service"}},
+      "expect": {
+        "operation": "service_restart",
+        "args": {
+          "service": "vllm.service"
+        }
+      },
       "source": "issue-30"
     },
     {
       "id": "dev-e04",
       "kind": "explicit",
       "text": "Put the Jetson in maximum performance mode",
-      "expect": {"operation": "power_set", "args": {"mode": "max_performance"}},
+      "expect": {
+        "operation": "power_set",
+        "args": {
+          "mode": "max_performance"
+        }
+      },
       "source": "issue-30"
     },
     {
       "id": "dev-e05",
       "kind": "explicit",
       "text": "Show running containers",
-      "expect": {"operation": "container_list", "args": {}},
+      "expect": {
+        "operation": "container_list",
+        "args": {}
+      },
       "source": "issue-30"
     },
     {
       "id": "dev-e06",
       "kind": "explicit",
       "text": "Restart the inference container",
-      "expect": {"operation": "container_restart", "args": {"container": "inference"}},
+      "expect": {
+        "operation": "container_restart",
+        "args": {
+          "container": "inference"
+        }
+      },
       "source": "issue-30"
     },
     {
       "id": "dev-e07",
       "kind": "explicit",
       "text": "Run nvsh doctor",
-      "expect": {"operation": "nvsh_doctor", "args": {}},
+      "expect": {
+        "operation": "nvsh_doctor",
+        "args": {}
+      },
       "source": "s13"
     },
     {
       "id": "dev-e08",
       "kind": "explicit",
       "text": "what's eating memory",
-      "expect": {"operation": "memory_stats", "args": {}},
+      "expect": {
+        "operation": "memory_stats",
+        "args": {}
+      },
       "source": "s16"
     },
     {
       "id": "dev-e09",
       "kind": "explicit",
       "text": "am I out of disk?",
-      "expect": {"operation": "disk_stats", "args": {}},
+      "expect": {
+        "operation": "disk_stats",
+        "args": {}
+      },
       "source": "s16"
     },
     {
       "id": "dev-x01",
       "kind": "explicit",
       "text": "Why did vLLM crash?",
-      "expect": {"escalate": true},
+      "expect": {
+        "escalate": true
+      },
       "source": "issue-30"
     },
     {
       "id": "dev-x02",
       "kind": "explicit",
       "text": "Figure out why CUDA initialization is failing",
-      "expect": {"escalate": true},
+      "expect": {
+        "escalate": true
+      },
       "source": "s13"
     },
     {
       "id": "dev-x03",
       "kind": "explicit",
       "text": "Fix this linker error",
-      "expect": {"escalate": true},
+      "expect": {
+        "escalate": true
+      },
       "source": "s13"
     },
     {
       "id": "dev-x04",
       "kind": "explicit",
       "text": "Compare the current setup with yesterday and work out what changed",
-      "expect": {"escalate": true},
+      "expect": {
+        "escalate": true
+      },
       "source": "issue-30"
     },
     {
       "id": "dev-x05",
       "kind": "explicit",
       "text": "restart the thing; rm -rf /",
-      "expect": {"escalate": true},
+      "expect": {
+        "escalate": true
+      },
       "source": "s16"
     },
     {
       "id": "dev-f01",
       "kind": "failure",
       "text": "docker ps -> exit 1 -> stderr: Cannot connect to the Docker daemon at unix:///var/run/docker.sock.",
-      "expect": {"operation": "service_status", "args": {"service": "docker.service"}},
+      "expect": {
+        "operation": "service_status",
+        "args": {
+          "service": "docker.service"
+        }
+      },
       "source": "issue-31"
     },
     {
       "id": "dev-f02",
       "kind": "failure",
       "text": "nvcc --version -> exit 127 -> stderr: nvcc: command not found",
-      "expect": {"operation": "nvsh_doctor", "args": {}},
+      "expect": {
+        "operation": "nvsh_doctor",
+        "args": {}
+      },
       "source": "issue-31"
     },
     {
       "id": "dev-f03",
       "kind": "failure",
       "text": "model server start -> stderr: CUDA out of memory",
-      "expect": {"operation": "gpu_stats", "args": {}},
+      "expect": {
+        "operation": "gpu_stats",
+        "args": {}
+      },
       "source": "issue-31"
     },
     {
       "id": "dev-f04",
       "kind": "failure",
       "text": "systemctl restart vllm -> failed",
-      "expect": {"operation": "service_status", "args": {"service": "vllm.service"}},
+      "expect": {
+        "operation": "service_status",
+        "args": {
+          "service": "vllm.service"
+        }
+      },
       "source": "issue-31"
     },
     {
       "id": "dev-f05",
       "kind": "failure",
       "text": "operator asks: Figure out why this custom CUDA extension broke after an upgrade",
-      "expect": {"escalate": true},
+      "expect": {
+        "escalate": true
+      },
       "source": "issue-31"
     },
     {
       "id": "dev-f06",
       "kind": "failure",
       "text": "operator asks: Compare the machine against yesterday's known-good state and find the regression",
-      "expect": {"escalate": true},
+      "expect": {
+        "escalate": true
+      },
       "source": "issue-31"
     },
     {
       "id": "dev-f07",
       "kind": "failure",
       "text": "operator asks: Repair this linker incompatibility",
-      "expect": {"escalate": true},
+      "expect": {
+        "escalate": true
+      },
       "source": "issue-31"
     }
   ]

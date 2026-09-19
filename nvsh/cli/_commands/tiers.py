@@ -424,10 +424,18 @@ def _write_bench_result(path: str, result: dict) -> None:
 def cmd_tiers_bench(args: argparse.Namespace) -> int:
     from nvsh import __version__
     from nvsh import platform as platform_mod
-    from nvsh.tiers.bench import bench, load_corpus
+    from nvsh.ops.ground import default_runner
+    from nvsh.tiers.bench import bench, load_corpus, load_world, world_platform, world_runner
 
     split = getattr(args, "split", "dev") or "dev"
-    loaded = load_corpus(_bench_corpus_path(split))
+    corpus_path = _bench_corpus_path(split)
+    loaded = load_corpus(corpus_path)
+    # By default the bench grounds against the corpus's own fixture machine,
+    # so the score measures the tier and not this host; --live uses the box.
+    live = bool(getattr(args, "live", False))
+    world = load_world(corpus_path)
+    platform = platform_mod.detect() if live else world_platform(world)
+    runner = default_runner if live else world_runner(world)
     tier_name = getattr(args, "tier", "fixture") or "fixture"
     tier1 = _bench_tier(tier_name)
 
@@ -436,7 +444,10 @@ def cmd_tiers_bench(args: argparse.Namespace) -> int:
             loaded.entries,
             split=split,
             tier1=tier1,
-            platform=platform_mod.detect(),
+            platform=platform,
+            runner=runner,
+            mode="cpu" if tier_name == "needle" else "none",
+            grounding="live" if live else "fixture-world",
             pins=_bench_pins(),
             nvsh_version=__version__,
             engine=tier_name,
@@ -511,6 +522,11 @@ def register(sub: argparse._SubParsersAction) -> None:
         choices=("fixture", "needle"),
         default="fixture",
         help="Which Tier 1 implementation to bench.",
+    )
+    bench.add_argument(
+        "--live",
+        action="store_true",
+        help="Ground and render against this machine instead of the corpus's fixture world.",
     )
     bench.add_argument("--out", help="Write the results JSON to this local file.")
     bench.add_argument("--json", action="store_true", help=_JSON_HELP)

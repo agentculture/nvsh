@@ -34,7 +34,7 @@ from typing import Callable, Mapping, Sequence
 from ..agent.base import AgentContext, AgentRequest, RequestKind
 from ..ops import ground as ops_ground
 from ..ops import table as ops_table
-from ..platform._model import Platform
+from ..platform._model import PATH, Platform, Value
 from .base import Decline, DeclineReason, Tier
 from .records import TierRecords
 from .router import TierOutcome, TierRouter, Verifier
@@ -214,6 +214,78 @@ def run_items(
     return results
 
 
+def load_world(path: str | Path) -> dict:
+    """The corpus file's ``world`` object, or ``{}`` (never raises)."""
+    try:
+        with open(path, encoding="utf-8") as handle:
+            world = json.load(handle).get("world")
+    except (OSError, ValueError, AttributeError):
+        return {}
+    return world if isinstance(world, dict) else {}
+
+
+def _names(world: Mapping[str, object], key: str) -> list[str]:
+    raw = world.get(key)
+    return [str(name) for name in raw] if isinstance(raw, list) else []
+
+
+def world_runner(world: Mapping[str, object]) -> Callable[[list[str], float], tuple[int, str]]:
+    """A grounding runner that answers from the corpus's fixture world.
+
+    It runs nothing: the unit and container lookups get the world's names,
+    anything else is "not found". Scores then measure the tier, not
+    whichever services happen to exist on the host running the bench.
+    """
+    services = "".join(f"{name} loaded active running\n" for name in _names(world, "services"))
+    containers = "".join(f"{name}\n" for name in _names(world, "containers"))
+
+    def runner(argv: list[str], timeout: float) -> tuple[int, str]:
+        del timeout
+        if argv == ops_ground.SERVICE_LOOKUP_ARGV:
+            return (0, services)
+        if argv == ops_ground.CONTAINER_LOOKUP_ARGV:
+            return (0, containers)
+        return (127, "")
+
+    return runner
+
+
+def world_platform(world: Mapping[str, object]) -> Platform:
+    """The fixture machine the corpus assumes: its kind and its device CLI."""
+    kind = str(world.get("platform") or "unknown")
+    cli = world.get("device_cli")
+    if not isinstance(cli, str) or not cli:
+        return Platform(kind=kind)
+    value = Value(name=f"{cli}_cli", text=cli, source=cli, method=PATH, present=True)
+    return Platform(kind=kind, values=(value,))
+
+
+def item_rows(items: Sequence[ItemResult]) -> list[dict]:
+    """One row per corpus entry: what was expected and what the tiers did.
+
+    The aggregate scores say how good a tier is; these rows say *which*
+    requests it got wrong and why (the decline reasons), which is what a
+    corpus fix, a description rewrite or a fine-tune is built from.
+    """
+    rows = []
+    for item in items:
+        outcome = item.outcome
+        rows.append(
+            {
+                "id": item.entry.id,
+                "kind": item.entry.kind,
+                "expect": item.entry.expect,
+                "handled_by": outcome.handled_by if outcome else None,
+                "operation": outcome.operation if outcome else None,
+                "args": dict(outcome.args) if outcome else {},
+                "declines": (
+                    [[tier, reason.value] for tier, reason in outcome.declines] if outcome else []
+                ),
+            }
+        )
+    return rows
+
+
 # ---------------------------------------------------------------------------
 # Accuracy / escalation / false-mutating-pick metrics
 # ---------------------------------------------------------------------------
@@ -222,6 +294,20 @@ def run_items(
 def _explicit_target_items(items: Sequence[ItemResult]) -> list[ItemResult]:
     """Items whose ``expect`` names an operation, not an escalation."""
     return [item for item in items if not item.entry.expect.get("escalate")]
+
+
+def accuracy_by_kind(items: Sequence[ItemResult]) -> dict:
+    """:func:`compute_operation_accuracy` per request kind.
+
+    A failure never reaches Tier 1, so a Tier-1-only run scores zero on every
+    failure item by design. The overall figure is the c20 target; this split
+    is what shows which tier is responsible for a miss.
+    """
+    kinds = sorted({item.entry.kind for item in items})
+    return {
+        kind: compute_operation_accuracy([item for item in items if item.entry.kind == kind])
+        for kind in kinds
+    }
 
 
 def compute_operation_accuracy(items: Sequence[ItemResult]) -> dict:
@@ -705,6 +791,7 @@ def bench(
     nvsh_version: str = "",
     engine: str = "none",
     mode: str = "unknown",
+    grounding: str = "unknown",
     concurrent_load: tuple[float, float, float] | None = None,
     timestamp: str = "",
     corpus_problems: Sequence[str] = (),
@@ -752,6 +839,8 @@ def bench(
     return {
         "corpus": {"split": split, "count": len(entries), "problems": list(corpus_problems)},
         "accuracy": accuracy,
+        "accuracy_by_kind": accuracy_by_kind(items),
+        "items": item_rows(items),
         "escalation": escalation,
         "false_mutating_pick": false_mutating,
         "calibration": calibration,
@@ -764,6 +853,7 @@ def bench(
             "device": platform.to_dict(),
             "engine": engine,
             "mode": mode,
+            "grounding": grounding,
             "concurrent_load": list(concurrent_load) if concurrent_load is not None else None,
             "model_hashes": model_hashes(pins, platform_tag=platform_tag),
             "image_size_bytes": image_size_bytes(pins),
