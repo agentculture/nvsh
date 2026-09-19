@@ -254,14 +254,14 @@ def test_needle_installed_reflects_flavor_check(monkeypatch):
     monkeypatch.setitem(
         registry.ADAPTERS,
         "needle",
-        dataclasses.replace(registry.ADAPTERS["needle"], installed_check=lambda: True),
+        dataclasses.replace(registry.ADAPTERS["needle"], installed_check=lambda _config: True),
     )
     assert registry.installed("needle", which=_which_all_missing) is True
 
     monkeypatch.setitem(
         registry.ADAPTERS,
         "needle",
-        dataclasses.replace(registry.ADAPTERS["needle"], installed_check=lambda: False),
+        dataclasses.replace(registry.ADAPTERS["needle"], installed_check=lambda _config: False),
     )
     assert registry.installed("needle", which=_which_all_missing) is False
 
@@ -309,14 +309,14 @@ def test_lfm_installed_reflects_flavor_check(monkeypatch):
     monkeypatch.setitem(
         registry.ADAPTERS,
         "lfm",
-        dataclasses.replace(registry.ADAPTERS["lfm"], installed_check=lambda: True),
+        dataclasses.replace(registry.ADAPTERS["lfm"], installed_check=lambda _config: True),
     )
     assert registry.installed("lfm", which=_which_all_missing) is True
 
     monkeypatch.setitem(
         registry.ADAPTERS,
         "lfm",
-        dataclasses.replace(registry.ADAPTERS["lfm"], installed_check=lambda: False),
+        dataclasses.replace(registry.ADAPTERS["lfm"], installed_check=lambda _config: False),
     )
     assert registry.installed("lfm", which=_which_all_missing) is False
 
@@ -341,7 +341,7 @@ def test_lfm_factory_builds_lfm_agent():
 
 def test_lfm_installed_check_reads_model_from_config(tmp_path, monkeypatch):
     """The real ``installed_check`` (unpatched): reads ``[tiers.lfm] model``
-    straight off disk, since ``installed()`` takes no config of its own."""
+    straight off disk when the caller passes no ``config`` of its own."""
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     nvsh_dir = tmp_path / "nvsh"
     nvsh_dir.mkdir()
@@ -351,6 +351,35 @@ def test_lfm_installed_check_reads_model_from_config(tmp_path, monkeypatch):
         '[tiers.lfm]\nmodel = "lfm2-1.2b-instruct"\n', encoding="utf-8"
     )
     assert registry.installed("lfm", which=_which_all_missing) is True
+
+
+def test_lfm_installed_honours_explicit_config_over_disk_default(tmp_path, monkeypatch):
+    """4054701425: a caller-held ``Config`` with ``[tiers.lfm] model`` set
+    must make ``@lfm`` usable even though the on-disk default has no model
+    configured at all -- ``installed()`` must not silently reload the
+    process-default config over the caller's own."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    (tmp_path / "nvsh").mkdir()
+    cfg = Config(tiers={"lfm": {"model": "lfm2-1.2b-instruct"}})
+
+    assert registry.installed("lfm", which=_which_all_missing, config=cfg) is True
+
+
+def test_lfm_installed_reverse_explicit_config_unconfigured_over_disk_default(
+    tmp_path, monkeypatch
+):
+    """The reverse of the above: the on-disk default config has a model
+    set, but the caller's own explicit ``Config`` has none -- the caller's
+    config must win, not the disk default."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    nvsh_dir = tmp_path / "nvsh"
+    nvsh_dir.mkdir()
+    (nvsh_dir / "config.toml").write_text(
+        '[tiers.lfm]\nmodel = "lfm2-1.2b-instruct"\n', encoding="utf-8"
+    )
+    cfg = Config()
+
+    assert registry.installed("lfm", which=_which_all_missing, config=cfg) is False
 
 
 def test_choose_uses_configured_provider_when_installed():

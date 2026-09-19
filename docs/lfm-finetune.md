@@ -48,6 +48,14 @@ result, then decide), and those examples have to come from real use:
 The held-out split (`nvsh/tiers/corpus/held-out.json`) is never used for
 training. The builder refuses it by name.
 
+`tool_calls[].function.arguments` defaults to a JSON **object**: Hugging Face's
+`tokenizer.apply_chat_template` documents tool-call arguments as a dict, and
+this file is consumed by `apply_chat_template`/TRL/unsloth, never sent over
+the wire. Tier 2's own runtime chat history (`nvsh.tiers.lfm`'s `_record`)
+instead stores `arguments` as a JSON **string**, matching the OpenAI wire
+format it replays -- pass `--arguments-as string` to produce that shape
+instead if a chosen template or trainer turns out to expect it.
+
 ## Pick the base
 
 Start from the smallest post-trained LFM2.5 that passes the stock baseline

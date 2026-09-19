@@ -151,11 +151,15 @@ class AdapterSpec:
     hosted: bool
     needs_node: bool = False
     #: Overrides :func:`installed`'s default rule (``which(binary)``, or
-    #: ``True`` when ``binary`` is ``None``) with a zero-arg predicate. Used
-    #: by adapters with no binary at all whose "installed" question is not
-    #: "always yes" (``openai-compat``/``demo``'s case) but "is the Python
-    #: flavor importable" (``needle``) or "is it configured" (``lfm``).
-    installed_check: Callable[[], bool] | None = None
+    #: ``True`` when ``binary`` is ``None``) with a one-arg predicate taking
+    #: the caller's ``Config`` (``None`` when the caller has none in hand).
+    #: Used by adapters with no binary at all whose "installed" question is
+    #: not "always yes" (``openai-compat``/``demo``'s case) but "is the
+    #: Python flavor importable" (``needle``, which ignores the config) or
+    #: "is it configured" (``lfm``, which reads ``[tiers.lfm] model`` off the
+    #: config it is given, falling back to :func:`nvsh.config.load` when
+    #: none is given).
+    installed_check: Callable[[Config | None], bool] | None = None
 
 
 def _str_or_none(value: object) -> str | None:
@@ -270,11 +274,15 @@ def _make_needle(config: Config) -> NvshAgent:
     return NeedleAgent(config.tiers)
 
 
-def _needle_flavor_installed() -> bool:
+def _needle_flavor_installed(_config: Config | None = None) -> bool:
     """Whether the ``needle`` (``cactus-needle``) Python package is
     importable. ``find_spec`` only locates the module -- it is never
     imported, so this never runs the native engine's own module-level code
     (mirrors ``nvsh/doctor_checks.py``'s ``_tier_flavor_installed``).
+
+    ``_config`` is accepted so this matches :attr:`AdapterSpec.installed_check`'s
+    one-arg shape, and ignored -- needle's "installed" question never
+    depends on the caller's config.
     """
     import importlib.util
 
@@ -295,23 +303,29 @@ def _make_lfm(config: Config) -> NvshAgent:
     return LfmAgent(config.tiers)
 
 
-def _lfm_flavor_installed() -> bool:
+def _lfm_flavor_installed(config: Config | None = None) -> bool:
     """Whether ``lfm`` is usable: is ``[tiers.lfm] model`` set?
 
     The ``lfm`` extra has no dependencies to import-check (unlike
     ``needle``'s ``cactus-needle`` package) -- Tier 2 talks to a container
     nvsh launches itself, not a locally-imported engine -- so its
-    "installed" question is really "is it configured at all". A malformed
-    ``config.toml`` (the one thing :func:`nvsh.config.load` can raise on)
-    reads the same as "not configured" here: this predicate only ever
-    answers ``installed()``'s yes/no question, never raises.
+    "installed" question is really "is it configured at all". When the
+    caller already holds a ``Config`` (an explicitly loaded or constructed
+    one) it is read directly, so a caller-supplied ``[tiers.lfm] model``
+    is honoured even when the on-disk default has none; only when no
+    ``config`` is given does this fall back to :func:`nvsh.config.load`
+    (the process-default config.toml). A malformed ``config.toml`` (the one
+    thing :func:`nvsh.config.load` can raise on) reads the same as "not
+    configured" here: this predicate only ever answers ``installed()``'s
+    yes/no question, never raises.
     """
-    from ..config import ConfigError, load
+    if config is None:
+        from ..config import ConfigError, load
 
-    try:
-        config = load()
-    except ConfigError:
-        return False
+        try:
+            config = load()
+        except ConfigError:
+            return False
     lfm_settings = config.tiers.get("lfm") if isinstance(config.tiers, dict) else None
     model = lfm_settings.get("model") if isinstance(lfm_settings, dict) else None
     return isinstance(model, str) and bool(model)
@@ -423,17 +437,22 @@ ADAPTERS: dict[str, AdapterSpec] = {
 }
 
 
-def installed(name: str, which: WhichFn = shutil.which) -> bool:
+def installed(name: str, which: WhichFn = shutil.which, config: Config | None = None) -> bool:
     """Is adapter ``name`` usable right now?
 
     ``spec.installed_check`` wins when set (``needle``'s: is the flavor
-    importable). Otherwise: ``openai-compat`` and ``demo`` always are --
-    neither has a binary, so ``which`` is not consulted at all (never with
-    ``None``, which would raise) -- and everything else is on PATH or not.
+    importable; ``lfm``'s: is ``[tiers.lfm] model`` set) -- it receives
+    *config* so a caller that already holds an explicitly loaded or
+    constructed ``Config`` gets an answer grounded in that config rather
+    than the process-default one (``lfm``'s check falls back to
+    :func:`nvsh.config.load` when *config* is ``None``). Otherwise:
+    ``openai-compat`` and ``demo`` always are -- neither has a binary, so
+    ``which`` is not consulted at all (never with ``None``, which would
+    raise) -- and everything else is on PATH or not.
     """
     spec = ADAPTERS[name]
     if spec.installed_check is not None:
-        return spec.installed_check()
+        return spec.installed_check(config)
     if spec.binary is None:
         return True
     return which(spec.binary) is not None
