@@ -152,18 +152,21 @@ def test_image_is_named_by_digest():
 
 
 def test_a_latest_tag_is_refused():
+    arg0 = settings(image="example.invalid/tier2:latest")
     with pytest.raises(RuntimeUnavailable, match="digest"):
-        rd.render_launch(settings(image="example.invalid/tier2:latest"), SPARK, uid=1000)
+        rd.render_launch(arg0, SPARK, uid=1000)
 
 
 def test_a_ref_without_a_digest_is_refused():
+    arg0 = settings(image="example.invalid/tier2")
     with pytest.raises(RuntimeUnavailable, match="digest"):
-        rd.render_launch(settings(image="example.invalid/tier2"), SPARK, uid=1000)
+        rd.render_launch(arg0, SPARK, uid=1000)
 
 
 def test_a_truncated_digest_is_refused():
+    arg0 = settings(image="example.invalid/tier2@sha256:abcd")
     with pytest.raises(RuntimeUnavailable, match="digest"):
-        rd.render_launch(settings(image="example.invalid/tier2@sha256:abcd"), SPARK, uid=1000)
+        rd.render_launch(arg0, SPARK, uid=1000)
 
 
 def test_the_container_is_not_started_with_rm_so_docker_rm_has_work():
@@ -182,8 +185,9 @@ def test_engine_table_matches_the_engines_config_accepts():
 
 
 def test_unknown_engine_names_the_accepted_ones():
+    arg0 = settings(engine="ollama")
     with pytest.raises(RuntimeUnavailable, match="llama-server, sglang, vllm"):
-        rd.render_launch(settings(engine="ollama"), SPARK, uid=1000)
+        rd.render_launch(arg0, SPARK, uid=1000)
 
 
 def test_llama_server_mounts_the_model_directory_read_only():
@@ -197,13 +201,15 @@ def test_a_mounted_engine_refers_to_the_model_inside_the_container():
 
 
 def test_llama_server_without_a_model_dir_is_refused():
+    arg0 = settings(model_dir=None)
     with pytest.raises(RuntimeUnavailable, match="model_dir"):
-        rd.render_launch(settings(model_dir=None), SPARK, uid=1000)
+        rd.render_launch(arg0, SPARK, uid=1000)
 
 
 def test_an_engine_without_a_model_is_refused():
+    arg0 = settings(engine="vllm", model=None)
     with pytest.raises(RuntimeUnavailable, match="model"):
-        rd.render_launch(settings(engine="vllm", model=None), SPARK, uid=1000)
+        rd.render_launch(arg0, SPARK, uid=1000)
 
 
 def test_vllm_needs_no_model_mount():
@@ -314,28 +320,33 @@ def test_every_rendered_argument_traces_to_settings_detection_or_template():
 
 
 def test_a_model_escaping_the_mount_is_refused():
+    arg0 = settings(model="../../etc/passwd")
     with pytest.raises(RuntimeUnavailable, match="model"):
-        rd.render_launch(settings(model="../../etc/passwd"), SPARK, uid=1000)
+        rd.render_launch(arg0, SPARK, uid=1000)
 
 
 def test_a_mounted_model_with_a_slash_is_refused():
+    arg0 = settings(model="sub/lfm2.gguf")
     with pytest.raises(RuntimeUnavailable, match="model"):
-        rd.render_launch(settings(model="sub/lfm2.gguf"), SPARK, uid=1000)
+        rd.render_launch(arg0, SPARK, uid=1000)
 
 
 def test_a_mounted_model_with_a_backslash_is_refused():
+    arg0 = settings(model="sub\\lfm2.gguf")
     with pytest.raises(RuntimeUnavailable, match="model"):
-        rd.render_launch(settings(model="sub\\lfm2.gguf"), SPARK, uid=1000)
+        rd.render_launch(arg0, SPARK, uid=1000)
 
 
 def test_a_dot_model_is_refused():
+    arg0 = settings(model=".")
     with pytest.raises(RuntimeUnavailable, match="model"):
-        rd.render_launch(settings(model="."), SPARK, uid=1000)
+        rd.render_launch(arg0, SPARK, uid=1000)
 
 
 def test_a_model_starting_with_a_dash_is_refused():
+    arg0 = settings(model="-v")
     with pytest.raises(RuntimeUnavailable, match="model"):
-        rd.render_launch(settings(model="-v"), SPARK, uid=1000)
+        rd.render_launch(arg0, SPARK, uid=1000)
 
 
 def test_a_repo_id_is_accepted_by_an_unmounted_engine():
@@ -344,18 +355,21 @@ def test_a_repo_id_is_accepted_by_an_unmounted_engine():
 
 
 def test_a_repo_id_with_two_slashes_is_refused():
+    arg0 = settings(engine="vllm", model="a/b/c")
     with pytest.raises(RuntimeUnavailable, match="model"):
-        rd.render_launch(settings(engine="vllm", model="a/b/c"), SPARK, uid=1000)
+        rd.render_launch(arg0, SPARK, uid=1000)
 
 
 def test_a_model_with_whitespace_is_refused():
+    arg0 = settings(engine="vllm", model="lfm2 --privileged")
     with pytest.raises(RuntimeUnavailable, match="model"):
-        rd.render_launch(settings(engine="vllm", model="lfm2 --privileged"), SPARK, uid=1000)
+        rd.render_launch(arg0, SPARK, uid=1000)
 
 
 def test_a_refused_model_says_so_on_one_line():
+    arg0 = settings(model="../../etc/passwd")
     with pytest.raises(RuntimeUnavailable) as caught:
-        rd.render_launch(settings(model="../../etc/passwd"), SPARK, uid=1000)
+        rd.render_launch(arg0, SPARK, uid=1000)
     assert "\n" not in str(caught.value)
 
 
@@ -363,23 +377,27 @@ def test_a_refused_model_says_so_on_one_line():
 
 
 def test_a_model_dir_smuggling_a_second_volume_is_refused():
+    arg0 = settings(model_dir="rel/dir:/x")
     with pytest.raises(RuntimeUnavailable, match="model_dir"):
-        rd.render_launch(settings(model_dir="rel/dir:/x"), SPARK, uid=1000)
+        rd.render_launch(arg0, SPARK, uid=1000)
 
 
 def test_a_relative_model_dir_is_refused():
+    arg0 = settings(model_dir="models")
     with pytest.raises(RuntimeUnavailable, match="model_dir"):
-        rd.render_launch(settings(model_dir="models"), SPARK, uid=1000)
+        rd.render_launch(arg0, SPARK, uid=1000)
 
 
 def test_a_model_dir_with_a_comma_is_refused():
+    arg0 = settings(model_dir="/m,rw")
     with pytest.raises(RuntimeUnavailable, match="model_dir"):
-        rd.render_launch(settings(model_dir="/m,rw"), SPARK, uid=1000)
+        rd.render_launch(arg0, SPARK, uid=1000)
 
 
 def test_a_model_dir_starting_with_a_dash_is_refused():
+    arg0 = settings(model_dir="-v")
     with pytest.raises(RuntimeUnavailable, match="model_dir"):
-        rd.render_launch(settings(model_dir="-v"), SPARK, uid=1000)
+        rd.render_launch(arg0, SPARK, uid=1000)
 
 
 def test_an_absolute_model_dir_is_accepted():
@@ -388,61 +406,72 @@ def test_an_absolute_model_dir_is_accepted():
 
 
 def test_a_model_dir_is_checked_even_for_an_unmounted_engine():
+    arg0 = settings(engine="vllm", model_dir="rel/dir:/x")
     with pytest.raises(RuntimeUnavailable, match="model_dir"):
-        rd.render_launch(settings(engine="vllm", model_dir="rel/dir:/x"), SPARK, uid=1000)
+        rd.render_launch(arg0, SPARK, uid=1000)
 
 
 # -- hostile settings: the numbers -----------------------------------------
 
 
 def test_a_non_integer_port_is_refused_not_ignored():
+    arg0 = settings(port="80; rm")
     with pytest.raises(RuntimeUnavailable, match="port"):
-        rd.render_launch(settings(port="80; rm"), SPARK, uid=1000)
+        rd.render_launch(arg0, SPARK, uid=1000)
 
 
 def test_a_privileged_port_is_refused():
+    arg0 = settings(port=22)
     with pytest.raises(RuntimeUnavailable, match="port"):
-        rd.render_launch(settings(port=22), SPARK, uid=1000)
+        rd.render_launch(arg0, SPARK, uid=1000)
 
 
 def test_a_port_above_the_range_is_refused():
+    arg0 = settings(port=70000)
     with pytest.raises(RuntimeUnavailable, match="port"):
-        rd.render_launch(settings(port=70000), SPARK, uid=1000)
+        rd.render_launch(arg0, SPARK, uid=1000)
 
 
 def test_a_boolean_port_is_refused():
+    arg0 = settings(port=True)
     with pytest.raises(RuntimeUnavailable, match="port"):
-        rd.render_launch(settings(port=True), SPARK, uid=1000)
+        rd.render_launch(arg0, SPARK, uid=1000)
 
 
 def test_a_non_integer_ctx_is_refused_not_ignored():
+    arg0 = settings(ctx="4096; rm")
     with pytest.raises(RuntimeUnavailable, match="ctx"):
-        rd.render_launch(settings(ctx="4096; rm"), SPARK, uid=1000)
+        rd.render_launch(arg0, SPARK, uid=1000)
 
 
 def test_a_tiny_ctx_is_refused():
+    arg0 = settings(ctx=8)
     with pytest.raises(RuntimeUnavailable, match="ctx"):
-        rd.render_launch(settings(ctx=8), SPARK, uid=1000)
+        rd.render_launch(arg0, SPARK, uid=1000)
 
 
 def test_a_huge_ctx_is_refused():
+    arg0 = settings(ctx=99999999)
     with pytest.raises(RuntimeUnavailable, match="ctx"):
-        rd.render_launch(settings(ctx=99999999), SPARK, uid=1000)
+        rd.render_launch(arg0, SPARK, uid=1000)
 
 
 def test_a_non_numeric_startup_timeout_is_refused():
+    arg0 = settings(startup_timeout_seconds="soon")
     with pytest.raises(RuntimeUnavailable, match="startup_timeout_seconds"):
-        rd.render_launch(settings(startup_timeout_seconds="soon"), SPARK, uid=1000)
+        rd.render_launch(arg0, SPARK, uid=1000)
 
 
 def test_a_zero_startup_timeout_is_refused():
+    arg0 = settings(startup_timeout_seconds=0)
     with pytest.raises(RuntimeUnavailable, match="startup_timeout_seconds"):
-        rd.render_launch(settings(startup_timeout_seconds=0), SPARK, uid=1000)
+        rd.render_launch(arg0, SPARK, uid=1000)
 
 
 def test_an_overlong_startup_timeout_is_refused():
+    arg0 = settings(startup_timeout_seconds=99999)
     with pytest.raises(RuntimeUnavailable, match="startup_timeout_seconds"):
-        rd.render_launch(settings(startup_timeout_seconds=99999), SPARK, uid=1000)
+        rd.render_launch(arg0, SPARK, uid=1000)
 
 
 def test_a_float_startup_timeout_is_accepted():
@@ -450,13 +479,15 @@ def test_a_float_startup_timeout_is_accepted():
 
 
 def test_a_bad_startup_timeout_stops_ensure_before_docker_runs():
+    subject = runtime(FakeDocker(), settings=settings(startup_timeout_seconds=-1))
     with pytest.raises(RuntimeUnavailable, match="startup_timeout_seconds"):
-        runtime(FakeDocker(), settings=settings(startup_timeout_seconds=-1)).ensure()
+        subject.ensure()
 
 
 def test_an_image_ref_starting_with_a_dash_is_refused():
+    arg0 = settings(image="-v@" + DIGEST)
     with pytest.raises(RuntimeUnavailable, match="digest"):
-        rd.render_launch(settings(image="-v@" + DIGEST), SPARK, uid=1000)
+        rd.render_launch(arg0, SPARK, uid=1000)
 
 
 # -- hostile settings: no smuggled flag, whatever the key ------------------
@@ -595,8 +626,9 @@ def test_docker_not_on_path_declines_with_one_line():
     def missing(argv, timeout):
         raise FileNotFoundError(2, "No such file or directory", "docker")
 
+    subject = runtime(missing)
     with pytest.raises(RuntimeUnavailable) as caught:
-        runtime(missing).ensure()
+        subject.ensure()
     assert "\n" not in str(caught.value)
 
 
@@ -604,20 +636,23 @@ def test_docker_not_on_path_says_docker_is_missing():
     def missing(argv, timeout):
         raise FileNotFoundError(2, "No such file or directory", "docker")
 
+    subject = runtime(missing)
     with pytest.raises(RuntimeUnavailable, match="Docker"):
-        runtime(missing).ensure()
+        subject.ensure()
 
 
 def test_a_shell_reporting_127_is_treated_as_docker_missing():
     docker = FakeDocker([(("docker", "info"), (127, "command not found"))])
+    subject = runtime(docker)
     with pytest.raises(RuntimeUnavailable, match="not on PATH"):
-        runtime(docker).ensure()
+        subject.ensure()
 
 
 def test_an_unreachable_daemon_declines_with_one_line():
     docker = FakeDocker([(("docker", "info"), (1, "Cannot connect to the Docker daemon"))])
+    subject = runtime(docker)
     with pytest.raises(RuntimeUnavailable) as caught:
-        runtime(docker).ensure()
+        subject.ensure()
     assert "\n" not in str(caught.value)
 
 
@@ -634,8 +669,9 @@ def test_an_unreachable_daemon_starts_nothing():
 
 def test_below_the_memory_floor_the_tier_declines():
     low = FloorResult(ok=False, available_mb=100, status="local tier skipped: 100 MB available")
+    subject = runtime(ExplodingDocker(), floor_check=lambda: low)
     with pytest.raises(RuntimeUnavailable, match="100 MB"):
-        runtime(ExplodingDocker(), floor_check=lambda: low).ensure()
+        subject.ensure()
 
 
 def test_above_the_memory_floor_the_tier_starts():
@@ -682,8 +718,9 @@ def test_a_failed_docker_run_declines_with_the_output_tail():
             (("docker", "run"), (125, "unknown flag: --gpus")),
         ]
     )
+    subject = runtime(docker)
     with pytest.raises(RuntimeUnavailable, match="unknown flag"):
-        runtime(docker).ensure()
+        subject.ensure()
 
 
 # -- ensure(): readiness ---------------------------------------------------
@@ -695,8 +732,9 @@ def test_a_slow_start_is_waited_out_without_real_sleeping():
 
 
 def test_a_runtime_that_never_answers_declines():
+    subject = runtime(FakeDocker(), probe=lambda url, timeout: False)
     with pytest.raises(RuntimeUnavailable, match="did not answer"):
-        runtime(FakeDocker(), probe=lambda url, timeout: False).ensure()
+        subject.ensure()
 
 
 def test_a_runtime_that_never_answers_is_stopped():
@@ -709,22 +747,25 @@ def test_a_runtime_that_never_answers_is_stopped():
 
 def test_the_timeout_detail_carries_the_container_log_tail():
     docker = FakeDocker([(("docker", "logs"), (0, "CUDA error: out of memory"))])
+    subject = runtime(docker, probe=lambda url, timeout: False)
     with pytest.raises(RuntimeUnavailable, match="out of memory"):
-        runtime(docker, probe=lambda url, timeout: False).ensure()
+        subject.ensure()
 
 
 def test_the_log_tail_is_bounded():
     docker = FakeDocker([(("docker", "logs"), (0, "x" * 5000))])
+    subject = runtime(docker, probe=lambda url, timeout: False)
     with pytest.raises(RuntimeUnavailable) as caught:
-        runtime(docker, probe=lambda url, timeout: False).ensure()
+        subject.ensure()
     assert str(caught.value).count("x") <= rd.LOG_TAIL_CHARS
 
 
 def test_the_log_tail_is_redacted():
     leak = "Authorization: Bearer " + "".join(("s", "k", "-", "x" * 20))
     docker = FakeDocker([(("docker", "logs"), (0, leak))])
+    subject = runtime(docker, probe=lambda url, timeout: False)
     with pytest.raises(RuntimeUnavailable) as caught:
-        runtime(docker, probe=lambda url, timeout: False).ensure()
+        subject.ensure()
     assert "x" * 20 not in str(caught.value)
 
 
@@ -832,8 +873,10 @@ def test_attach_mode_runs_no_docker_commands():
 
 
 def test_attach_mode_needs_a_base_url():
+    arg0 = settings(mode="attach")
+    runner = ExplodingDocker()
     with pytest.raises(RuntimeUnavailable, match="base_url"):
-        rd.build_runtime(settings(mode="attach"), SPARK, runner=ExplodingDocker())
+        rd.build_runtime(arg0, SPARK, runner=runner)
 
 
 def test_attach_mode_refuses_a_remote_base_url():
@@ -852,8 +895,10 @@ def test_managed_mode_returns_the_docker_runtime():
 
 
 def test_an_unknown_mode_is_refused():
+    arg0 = settings(mode="podman")
+    runner = ExplodingDocker()
     with pytest.raises(RuntimeUnavailable, match="attach, managed"):
-        rd.build_runtime(settings(mode="podman"), SPARK, runner=ExplodingDocker())
+        rd.build_runtime(arg0, SPARK, runner=runner)
 
 
 def test_constructing_the_runtime_starts_nothing():
@@ -955,8 +1000,9 @@ def test_llama_server_ignores_the_download_cache():
 
 
 def test_a_cache_dir_that_could_smuggle_a_volume_is_refused():
+    arg0 = settings(engine="vllm", hf_cache_dir="/a:/b")
     with pytest.raises(rd.RuntimeUnavailable, match="hf_cache_dir"):
-        rd.render_launch(settings(engine="vllm", hf_cache_dir="/a:/b"), SPARK, uid=1000)
+        rd.render_launch(arg0, SPARK, uid=1000)
 
 
 def test_build_runtime_defaults_the_cache_under_nvsh_own_cache_dir(tmp_path, monkeypatch):

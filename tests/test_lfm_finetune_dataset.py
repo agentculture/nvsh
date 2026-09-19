@@ -49,8 +49,10 @@ def test_a_should_decline_request_is_answered_by_escalate():
 
 
 def test_the_held_out_split_is_refused():
+    subject = _module()
+    arg0 = held_out_corpus_path()
     with pytest.raises(ValueError, match="held-out"):
-        _module().build(held_out_corpus_path())
+        subject.build(arg0)
 
 
 def test_main_writes_one_json_object_per_line(tmp_path):
