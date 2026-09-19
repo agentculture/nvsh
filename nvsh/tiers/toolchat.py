@@ -510,6 +510,10 @@ def yes_no_probability(top_logprobs: dict[str, float]) -> tuple[float | None, fl
     yes_mass = 0.0
     no_mass = 0.0
     for token, logprob in top_logprobs.items():
+        if not isinstance(token, str) or isinstance(logprob, bool):
+            continue
+        if not isinstance(logprob, (int, float)) or math.isnan(logprob) or logprob > 0:
+            continue  # a log-probability is never positive; skip junk, never raise
         word = token.strip().casefold()
         prob = math.exp(logprob)
         if word == "yes":

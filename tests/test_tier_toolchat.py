@@ -770,3 +770,11 @@ def test_calibrated_logit_clamps_extremes() -> None:
     result = calibrated_logit(1.0, 0.0)
     assert isinstance(result, float)
     assert math.isfinite(result)
+
+
+@pytest.mark.parametrize(
+    "junk",
+    [{1: -1.0}, {" yes": float("nan")}, {"yes": 5.0}, {"yes": True}, {"no": "x"}],
+)
+def test_yes_no_probability_skips_junk_entries(junk) -> None:
+    assert yes_no_probability(junk) == (None, 0.0)
