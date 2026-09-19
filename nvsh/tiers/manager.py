@@ -13,11 +13,14 @@ what it may propose and what is recorded stays in
 :mod:`nvsh.tiers.router` -- nothing here inspects an operation name, and
 nothing here executes anything.
 
-Tier 2 and the confidence verifier have no implementation yet: their
-factories default to ``None``, which is exactly what
-:class:`~nvsh.tiers.router.TierRouter` already understands as "that tier is
-not installed". The seam is here so the LFM tier plugs in without
-``daemon.py`` changing.
+The confidence verifier has no implementation yet: its factory defaults to
+``None``, which is exactly what :class:`~nvsh.tiers.router.TierRouter`
+already understands as "that tier is not installed". Tier 2 (task t19) is
+built the same way Tier 1 always has been -- :meth:`TierManager._build`
+makes an :class:`~nvsh.tiers.lfm.LfmTier` when no ``tier2_factory`` was
+injected and ``[tiers.lfm] model`` is configured, and leaves it ``None``
+(today's behaviour, unchanged) otherwise. Either seam still lets a caller
+inject a fake for tests without ``daemon.py`` changing.
 
 This module is **not** importable on the hot success path: the daemon
 imports it lazily, inside the first tier request.
@@ -235,6 +238,9 @@ class TierManager:
         self._lock = threading.RLock()
         self._loaded: _Loaded | None = None
         self._problem = ""
+        #: Set when Tier 2 was configured but failed to build; unlike
+        #: ``_problem``, this never fails Tier 1 -- see :meth:`_build_tier2`.
+        self._tier2_problem = ""
         self._last_used = clock()
         self._next_id = 0
         self._routes: "OrderedDict[str, Route]" = OrderedDict()
@@ -263,6 +269,7 @@ class TierManager:
                 "enabled": self.enabled,
                 "loaded": self._loaded is not None,
                 "problem": self._problem,
+                "tier2_problem": self._tier2_problem,
             }
 
     # -- one request -------------------------------------------------------
@@ -373,7 +380,7 @@ class TierManager:
             store_request_text=bool(self._setting("store_request_text")),
         )
         tier1 = self._tier1_factory() if self._tier1_factory is not None else self._needle()
-        tier2 = self._tier2_factory() if self._tier2_factory is not None else None
+        tier2 = self._tier2_factory() if self._tier2_factory is not None else self._build_tier2()
         verifier = self._verifier_factory() if self._verifier_factory is not None else None
         router = TierRouter(
             tier1,
@@ -396,6 +403,42 @@ class TierManager:
             floor_check=lambda: check_floor(floor_mb),
             env=self._env,
         )
+
+    def _build_tier2(self) -> Tier | None:
+        """Tier 2, when ``[tiers.lfm] model`` is configured; ``None``
+        otherwise (today's behaviour, unchanged).
+
+        A build failure here -- a bad ``[tiers.lfm]`` setting, docker/the
+        runtime module missing, whatever -- must not take Tier 1 down with
+        it: it is reported in :meth:`status` and the router simply runs
+        without a Tier 2, the same as an unconfigured one.
+        """
+        self._tier2_problem = ""
+        lfm_settings = self._setting("lfm")
+        lfm_settings = lfm_settings if isinstance(lfm_settings, Mapping) else {}
+        model = lfm_settings.get("model")
+        if not isinstance(model, str) or not model:
+            return None
+        try:
+            return self._lfm(lfm_settings, model)
+        except Exception as exc:  # noqa: BLE001 - a broken lfm build costs tier 2 only
+            self._tier2_problem = f"lfm tier unavailable: {type(exc).__name__}: {exc}"
+            return None
+
+    def _lfm(self, lfm_settings: Mapping[str, object], model: str) -> Tier:
+        """Tier 2: LFM's runtime (managed container or attached endpoint),
+        floor-checked, and its bounded inspect-propose loop."""
+        from .lfm import LfmTier  # lazy: nothing here on the hot path
+        from .memfloor import check_floor
+        from .runtime_docker import build_runtime
+
+        floor_mb = int(self._setting("memory_floor_mb"))
+
+        def floor_check():
+            return check_floor(floor_mb)
+
+        runtime = build_runtime(lfm_settings, self._platform, floor_check=floor_check)
+        return LfmTier(runtime, self._platform, model=model, floor_check=floor_check)
 
     def sweep(self) -> bool:
         """Unload the tiers when they have been idle long enough.

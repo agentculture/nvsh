@@ -247,6 +247,163 @@ def test_a_tier_factory_that_raises_costs_one_status_line(tmp_path: Path) -> Non
     assert kinds == [EventKind.STATUS]
 
 
+# --- Tier 2 wiring (task t19): the manager builds a real LfmTier when the --
+# --- flavor is configured, floor-checked and torn down like Tier 1, and a --
+# --- build failure there costs Tier 2 only, never Tier 1. --------------------
+
+
+def _lfm_config(**lfm_overrides: object) -> Config:
+    config = Config()
+    config.tiers = {
+        **config.tiers,
+        "enabled": True,
+        "lfm": {**config.tiers["lfm"], "model": "test-model", **lfm_overrides},
+    }
+    return config
+
+
+def _fake_chat_module(monkeypatch, replies: list) -> "_FakeLfmChat":
+    """Patch ``nvsh.tiers.lfm.ToolChat`` (the class ``LfmTier._default_chat``
+    constructs) so the manager's real wiring never opens a socket."""
+    from nvsh.tiers import lfm as lfm_mod
+
+    chat = _FakeLfmChat(replies)
+    monkeypatch.setattr(lfm_mod, "ToolChat", chat.constructor)
+    return chat
+
+
+class _FakeLfmChat:
+    """Records every ``ToolChat(base_url, model, stream=...)`` construction
+    and replays scripted replies from whichever instance is asked."""
+
+    def __init__(self, replies: list) -> None:
+        self._replies = list(replies)
+        self.constructed: list[tuple[str, str]] = []
+
+    def constructor(self, base_url: str, model: str, *, stream: bool = False) -> "_FakeLfmChat":
+        del stream
+        self.constructed.append((base_url, model))
+        return self
+
+    def complete(self, messages: list[dict], tools: list[dict]):
+        del messages, tools
+        if not self._replies:
+            from nvsh.tiers.toolchat import ChatReply
+
+            return ChatReply(text="", tool_calls=())
+        return self._replies.pop(0)
+
+    def stop(self) -> None:
+        pass
+
+
+def _fake_lfm_runtime(monkeypatch) -> "_FakeLfmRuntime":
+    from nvsh.tiers import runtime_docker
+
+    runtime = _FakeLfmRuntime()
+    monkeypatch.setattr(runtime_docker, "build_runtime", lambda *a, **k: runtime)
+    return runtime
+
+
+class _FakeLfmRuntime:
+    def __init__(self) -> None:
+        self.ensured = 0
+        self.stopped = 0
+
+    def ensure(self) -> str:
+        self.ensured += 1
+        return "http://127.0.0.1:65000"
+
+    def stop(self) -> None:
+        self.stopped += 1
+
+    def status(self) -> str:
+        return "fake runtime"
+
+
+def test_a_failure_request_reaches_lfm_tier_first_when_configured(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Criterion 2: with tiers enabled and the flavor configured, a FAILURE
+    request is answered by the real Tier 2 wiring -- not by any injected
+    ``tier2_factory`` test seam."""
+    from nvsh.tiers.toolchat import ChatReply, ToolCall
+
+    runtime = _fake_lfm_runtime(monkeypatch)
+    chat = _fake_chat_module(
+        monkeypatch,
+        [ChatReply(text="", tool_calls=(ToolCall(name="explain", arguments={"text": "fine"}),))],
+    )
+
+    manager = TierManager(
+        _lfm_config(),
+        _PLATFORM,
+        clock=_Clock(),
+        env=_env(tmp_path),
+        tier1_factory=lambda: FakeTier([]),
+    )
+    request = AgentRequest(kind=RequestKind.FAILURE, command="docker ps", exit_code=1)
+    answer = _answer(manager, request)
+    assert answer.tier == "lfm"
+    assert runtime.ensured == 1
+    assert chat.constructed
+
+
+def test_lfm_tier_is_torn_down_on_close(tmp_path: Path, monkeypatch) -> None:
+    from nvsh.tiers.toolchat import ChatReply, ToolCall
+
+    runtime = _fake_lfm_runtime(monkeypatch)
+    _fake_chat_module(
+        monkeypatch,
+        [ChatReply(text="", tool_calls=(ToolCall(name="explain", arguments={"text": "fine"}),))],
+    )
+
+    manager = TierManager(
+        _lfm_config(),
+        _PLATFORM,
+        clock=_Clock(),
+        env=_env(tmp_path),
+        tier1_factory=lambda: FakeTier([]),
+    )
+    request = AgentRequest(kind=RequestKind.FAILURE, command="docker ps", exit_code=1)
+    _answer(manager, request)
+    manager.close()
+    assert runtime.stopped == 1
+
+
+def test_no_model_configured_builds_no_tier2_as_before(tmp_path: Path) -> None:
+    manager = TierManager(
+        _config(),  # no [tiers.lfm] model
+        _PLATFORM,
+        clock=_Clock(),
+        env=_env(tmp_path),
+        tier1_factory=lambda: FakeTier([]),
+    )
+    answer = _answer(manager, AgentRequest(kind=RequestKind.FAILURE, command="x", exit_code=1))
+    # No tier at all for a FAILURE request when Tier 2 is unconfigured (Tier 1
+    # is never in a FAILURE's order): straight to ESCALATE, same as before
+    # this task, and no tier2-specific problem to report.
+    assert answer.outcome == manager_mod.ESCALATE
+    assert manager.status()["tier2_problem"] == ""
+
+
+def test_a_broken_tier2_build_costs_tier2_only(tmp_path: Path, monkeypatch) -> None:
+    """An exception while building Tier 2 must not take Tier 1 down with
+    it: an EXPLICIT request (Tier 1's kind) still gets answered."""
+    from nvsh.tiers import runtime_docker
+
+    def _boom(*_args, **_kwargs):
+        raise RuntimeError("docker not found")
+
+    monkeypatch.setattr(runtime_docker, "build_runtime", _boom)
+
+    manager = _manager(tmp_path, config=_lfm_config())
+    answer = _answer(manager)
+    assert answer.outcome == manager_mod.HANDLED
+    assert answer.tier == "fake"
+    assert "docker not found" in manager.status()["tier2_problem"]
+
+
 # --- idle unload -----------------------------------------------------------
 
 

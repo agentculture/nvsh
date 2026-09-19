@@ -295,3 +295,28 @@ def test_check_default_target_names_needle_in_its_message():
     cfg = Config(aliases={"default": "needle"})
     check = doctor_checks.check_default_target_not_demo(cfg)
     assert "needle" in check["message"]
+
+
+def test_check_default_target_fails_when_default_is_lfm():
+    cfg = Config(aliases={"default": "lfm"})
+    check = doctor_checks.check_default_target_not_demo(cfg)
+    assert check["passed"] is False
+
+
+def test_check_default_target_names_lfm_in_its_message():
+    cfg = Config(aliases={"default": "lfm"})
+    check = doctor_checks.check_default_target_not_demo(cfg)
+    assert "lfm" in check["message"]
+
+
+def test_agent_use_lfm_is_refused_like_needle(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    code = cli_main(["agent", "use", "lfm", "--json"])
+    assert code == EXIT_USER_ERROR
+
+
+def test_agent_use_lfm_refusal_names_tier_two(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    cli_main(["agent", "use", "lfm"])
+    err = capsys.readouterr().err
+    assert "Tier 2" in err

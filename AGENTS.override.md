@@ -59,7 +59,8 @@ and the audit log, never as the prompt's `$?`); `nvsh overview` shows the
 active turn; `nvsh doctor --apply` clears a hung one. See
 `docs/shell-integration.md` "Stopping the agent".
 
-nvsh now registers ten harness adapters (nine harnesses plus the in-process `needle` tier adapter) (`nvsh/agent/registry.py`'s
+nvsh now registers eleven harness adapters (nine harnesses plus the
+in-process `needle` and `lfm` tier adapters) (`nvsh/agent/registry.py`'s
 `ADAPTERS`): `pi`, `qwen` (ACP, plan mode by default), `qwen-p`
 (stream-json print-mode, read-only fallback), `claude`, `codex`, `agy`
 (stream-json, always read-only for commands), `kiro` (ACP), `openai-compat`,
@@ -82,7 +83,7 @@ leaves the process is redacted first (`nvsh/redact.py`), and a spawned
 harness's environment has `CLAUDECODE`/`CLAUDE_CODE_*` stripped
 (`nvsh/agent/_env.py`).
 
-**Local tiers (nvsh 0.16.0, opt-in, off by default).** With `[tiers] enabled = true` a request typed at the prompt is first offered to Needle3 (Tier 1, a 121M local model run in its own child process by the daemon) which picks one typed operation from `nvsh/ops/table.py`; nvsh grounds the arguments, renders the command from the table and shows it as an ordinary proposal naming the operation it understood — approval, `sudo` and destructive-command handling are unchanged, a failed command never goes to Tier 1, and `@target` bypasses the tiers. `needle` is a tenth registered adapter (`@needle`, in-process, excluded from `setup`'s probe and refused as a persisted default like `demo`). `nvsh tiers stats|export|prefetch|bench` and three `doctor` checks cover it. Tier 2 (LFM2.5) is not built yet. Measured accuracy of stock Needle3 is about half of the target, so read `docs/tiers-improving-accuracy.md` and `docs/needle-finetune.md` before describing the tiers as good; never add code that switches on a specific operation name — the table is the only place operations are named.
+**Local tiers (nvsh 0.16.0, opt-in, off by default).** With `[tiers] enabled = true` a request typed at the prompt is first offered to Needle3 (Tier 1, a 121M local model run in its own child process by the daemon) which picks one typed operation from `nvsh/ops/table.py`; nvsh grounds the arguments, renders the command from the table and shows it as an ordinary proposal naming the operation it understood — approval, `sudo` and destructive-command handling are unchanged, a failed command never goes to Tier 1, and `@target` bypasses the tiers. `needle` is a tenth registered adapter (`@needle`, in-process, excluded from `setup`'s probe and refused as a persisted default like `demo`). `nvsh tiers stats|export|prefetch|bench` and three `doctor` checks cover it. `lfm` is an eleventh (`@lfm`, in-process, same exclusions): the explicit Tier-2-only counterpart to `needle`, usable once `[tiers.lfm] model` is set — with no model configured it explains that in one line rather than building a broken tier. `nvsh/tiers/manager.py`'s `TierManager._build` wires the same `LfmTier` into the daemon's automatic Tier 2 slot when no `tier2_factory` is injected and the flavor is configured, so a FAILURE request reaches it directly rather than Tier 1 (which never sees a FAILURE at all). Measured accuracy of stock Needle3 is about half of the target, so read `docs/tiers-improving-accuracy.md` and `docs/needle-finetune.md` before describing the tiers as good; never add code that switches on a specific operation name — the table is the only place operations are named.
 
 It is an AgentCulture mesh agent, a sibling to
 [`guildmaster`](https://github.com/agentculture/guildmaster) (the skills
