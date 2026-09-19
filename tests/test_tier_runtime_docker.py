@@ -707,8 +707,8 @@ def test_a_stale_stopped_container_is_removed_before_relaunch():
 def test_ensure_is_idempotent_across_calls():
     docker = FakeDocker([(("docker", "inspect"), (0, "true"))])
     managed = runtime(docker)
-    managed.ensure()
-    assert managed.ensure() == managed.ensure()
+    first = managed.ensure()
+    assert managed.ensure() == first
 
 
 def test_a_failed_docker_run_declines_with_the_output_tail():

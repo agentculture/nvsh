@@ -145,38 +145,48 @@ class EngineTemplate:
 
 
 #: The engines ``[tiers.lfm] engine`` accepts, and how each is launched.
+#: The endpoint never leaves this machine (published on loopback only), and
+#: the engines serve plain HTTP there; TLS to 127.0.0.1 would protect nothing.
+_SCHEME = "http://"  # NOSONAR python:S5332 - loopback only, see above
+
+#: Placeholders the engine templates use, and the readiness path they share.
+_MODEL = "{model}"
+_PORT = "{port}"
+_CTX = "{ctx}"
+_HEALTH = "/health"
+
 ENGINES: Mapping[str, EngineTemplate] = {
     "llama-server": EngineTemplate(
         port=8080,
         args=(
             "--model",
-            "{model}",
+            _MODEL,
             "--host",
             _IN_CONTAINER_BIND,
             "--port",
-            "{port}",
+            _PORT,
             "--ctx-size",
-            "{ctx}",
+            _CTX,
         ),
         needs_model_mount=True,
-        health_path="/health",
+        health_path=_HEALTH,
     ),
     "vllm": EngineTemplate(
         port=8000,
         args=(
             "--model",
-            "{model}",
+            _MODEL,
             "--host",
             _IN_CONTAINER_BIND,
             "--port",
-            "{port}",
+            _PORT,
             "--max-model-len",
-            "{ctx}",
+            _CTX,
             "--gpu-memory-utilization",
             "{gpu_fraction}",
         ),
         needs_model_mount=False,
-        health_path="/health",
+        health_path=_HEALTH,
         tool_parser_args=("--enable-auto-tool-choice", "--tool-call-parser", "{tool_parser}"),
         downloads_model=True,
         default_tool_parser="lfm2",  # verified in vllm/vllm-openai nightly, 2026-09-19
@@ -185,18 +195,18 @@ ENGINES: Mapping[str, EngineTemplate] = {
         port=30000,
         args=(
             "--model-path",
-            "{model}",
+            _MODEL,
             "--host",
             _IN_CONTAINER_BIND,
             "--port",
-            "{port}",
+            _PORT,
             "--context-length",
-            "{ctx}",
+            _CTX,
             "--mem-fraction-static",
             "{gpu_fraction}",
         ),
         needs_model_mount=False,
-        health_path="/health",
+        health_path=_HEALTH,
         downloads_model=True,
         tool_parser_args=("--tool-call-parser", "{tool_parser}"),  # no default: unverified
     ),
@@ -299,12 +309,15 @@ def _check_mounted_model(value: str) -> str:
     return value
 
 
+def _is_parser_name(text: str) -> bool:
+    if not 0 < len(text) <= 40 or text.startswith("-"):
+        return False
+    return all(ch.islower() or ch.isdigit() or ch in "_-" for ch in text)
+
+
 def check_tool_call_parser(value: object) -> str:
     """The name of the server's tool-call parser: a short lowercase word."""
-    ok = isinstance(value, str) and 0 < len(value) <= 40
-    if not ok or not all(ch.islower() or ch.isdigit() or ch in "_-" for ch in value):
-        raise _refuse("tool_call_parser", "must be a short lowercase parser name", value)
-    if value.startswith("-"):
+    if not isinstance(value, str) or not _is_parser_name(value):
         raise _refuse("tool_call_parser", "must be a short lowercase parser name", value)
     return value
 
@@ -586,7 +599,7 @@ def _default_runner(argv: list[str], timeout: float) -> tuple[int, str]:  # prag
     return completed.returncode, (completed.stdout or "") + (completed.stderr or "")
 
 
-def http_probe(base_url: str, timeout: float, *, path: str = "/health") -> bool:
+def http_probe(base_url: str, timeout: float, *, path: str = _HEALTH) -> bool:
     """GET *path* on *base_url*'s host and port; ``True`` on HTTP 200.
 
     Never raises: a refused connection, a reset or a timeout is simply
@@ -644,7 +657,7 @@ class DockerRuntime:
         self._sleep = sleep
         self._uid = int(uid())
         self._name = container_name(self._uid)
-        self._url = f"http://{LOOPBACK}:{host_port(self._settings, self._uid)}/v1"
+        self._url = f"{_SCHEME}{LOOPBACK}:{host_port(self._settings, self._uid)}/v1"
         self._started = False
 
     # -- the Runtime protocol --------------------------------------------
