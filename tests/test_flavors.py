@@ -63,24 +63,27 @@ def test_cli_startup_imports_no_tier_module():
     assert "nvsh.ops" not in stderr, "nvsh.ops found in import-time output"
 
 
+def _is_needle(module: str | None) -> bool:
+    return module is not None and (module == "needle" or module.startswith("needle."))
+
+
+def _top_level_needle_imports(py_file: Path) -> list[str]:
+    """Names of the ``needle`` modules *py_file* imports at module level."""
+    tree = ast.parse(py_file.read_text(), filename=str(py_file))
+    found = []
+    for node in tree.body:
+        if isinstance(node, ast.Import):
+            found += [alias.name for alias in node.names if _is_needle(alias.name)]
+        elif isinstance(node, ast.ImportFrom) and _is_needle(node.module):
+            found.append(node.module)
+    return found
+
+
 def test_no_tier_module_imports_needle_at_module_level():
     """No *.py under nvsh/tiers or nvsh/ops may import needle at module level."""
-    patterns = [REPO_ROOT / "nvsh" / "tiers", REPO_ROOT / "nvsh" / "ops"]
-    for pkg_dir in patterns:
-        if not pkg_dir.is_dir():
-            continue
-        for py_file in pkg_dir.rglob("*.py"):
-            source = py_file.read_text()
-            tree = ast.parse(source, filename=str(py_file))
-            for node in tree.body:
-                if isinstance(node, ast.Import):
-                    for alias in node.names:
-                        assert (
-                            alias.name != "needle"
-                        ), f"{py_file}: bare 'import needle' at module level"
-                elif isinstance(node, ast.ImportFrom):
-                    if node.module and node.module.startswith("needle"):
-                        assert False, f"{py_file}: 'from needle import ...' at module level"
+    files = [f for pkg in ("tiers", "ops") for f in (REPO_ROOT / "nvsh" / pkg).rglob("*.py")]
+    offenders = {str(f): names for f in files if (names := _top_level_needle_imports(f))}
+    assert offenders == {}
 
 
 @pytest.mark.parametrize(
