@@ -86,8 +86,16 @@ _RUNNING = "running"
 _STOPPED = "stopped"
 
 #: ``<repo>@sha256:<64 hex>`` and nothing else. A tag has no ``@sha256:`` and
-#: is refused by the same check.
-_DIGEST_RE = re.compile(r"\A[^@\s]+@sha256:[0-9a-f]{64}\Z")
+#: is refused by the same check; the leading character must be alphanumeric,
+#: so a ref can never arrive at docker looking like a flag.
+_DIGEST_RE = re.compile(r"\A[A-Za-z0-9][^@\s]*@sha256:[0-9a-f]{64}\Z")
+
+#: Bounds for the numeric ``[tiers.lfm]`` settings the launch line reads.
+_PORT_MIN = 1024
+_PORT_MAX = 65535
+_CTX_MIN = 256
+_CTX_MAX = 1048576
+_TIMEOUT_MAX = 3600.0
 
 #: ``(argv, timeout) -> (returncode, combined output)``.
 RunnerFn = Callable[[list[str], float], "tuple[int, str]"]
@@ -168,6 +176,110 @@ ENGINES: Mapping[str, EngineTemplate] = {
 }
 
 
+# -- settings validation ---------------------------------------------------
+#
+# Every value below reaches ``docker`` as an argv element, so a setting that
+# is present and malformed is refused outright rather than quietly replaced
+# by a default: a silent fallback hides a typo, and a value that is merely
+# *stringified* can smuggle a second volume through a ``:`` or a whole flag
+# through a leading ``-``. Refusing is safe, because the caller turns a
+# ``RuntimeUnavailable`` into one status line and the request escalates.
+
+
+def _refuse(key: str, requirement: str, value: object) -> RuntimeUnavailable:
+    """The one-line refusal for *key*. ``repr`` keeps it on a single line."""
+    return RuntimeUnavailable(f"[tiers.lfm] {key} {requirement} (got {value!r})")
+
+
+def _is_int(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _is_word(value: str) -> bool:
+    """No whitespace anywhere, and not a leading ``-`` that docker would read."""
+    return value.split() == [value] and not value.startswith("-")
+
+
+def check_port(value: object) -> int:
+    """A published host port: an int in the unprivileged range."""
+    if not _is_int(value) or not _PORT_MIN <= value <= _PORT_MAX:
+        raise _refuse("port", f"must be an integer from {_PORT_MIN} to {_PORT_MAX}", value)
+    return value
+
+
+def check_ctx(value: object) -> int:
+    """A context length the engine template substitutes into ``{ctx}``."""
+    if not _is_int(value) or not _CTX_MIN <= value <= _CTX_MAX:
+        raise _refuse("ctx", f"must be an integer from {_CTX_MIN} to {_CTX_MAX}", value)
+    return value
+
+
+def check_startup_timeout(value: object) -> float:
+    """How long :meth:`DockerRuntime.ensure` waits for the engine to answer."""
+    numeric = isinstance(value, (int, float)) and not isinstance(value, bool)
+    if not numeric or not 0 < float(value) <= _TIMEOUT_MAX:  # type: ignore[arg-type]
+        raise _refuse(
+            "startup_timeout_seconds", f"must be a number of seconds in (0, {_TIMEOUT_MAX}]", value
+        )
+    return float(value)  # type: ignore[arg-type]
+
+
+def check_model_dir(value: object) -> str:
+    """The host directory bind-mounted read-only at :data:`MODEL_MOUNT`.
+
+    Absolute, and free of the ``:`` and ``,`` that separate a ``-v``
+    argument's own fields -- otherwise a directory name alone could mount a
+    second volume. Existence is not checked: rendering stays pure.
+    """
+    if not isinstance(value, str) or not value:
+        raise _refuse("model_dir", "must be the absolute path of the model directory", value)
+    if not os.path.isabs(value) or ":" in value or "," in value or not _is_word(value):
+        raise _refuse("model_dir", "must be an absolute path with no ':', ',' or whitespace", value)
+    return value
+
+
+def check_model(value: object, *, mounted: bool) -> str:
+    """The model the engine serves, as the engine's own argument.
+
+    A mounted engine is handed ``<mount>/<name>``, so *name* must be a bare
+    file name: a ``/`` or a ``..`` there would reach back out of the mount.
+    An unmounted engine takes a model id, so one ``/`` is allowed
+    (``owner/name``) and nothing else is.
+    """
+    if not isinstance(value, str) or not value:
+        raise _refuse("model", "must name the model Tier 2 should serve", value)
+    if not _is_word(value):
+        raise _refuse("model", "must not start with '-' or contain whitespace", value)
+    if mounted:
+        return _check_mounted_model(value)
+    if value.count("/") > 1 or "\\" in value:
+        raise _refuse("model", "must be a model name or 'owner/name'", value)
+    return value
+
+
+def _check_mounted_model(value: str) -> str:
+    if "/" in value or "\\" in value or value in (".", ".."):
+        raise _refuse("model", "must be a bare file name inside [tiers.lfm] model_dir", value)
+    return value
+
+
+#: Checks for the settings that are optional but, when present, must be
+#: well-formed. Keyed by setting name so adding one is a table entry.
+SETTING_CHECKS: Mapping[str, Callable[[object], object]] = {
+    "port": check_port,
+    "ctx": check_ctx,
+    "startup_timeout_seconds": check_startup_timeout,
+    "model_dir": check_model_dir,
+}
+
+
+def check_settings(settings: Mapping[str, object]) -> None:
+    """Refuse every present-but-malformed launch setting. Pure; raises one line."""
+    for key, check in SETTING_CHECKS.items():
+        if settings.get(key) is not None:
+            check(settings[key])
+
+
 # -- per-user identity ----------------------------------------------------
 
 
@@ -180,12 +292,13 @@ def host_port(settings: Mapping[str, object], uid: int) -> int:
     """The loopback port this user's container publishes on.
 
     Derived from the uid so two operators on one machine do not collide;
-    ``[tiers.lfm] port`` overrides it when a site needs a fixed number.
+    ``[tiers.lfm] port`` overrides it when a site needs a fixed number -- and
+    a ``port`` that is present but unusable is refused, never ignored.
     """
     configured = settings.get("port")
-    if isinstance(configured, int) and not isinstance(configured, bool):
-        return configured
-    return PORT_BASE + (uid % PORT_SPAN)
+    if configured is None:
+        return PORT_BASE + (uid % PORT_SPAN)
+    return check_port(configured)
 
 
 # -- detection and config lookups -----------------------------------------
@@ -262,18 +375,11 @@ def resolve_image(settings: Mapping[str, object], engine: str) -> str:
 
 
 def _model_dir(settings: Mapping[str, object]) -> str:
-    directory = settings.get("model_dir")
-    if not isinstance(directory, str) or not directory:
-        raise RuntimeUnavailable(
-            "this engine serves a local file; set [tiers.lfm] model_dir to its directory"
-        )
-    return directory
+    return check_model_dir(settings.get("model_dir"))
 
 
 def _model_ref(template: EngineTemplate, settings: Mapping[str, object]) -> str:
-    model = settings.get("model")
-    if not isinstance(model, str) or not model:
-        raise RuntimeUnavailable("set [tiers.lfm] model to the model Tier 2 should serve")
+    model = check_model(settings.get("model"), mounted=template.needs_model_mount)
     if template.needs_model_mount:
         return f"{MODEL_MOUNT}/{model}"
     return model
@@ -281,9 +387,9 @@ def _model_ref(template: EngineTemplate, settings: Mapping[str, object]) -> str:
 
 def _ctx(settings: Mapping[str, object]) -> int:
     configured = settings.get("ctx")
-    if isinstance(configured, int) and not isinstance(configured, bool):
-        return configured
-    return DEFAULT_CTX
+    if configured is None:
+        return DEFAULT_CTX
+    return check_ctx(configured)
 
 
 def _mount_args(template: EngineTemplate, settings: Mapping[str, object]) -> list[str]:
@@ -308,7 +414,12 @@ def render_launch(settings: Mapping[str, object], platform: Platform, *, uid: in
     no request text, no model output, no environment. The container is
     started detached and *without* ``--rm``, so :meth:`DockerRuntime.stop`'s
     ``docker rm`` is what actually reclaims it.
+
+    Every setting it reads is validated first: a malformed one raises
+    ``RuntimeUnavailable`` with one line naming the key, and no argv is
+    produced at all.
     """
+    check_settings(settings)
     engine = str(settings.get("engine") or DEFAULT_ENGINE)
     template = engine_template(engine)
     image = resolve_image(settings, engine)
@@ -433,6 +544,7 @@ class DockerRuntime:
 
     def ensure(self) -> str:
         """Return a ready base URL, starting the container if it is not up."""
+        check_settings(self._settings)
         self._check_floor()
         self._require_docker()
         if self._state() != _RUNNING:
@@ -516,9 +628,9 @@ class DockerRuntime:
 
     def _startup_seconds(self) -> float:
         configured = self._settings.get("startup_timeout_seconds")
-        if isinstance(configured, (int, float)) and not isinstance(configured, bool):
-            return float(configured)
-        return DEFAULT_STARTUP_SECONDS
+        if configured is None:
+            return DEFAULT_STARTUP_SECONDS
+        return check_startup_timeout(configured)
 
     def _default_probe(self, base_url: str, timeout: float) -> bool:
         engine = str(self._settings.get("engine") or DEFAULT_ENGINE)

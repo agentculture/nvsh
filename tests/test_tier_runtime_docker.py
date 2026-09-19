@@ -310,6 +310,204 @@ def test_every_rendered_argument_traces_to_settings_detection_or_template():
     assert stray == []
 
 
+# -- hostile settings: the model name --------------------------------------
+
+
+def test_a_model_escaping_the_mount_is_refused():
+    with pytest.raises(RuntimeUnavailable, match="model"):
+        rd.render_launch(settings(model="../../etc/passwd"), SPARK, uid=1000)
+
+
+def test_a_mounted_model_with_a_slash_is_refused():
+    with pytest.raises(RuntimeUnavailable, match="model"):
+        rd.render_launch(settings(model="sub/lfm2.gguf"), SPARK, uid=1000)
+
+
+def test_a_mounted_model_with_a_backslash_is_refused():
+    with pytest.raises(RuntimeUnavailable, match="model"):
+        rd.render_launch(settings(model="sub\\lfm2.gguf"), SPARK, uid=1000)
+
+
+def test_a_dot_model_is_refused():
+    with pytest.raises(RuntimeUnavailable, match="model"):
+        rd.render_launch(settings(model="."), SPARK, uid=1000)
+
+
+def test_a_model_starting_with_a_dash_is_refused():
+    with pytest.raises(RuntimeUnavailable, match="model"):
+        rd.render_launch(settings(model="-v"), SPARK, uid=1000)
+
+
+def test_a_repo_id_is_accepted_by_an_unmounted_engine():
+    argv = rd.render_launch(settings(engine="vllm", model="LiquidAI/LFM2.5-350M"), SPARK, uid=1000)
+    assert "LiquidAI/LFM2.5-350M" in argv
+
+
+def test_a_repo_id_with_two_slashes_is_refused():
+    with pytest.raises(RuntimeUnavailable, match="model"):
+        rd.render_launch(settings(engine="vllm", model="a/b/c"), SPARK, uid=1000)
+
+
+def test_a_model_with_whitespace_is_refused():
+    with pytest.raises(RuntimeUnavailable, match="model"):
+        rd.render_launch(settings(engine="vllm", model="lfm2 --privileged"), SPARK, uid=1000)
+
+
+def test_a_refused_model_says_so_on_one_line():
+    with pytest.raises(RuntimeUnavailable) as caught:
+        rd.render_launch(settings(model="../../etc/passwd"), SPARK, uid=1000)
+    assert "\n" not in str(caught.value)
+
+
+# -- hostile settings: the model directory ---------------------------------
+
+
+def test_a_model_dir_smuggling_a_second_volume_is_refused():
+    with pytest.raises(RuntimeUnavailable, match="model_dir"):
+        rd.render_launch(settings(model_dir="rel/dir:/x"), SPARK, uid=1000)
+
+
+def test_a_relative_model_dir_is_refused():
+    with pytest.raises(RuntimeUnavailable, match="model_dir"):
+        rd.render_launch(settings(model_dir="models"), SPARK, uid=1000)
+
+
+def test_a_model_dir_with_a_comma_is_refused():
+    with pytest.raises(RuntimeUnavailable, match="model_dir"):
+        rd.render_launch(settings(model_dir="/m,rw"), SPARK, uid=1000)
+
+
+def test_a_model_dir_starting_with_a_dash_is_refused():
+    with pytest.raises(RuntimeUnavailable, match="model_dir"):
+        rd.render_launch(settings(model_dir="-v"), SPARK, uid=1000)
+
+
+def test_an_absolute_model_dir_is_accepted():
+    argv = rd.render_launch(settings(model_dir="/srv/models"), SPARK, uid=1000)
+    assert "/srv/models:/models:ro" in argv
+
+
+def test_a_model_dir_is_checked_even_for_an_unmounted_engine():
+    with pytest.raises(RuntimeUnavailable, match="model_dir"):
+        rd.render_launch(settings(engine="vllm", model_dir="rel/dir:/x"), SPARK, uid=1000)
+
+
+# -- hostile settings: the numbers -----------------------------------------
+
+
+def test_a_non_integer_port_is_refused_not_ignored():
+    with pytest.raises(RuntimeUnavailable, match="port"):
+        rd.render_launch(settings(port="80; rm"), SPARK, uid=1000)
+
+
+def test_a_privileged_port_is_refused():
+    with pytest.raises(RuntimeUnavailable, match="port"):
+        rd.render_launch(settings(port=22), SPARK, uid=1000)
+
+
+def test_a_port_above_the_range_is_refused():
+    with pytest.raises(RuntimeUnavailable, match="port"):
+        rd.render_launch(settings(port=70000), SPARK, uid=1000)
+
+
+def test_a_boolean_port_is_refused():
+    with pytest.raises(RuntimeUnavailable, match="port"):
+        rd.render_launch(settings(port=True), SPARK, uid=1000)
+
+
+def test_a_non_integer_ctx_is_refused_not_ignored():
+    with pytest.raises(RuntimeUnavailable, match="ctx"):
+        rd.render_launch(settings(ctx="4096; rm"), SPARK, uid=1000)
+
+
+def test_a_tiny_ctx_is_refused():
+    with pytest.raises(RuntimeUnavailable, match="ctx"):
+        rd.render_launch(settings(ctx=8), SPARK, uid=1000)
+
+
+def test_a_huge_ctx_is_refused():
+    with pytest.raises(RuntimeUnavailable, match="ctx"):
+        rd.render_launch(settings(ctx=99999999), SPARK, uid=1000)
+
+
+def test_a_non_numeric_startup_timeout_is_refused():
+    with pytest.raises(RuntimeUnavailable, match="startup_timeout_seconds"):
+        rd.render_launch(settings(startup_timeout_seconds="soon"), SPARK, uid=1000)
+
+
+def test_a_zero_startup_timeout_is_refused():
+    with pytest.raises(RuntimeUnavailable, match="startup_timeout_seconds"):
+        rd.render_launch(settings(startup_timeout_seconds=0), SPARK, uid=1000)
+
+
+def test_an_overlong_startup_timeout_is_refused():
+    with pytest.raises(RuntimeUnavailable, match="startup_timeout_seconds"):
+        rd.render_launch(settings(startup_timeout_seconds=99999), SPARK, uid=1000)
+
+
+def test_a_float_startup_timeout_is_accepted():
+    assert rd.render_launch(settings(startup_timeout_seconds=2.5), SPARK, uid=1000)
+
+
+def test_a_bad_startup_timeout_stops_ensure_before_docker_runs():
+    with pytest.raises(RuntimeUnavailable, match="startup_timeout_seconds"):
+        runtime(FakeDocker(), settings=settings(startup_timeout_seconds=-1)).ensure()
+
+
+def test_an_image_ref_starting_with_a_dash_is_refused():
+    with pytest.raises(RuntimeUnavailable, match="digest"):
+        rd.render_launch(settings(image="-v@" + DIGEST), SPARK, uid=1000)
+
+
+# -- hostile settings: no smuggled flag, whatever the key ------------------
+
+#: Every ``-``-leading element the launch line is allowed to contain: docker's
+#: own flags, the detection flags, and the engines' flag names.
+ALLOWED_FLAGS = frozenset(
+    {
+        "-d",
+        "--name",
+        "-p",
+        "-v",
+        "--gpus",
+        "--runtime",
+        "--model",
+        "--model-path",
+        "--host",
+        "--port",
+        "--ctx-size",
+        "--max-model-len",
+        "--context-length",
+    }
+)
+
+HOSTILE_SETTINGS = [
+    ("engine", "--privileged"),
+    ("image", "-v@" + DIGEST),
+    ("model", "-v /:/host"),
+    ("model_dir", "-v"),
+    ("gpu", "--privileged"),
+    ("port", "--privileged"),
+    ("ctx", "--privileged"),
+    ("startup_timeout_seconds", "--privileged"),
+    ("mode", "--privileged"),
+]
+
+
+def _smuggled_flags(hostile: dict[str, object]) -> list[str]:
+    """Flags a hostile config got into the argv; ``[]`` when it was refused."""
+    try:
+        argv = rd.render_launch(hostile, SPARK, uid=1000)
+    except RuntimeUnavailable:
+        return []
+    return [part for part in argv if part.startswith("-") and part not in ALLOWED_FLAGS]
+
+
+@pytest.mark.parametrize("key,value", HOSTILE_SETTINGS)
+def test_no_setting_can_smuggle_a_docker_flag(key, value):
+    assert _smuggled_flags(settings(**{key: value})) == []
+
+
 # -- the grep-style test (criterion 3) ------------------------------------
 
 
