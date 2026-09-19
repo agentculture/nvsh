@@ -48,9 +48,9 @@ publishing anything.
 
 ## Who publishes (answered by the operator, 2026-09-19)
 
-The `jetson-ai-lab` organisation is a small non-profit community, not a
-company and not under a company's control, so it is far below the threshold
-and a free fine-tune published there is within the licence as read above. A
+The operator states that the `jetson-ai-lab` organisation is a small
+non-profit community. On that basis it is far below the threshold, and a free
+fine-tune published there is within the licence as read above. A
 tuned LFM2.5 may therefore be published under `jetson-ai-lab`, with the model
 card duties listed in the previous section. Two things stay true:
 
