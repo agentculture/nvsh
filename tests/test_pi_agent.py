@@ -521,6 +521,33 @@ def test_start_reports_a_pi_that_exits_at_once(tmp_path):
     assert "cannot find module foo" in message
 
 
+def test_a_slow_stderr_reader_does_not_lose_the_reason_pi_died(tmp_path, monkeypatch):
+    """The stderr drain runs on its own thread, so a pi that dies instantly
+    can be noticed before its last words have been read. Under whole-suite
+    load that happened about once in a dozen runs and the operator got
+    ``pi exited with code 2; no stderr`` (issue 27, CI on PR 22). The delay
+    here makes the race certain instead of rare: the reader is still asleep
+    when the launch failure is reported."""
+    real_loop = PiAgent._stderr_loop
+
+    def late(self):
+        time.sleep(0.3)
+        real_loop(self)
+
+    monkeypatch.setattr(PiAgent, "_stderr_loop", late)
+    env = _env(tmp_path)
+    env["PATH"] = str(_exiting_pi(tmp_path, 2, "pi: unknown thinking level 'x'")) + (
+        os.pathsep + os.environ.get("PATH", "")
+    )
+    agent = PiAgent(pi_path="pi", env=env)
+    with pytest.raises(PiRpcError) as excinfo:
+        agent.start()
+    agent.close()
+    message = str(excinfo.value)
+    assert "code 2" in message
+    assert "unknown thinking level" in message, message
+
+
 def test_start_redacts_secrets_out_of_the_stderr_tail(tmp_path):
     env = _env(tmp_path)
     secret = "hf_" + "z" * 24
