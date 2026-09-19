@@ -266,7 +266,7 @@ class _Round:
     inspection: tuple[str, str] | None
 
 
-def _system_brief(platform: Platform, max_rounds: int) -> str:
+def system_brief(platform: Platform, max_rounds: int = MAX_ROUNDS) -> str:
     """Static text plus the platform kind. The operations arrive as tools."""
     return _SYSTEM_BRIEF.format(kind=_clamp(str(platform.kind), KIND_CHARS), rounds=max_rounds)
 
@@ -398,7 +398,7 @@ class LfmTier(Tier):
         if isinstance(chat, Decline):
             return chat
 
-        system = _system_brief(self._platform, self._max_rounds)
+        system = system_brief(self._platform, self._max_rounds)
         ask = _request_message(request, context)
         tools = tools_for()
         rounds: list[_Round] = []
