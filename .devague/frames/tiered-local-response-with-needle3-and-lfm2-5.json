@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "drafting",
   "created": "2026-09-19T11:10:08Z",
-  "updated": "2026-09-19T11:15:54Z",
+  "updated": "2026-09-19T11:19:17Z",
   "claims": [
     {
       "id": "c1",
@@ -249,7 +249,7 @@
     {
       "id": "c14",
       "kind": "requirement",
-      "text": "Each tier is also reachable explicitly as a registered adapter (`@needle`, `@lfm`, `nvsh --agent needle`) for testing and benchmarking, is excluded from `nvsh setup`'s default-agent probe, and is reported by `nvsh agent list --json` and `nvsh doctor`. An explicit `@target` naming another harness bypasses the tiers.",
+      "text": "Each tier is reachable explicitly as a registered adapter (`@needle`, `@lfm`, `nvsh --agent needle`) as soon as its flavor is installed, is excluded from `nvsh setup`'s default-agent probe, and is reported by `nvsh agent list --json` and `nvsh doctor`. Automatic tier routing is off until the operator enables it in config. An explicit `@target` naming another harness always bypasses the tiers.",
       "origin": "llm",
       "status": "proposed",
       "honesty_conditions": [
@@ -263,7 +263,13 @@
       "hard_questions": [],
       "links": [],
       "instruction": "",
-      "revisions": []
+      "revisions": [
+        {
+          "text": "Each tier is also reachable explicitly as a registered adapter (`@needle`, `@lfm`, `nvsh --agent needle`) for testing and benchmarking, is excluded from `nvsh setup`'s default-agent probe, and is reported by `nvsh agent list --json` and `nvsh doctor`. An explicit `@target` naming another harness bypasses the tiers.",
+          "kind": "requirement",
+          "reason": "q2 decision: routing is opt-in"
+        }
+      ]
     },
     {
       "id": "c15",
@@ -306,7 +312,7 @@
     {
       "id": "c17",
       "kind": "boundary",
-      "text": "No new auto-apply: every mutating action still needs operator approval, sudo and destructive-command rules are unchanged, and the local tiers only ever reach commands that the operation table can render. nvsh's own measurement data stays on the machine; nothing is sent off the box.",
+      "text": "No new auto-apply: every mutating action still needs operator approval, sudo and destructive-command rules are unchanged, and the local tiers only ever reach commands that the operation table can render. nvsh itself never sends measurement data off the machine; the only way records leave is a redacted export file the operator creates and moves by hand.",
       "origin": "llm",
       "status": "proposed",
       "honesty_conditions": [
@@ -320,7 +326,13 @@
       "hard_questions": [],
       "links": [],
       "instruction": "",
-      "revisions": []
+      "revisions": [
+        {
+          "text": "No new auto-apply: every mutating action still needs operator approval, sudo and destructive-command rules are unchanged, and the local tiers only ever reach commands that the operation table can render. nvsh's own measurement data stays on the machine; nothing is sent off the box.",
+          "kind": "boundary",
+          "reason": "q3 decision: local plus manual export"
+        }
+      ]
     },
     {
       "id": "c18",
@@ -356,6 +368,73 @@
         {
           "id": "h17",
           "text": "Each number in the signal is produced by the committed benchmark command, not measured by hand; a missed target is reported as missed in the device's results file.",
+          "status": "proposed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c21",
+      "kind": "decision",
+      "text": "One spec, delivered in phases: the operation table and observability first, then Tier 1 (Needle3), then Tier 2 (LFM2.5). Tier 2 may be dropped if its baseline fails.",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c22",
+      "kind": "decision",
+      "text": "Transparent routing is opt-in through config. Installing a flavor adds only the explicit `@needle` / `@lfm` targets; the operator switches on automatic tier routing once they have measured it.",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c23",
+      "kind": "decision",
+      "text": "Measurement records stay on the machine, and an operator-run export command bundles redacted records into a file for building fine-tune and benchmark data across the fleet. nvsh itself never sends data anywhere.",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c24",
+      "kind": "decision",
+      "text": "The Tier 2 model runtime is pluggable and chosen from benchmark evidence: the first implementation is a daemon-managed `llama-server` on localhost, and vLLM and SGLang must be selectable through the same OpenAI-compatible interface, because speed is the goal and the fastest runtime per device is not obvious.",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c25",
+      "kind": "requirement",
+      "text": "Tier 2 talks to its model through one OpenAI-compatible localhost interface with tool-call support, and the runtime behind it is a config choice among `llama-server`, `vllm` and `sglang`: nvsh either starts and stops the runtime itself or attaches to one the operator already runs. The benchmark runner records results per runtime so the default for each device class is picked from numbers.",
+      "origin": "llm",
+      "status": "proposed",
+      "honesty_conditions": [
+        {
+          "id": "h18",
+          "text": "The benchmark is run with at least two runtimes on at least one device and both result sets are committed; switching runtime is a config change with no code change, shown by a test that points Tier 2 at a fixture HTTP server.",
           "status": "proposed",
           "instruction": ""
         }
