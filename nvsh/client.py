@@ -1876,7 +1876,11 @@ def _escalated_context(context: AgentContext, results) -> AgentContext:
         lines.append(f"{operation}: {' '.join(str(excerpt).split())}")
     block = "\n".join(lines)[:ESCALATION_MAX_CHARS]
     output = f"{context.output}\n\n{block}" if context.output else block
-    return replace(context, output=output)
+    # Annotated local: ``dataclasses.replace`` is typed as returning a bare
+    # ``DataclassInstance``, which does not match the declared return type
+    # (SonarCloud python:S5886).
+    escalated: AgentContext = replace(context, output=output)
+    return escalated
 
 
 def _tier_approved(decisions: Sequence[str]) -> bool:
@@ -2073,7 +2077,9 @@ class _Routing:
 
 def _follow_up_routing(routing: _Routing) -> _Routing:
     """The routing for a turn that continues one the full agent answered."""
-    return replace(routing, tiers=False)
+    # Annotated local: see ``_escalated_context`` (SonarCloud python:S5886).
+    follow_up: _Routing = replace(routing, tiers=False)
+    return follow_up
 
 
 def _stream_request(

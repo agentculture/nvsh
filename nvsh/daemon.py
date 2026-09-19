@@ -55,7 +55,7 @@ from .agent.base import (
 from .config import DEFAULT_ALIAS, Config
 
 if TYPE_CHECKING:  # pragma: no cover - typing only, never imported at runtime
-    from .tiers.manager import TierAnswer, TierManager
+    from .tiers.manager import TierAnswer, TierManager, TierSession
 
 #: Seconds with no request after which the daemon shuts itself down.
 DEFAULT_IDLE_TIMEOUT = 900.0
@@ -1120,7 +1120,12 @@ class Daemon:
         table = self.config.tiers if isinstance(self.config.tiers, Mapping) else {}
         return {"enabled": bool(table.get("enabled", False)), "loaded": False, "problem": ""}
 
-    def _handle_tier(self, request: AgentRequest, context: AgentContext) -> Iterator[AgentEvent]:
+    def _handle_tier(
+        self,
+        request: AgentRequest,
+        context: AgentContext,
+        connection: socket.socket | None = None,
+    ) -> Iterator[AgentEvent]:
         """Answer one ``tier`` request: the tiers only, never the full agent.
 
         Deliberately *not* behind :attr:`_run_lock`: a tier selection is a
@@ -1130,16 +1135,54 @@ class Daemon:
         one final frame naming the outcome, then ``done`` -- the client needs
         the outcome *before* the terminal event, because a terminal event is
         where it stops reading.
+
+        ``connection`` is watched for the length of the request the same way
+        an agent turn's is (:meth:`_watch_turn`): a client that times out or
+        exits while Tier 1 is loading or selecting cancels the session, so
+        the abandoned work stops at the next event boundary instead of
+        holding the tier's one-at-a-time lock for everyone behind it (Qodo
+        #14, PR review).
         """
+        if _peer_is_gone(connection):
+            # Nothing to answer: never build or consult a tier for a client
+            # that has already gone.
+            return
         session = self._tier_manager().open(request, context)
         done: AgentEvent | None = None
-        for event in session:
-            if event.kind is EventKind.DONE:
-                done = event
-                continue
-            yield event
+        finished = threading.Event()
+        if connection is not None:
+            # No socket, no watcher: an in-process caller has no peer that
+            # can leave, and a tier request must not pay for a thread it
+            # would never use.
+            threading.Thread(
+                target=self._watch_tier, args=(session, finished, connection), daemon=True
+            ).start()
+        try:
+            for event in session:
+                if event.kind is EventKind.DONE:
+                    done = event
+                    continue
+                yield event
+        finally:
+            finished.set()
         yield _tier_answer_event(session.answer)
         yield done if done is not None else AgentEvent(kind=EventKind.DONE)
+
+    def _watch_tier(
+        self,
+        session: "TierSession",
+        finished: threading.Event,
+        connection: socket.socket,
+    ) -> None:
+        """Cancel *session* when its client goes away. No timeout of its own:
+        a tier request has no turn cap -- Tier 1 enforces its own -- and the
+        thread that owns the request is parked inside the tier's blocking
+        call, so it cannot notice the departure itself."""
+        while not finished.wait(_TURN_WATCH_INTERVAL):
+            if _peer_is_gone(connection):
+                self._log.info("tier request cancelled: its client closed the connection")
+                session.cancel()
+                return
 
     def _handle_tier_decision(
         self, _shell: str, message: Mapping[str, object]
@@ -1312,7 +1355,7 @@ class Daemon:
         context = context_from_dict(message.get("context"))  # type: ignore[arg-type]
         if kind == TIER_KIND:
             # Before ``_run``, and before the run lock it takes (c32).
-            yield from self._handle_tier(request, context)
+            yield from self._handle_tier(request, context, connection)
             return
         yield from self._run(shell, request, context, connection=connection)
 

@@ -28,6 +28,7 @@ from __future__ import annotations
 import contextlib
 import threading
 import time
+import weakref
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Callable, Iterator, Mapping
@@ -85,6 +86,11 @@ class TierAnswer:
 #: What a request that never reached a tier answers with.
 ESCALATED = TierAnswer(outcome=ESCALATE, text="no local tier answered; asking the full agent")
 
+#: What a request whose caller went away answers with. Still an
+#: :data:`ESCALATE` -- nobody is left to show a proposal to, and a cancelled
+#: request must never look "handled" in the wire frame or the records.
+CANCELLED = TierAnswer(outcome=ESCALATE, text="the request was cancelled; the local tiers stopped")
+
 
 class TierSession:
     """One tier request: iterate it for events, then read :attr:`answer`.
@@ -97,6 +103,11 @@ class TierSession:
     A session with no route -- the tiers are off, or the flavor could not be
     built -- yields at most one ``status`` line and answers
     :data:`ESCALATE`. It loads nothing.
+
+    A session with a route holds a *lease* on the manager's loaded tiers
+    from :meth:`TierManager.open` until it is finished, cancelled or
+    collected: the idle sweep never unloads the worker a live request is
+    about to use, or is using (Qodo #2, PR review).
     """
 
     def __init__(
@@ -106,22 +117,68 @@ class TierSession:
         *,
         route_id: str = "",
         problem: str = "",
+        lease: int = 0,
     ) -> None:
         self._manager = manager
         self._route = route
         self._route_id = route_id
         self._problem = problem
         self._answer: TierAnswer | None = None
+        self._cancelled = False
+        #: Releases this session's lease exactly once, whether it is
+        #: iterated to the end, abandoned mid-stream, or simply dropped
+        #: without ever being iterated (the finalizer fires on collection).
+        self._finalizer: weakref.finalize | None = (
+            weakref.finalize(self, manager.release, lease) if lease else None
+        )
+
+    def cancel(self) -> None:
+        """Stop this request at the next event boundary.
+
+        Cooperative on purpose: a tier's ``select()`` is a blocking round
+        trip to its own child process and nothing here reaches into it. What
+        this guarantees is that no *further* tier is consulted, nothing more
+        is proposed, and the lease is released as soon as the call in flight
+        returns -- so an abandoned request stops holding the tiers.
+        """
+        self._cancelled = True
 
     def __iter__(self) -> Iterator[AgentEvent]:
         route = self._route
         if route is None:
-            if self._problem:
-                yield AgentEvent(kind=EventKind.STATUS, text=self._problem, args={"tier": "tiers"})
-            self._answer = ESCALATED
+            yield from self._without_a_route()
             return
-        yield from route
-        self._answer = self._manager.finish(self._route_id, route)
+        try:
+            yield from self._through(route)
+        finally:
+            self._release()
+
+    def _without_a_route(self) -> Iterator[AgentEvent]:
+        if self._problem:
+            yield AgentEvent(kind=EventKind.STATUS, text=self._problem, args={"tier": "tiers"})
+        self._answer = ESCALATED
+
+    def _through(self, route: Route) -> Iterator[AgentEvent]:
+        if self._cancelled:
+            self._answer = CANCELLED
+            return
+        events = iter(route)
+        try:
+            for event in events:
+                if self._cancelled:
+                    break
+                yield event
+        finally:
+            # The route is a generator: closing it unwinds whatever it was
+            # parked on rather than leaving it suspended forever.
+            with contextlib.suppress(Exception):
+                events.close()  # type: ignore[attr-defined]
+        self._answer = CANCELLED if self._cancelled else self._manager.finish(self._route_id, route)
+
+    def _release(self) -> None:
+        finalizer, self._finalizer = self._finalizer, None
+        if finalizer is not None:
+            finalizer()  # weakref.finalize runs its callback at most once
 
     @property
     def answer(self) -> TierAnswer:
@@ -181,6 +238,10 @@ class TierManager:
         self._last_used = clock()
         self._next_id = 0
         self._routes: "OrderedDict[str, Route]" = OrderedDict()
+        #: Leases held by sessions that have been opened and not yet
+        #: finished. The idle sweep refuses to unload while any is held.
+        self._inflight: set[int] = set()
+        self._next_lease = 0
 
     # -- configuration -----------------------------------------------------
 
@@ -207,7 +268,13 @@ class TierManager:
     # -- one request -------------------------------------------------------
 
     def open(self, request: AgentRequest, context: AgentContext) -> TierSession:
-        """A session for *request*. Nothing runs until the session is iterated."""
+        """A session for *request*. Nothing runs until the session is iterated.
+
+        The lease is taken here rather than on first iteration: a session is
+        lazy, so the gap between ``open`` and the first ``next()`` is exactly
+        the window in which the idle sweep used to unload the worker the
+        caller was about to use.
+        """
         with self._lock:
             if not self.enabled:
                 return TierSession(self, None)
@@ -218,7 +285,24 @@ class TierManager:
             self._next_id += 1
             route_id = str(self._next_id)
             route = loaded.router.route(request, context)
-        return TierSession(self, route, route_id=route_id)
+            lease = self._acquire()
+        return TierSession(self, route, route_id=route_id, lease=lease)
+
+    def _acquire(self) -> int:
+        """Take a lease on the loaded tiers. Caller holds :attr:`_lock`."""
+        self._next_lease += 1
+        self._inflight.add(self._next_lease)
+        return self._next_lease
+
+    def release(self, lease: int) -> None:
+        """Give a lease back, and restart the idle clock from now.
+
+        Public because :class:`TierSession`'s finalizer calls it; harmless
+        and idempotent for a lease that is already gone.
+        """
+        with self._lock:
+            self._inflight.discard(lease)
+            self._last_used = self._clock()
 
     def finish(self, route_id: str, route: Route) -> TierAnswer:
         """Read *route*'s outcome, keeping it only when a tier answered."""
@@ -320,21 +404,39 @@ class TierManager:
         this module's own: until a tier request arrives this is two attribute
         reads. ``idle_unload_seconds`` of ``0`` means "never unload".
         Returns ``True`` when something was dropped.
+
+        A request that is open -- including one still waiting on a tier's
+        blocking ``select()`` -- holds a lease, and an idle window that
+        elapses under it is not idle: the sweep declines rather than tearing
+        the worker out from under a live selection (Qodo #2, PR review).
+        The decision and the detach happen under one hold of the lock, so a
+        request that opens between them gets freshly built tiers instead of
+        the ones being torn down.
         """
         window = float(self._setting("idle_unload_seconds") or 0)
         if window <= 0:
             return False
         with self._lock:
-            if self._loaded is None or self._clock() - self._last_used < window:
-                return False
-        self.close()
+            idle = self._loaded is not None and self._clock() - self._last_used >= window
+            loaded = self._detach() if idle and not self._inflight else None
+        if loaded is None:
+            return False
+        self._teardown(loaded)
         return True
+
+    def _detach(self) -> _Loaded | None:
+        """Take the built tiers off the manager. Caller holds :attr:`_lock`."""
+        loaded, self._loaded = self._loaded, None
+        self._routes.clear()
+        return loaded
 
     def close(self) -> None:
         """Drop the tiers and everything they hold (a Needle child). Never raises."""
         with self._lock:
-            loaded, self._loaded = self._loaded, None
-            self._routes.clear()
+            loaded = self._detach()
+        self._teardown(loaded)
+
+    def _teardown(self, loaded: _Loaded | None) -> None:
         if loaded is None:
             return
         for tier in loaded.tiers:

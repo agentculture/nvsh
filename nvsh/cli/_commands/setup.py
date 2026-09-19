@@ -391,8 +391,10 @@ def _keep_existing_default(cfg, probe_rows: list[dict]) -> bool:
         return False
     if backend not in registry.ADAPTERS or not registry.installed(backend, shutil.which):
         return False
-    if backend == "demo":
-        return False  # a scripted fixture is never a usable default (see _refuse_demo_default)
+    if backend in registry.NOT_PERSISTABLE_DEFAULT:
+        # A scripted fixture (demo) or a Tier-1-only model (needle) is never
+        # a usable default, however it got written in: re-probe instead.
+        return False
     if backend == "openai-compat" and probe_rows:
         if not cfg.agents.get("openai-compat", {}).get("base_url"):
             return False
@@ -458,55 +460,60 @@ def _setup_lines(result: dict, install_rows: list[dict], offer_only: bool) -> li
     return lines
 
 
-def _forced_resolves_to_demo(args: argparse.Namespace) -> bool:
-    """Whether ``--agent <x>`` names demo through an alias, ``@`` form or a
-    model-qualified target, resolved against the operator's config before
-    any side effect. A config that fails to load is left to the later,
-    normal error path."""
+def _forced_default_backend(args: argparse.Namespace) -> str:
+    """The backend ``--agent <x>`` would persist, through an alias, an ``@``
+    form or a model-qualified target, resolved against the operator's config
+    before any side effect. ``""`` when nothing was forced, or when the
+    config fails to load -- that is left to the later, normal error path."""
     forced = getattr(args, "agent", None)
     if not forced:
-        return False
+        return ""
     try:
         cfg = nvsh_config.load()
         bare = forced[1:] if forced.startswith("@") else forced
         if forced in cfg.aliases or bare in cfg.aliases:
             backend, _m, _e, _a = cfg.resolve_target(forced if forced in cfg.aliases else bare)
-            return backend == "demo"
+            return backend
     except nvsh_config.ConfigError:
-        return False
-    return bare.split("/", 1)[0] == "demo"
+        return ""
+    return bare.split("/", 1)[0]
 
 
-def _refuse_demo_default(args: argparse.Namespace) -> None:
-    """Refuse ``--agent demo`` before any side effect (rc edit, install
-    probe, daemon restart): 'demo' is a scripted fixture (see
-    registry.DEMO_DEFAULT_MESSAGE), never a persisted default. A literal
-    '--agent demo'/'--agent @demo' names the adapter directly, so this
-    catches it without waiting on _pick_agent's alias resolution -- an
-    alias whose *target* happens to be demo is unaffected, it is still a
-    per-request pick until something asks for it as the default."""
-    if getattr(args, "agent", None) in ("demo", "@demo") or _forced_resolves_to_demo(args):
-        raise CliError(
-            code=EXIT_USER_ERROR,
-            message=registry.DEMO_DEFAULT_MESSAGE,
-            remediation=registry.DEMO_DEFAULT_HINT,
-        )
+def _refuse_unpersistable_default(args: argparse.Namespace) -> None:
+    """Refuse ``--agent <x>`` for an adapter that must never be the persisted
+    default before any side effect (rc edit, install probe, daemon restart).
+
+    The table is ``registry.NOT_PERSISTABLE_DEFAULT_REASONS`` -- ``demo`` (a
+    scripted fixture) and ``needle`` (a Tier-1-only local model), and
+    whatever joins them -- rather than a demo-only check, which let
+    ``nvsh setup --agent needle`` write a Tier-1-only adapter into
+    ``[aliases].default`` (Qodo #1, PR review). The literal spelling is
+    checked alongside the resolved one so a config that will not load still
+    refuses ``--agent needle``. An alias whose *target* is one of these is
+    caught here too; it stays a per-request pick until something asks for it
+    as the default."""
+    forced = str(getattr(args, "agent", None) or "")
+    literal = forced[1:] if forced.startswith("@") else forced
+    _refuse_unpersistable(literal, _forced_default_backend(args))
 
 
-def _refuse_demo_backend(backend: str, target: str) -> None:
-    """The resolved pick, after aliases: an alias whose target is ``demo``
-    (``demo-run = "demo"``, ``@demo``, ``demo/x``) must not be persisted
-    either, however it was spelled on the command line."""
-    if backend == "demo" or str(target).lstrip("@").split("/", 1)[0] == "demo":
-        raise CliError(
-            code=EXIT_USER_ERROR,
-            message=registry.DEMO_DEFAULT_MESSAGE,
-            remediation=registry.DEMO_DEFAULT_HINT,
-        )
+def _refuse_unpersistable_backend(backend: str, target: str) -> None:
+    """The resolved pick, after aliases: an alias whose target is
+    ``demo``/``needle`` (``demo-run = "demo"``, ``@needle``, ``needle/x``)
+    must not be persisted either, however it was spelled on the command
+    line."""
+    _refuse_unpersistable(backend, str(target).lstrip("@").split("/", 1)[0])
+
+
+def _refuse_unpersistable(*names: str) -> None:
+    for name in names:
+        reason = registry.NOT_PERSISTABLE_DEFAULT_REASONS.get(name)
+        if reason is not None:
+            raise CliError(code=EXIT_USER_ERROR, message=reason[0], remediation=reason[1])
 
 
 def cmd_setup(args: argparse.Namespace, prompt=None) -> int:
-    _refuse_demo_default(args)
+    _refuse_unpersistable_default(args)
     rc_path = _rc_path(args)
 
     shell_dir = render.render_shell_files()
@@ -518,7 +525,7 @@ def cmd_setup(args: argparse.Namespace, prompt=None) -> int:
     cfg = nvsh_config.load()
     prompt = _prompt_input if prompt is None else prompt
     chosen, reason, target, probe_rows, forced, keep_existing = _pick_agent(args, cfg, prompt)
-    _refuse_demo_backend(chosen, target)
+    _refuse_unpersistable_backend(chosen, target)
 
     offer_only, confirm = _install_mode(args)
     # Scope the offers to the pick -- except on a bare machine, where the

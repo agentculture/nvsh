@@ -157,6 +157,34 @@ def test_an_explicit_target_sends_the_request_past_both_tiers(xdg, monkeypatch):
     assert asked == []
 
 
+def _explicit_target_calls(monkeypatch) -> list:
+    """Drive one ``--agent claude`` request, recording both full-agent
+    transports (``send`` and the one-shot path) in a single list."""
+    calls: list = []
+    monkeypatch.setattr(client_transport, "send", _stub_send(calls))
+    monkeypatch.setattr(client_transport, "one_shot", _stub_send(calls))
+    monkeypatch.setattr(client_transport, "ask_tiers", _stub_tiers([]))
+    monkeypatch.setattr("nvsh.agent.registry.installed", lambda name, config=None: True)
+    client_mod.ask("why is it hot?", agent="claude", panel=_panel())
+    return calls
+
+
+def test_an_explicit_target_still_reaches_a_full_agent_transport(xdg, monkeypatch):
+    """Past the tiers is not the same as past the agent.
+
+    Asserting only that ``ask_tiers`` went unused (the test above) would
+    also hold for a request dropped before either full-agent transport
+    (Qodo #4, PR review), so this asserts the forwarding itself.
+    """
+    _tiers(xdg, True)
+    assert len(_explicit_target_calls(monkeypatch)) == 1
+
+
+def test_an_explicit_target_forwards_the_operators_prompt(xdg, monkeypatch):
+    _tiers(xdg, True)
+    assert _explicit_target_calls(monkeypatch)[0][0].prompt == "why is it hot?"
+
+
 def test_a_follow_up_turn_does_not_consult_the_tiers_again(xdg, monkeypatch):
     _tiers(xdg, True)
     (xdg.config / "nvsh" / "approved.toml").write_text(

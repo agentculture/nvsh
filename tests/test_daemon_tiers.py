@@ -16,7 +16,9 @@ to run one with.
 
 from __future__ import annotations
 
+import gc
 import json
+import socket
 import subprocess  # nosec B404 - fixed argv, no shell
 import sys
 import threading
@@ -289,6 +291,101 @@ def test_idle_unload_seconds_of_zero_never_unloads(tmp_path: Path) -> None:
     assert builds[0].closed is False
 
 
+def test_sweep_keeps_a_tier_an_open_request_has_not_used_yet(tmp_path: Path) -> None:
+    """A session is lazy: ``open`` builds the tiers and returns before the
+    first ``next()``. The idle sweep must not unload the worker in that
+    window (Qodo #2, PR review)."""
+    clock = _Clock()
+    builds: list[FakeTier] = []
+    manager = _manager(tmp_path, clock=clock, builds=builds)
+    session = manager.open(_request(), AgentContext())
+    clock.advance(901.0)
+    manager.sweep()
+    closed = builds[0].closed
+    session.cancel()
+    assert closed is False
+
+
+def test_sweep_keeps_a_tier_while_a_request_is_mid_stream(tmp_path: Path) -> None:
+    """The selection itself can outlast ``idle_unload_seconds``; unloading
+    under it would kill the worker answering the request."""
+    clock = _Clock()
+    builds: list[FakeTier] = []
+    manager = _manager(tmp_path, clock=clock, builds=builds)
+    events = iter(manager.open(_request(), AgentContext()))
+    next(events)  # Tier 1 has been consulted; the answer is still streaming
+    clock.advance(901.0)
+    manager.sweep()
+    assert builds[0].closed is False
+
+
+def test_sweep_reports_nothing_dropped_while_a_request_is_open(tmp_path: Path) -> None:
+    clock = _Clock()
+    manager = _manager(tmp_path, clock=clock)
+    session = manager.open(_request(), AgentContext())
+    clock.advance(901.0)
+    dropped = manager.sweep()
+    session.cancel()
+    assert dropped is False
+
+
+def test_a_finished_request_stops_holding_the_tiers(tmp_path: Path) -> None:
+    """The lease must be given back, or nothing would ever unload again."""
+    clock = _Clock()
+    manager = _manager(tmp_path, clock=clock)
+    _answer(manager)
+    clock.advance(901.0)
+    assert manager.sweep() is True
+
+
+def test_an_abandoned_session_stops_holding_the_tiers(tmp_path: Path) -> None:
+    """A session opened and dropped without ever being iterated releases its
+    lease when it is collected, so a lost caller cannot pin the models."""
+    clock = _Clock()
+    manager = _manager(tmp_path, clock=clock)
+    manager.open(_request(), AgentContext())
+    gc.collect()
+    clock.advance(901.0)
+    assert manager.sweep() is True
+
+
+# --- cancelling one request ------------------------------------------------
+
+
+def test_a_cancelled_session_consults_no_tier(tmp_path: Path) -> None:
+    builds: list[FakeTier] = []
+    manager = _manager(tmp_path, builds=builds)
+    session = manager.open(_request(), AgentContext())
+    session.cancel()
+    list(session)
+    assert builds[0].requests_seen == []
+
+
+def test_a_cancelled_session_yields_nothing(tmp_path: Path) -> None:
+    manager = _manager(tmp_path)
+    session = manager.open(_request(), AgentContext())
+    session.cancel()
+    assert list(session) == []
+
+
+def test_a_cancelled_session_answers_escalate(tmp_path: Path) -> None:
+    manager = _manager(tmp_path)
+    session = manager.open(_request(), AgentContext())
+    session.cancel()
+    list(session)
+    assert session.answer.outcome == manager_mod.ESCALATE
+
+
+def test_a_cancelled_session_stops_holding_the_tiers(tmp_path: Path) -> None:
+    clock = _Clock()
+    manager = _manager(tmp_path, clock=clock)
+    session = manager.open(_request(), AgentContext())
+    session.cancel()
+    list(session)
+    clock.advance(901.0)
+    assert manager.sweep() is True
+
+
 def test_close_closes_the_loaded_tier(tmp_path: Path) -> None:
     builds: list[FakeTier] = []
     manager = _manager(tmp_path, builds=builds)
@@ -340,9 +437,27 @@ def test_a_tier_request_never_builds_an_agent(tmp_path: Path) -> None:
 
 
 def test_a_tier_request_ends_with_the_outcome_frame_then_done(tmp_path: Path) -> None:
+    """The status before ``done`` is *the* outcome frame, not just any status.
+
+    Asserting the last two *kinds* (the earlier shape of this test) was
+    satisfied by any unrelated status followed by completion, even with the
+    outcome metadata missing (Qodo #5, PR review); ``_outcome_frame``
+    identifies the frame by its ``tier_outcome`` key.
+    """
     daemon = _daemon(tmp_path, _manager(tmp_path))
     events = list(daemon.handle_message(_tier_message()))
-    assert [event.kind for event in events[-2:]] == [EventKind.STATUS, EventKind.DONE]
+    assert _outcome_frame(events) is events[-2]
+
+
+def test_a_tier_request_ends_with_done(tmp_path: Path) -> None:
+    daemon = _daemon(tmp_path, _manager(tmp_path))
+    events = list(daemon.handle_message(_tier_message()))
+    assert events[-1].kind is EventKind.DONE
+
+
+def test_the_outcome_frame_is_a_status_event(tmp_path: Path) -> None:
+    daemon = _daemon(tmp_path, _manager(tmp_path))
+    assert _outcome_frame(list(daemon.handle_message(_tier_message()))).kind is EventKind.STATUS
 
 
 def test_the_outcome_frame_names_the_tier_that_handled_it(tmp_path: Path) -> None:
@@ -415,6 +530,68 @@ def test_a_tier_decision_for_an_unknown_route_is_an_error(tmp_path: Path) -> Non
         )
     )
     assert [event.kind for event in events] == [EventKind.ERROR]
+
+
+# --- a client that walks away (Qodo #14, PR review) ------------------------
+
+
+def _departed_peer() -> socket.socket:
+    """One end of a socket pair whose other end has already closed."""
+    ours, theirs = socket.socketpair()
+    theirs.close()
+    return ours
+
+
+def test_a_tier_request_from_a_departed_client_builds_no_tier(tmp_path: Path) -> None:
+    """A client that timed out or exited must not have work done for it: the
+    tiers would otherwise load and hold Needle's one-at-a-time lock for a
+    request nobody is reading."""
+    builds: list[FakeTier] = []
+    daemon = _daemon(tmp_path, _manager(tmp_path, builds=builds))
+    gone = _departed_peer()
+    try:
+        list(daemon.handle_message(_tier_message(), connection=gone))
+    finally:
+        gone.close()
+    assert builds == []
+
+
+def test_a_tier_request_from_a_departed_client_yields_nothing(tmp_path: Path) -> None:
+    daemon = _daemon(tmp_path, _manager(tmp_path))
+    gone = _departed_peer()
+    try:
+        events = list(daemon.handle_message(_tier_message(), connection=gone))
+    finally:
+        gone.close()
+    assert events == []
+
+
+def test_a_tier_request_with_a_live_client_still_answers(tmp_path: Path) -> None:
+    daemon = _daemon(tmp_path, _manager(tmp_path))
+    ours, theirs = socket.socketpair()
+    try:
+        frame = _outcome_frame(list(daemon.handle_message(_tier_message(), connection=ours)))
+    finally:
+        ours.close()
+        theirs.close()
+    assert frame.args[daemon_mod.TIER_OUTCOME_KEY] == daemon_mod.TIER_HANDLED
+
+
+def test_a_client_that_leaves_mid_request_cancels_the_session(tmp_path: Path) -> None:
+    """The watcher thread is what notices a departure while a tier is inside
+    its blocking ``select()``; here it is driven directly against a session."""
+    builds: list[FakeTier] = []
+    daemon = _daemon(tmp_path, _manager(tmp_path, builds=builds))
+    session = daemon._tier_manager().open(_request(), AgentContext())
+    finished = threading.Event()
+    gone = _departed_peer()
+    try:
+        daemon._watch_tier(session, finished, gone)
+    finally:
+        finished.set()
+        gone.close()
+    list(session)
+    assert builds[0].requests_seen == []
 
 
 def test_daemon_shutdown_closes_the_tiers(tmp_path: Path) -> None:

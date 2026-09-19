@@ -22,7 +22,9 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess  # nosec B404 - monkeypatched in a test, never run
 import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -32,7 +34,7 @@ from nvsh.agent import registry
 from nvsh.agent.base import AgentContext, AgentRequest, EventKind, RequestKind
 from nvsh.agent.needle import NEEDLE_CAPABILITIES, NeedleAgent
 from nvsh.cli import main as cli_main
-from nvsh.cli._errors import EXIT_USER_ERROR
+from nvsh.cli._errors import EXIT_USER_ERROR, CliError
 from nvsh.config import Config
 from nvsh.platform._model import Platform
 
@@ -141,6 +143,137 @@ def test_factory_from_config_is_cheap():
     """registry.ADAPTERS['needle'].factory(Config()) must not raise or spawn."""
     agent = registry.ADAPTERS["needle"].factory(Config())
     assert isinstance(agent, NeedleAgent)
+
+
+def test_factory_from_config_builds_no_router(monkeypatch):
+    """The factory must not reach :meth:`NeedleAgent.start`.
+
+    ``isinstance`` alone (the test above) would pass for a constructor that
+    built the router or started the worker (Qodo #3, PR review), so this
+    makes both fatal: ``start`` is what imports ``nvsh.tiers`` and builds
+    the tier, and ``Popen`` is what would spawn its child.
+    """
+
+    def _boom(*args, **kwargs):
+        raise AssertionError(f"the needle factory started something: {args!r}")
+
+    monkeypatch.setattr(NeedleAgent, "start", _boom)
+    monkeypatch.setattr(subprocess, "Popen", _boom)
+    agent = registry.ADAPTERS["needle"].factory(Config())
+    assert isinstance(agent, NeedleAgent)
+
+
+# ---------------------------------------------------------------------------
+# needle is never persisted as the default (AC2, Qodo #1 of the PR review)
+# ---------------------------------------------------------------------------
+
+#: An Ubuntu ``.bashrc`` down to its interactive guard -- the file ``nvsh
+#: setup`` would edit if a refusal did not come first.
+UBUNTU_RC = """\
+# ~/.bashrc
+
+# If not running interactively, don't do anything
+case $- in
+    *i*) ;;
+      *) return;;
+esac
+"""
+
+
+@pytest.fixture
+def setup_home(tmp_path, monkeypatch):
+    """A throwaway HOME/XDG with an rc file, for ``nvsh setup`` refusals."""
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / ".bashrc").write_text(UBUNTU_RC, encoding="utf-8")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg-config"))
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg-data"))
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "run"))
+    monkeypatch.delenv("NVSH_HOOK_VERSION", raising=False)
+    return types.SimpleNamespace(home=home, rc=home / ".bashrc", config=tmp_path / "xdg-config")
+
+
+def _alias(setup_home, body: str) -> None:
+    nvsh_dir = setup_home.config / "nvsh"
+    nvsh_dir.mkdir(parents=True, exist_ok=True)
+    (nvsh_dir / "config.toml").write_text(body, encoding="utf-8")
+
+
+def test_setup_agent_needle_is_refused(setup_home):
+    assert cli_main(["setup", "--agent", "needle", "--json"]) == EXIT_USER_ERROR
+
+
+def test_setup_agent_needle_refusal_names_tier_one(setup_home, capsys):
+    cli_main(["setup", "--agent", "needle", "--json"])
+    payload = json.loads(capsys.readouterr().err)
+    assert "Tier 1" in payload["message"]
+
+
+def test_setup_agent_at_needle_is_refused(setup_home):
+    assert cli_main(["setup", "--agent", "@needle", "--json"]) == EXIT_USER_ERROR
+
+
+def test_setup_agent_needle_never_touches_the_rc_file(setup_home):
+    cli_main(["setup", "--agent", "needle", "--json"])
+    assert setup_home.rc.read_text(encoding="utf-8") == UBUNTU_RC
+
+
+def test_setup_refuses_an_alias_whose_target_is_needle(setup_home):
+    _alias(setup_home, '[aliases]\ntier1 = "needle"\n')
+    assert cli_main(["setup", "--agent", "tier1", "--json"]) == EXIT_USER_ERROR
+
+
+def test_setup_refuses_a_model_qualified_needle_target(setup_home):
+    assert cli_main(["setup", "--agent", "needle/needle3", "--json"]) == EXIT_USER_ERROR
+
+
+def test_keep_existing_default_never_keeps_needle():
+    """A ``[aliases].default = "needle"`` already on disk is re-probed, not kept."""
+    from nvsh import config as nvsh_config
+    from nvsh.cli._commands.setup import _keep_existing_default
+
+    cfg = nvsh_config.Config(aliases={nvsh_config.DEFAULT_ALIAS: "needle"})
+    assert _keep_existing_default(cfg, probe_rows=[]) is False
+
+
+# ---------------------------------------------------------------------------
+# a forced --agent needle with no flavor installed (Qodo #13 of the review)
+# ---------------------------------------------------------------------------
+
+
+def _uninstalled(monkeypatch) -> None:
+    monkeypatch.setattr(registry, "installed", lambda name, which=None: False)
+
+
+def test_forced_needle_without_the_flavor_names_the_flavor(monkeypatch):
+    _uninstalled(monkeypatch)
+    with pytest.raises(CliError) as caught:
+        registry.choose(Config(), lambda _name: None, forced="needle")
+    assert "needle flavor" in caught.value.message
+
+
+def test_forced_needle_without_the_flavor_never_says_none(monkeypatch):
+    """``needle`` has no ``binary``; the old message formatted it anyway."""
+    _uninstalled(monkeypatch)
+    with pytest.raises(CliError) as caught:
+        registry.choose(Config(), lambda _name: None, forced="needle")
+    assert "None" not in caught.value.message
+
+
+def test_forced_needle_without_the_flavor_remediates_with_an_install(monkeypatch):
+    _uninstalled(monkeypatch)
+    with pytest.raises(CliError) as caught:
+        registry.choose(Config(), lambda _name: None, forced="needle")
+    assert "pip install" in caught.value.remediation
+
+
+def test_forced_claude_without_its_binary_still_names_the_binary(monkeypatch):
+    """The binary-bearing branch's message is unchanged."""
+    _uninstalled(monkeypatch)
+    with pytest.raises(CliError) as caught:
+        registry.choose(Config(), lambda _name: None, forced="claude")
+    assert caught.value.message.startswith("claude is not installed")
 
 
 def test_capabilities_match_the_declared_needle_shape():

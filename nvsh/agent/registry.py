@@ -108,6 +108,17 @@ NOT_PERSISTABLE_DEFAULT_REASONS: dict[str, tuple[str, str]] = {
 #: plain membership check where the reason text isn't needed.
 NOT_PERSISTABLE_DEFAULT = frozenset(NOT_PERSISTABLE_DEFAULT_REASONS)
 
+#: How a *forced* target that is not installed is explained when its adapter
+#: has no ``binary`` to name (``needle``: a Python flavor, not a CLI). Without
+#: this, :func:`_choose_forced` formatted ``spec.binary`` -- ``None`` -- and
+#: told the operator that "None is not installed; install None" (Qodo #13, PR
+#: review). ``(what is missing, how to get it)``; ``lfm`` (task t19) adds its
+#: pair here, no new branch. Adapters with no binary that are *always*
+#: installed (``openai-compat``, ``demo``) never reach this table.
+MISSING_WITHOUT_BINARY: dict[str, tuple[str, str]] = {
+    "needle": ("the needle flavor is not installed", "pip install 'nvsh[needle]'"),
+}
+
 
 @dataclass(frozen=True)
 class AdapterSpec:
@@ -504,14 +515,32 @@ def _choose_forced(config: Config, which: WhichFn, forced: str | Target) -> tupl
             f"unknown backend {backend!r} in forced target {forced!r}",
             remediation=f"choose one of: {', '.join(sorted(ADAPTERS))}",
         )
-    spec = ADAPTERS[backend]
     if not installed(backend, which):
-        raise CliError(
+        raise _not_installed_error(backend)
+    return backend, f"forced via --agent {forced!r}"
+
+
+def _not_installed_error(backend: str) -> CliError:
+    """The error :func:`_choose_forced` raises for an uninstalled backend.
+
+    Named by its binary when it has one; by :data:`MISSING_WITHOUT_BINARY`
+    when it hasn't (``needle``'s Python flavor). The binary branch's two
+    strings are unchanged, byte for byte.
+    """
+    spec = ADAPTERS[backend]
+    if spec.binary is not None:
+        return CliError(
             EXIT_ENV_ERROR,
             f"{spec.binary} is not installed (forced backend {backend!r})",
             remediation=f"install {spec.binary}, or drop --agent to let nvsh choose",
         )
-    return backend, f"forced via --agent {forced!r}"
+    what, how = MISSING_WITHOUT_BINARY.get(backend, (f"{backend} is not installed", ""))
+    install = f"{how}, or " if how else ""
+    return CliError(
+        EXIT_ENV_ERROR,
+        f"{what} (forced backend {backend!r})",
+        remediation=f"{install}drop --agent to let nvsh choose",
+    )
 
 
 def _unavailable_reason(configured: str, which: WhichFn) -> str:
