@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/). This project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.16.1] - 2026-09-19
+
+### Added
+
+- Delivery record for the tiered local response work so far (`docs/deliveries/2026-09-19-tiered-local-response-with-needle3-and-lfm2-5.md`): a partial run — PR A (#32) and PR B (#34) merged, Tier 2 (PR C) not started. All 25 plan tasks accounted for; two of the five success targets are recorded as **not met** (correct-operation rate and should-escalate rate, measured on the DGX Spark), one as unverified.
+- devague ledger: 17 behavioral obligations, 36 evidence records (34 pass, 2 fail) and 7 behavioral deltas from `/validate-delivery`; operator-approved lapses l5 to l7; `docs/current-spec.md` regenerated.
+
 ## [0.16.0] - 2026-09-19
 
 ### Added

@@ -2,8 +2,8 @@
 
 ## Coverage boundary
 
-This projection is complete only over the behavior ledger: 5 of 6 plans have a ledgered delivery (`first-class-multi-harness-with-aliases`, `readme-demo-recording`, `reliable-agent-stop`, `setup-works-with-any-installed-agent`, `stop-choice-prompt`), spanning `2026-09-14T06:16:12Z` (plan `first-class-multi-harness-with-aliases`) through `2026-09-17T18:23:45Z` (plan `stop-choice-prompt`).
-1 of 6 frame have no ledgered delivery at all (`nvsh-bash-hook-agent-on-error`) — nothing in this document reflects them.
+This projection is complete only over the behavior ledger: 6 of 7 plans have a ledgered delivery (`first-class-multi-harness-with-aliases`, `readme-demo-recording`, `reliable-agent-stop`, `setup-works-with-any-installed-agent`, `stop-choice-prompt`, `tiered-local-response-with-needle3-and-lfm2-5`), spanning `2026-09-14T06:16:12Z` (plan `first-class-multi-harness-with-aliases`) through `2026-09-19T14:14:40Z` (plan `tiered-local-response-with-needle3-and-lfm2-5`).
+1 of 7 frame have no ledgered delivery at all (`nvsh-bash-hook-agent-on-error`) — nothing in this document reflects them.
 Anything predating this boundary, or belonging to an unledgered frame, is not reflected here by construction.
 
 ## Current behavior
@@ -154,6 +154,6 @@ Anything predating this boundary, or belonging to an unledgered frame, is not re
 
 ## Ledger status
 
-- proposed deltas awaiting adjudication: 17
+- proposed deltas awaiting adjudication: 24
 - rejected deltas (excluded from this projection): 0
 - retired lineages (superseded with no live replacement): 0
