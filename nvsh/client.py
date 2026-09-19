@@ -61,6 +61,7 @@ from .agent.base import (
     AgentContext,
     AgentEvent,
     AgentRequest,
+    EventKind,
     Proposal,
     ProposalKind,
     RequestKind,
@@ -1101,6 +1102,7 @@ def _proposal_handler(
     config=None,
     env: Mapping[str, str] | None = None,
     turn: "_Turn | None" = None,
+    on_decision=None,
 ):
     """Answer one proposal, sending the answer wherever the dialog came from.
 
@@ -1109,9 +1111,19 @@ def _proposal_handler(
     handler no longer assumes a daemon is listening -- it hands the answer
     to :class:`nvsh.client_transport.Responder`, which is pointed at the
     daemon socket or at the one-shot, in-process agent as appropriate.
+
+    ``on_decision`` (t13) is told every decision token this handler settles
+    on -- including the :data:`AUTO_INSPECT` one an already-approved
+    inspection takes without asking. It is how the tier step learns whether
+    the operator accepted what a tier proposed, without a second copy of
+    the decision logic living beside this one.
     """
 
     resolved_env = dict(os.environ if env is None else env)
+
+    def decided(choice: str) -> None:
+        if on_decision is not None:
+            on_decision(choice)
 
     def handle(proposal: Proposal, event: AgentEvent) -> None:
         request_id = (event.args or {}).get("request_id")
@@ -1127,6 +1139,7 @@ def _proposal_handler(
             audit=audit,
             request_id=request_id,
         ):
+            decided(AUTO_INSPECT)
             return
 
         inject = _injector(panel, responder, steers, request_id)
@@ -1141,6 +1154,7 @@ def _proposal_handler(
                 env=resolved_env,
             )
         choice = _decide_proposal(panel, proposal, details=details, inject=inject)
+        decided(choice)
         if audit is not None:
             audit.record(event="decision", proposal=proposal, decision=choice)
         if choice == IGNORE and turn is not None:
@@ -1748,6 +1762,284 @@ def _agreed_to_correct(panel: Panel) -> bool:
         return False
 
 
+# ---------------------------------------------------------------------------
+# the local tiers (task t13)
+# ---------------------------------------------------------------------------
+
+#: What the daemon is told the operator did with a tier's proposal. The two
+#: tokens are the measurement log's own words (``docs/daemon.md``, "Local
+#: tiers"); nothing else is ever sent.
+TIER_APPROVED = "approved"
+TIER_DECLINED = "declined"
+
+#: Asked once, on a terminal, after the operator declined what a tier
+#: proposed: the same request may still go to the full agent, but only
+#: because the operator said so. Off a terminal it is never asked and never
+#: assumed -- a declined tier proposal simply ends the turn.
+ESCALATE_QUESTION = "send the same request to the full agent?"
+
+#: The block the tiers' own read-only work travels to the full agent under,
+#: bounded so an escalation can never turn into an unbounded prompt. The
+#: router redacted and truncated each excerpt before it reached the wire;
+#: these bounds are the client's own second, cheap guard.
+ESCALATION_HEADER = "local inspection results:"
+ESCALATION_MAX_ITEMS = 4
+ESCALATION_MAX_CHARS = 2048
+
+
+def _tiers_enabled(config) -> bool:
+    """Is automatic tier routing switched on in the operator's config?
+
+    Read the same way :class:`nvsh.tiers.manager.TierManager` reads it, and
+    without importing a single tier module: with ``[tiers] enabled = false``
+    -- the default -- no tier code runs in this process and no extra socket
+    round trip is made.
+    """
+    table = getattr(config, "tiers", None)
+    if not isinstance(table, Mapping):
+        return False
+    return bool(table.get("enabled", False))
+
+
+def _consult_tiers(request: AgentRequest, routing: "_Routing", config) -> bool:
+    """Should this turn be offered to the local tiers first?
+
+    Only a request the operator did *not* aim at a named harness: an
+    ``@claude`` / ``--agent qwen`` request is an instruction, and it goes
+    past both tiers untouched (spec c14). A follow-up turn belongs to the
+    full agent's own conversation and is never re-offered either. The kind
+    is not looked at: a ``FAILURE`` is offered like anything else, and the
+    router decides which tier (if any) starts it.
+    """
+    if not routing.tiers:
+        return False
+    if routing.target is not None or request.target is not None:
+        return False
+    return _tiers_enabled(config)
+
+
+def _ask_tiers(request: AgentRequest, context: AgentContext, *, shell_id: int, env):
+    """The tier round trip, or ``None`` when there was no answer to be had.
+
+    :func:`nvsh.client_transport.ask_tiers` never starts a daemon and never
+    raises by contract; the guard is here because a diagnosis at a failing
+    prompt must not become a traceback if that contract is ever broken.
+    """
+    try:
+        return client_transport.ask_tiers(request, context, shell_id=shell_id, env=env)
+    except Exception:  # noqa: BLE001 - a broken tier round trip is simply no answer
+        return None
+
+
+def _declining_tier(reply) -> str:
+    """Which tier the header names when the request was escalated.
+
+    The last tier that declined: that is the highest one that looked at the
+    request, so ``lfm -> claude`` reads as what actually happened on a
+    machine where Needle declined first.
+    """
+    for tier, _reason in reversed(reply.declines):
+        if tier:
+            return tier
+    return ""
+
+
+def _tier_notices(panel: Panel, reply) -> None:
+    """Print the tiers' own status lines once each, and never as an error.
+
+    A tier that could not be loaded (no model, below the memory floor, no
+    container runtime) is news, not a failure: the request is on its way to
+    the full agent either way. Repeats of the same line -- two tiers with
+    the same problem, a daemon that said it twice -- are printed once.
+    """
+    seen: set[str] = set()
+    for event in reply.events:
+        text = (event.text or "").strip()
+        if event.kind is not EventKind.STATUS or not text or text in seen:
+            continue
+        seen.add(text)
+        panel.status(text)
+
+
+def _escalated_context(context: AgentContext, results) -> AgentContext:
+    """Hand the full agent what the tiers already inspected (spec c36).
+
+    Appended to the context output as one short, bounded block, so it rides
+    the path every other byte rides: already redacted by the router, already
+    bounded by it, and bounded again here. An empty ``results`` leaves the
+    context exactly as it was.
+    """
+    if not results:
+        return context
+    lines = [ESCALATION_HEADER]
+    for operation, excerpt in tuple(results)[:ESCALATION_MAX_ITEMS]:
+        lines.append(f"{operation}: {' '.join(str(excerpt).split())}")
+    block = "\n".join(lines)[:ESCALATION_MAX_CHARS]
+    output = f"{context.output}\n\n{block}" if context.output else block
+    return replace(context, output=output)
+
+
+def _tier_approved(decisions: Sequence[str]) -> bool:
+    """Did the operator accept what the tier proposed?
+
+    A tier answer with no proposal in it at all (a plain explanation) is an
+    answer the operator got and did not refuse, so it counts as approved --
+    there is nothing there to decline.
+    """
+    if not decisions:
+        return True
+    return any(decision in _APPROVED_DECISIONS for decision in decisions)
+
+
+def _report_tier_decision(route_id: str, approved: bool, *, shell_id: int, env) -> None:
+    """Tell the daemon what the operator did. A lost measurement is not an error."""
+    if not route_id:
+        return
+    # Suppressed deliberately and broadly (the turn is already decided): a
+    # measurement nobody can write down must never become an error on the
+    # operator's prompt.
+    with contextlib.suppress(Exception):
+        client_transport.tier_decision(
+            route_id,
+            TIER_APPROVED if approved else TIER_DECLINED,
+            shell_id=shell_id,
+            env=env,
+        )
+
+
+def _offer_full_agent(panel: Panel) -> bool:
+    """Ask once whether the declined request should go to the full agent.
+
+    :meth:`Panel.confirm` answers ``False`` wherever the question cannot be
+    shown *and* answered (not a tty, ``TERM=dumb``, no stdin fd), which is
+    exactly the rule here: nvsh never escalates a declined proposal silently.
+    """
+    try:
+        return bool(panel.confirm(ESCALATE_QUESTION))
+    except Exception:  # noqa: BLE001 - an unaskable question is not a yes
+        return False
+
+
+def _show_inspection(panel: Panel, ran: Sequence[tuple[str, RunResult]]) -> None:
+    """Print what an already-approved inspection a *tier* proposed produced.
+
+    The agent's own turn feeds that output back as a follow-up prompt; a
+    tier has no conversation to feed it back into, so it goes on screen
+    rather than nowhere.
+    """
+    for _command, result in ran:
+        if result.stdout:
+            panel.write(result.stdout)
+        if result.stderr:
+            panel.write(result.stderr)
+
+
+def _render_tier_answer(
+    panel: Panel,
+    reply,
+    context: AgentContext,
+    *,
+    env: Mapping[str, str],
+    shell_id: int,
+    config,
+    approvals,
+    audit,
+) -> tuple[StreamResult, bool]:
+    """Render a tier's answer through the panel an agent's answer uses.
+
+    Nothing about approval changes: the tier's proposal goes through the
+    same :func:`_proposal_handler`, so ``sudo`` is still never auto-run, the
+    scope keys still store the same patterns, and the command still runs
+    only on the operator's keypress. Returns the stream's result and whether
+    the operator accepted what was proposed.
+    """
+    panel.set_target(None)
+    panel.set_tier(reply.tier)
+    decisions: list[str] = []
+    ran: list[tuple[str, RunResult]] = []
+    on_proposal = None
+    if approvals is not None:
+        on_proposal = _proposal_handler(
+            panel,
+            approvals=approvals,
+            inspections=ran,
+            responder=client_transport.Responder(shell_id=shell_id, env=env),
+            audit=audit,
+            context=context,
+            config=config,
+            env=env,
+            on_decision=decisions.append,
+        )
+    # No stop target and no stop prompt: the tier's events are already in
+    # hand, so there is no running turn to stop.
+    result = panel.stream(iter(reply.events), on_proposal=on_proposal, stop_prompt=False)
+    _show_inspection(panel, ran)
+    approved = _tier_approved(decisions)
+    _report_tier_decision(reply.route_id, approved, shell_id=shell_id, env=env)
+    return result, approved
+
+
+def _tier_step(
+    panel: Panel,
+    request: AgentRequest,
+    context: AgentContext,
+    *,
+    env: Mapping[str, str],
+    shell_id: int,
+    config,
+    routing: "_Routing",
+    approvals,
+    audit,
+    declined: list[str] | None,
+) -> tuple[StreamResult | None, AgentContext]:
+    """The local tiers, in front of the full agent (spec c14/c36).
+
+    Returns ``(result, context)``. A ``result`` means a tier answered and
+    the turn is over; ``None`` means the caller goes on to the full agent
+    with the returned context, which carries the tiers' read-only work when
+    they did any.
+
+    Three outcomes:
+
+    * **not consulted** -- the tiers are off, or the operator named a
+      harness. Nothing is asked, nothing is sent, and the turn is byte for
+      byte the one it was before this step existed.
+    * **handled** -- rendered here, and the operator's answer is reported to
+      the daemon. If they declined what the tier proposed they are asked
+      once whether to send the same request to the full agent; a yes falls
+      through to the normal path with the *original* request.
+    * **escalated** -- the declining tier is named in the header, its status
+      lines are shown once, and what it inspected rides along to the agent.
+    """
+    if not _consult_tiers(request, routing, config):
+        return None, context
+    reply = _ask_tiers(request, context, shell_id=shell_id, env=env)
+    if reply is None:
+        return None, context
+    if not reply.handled:
+        _tier_notices(panel, reply)
+        panel.set_tier(_declining_tier(reply))
+        return None, _escalated_context(context, reply.escalation_context)
+    result, approved = _render_tier_answer(
+        panel,
+        reply,
+        context,
+        env=env,
+        shell_id=shell_id,
+        config=config,
+        approvals=approvals,
+        audit=audit,
+    )
+    if approved or result.interrupted:
+        return result, context
+    if not _offer_full_agent(panel):
+        if declined is not None:
+            declined.append("declined tier proposal")
+        return result, context
+    panel.set_tier(reply.tier)
+    return None, _escalated_context(context, reply.escalation_context)
+
+
 @dataclass(frozen=True)
 class _Routing:
     """Where one request goes, and how its answer is rendered.
@@ -1769,6 +2061,16 @@ class _Routing:
     #: ``nvsh slash --json`` (d2): no stop-choice prompt, because there is
     #: no panel for the operator to answer one on.
     json_mode: bool = False
+    #: Whether the local tiers are offered this turn (t13). A follow-up turn
+    #: sets it ``False``: the inspection results and the operator's
+    #: correction belong to the conversation the *full agent* is already
+    #: having, and handing them to a tier would answer the wrong question.
+    tiers: bool = True
+
+
+def _follow_up_routing(routing: _Routing) -> _Routing:
+    """The routing for a turn that continues one the full agent answered."""
+    return replace(routing, tiers=False)
 
 
 def _stream_request(
@@ -1797,6 +2099,22 @@ def _stream_request(
     target = routing.target
     warm = not one_shot
     resolved = target if target is not None else default_target(config)
+    # t13: the local tiers come first, in front of the full agent's _send and
+    # nowhere else, so every entry point funnels through exactly one of them.
+    answered, context = _tier_step(
+        panel,
+        request,
+        context,
+        env=env,
+        shell_id=shell_id,
+        config=config,
+        routing=routing,
+        approvals=approvals,
+        audit=audit,
+        declined=declined,
+    )
+    if answered is not None:
+        return answered
     if resolved is not None:
         panel.set_target(resolved, _target_path(resolved), warm)
     if target is not None:
@@ -2056,7 +2374,7 @@ def handle_failure(
             inspections=[],
             audit=audit,
             declined=declined,
-            routing=routing,
+            routing=_follow_up_routing(routing),
         )
         if follow.interrupted:
             return 130
@@ -2146,7 +2464,7 @@ def ask(
             inspections=[],
             audit=audit,
             declined=declined,
-            routing=routing,
+            routing=_follow_up_routing(routing),
         )
         if follow.interrupted:
             return 130
@@ -2232,7 +2550,7 @@ def _on_last_failure(
             inspections=[],
             audit=audit,
             declined=declined,
-            routing=_Routing(json_mode=json_mode),
+            routing=_follow_up_routing(_Routing(json_mode=json_mode)),
         )
         if follow.interrupted:
             return 130

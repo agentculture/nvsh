@@ -370,6 +370,52 @@ the DGX Spark reported "I don't see proper indications things run"):
   slower turn that follows. Every other status stays a dim `... text` line,
   and a status with empty text prints nothing at all.
 
+### Local tiers
+
+With `[tiers] enabled = true` in `config.toml`, the client offers each
+request to the daemon's resident local tiers *before* the full agent
+(`nvsh/client.py`, in front of the one place that sends to an agent).
+`[tiers] enabled = false` — the default — is off in the strongest sense: no
+tier module is imported, no extra socket round trip is made, and the turn is
+byte for byte what it was before the tiers existed. A request that names a
+harness (`@claude ...`, `/ask --agent qwen ...`) goes past both tiers
+untouched, and so does the follow-up turn of a conversation the full agent is
+already having.
+
+**The header names who answered.** The panel's first line is the same slot
+that names the target:
+
+| What happened | Header |
+|---|---|
+| A tier answered | `needle` |
+| No tier answered | `needle -> claude/opus · stream-json · warm` |
+| The tiers were not consulted | `claude/opus · stream-json · warm` |
+
+A tier that could not be loaded (no model, below the memory floor, no
+container runtime) says so in one dim status line, once, and never as an
+error: the request is on its way to the full agent either way. What the
+tiers already inspected travels to that agent as a short, bounded
+`local inspection results:` block appended to the context, so the work is
+not repeated.
+
+**Nothing about approval changes.** A tier's proposal is rendered through the
+same panel and the same approve/execute/verify path an agent's proposal
+takes — the same keys, the same scope patterns, the same refusal of `sudo`
+and destructive commands. The tiers themselves never execute anything.
+
+**Declining sends it on, but only if you say so.** After you decline what a
+tier proposed, nvsh asks once, `nvsh: send the same request to the full
+agent? [y/N]`. `y` sends the *same* request to the full agent (the header
+then reads `needle -> …`); `n`, Esc, Ctrl+C and silence all end the turn as
+declined (exit 3). Off a terminal — not a tty, `TERM=dumb`, no stdin — the
+question is never asked and never assumed: the turn ends as declined rather
+than escalating silently.
+
+Whatever you decide is reported back to the daemon as `approved`/`declined`
+for that route, which is how the tier measurement log learns what its
+proposals were worth. A report that cannot be delivered costs a measurement
+and nothing else.
+
 ### Stopping the agent (stop-choice-prompt)
 
 While the agent works — thinking, streaming text, or the waiting ticker —

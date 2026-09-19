@@ -482,6 +482,12 @@ class Panel:
         self._target: Target | None = None
         self._target_path = ""
         self._target_warm = False
+        # t13: the local tier that answered this request, or that declined it
+        # before the full agent was asked. It shares the header slot with the
+        # target: a tier that answered *is* who answered, and an escalation
+        # reads ``needle -> claude/opus · ...``. Empty for a panel no tier was
+        # consulted for, which is every pre-t13 caller.
+        self._tier = ""
         # Whether a THINKING run is currently open (styled mode only; the
         # plain-mode fallback prints one line per delta and never needs to
         # track an open run).
@@ -500,6 +506,26 @@ class Panel:
         self._target = target
         self._target_path = path
         self._target_warm = warm
+
+    def set_tier(self, tier: str = "") -> None:
+        """Name the local tier this panel is about to speak for (t13).
+
+        ``tier`` is the tier's own name (``needle``, ``lfm``) -- either
+        because it answered the request, in which case the caller also
+        clears the target and the header is that name alone, or because it
+        declined and the full agent is being asked instead, in which case
+        the header reads ``needle -> <target>``. ``""`` clears it, which is
+        the state of every panel no tier was consulted for.
+        """
+        self._tier = tier or ""
+
+    def _header_line(self) -> str:
+        """The one header line: the tier, the target, or the escalation (t13)."""
+        if self._target is None:
+            return self._tier
+        if self._tier:
+            return f"{self._tier} -> {self._target_header_line()}"
+        return self._target_header_line()
 
     def _target_header_line(self) -> str:
         """``harness/model/effort · path · warm|one-shot`` (t18)."""
@@ -743,8 +769,9 @@ class Panel:
         over, so nothing further is sent to the harness (t8b, plan risk r7).
         """
         result = StreamResult()
-        if self._target is not None:
-            self.line(self._target_header_line())
+        header = self._header_line()
+        if header:
+            self.line(header)
         stop = _StopState(cancel, force_stop)
         stop_waiting = threading.Event()
         self._waiting_shown = False
