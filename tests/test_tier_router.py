@@ -246,7 +246,8 @@ def test_an_explanation_proposes_nothing(records):
     tier2 = _ExplainingTier(Explanation(text="the disk is full"))
     route = _router(records, None, tier2).route(_request(), _context())
     events = list(route)
-    assert _proposals(events) == [] and route.outcome.handled_by == "lfm"
+    assert _proposals(events) == []
+    assert route.outcome.handled_by == "lfm"
 
 
 # ---------------------------------------------------------------------------
@@ -603,7 +604,8 @@ def test_a_wrong_mutating_pick_for_a_read_only_request_still_needs_approval(reco
     tier1 = FakeTier([_pick("service_restart", {"service": "nginx"}, 1.0)], "needle")
     events = list(_router(records, tier1).route(asked, _context()))
     executed = _run_through_loop(events, tmp_path, approve=lambda proposal: False)
-    assert executed == [] and "service_restart" in _proposals(events)[0].rationale
+    assert executed == []
+    assert "service_restart" in _proposals(events)[0].rationale
 
 
 def test_a_pick_grounding_refuses_never_costs_a_verifier_call(records):

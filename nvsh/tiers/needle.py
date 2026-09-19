@@ -65,6 +65,15 @@ DEFAULT_TIMEOUT_SECONDS = 10.0
 #: operator asks; anything longer belongs to a tier that can read it.
 MAX_PROMPT_CHARS = 4000
 
+#: Grace period for killing a child that already missed the tier's own
+#: deadline (a timed-out write/read, or an early EOF). ``kill_tree``'s own
+#: default (2.0s) is meant for an operator-requested ``close()``, where
+#: nothing else is waiting; here the operator's request already sat out the
+#: full ``self._timeout`` before ``_dead_child`` runs, so a resistant child
+#: must not add up to two more full grace periods (SIGTERM wait, then
+#: SIGKILL wait) on top of that (Qodo #4053821262).
+_DEAD_CHILD_KILL_GRACE = 0.5
+
 AvailabilityFn = Callable[[], str | None]
 FloorFn = Callable[[], FloorResult]
 
@@ -240,7 +249,7 @@ class NeedleTier(Tier):
 
         try:
             decoded = json.loads(payload.decode("utf-8"))
-        except (UnicodeDecodeError, ValueError) as exc:
+        except ValueError as exc:
             self._shutdown()
             return Decline(
                 reason=DeclineReason.TIER_ERROR,
@@ -255,8 +264,14 @@ class NeedleTier(Tier):
         return decoded
 
     def _dead_child(self, outcome: object) -> Decline:
-        """Kill the child and explain why the read did not finish."""
-        self._shutdown()
+        """Kill the child and explain why the read did not finish.
+
+        Uses :data:`_DEAD_CHILD_KILL_GRACE` rather than ``_shutdown``'s
+        default: the tier's own deadline already elapsed by the time this
+        runs, so the decline must not sit behind two more multi-second
+        waits for a child that resists termination.
+        """
+        self._shutdown(grace=_DEAD_CHILD_KILL_GRACE)
         if outcome == _TIMEOUT:
             return Decline(
                 reason=DeclineReason.TIER_ERROR,
@@ -294,11 +309,14 @@ class NeedleTier(Tier):
             )
         return self._proc
 
-    def _shutdown(self) -> None:
+    def _shutdown(self, *, grace: float | None = None) -> None:
         proc, self._proc = self._proc, None
         if proc is None:
             return
-        kill_tree(proc)
+        if grace is None:
+            kill_tree(proc)
+        else:
+            kill_tree(proc, grace=grace)
         for stream in (proc.stdin, proc.stdout):
             _close_quietly(stream)
 

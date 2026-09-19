@@ -26,7 +26,7 @@ import pytest
 
 from nvsh.agent.base import AgentContext, AgentRequest, RequestKind
 from nvsh.ops import table as ops_table
-from nvsh.tiers import needle_home, needle_worker
+from nvsh.tiers import needle, needle_home, needle_worker
 from nvsh.tiers.base import Decline, DeclineReason, TierDecision
 from nvsh.tiers.fetch import FetchProblem
 from nvsh.tiers.memfloor import FloorResult
@@ -121,7 +121,8 @@ def test_dead_child_declines(tmp_path, closing):
     tier = _tier(tmp_path, [["die"], [{"calls": [GOOD_CALL]}]])
     closing(tier)
     result = tier.select(_request(), _context())
-    assert isinstance(result, Decline) and result.reason is DeclineReason.TIER_ERROR
+    assert isinstance(result, Decline)
+    assert result.reason is DeclineReason.TIER_ERROR
 
 
 def test_next_request_restarts_the_child(tmp_path, closing):
@@ -150,7 +151,8 @@ def test_hung_child_declines_after_timeout(tmp_path, closing):
     tier = _tier(tmp_path, [["hang"]], timeout=0.3)
     closing(tier)
     result = tier.select(_request(), _context())
-    assert isinstance(result, Decline) and result.reason is DeclineReason.TIER_ERROR
+    assert isinstance(result, Decline)
+    assert result.reason is DeclineReason.TIER_ERROR
 
 
 def test_hung_child_is_killed(tmp_path, closing):
@@ -162,12 +164,35 @@ def test_hung_child_is_killed(tmp_path, closing):
     assert _wait_gone(pid)
 
 
+def test_dead_child_kill_uses_a_short_grace(tmp_path, closing, monkeypatch):
+    """A child killed after the deadline gets a short grace, not kill_tree's default.
+
+    Qodo #4053821262: ``_dead_child`` used to call ``_shutdown()`` with no
+    grace, which meant a resistant child could add two more full
+    ``kill_tree`` grace periods (SIGTERM wait, then SIGKILL wait) on top of
+    the timeout the operator already sat through.
+    """
+    tier = _tier(tmp_path, [["hang"]], timeout=0.3)
+    closing(tier)
+    seen_grace: list[float] = []
+    real_kill_tree = needle.kill_tree
+
+    def recording_kill_tree(proc, grace=2.0):
+        seen_grace.append(grace)
+        return real_kill_tree(proc, grace=grace)
+
+    monkeypatch.setattr(needle, "kill_tree", recording_kill_tree)
+    tier.select(_request(), _context())
+    assert seen_grace == [needle._DEAD_CHILD_KILL_GRACE]
+
+
 def test_garbled_frame_declines(tmp_path, closing):
     """A well-framed payload that is not JSON is a decline, not a crash."""
     tier = _tier(tmp_path, [["garbage"]], timeout=2.0)
     closing(tier)
     result = tier.select(_request(), _context())
-    assert isinstance(result, Decline) and result.reason is DeclineReason.TIER_ERROR
+    assert isinstance(result, Decline)
+    assert result.reason is DeclineReason.TIER_ERROR
 
 
 def test_oversized_frame_declines(tmp_path, closing):
@@ -175,7 +200,8 @@ def test_oversized_frame_declines(tmp_path, closing):
     tier = _tier(tmp_path, [["huge"]], timeout=2.0)
     closing(tier)
     result = tier.select(_request(), _context())
-    assert isinstance(result, Decline) and "too large" in result.detail
+    assert isinstance(result, Decline)
+    assert "too large" in result.detail
 
 
 def test_worker_error_reply_declines(tmp_path, closing):
@@ -183,7 +209,8 @@ def test_worker_error_reply_declines(tmp_path, closing):
     tier = _tier(tmp_path, [[{"error": "needle_complete failed"}]])
     closing(tier)
     result = tier.select(_request(), _context())
-    assert isinstance(result, Decline) and "needle_complete failed" in result.detail
+    assert isinstance(result, Decline)
+    assert "needle_complete failed" in result.detail
 
 
 def test_close_kills_the_child(tmp_path):
@@ -200,7 +227,8 @@ def test_untrusted_output_goes_through_decide(tmp_path, closing):
     tier = _tier(tmp_path, [[{"calls": [{"name": "bash", "arguments": {"cmd": "rm -rf /"}}]}]])
     closing(tier)
     result = tier.select(_request(), _context())
-    assert isinstance(result, Decline) and result.reason is DeclineReason.RAW_SHELL
+    assert isinstance(result, Decline)
+    assert result.reason is DeclineReason.RAW_SHELL
 
 
 def test_warm_child_is_reused(tmp_path, closing):
@@ -221,7 +249,8 @@ def test_missing_worker_command_declines(tmp_path, closing):
     )
     closing(tier)
     result = tier.select(_request(), _context())
-    assert isinstance(result, Decline) and result.reason is DeclineReason.TIER_UNAVAILABLE
+    assert isinstance(result, Decline)
+    assert result.reason is DeclineReason.TIER_UNAVAILABLE
 
 
 # -- hardening: one turn at a time, matched replies, bounded prompts --
@@ -248,7 +277,8 @@ def test_mismatched_reply_id_declines(tmp_path, closing):
     tier = _tier(tmp_path, [["wrong_id"]], timeout=2.0)
     closing(tier)
     result = tier.select(_request(), _context())
-    assert isinstance(result, Decline) and result.reason is DeclineReason.TIER_ERROR
+    assert isinstance(result, Decline)
+    assert result.reason is DeclineReason.TIER_ERROR
 
 
 def test_prompt_is_clamped_on_the_wire(tmp_path, closing):
@@ -272,14 +302,16 @@ def test_unavailable_tier_declines(tmp_path, closing):
     tier = NeedleTier(availability=lambda: "cactus-needle is not installed")
     closing(tier)
     result = tier.select(_request(), _context())
-    assert isinstance(result, Decline) and result.reason is DeclineReason.TIER_UNAVAILABLE
+    assert isinstance(result, Decline)
+    assert result.reason is DeclineReason.TIER_UNAVAILABLE
 
 
 def test_unavailable_status_is_one_line():
     """status() is a single human-readable line naming the reason."""
     tier = NeedleTier(availability=lambda: "cactus-needle is not installed\nsecond line")
     line = tier.status()
-    assert "\n" not in line and "cactus-needle is not installed" in line
+    assert "\n" not in line
+    assert "cactus-needle is not installed" in line
 
 
 def test_ready_status_is_one_line():
@@ -307,7 +339,8 @@ def test_memory_floor_declines(tmp_path, closing):
     tier = _tier(tmp_path, [[{"calls": [GOOD_CALL]}]], floor_check=lambda: floor)
     closing(tier)
     result = tier.select(_request(), _context())
-    assert isinstance(result, Decline) and result.reason is DeclineReason.MEMORY_FLOOR
+    assert isinstance(result, Decline)
+    assert result.reason is DeclineReason.MEMORY_FLOOR
 
 
 # -- framing --
@@ -536,6 +569,17 @@ def test_engine_spec_is_read_off_the_request_frame():
 def test_extract_selection_shapes(envelope, expected):
     """Every envelope shape the engine may return reduces to (calls, confidence)."""
     assert needle_worker.extract_selection(envelope) == expected
+
+
+def test_extract_selection_ignores_calls_on_a_non_call_envelope():
+    """A "text" envelope carrying a call-shaped field is not a selection.
+
+    Qodo #4053821266: forwarding ``function_calls`` regardless of ``type``
+    would let a malformed or future text response reach the operator as a
+    proposal instead of being declined.
+    """
+    envelope = {"type": "text", "function_calls": [GOOD_CALL], "confidence": 0.9}
+    assert needle_worker.extract_selection(envelope) == ([], None)
 
 
 # -- criterion 2: nvsh never calls Needle.run --
