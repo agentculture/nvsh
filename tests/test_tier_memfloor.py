@@ -124,3 +124,12 @@ def test_default_reader_on_this_machine():
     result = available_mb()
     assert isinstance(result, int)
     assert result > 0
+
+
+def test_undecodable_meminfo_passes_with_note():
+    def reader() -> str:
+        raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
+
+    result = check_floor(1024, reader)
+    assert result.ok is True
+    assert result.available_mb is None

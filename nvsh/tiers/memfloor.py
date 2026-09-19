@@ -43,7 +43,7 @@ def available_mb(reader: Reader = default_reader) -> int | None:
     """
     try:
         text = reader()
-    except OSError:
+    except (OSError, ValueError):  # ValueError covers a UnicodeDecodeError
         return None
 
     for line in text.splitlines():
