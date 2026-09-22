@@ -4433,7 +4433,7 @@
       "text": "--gpus all vs --runtime nvidia",
       "expect": {
         "explain": true,
-        "answer": "Both give a container GPU access through the NVIDIA Container Toolkit. --gpus uses Docker's device request support, while --runtime nvidia selects the NVIDIA runtime directly, which is common on Jetson."
+        "answer": "Both use the NVIDIA Container Toolkit. --gpus asks Docker for specific GPUs through its device requests, while --runtime nvidia only selects the NVIDIA runtime; which GPUs the container then sees depends on NVIDIA_VISIBLE_DEVICES, which NVIDIA's own images usually set. On Jetson, --runtime nvidia is the common form."
       },
       "class": "explain:jargon",
       "source": "explain-2026-09-22"
@@ -4444,7 +4444,7 @@
       "text": "What does default-runtime nvidia in daemon.json do?",
       "expect": {
         "explain": true,
-        "answer": "It makes every container use the NVIDIA runtime without passing a flag, so containers get GPU access by default."
+        "answer": "It makes the NVIDIA runtime the one Docker uses when a container does not name another, so no --runtime flag is needed. Whether a container actually sees GPUs still depends on its device selection, such as NVIDIA_VISIBLE_DEVICES or --gpus, and a container can still ask for a different runtime."
       },
       "class": "explain:question",
       "source": "explain-2026-09-22"
@@ -4565,7 +4565,7 @@
       "text": "What happens when a container hits its --memory limit?",
       "expect": {
         "explain": true,
-        "answer": "The kernel's cgroup memory controller kills a process in that container, so it exits with an out-of-memory kill even if the host still has free memory."
+        "answer": "The kernel first tries to reclaim memory inside that container's cgroup; if it cannot, the cgroup's out-of-memory killer ends a process in it, even if the host has memory free. If that process is the container's main one the container exits, usually with code 137."
       },
       "class": "explain:question",
       "source": "explain-2026-09-22"
@@ -4620,7 +4620,7 @@
       "text": "What is PIPESTATUS in bash?",
       "expect": {
         "explain": true,
-        "answer": "An array with the exit status of every command in the most recent pipeline, since $? only gives the last stage's status."
+        "answer": "An array with the exit status of every command in the most recent pipeline. Without pipefail, $? holds only the last stage's status; PIPESTATUS shows each stage's."
       },
       "class": "explain:question",
       "source": "explain-2026-09-22"
