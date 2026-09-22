@@ -16,6 +16,8 @@ from pathlib import Path
 
 import pytest
 
+from nvsh.tiers.runtime import RuntimeUnavailable as RuntimeUnavailableForTest
+
 _SCRIPT = Path(__file__).resolve().parents[1] / "scripts/lfm-finetune/measure_skills.py"
 
 
@@ -444,3 +446,317 @@ def test_default_out_path_uses_label_and_date(mod):
     path = mod.default_out_path("stock", "2026-09-22")
     assert path.name == "2026-09-22-skills-stock.md"
     assert path.parent.name == "benchmarks"
+
+
+# ---------------------------------------------------------------------------
+# finding 1: credentials/endpoints must never leak
+# ---------------------------------------------------------------------------
+
+
+def test_require_localhost_refuses_userinfo(mod):
+    with pytest.raises(ValueError):
+        mod.require_localhost("http://user:example-secret@127.0.0.1:8000/v1")
+    with pytest.raises(ValueError):
+        mod.require_localhost("http://user@127.0.0.1:8000/v1")
+
+
+def test_main_refuses_url_with_credentials(mod, tmp_path):
+    tools_path, test_path = _write_inputs(tmp_path)
+    with pytest.raises(SystemExit):
+        mod.main(
+            [
+                "--tools",
+                str(tools_path),
+                "--test",
+                str(test_path),
+                "--url",
+                "http://user:example-secret@127.0.0.1:8000/v1",
+                "--model",
+                "fake-model",
+                "--out",
+                str(tmp_path / "results.md"),
+            ]
+        )
+
+
+def test_main_never_writes_endpoint_url_into_results(mod, fake_server, tmp_path):
+    tools_path, test_path = _write_inputs(tmp_path)
+    out_path = tmp_path / "results.md"
+    url = _base_url(fake_server)
+    exit_code = mod.main(
+        [
+            "--tools",
+            str(tools_path),
+            "--test",
+            str(test_path),
+            "--url",
+            url,
+            "--model",
+            "fake-model",
+            "--out",
+            str(out_path),
+        ]
+    )
+    assert exit_code == 0
+    text = out_path.read_text(encoding="utf-8")
+    assert url not in text
+    assert mod.LOCAL_ENDPOINT_LABEL in text
+
+
+def test_main_strips_url_value_from_recorded_command_line(mod, fake_server, tmp_path):
+    tools_path, test_path = _write_inputs(tmp_path)
+    out_path = tmp_path / "results.md"
+    url = _base_url(fake_server)
+    exit_code = mod.main(
+        [
+            "--tools",
+            str(tools_path),
+            "--test",
+            str(test_path),
+            "--url",
+            url,
+            "--model",
+            "fake-model",
+            "--out",
+            str(out_path),
+        ]
+    )
+    assert exit_code == 0
+    text = out_path.read_text(encoding="utf-8")
+    command_line = next(line for line in text.splitlines() if line.startswith("- command:"))
+    assert url not in command_line
+    assert mod.LOCAL_ENDPOINT_LABEL in command_line
+
+
+def test_redact_command_line_replaces_url_value(mod):
+    argv = ["--url", "http://user:secret@127.0.0.1:8000/v1", "--model", "m"]
+    rendered = mod.redact_command_line(argv)
+    assert "secret" not in rendered
+    assert mod.LOCAL_ENDPOINT_LABEL in rendered
+    assert "--model m" in rendered
+
+
+def test_redact_command_line_handles_equals_form(mod):
+    argv = ["--url=http://user:secret@127.0.0.1:8000/v1", "--model", "m"]
+    rendered = mod.redact_command_line(argv)
+    assert "secret" not in rendered
+    assert mod.LOCAL_ENDPOINT_LABEL in rendered
+
+
+def test_main_passes_results_through_redact(mod, fake_server, tmp_path, monkeypatch):
+    tools_path, test_path = _write_inputs(tmp_path)
+    out_path = tmp_path / "results.md"
+
+    calls: list[bytes] = []
+    real_redact = mod.redact
+
+    def spy(data: bytes) -> bytes:
+        calls.append(data)
+        return real_redact(data)
+
+    monkeypatch.setattr(mod, "redact", spy)
+    exit_code = mod.main(
+        [
+            "--tools",
+            str(tools_path),
+            "--test",
+            str(test_path),
+            "--url",
+            _base_url(fake_server),
+            "--model",
+            "fake-model",
+            "--out",
+            str(out_path),
+        ]
+    )
+    assert exit_code == 0
+    assert calls, "redact() must be called on the recorded results text"
+
+
+# ---------------------------------------------------------------------------
+# finding 2: --launch serves the model through nvsh's own Tier 2 launcher
+# ---------------------------------------------------------------------------
+
+
+class _FakeLaunchRuntime:
+    def __init__(self, base_url: str, fail: str = "") -> None:
+        self.base_url = base_url
+        self.fail = fail
+        self.ensured = 0
+        self.stopped = 0
+
+    def ensure(self) -> str:
+        self.ensured += 1
+        if self.fail:
+            raise RuntimeUnavailableForTest(self.fail)
+        return self.base_url
+
+    def stop(self) -> None:
+        self.stopped += 1
+
+    def status(self) -> str:
+        return "fake tier 2 runtime"
+
+
+class _LaunchHarness:
+    """Fake docker + fake config + fake runtime builder for --launch."""
+
+    def __init__(self, mod, *, base_url: str, running_container: str | None = None, fail: str = ""):
+        self.mod = mod
+        self.base_url = base_url
+        self.running_container = running_container
+        self.fail = fail
+        self.docker_calls: list[list[str]] = []
+        self.build_calls: list[tuple[dict, object]] = []
+        self.runtime: _FakeLaunchRuntime | None = None
+        self.lfm_config = {"engine": "vllm", "mode": "managed", "tool_call_parser": "lfm2"}
+
+        def run_docker(argv, timeout):
+            self.docker_calls.append(argv)
+            if argv[0] == "docker" and argv[1] == "ps" and "--filter" in argv:
+                names = f"{self.running_container}\n" if self.running_container else ""
+                return (0, names)
+            return (0, "")
+
+        def load_config(path):
+            from types import SimpleNamespace
+
+            return SimpleNamespace(tiers={"memory_floor_mb": 1024, "lfm": dict(self.lfm_config)})
+
+        def build_runtime(lfm_settings, platform, *, floor_check):
+            self.build_calls.append((dict(lfm_settings), platform))
+            self.runtime = _FakeLaunchRuntime(self.base_url, fail=self.fail)
+            return self.runtime
+
+        self.seams = mod.LaunchSeams(
+            run_docker=run_docker,
+            detect_platform=lambda: object(),
+            load_config=load_config,
+            build_runtime=build_runtime,
+            uid=lambda: 1234,
+        )
+
+
+def test_launch_guard_refuses_when_container_already_running(mod, tmp_path):
+    tools_path, test_path = _write_inputs(tmp_path)
+    harness = _LaunchHarness(
+        mod, base_url="http://127.0.0.1:9/v1", running_container="nvsh-tier2-1234"
+    )
+    exit_code = mod.main(
+        [
+            "--tools",
+            str(tools_path),
+            "--test",
+            str(test_path),
+            "--model",
+            "fake-model",
+            "--launch",
+            "--out",
+            str(tmp_path / "results.md"),
+        ],
+        launch_seams=harness.seams,
+    )
+    assert exit_code == 2
+    assert harness.runtime is None
+    assert not (tmp_path / "results.md").exists()
+
+
+def test_launch_serves_and_measures_then_stops_runtime(mod, fake_server, tmp_path):
+    tools_path, test_path = _write_inputs(tmp_path)
+    out_path = tmp_path / "results.md"
+    harness = _LaunchHarness(mod, base_url=_base_url(fake_server))
+    exit_code = mod.main(
+        [
+            "--tools",
+            str(tools_path),
+            "--test",
+            str(test_path),
+            "--model",
+            "fake-model",
+            "--launch",
+            "--out",
+            str(out_path),
+        ],
+        launch_seams=harness.seams,
+    )
+    assert exit_code == 0
+    assert harness.runtime is not None
+    assert harness.runtime.ensured == 1
+    assert harness.runtime.stopped == 1
+    # the model override reached [tiers.lfm] settings used to build the runtime
+    assert harness.build_calls[0][0]["model"] == "fake-model"
+    text = out_path.read_text(encoding="utf-8")
+    assert _base_url(fake_server) not in text
+    assert mod.LOCAL_ENDPOINT_LABEL in text
+
+
+def test_launch_stops_runtime_even_when_measurement_fails(mod, tmp_path):
+    tools_path, test_path = _write_inputs(tmp_path)
+    # base_url with no server listening -> run_measurement will raise RuntimeError
+    harness = _LaunchHarness(mod, base_url="http://127.0.0.1:1/v1")
+    exit_code = mod.main(
+        [
+            "--tools",
+            str(tools_path),
+            "--test",
+            str(test_path),
+            "--model",
+            "fake-model",
+            "--launch",
+            "--out",
+            str(tmp_path / "results.md"),
+        ],
+        launch_seams=harness.seams,
+    )
+    assert exit_code == 1
+    assert harness.runtime is not None
+    assert harness.runtime.stopped == 1
+
+
+def test_launch_reports_runtime_unavailable_without_measuring(mod, tmp_path):
+    tools_path, test_path = _write_inputs(tmp_path)
+    harness = _LaunchHarness(mod, base_url="http://127.0.0.1:9/v1", fail="no gpu")
+    exit_code = mod.main(
+        [
+            "--tools",
+            str(tools_path),
+            "--test",
+            str(test_path),
+            "--model",
+            "fake-model",
+            "--launch",
+            "--out",
+            str(tmp_path / "results.md"),
+        ],
+        launch_seams=harness.seams,
+    )
+    assert exit_code == 2
+    assert harness.runtime is not None
+    assert harness.runtime.stopped == 1
+    assert not (tmp_path / "results.md").exists()
+
+
+def test_launch_ignores_url_localhost_check_but_still_uses_local_runtime(
+    mod, fake_server, tmp_path
+):
+    """Without --launch, --url is validated; with --launch, only the runtime's
+    own base URL matters (still required to be local)."""
+    tools_path, test_path = _write_inputs(tmp_path)
+    harness = _LaunchHarness(mod, base_url=_base_url(fake_server))
+    exit_code = mod.main(
+        [
+            "--tools",
+            str(tools_path),
+            "--test",
+            str(test_path),
+            "--model",
+            "fake-model",
+            "--launch",
+            "--url",
+            "http://example.com:8000",  # would be refused outside --launch
+            "--out",
+            str(tmp_path / "results.md"),
+        ],
+        launch_seams=harness.seams,
+    )
+    assert exit_code == 0
