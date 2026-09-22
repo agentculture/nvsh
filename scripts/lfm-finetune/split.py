@@ -188,13 +188,24 @@ def build_splits(
 
 
 def _write_side(
-    out_dir: Path, name: str, entries: list[dict], header: str, corpus_name: str, seed: int
+    out_dir: Path,
+    name: str,
+    entries: list[dict],
+    header: str,
+    corpus_name: str,
+    seed: int,
+    world: dict | None = None,
 ) -> Path:
     note = f"Split '{name}' of {corpus_name} (seed={seed})."
-    payload = {
+    payload: dict = {
         "header": f"{header} {note}".strip(),
         "entries": entries,
     }
+    # The corpus world (platform, fixture machine state) travels with every
+    # side: without it a builder falls back to an unknown platform and the
+    # system brief no longer matches what Tier 2 was measured with.
+    if world is not None:
+        payload["world"] = world
     out_path = out_dir / f"{name}.json"
     with open(out_path, "w", encoding="utf-8") as handle:
         json.dump(payload, handle, ensure_ascii=False, indent=2, sort_keys=True)
@@ -223,10 +234,14 @@ def main(argv: list[str] | None = None) -> int:
         described = ", ".join(f"{kind!r} on {name}" for kind, name in gaps)
         parser.error(f"too few entries to reach every side: missing {described}")
 
+    with open(corpus, encoding="utf-8") as handle:
+        raw = json.load(handle)
+    world = raw.get("world") if isinstance(raw, dict) else None
+
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     for name in SPLIT_NAMES:
-        _write_side(out_dir, name, sides[name], header, corpus.name, args.seed)
+        _write_side(out_dir, name, sides[name], header, corpus.name, args.seed, world)
 
     for kind in missing_kinds:
         print(f"note: no {kind!r} entries in {corpus.name}; not present on any side")

@@ -250,3 +250,16 @@ def test_cli_fails_when_a_kind_cannot_reach_every_side(tmp_path, capsys) -> None
         split.main(["--corpus", str(corpus), "--out-dir", str(tmp_path / "out")])
     assert "too few entries" in capsys.readouterr().err
     assert not (tmp_path / "out" / "train.json").exists()
+
+
+def test_every_side_keeps_the_corpus_world(tmp_path) -> None:
+    split = _module()
+    world = {"platform": {"kind": "jetson"}}
+    entries = [_operation_entry(f"o{i}") for i in range(6)] + [
+        _escalate_entry(f"e{i}") for i in range(6)
+    ]
+    corpus = tmp_path / "c.json"
+    corpus.write_text(json.dumps({"header": "h", "world": world, "entries": entries}))
+    split.main(["--corpus", str(corpus), "--out-dir", str(tmp_path / "out")])
+    for name in ("train", "val", "test"):
+        assert json.loads((tmp_path / "out" / f"{name}.json").read_text())["world"] == world
