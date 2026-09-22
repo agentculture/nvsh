@@ -165,11 +165,16 @@ def test_main_writes_one_json_object_per_line(tmp_path):
     assert all("messages" in json.loads(line) for line in lines)
 
 
-def _write_split(tmp_path: Path, entries: list[dict], name: str = "train.json") -> Path:
+def _write_split(
+    tmp_path: Path,
+    entries: list[dict],
+    name: str = "train.json",
+    header: str = "Split 'train' of fixture.json (seed=39).",
+) -> Path:
     """A split.py-shaped file: same corpus shape, every entry carries source_id."""
     path = tmp_path / name
     payload = {
-        "header": "Split 'train' of fixture.json (seed=39).",
+        "header": header,
         "entries": [
             {"source_id": entry["id"], **entry} if "source_id" not in entry else dict(entry)
             for entry in entries
@@ -246,6 +251,126 @@ def test_cli_refuses_split_with_explicit_corpus(tmp_path):
         _module().main(
             ["--split", str(split), "--corpus", str(dev_corpus_path()), "--out", str(out)]
         )
+
+
+def test_cli_refuses_a_val_split_file(tmp_path):
+    """Bug repro: --split must be a TRAIN side; val must be refused too."""
+    split = _write_split(
+        tmp_path,
+        [_entry("op01", {"operation": "thermal_stats", "args": {}})],
+        name="val.json",
+        header="Split 'val' of fixture.json (seed=39).",
+    )
+    out = tmp_path / "train.jsonl"
+    with pytest.raises(SystemExit):
+        _module().main(["--split", str(split), "--out", str(out)])
+
+
+def test_cli_refuses_a_test_split_file(tmp_path):
+    """Bug repro: --split must be a TRAIN side; test must be refused too."""
+    split = _write_split(
+        tmp_path,
+        [_entry("op01", {"operation": "thermal_stats", "args": {}})],
+        name="test.json",
+        header="Split 'test' of fixture.json (seed=39).",
+    )
+    out = tmp_path / "train.jsonl"
+    with pytest.raises(SystemExit):
+        _module().main(["--split", str(split), "--out", str(out)])
+
+
+def test_build_refuses_a_val_split_file_directly(tmp_path):
+    split = _write_split(
+        tmp_path,
+        [_entry("op01", {"operation": "thermal_stats", "args": {}})],
+        name="val.json",
+        header="Split 'val' of fixture.json (seed=39).",
+    )
+    with pytest.raises(ValueError, match="'val'"):
+        _module().build(split, is_split=True)
+
+
+def test_build_refuses_a_test_split_file_directly(tmp_path):
+    split = _write_split(
+        tmp_path,
+        [_entry("op01", {"operation": "thermal_stats", "args": {}})],
+        name="test.json",
+        header="Split 'test' of fixture.json (seed=39).",
+    )
+    with pytest.raises(ValueError, match="'test'"):
+        _module().build(split, is_split=True)
+
+
+def test_cli_refuses_a_split_file_renamed_from_test_whose_header_names_no_side(tmp_path):
+    """Bug repro: a renamed test.json (header stripped of the split note) is
+    still refused -- a --split file that does not positively identify
+    itself as the train side cannot be trusted to be one."""
+    split = _write_split(
+        tmp_path,
+        [_entry("op01", {"operation": "thermal_stats", "args": {}})],
+        name="renamed.json",
+        header="Fixture corpus for build_dataset tests.",
+    )
+    out = tmp_path / "train.jsonl"
+    with pytest.raises(SystemExit):
+        _module().main(["--split", str(split), "--out", str(out)])
+
+
+def test_build_refuses_a_split_file_whose_header_names_no_side_directly(tmp_path):
+    split = _write_split(
+        tmp_path,
+        [_entry("op01", {"operation": "thermal_stats", "args": {}})],
+        name="renamed.json",
+        header="Fixture corpus for build_dataset tests.",
+    )
+    with pytest.raises(ValueError, match="names no side"):
+        _module().build(split, is_split=True)
+
+
+def test_a_split_file_names_the_train_side_and_is_accepted(tmp_path):
+    """The passing case: a genuine train-side split file, is_split=True, builds fine."""
+    split = _write_split(tmp_path, [_entry("op01", {"operation": "thermal_stats", "args": {}})])
+    examples = _module().build(split, is_split=True)
+    assert len(examples) == 1
+
+
+def test_a_held_out_split_renamed_is_still_refused_by_header(tmp_path):
+    """The held-out corpus's own header is refused even under another filename."""
+    held_out_header = _module()._header(held_out_corpus_path())
+    split = _write_split(
+        tmp_path,
+        [_entry("op01", {"operation": "thermal_stats", "args": {}})],
+        name="renamed-held-out.json",
+        header=held_out_header,
+    )
+    with pytest.raises(ValueError, match="held-out"):
+        _module().build(split, is_split=True)
+
+
+def test_an_explicit_long_prompt_is_clamped_like_runtime(tmp_path):
+    module = _module()
+    long_prompt = "x" * 10_000
+    entry = _entry("long01", {"escalate": True})
+    entry["text"] = long_prompt
+    corpus = _write_corpus(tmp_path, [entry])
+    examples = module.build(corpus)
+    user_message = examples[0]["messages"][1]["content"]
+    assert len(user_message) < len(long_prompt)
+    assert user_message == lfm.request_message(
+        request_for(load_corpus(corpus).entries[0]), context_for(load_corpus(corpus).entries[0])
+    )
+
+
+def test_an_explicit_prompt_with_a_token_is_redacted_like_runtime(tmp_path):
+    module = _module()
+    entry = _entry("secret01", {"escalate": True})
+    entry["text"] = "please HF_TOKEN=hf_abcdefghijklmnopqrstuvwxyz help me"
+    corpus = _write_corpus(tmp_path, [entry])
+    examples = module.build(corpus)
+    user_message = examples[0]["messages"][1]["content"]
+    loaded_entry = load_corpus(corpus).entries[0]
+    assert user_message == lfm.request_message(request_for(loaded_entry), context_for(loaded_entry))
+    assert "hf_abcdefghijklmnopqrstuvwxyz" not in user_message
 
 
 def test_a_split_built_example_matches_the_corpus_built_one(tmp_path) -> None:
