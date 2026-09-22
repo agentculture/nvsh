@@ -1498,8 +1498,11 @@ def test_the_expected_answer_is_described_in_words_not_json() -> None:
     module = _module()
     words = module._answer_in_words({"operation": "power_set", "args": {"mode": "max_performance"}})
     assert "power mode" in words and "mode = max_performance" in words and "{" not in words
-    assert "full agent" in module._answer_in_words({"escalate": True})
-    assert "plain words" in module._answer_in_words({"explain": True, "answer": "It pins clocks."})
+    assert "power_set" not in words
+    assert "more capable assistant" in module._answer_in_words({"escalate": True})
+    assert "It pins clocks." in module._answer_in_words(
+        {"explain": True, "answer": "It pins clocks."}
+    )
 
 
 def test_each_variation_number_asks_for_a_different_phrasing_style() -> None:
@@ -1548,3 +1551,31 @@ def test_tasks_are_planned_round_robin_across_seeds() -> None:
 
     tasks = module._plan_tasks([seed("a"), seed("b")], per_source=2, limit=3, done=set())
     assert [variation_id for _, variation_id in tasks] == ["a~v1", "b~v1", "a~v2"]
+
+
+@pytest.mark.parametrize(
+    "text,copied",
+    [
+        ("Propose this action: Restart a named container, with container = inference", True),
+        ("Hand the request to the full agent: a linker issue", True),
+        ("Restart the inference container", False),
+        ("Why does the trainer keep dying?", False),
+    ],
+)
+def test_a_variation_copying_the_answer_template_is_caught(text, copied) -> None:
+    assert bool(_module().copies_answer_template(text)) is copied
+
+
+def test_the_generator_never_sees_the_expected_answer() -> None:
+    module = _module()
+    seed = module.Seed(
+        source_id="g1",
+        seed_format="split",
+        side="train",
+        seed_text="Restart the trainer container",
+        expect={"operation": "container_restart", "args": {"container": "trainer"}},
+        needs_change_check=False,
+    )
+    _system, user = module.generator_prompt(seed, 1)
+    assert "Restart the trainer container" in user
+    assert "take this action" not in user and "container =" not in user

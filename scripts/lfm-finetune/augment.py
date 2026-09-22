@@ -419,19 +419,20 @@ def _answer_in_words(expect: dict[str, Any]) -> str:
     """
     if expect.get("escalate"):
         return (
-            "hand the request to the full agent: it needs investigation or changes"
-            " beyond a small fixed set of machine operations"
+            "pass it on to a more capable assistant, because it needs investigation"
+            " or changes beyond a small fixed set of machine actions"
         )
     if expect.get("explain"):
-        return (
-            "answer in plain words without inspecting or changing the machine, along"
-            f" the lines of: {expect.get('answer', '')}"
-        )
+        return f"reply in words, along the lines of: {expect.get('answer', '')}"
     name = str(expect.get("operation"))
     operation = get_operation(name)
-    what = operation.description if operation is not None else name
+    what = operation.description if operation is not None else "the expected action"
     args = ", ".join(f"{key} = {value}" for key, value in sorted(expect.get("args", {}).items()))
-    return f"the operation {name!r} ({what})" + (f" with {args}" if args else "")
+    # Described by what it does, never by its identifier: a reviewer told that
+    # users never name identifiers rejected responses that carried one, and a
+    # generator shown one copied it into the request.
+    what = what.rstrip(".")
+    return f"take this action: {what}" + (f" ({args})" if args else "")
 
 
 #: Phrasing styles the generator rotates through, one per variation number,
@@ -453,11 +454,10 @@ PHRASING_STYLES = (
 # ---------------------------------------------------------------------------
 
 GENERATOR_SYSTEM_SPLIT = (
-    "You rewrite user requests for a training dataset. You are given a fixed "
-    "answer and an original request that produces it. Rewrite the request in "
-    "different words. Do not change what is being asked for: the rewritten "
-    "request must still produce exactly the same fixed answer. Reply with "
-    "only the rewritten request, nothing else."
+    "You rewrite user requests for a training dataset. You are given one "
+    "request a user typed to a machine assistant. Rewrite it in different "
+    "words as that user might have typed it. Do not change what is being "
+    "asked for. Reply with only the rewritten request, nothing else."
 )
 
 GENERATOR_SYSTEM_SKILL = (
@@ -519,10 +519,13 @@ def generator_prompt(seed: Seed, variation: int = 0) -> tuple[str, str]:
         )
         return GENERATOR_SYSTEM_SKILL, user
     style = PHRASING_STYLES[variation % len(PHRASING_STYLES)]
+    # The generator never sees the expected answer: shown it, it copied its
+    # wording ("Propose this action: ...") into the request. The original
+    # request already carries the meaning to keep.
     user = (
-        f"Fixed answer (do not change this): {_expected_description(seed)}\n\n"
         f"Original request: {seed.seed_text}\n\n"
-        "Rewrite the request above in different words, keeping exactly the same meaning."
+        "Rewrite the request above in different words, keeping exactly the same meaning"
+        " and asking for exactly the same thing, no more and no less."
         f" Write it {style}. Do not name internal operations or their identifiers."
     )
     return GENERATOR_SYSTEM_SPLIT, user
@@ -844,6 +847,22 @@ def _validate_seed_consistency(seeds: list[Seed]) -> None:
             )
 
 
+#: Wording that only appears in the expected-answer descriptions shown to the
+#: corrector and reviewers. A request that carries it was copied from the
+#: answer, not written as a user would, and is rejected whatever the reviewers say.
+_ANSWER_TEMPLATE_RE = re.compile(
+    r"take this action|propose this action|more capable assistant|full agent"
+    r"|hand (?:the|this) request|reply in words|\b\w+ = \S+",
+    re.IGNORECASE,
+)
+
+
+def copies_answer_template(text: str) -> str:
+    """The answer-template wording *text* copies, or "" if none."""
+    match = _ANSWER_TEMPLATE_RE.search(text)
+    return match.group(0) if match else ""
+
+
 def names_internal_operation(text: str) -> str:
     """The first operation-table identifier *text* names, or "" if none.
 
@@ -907,6 +926,10 @@ def _process_variation(
         # Deterministic, whatever the reviewers said: a request that names an
         # internal operation teaches the model that users talk in identifiers.
         verdicts["identifier_check"] = {"accept": False, "reason": f"names {leaked!r}"}
+    copied = "" if leaked else copies_answer_template(corrected_text)
+    if copied:
+        verdicts["template_check"] = {"accept": False, "reason": f"copies {copied!r}"}
+        leaked = copied
     accepted = accept_a and accept_b and not leaked
     # The record keeps the source entry's own corpus fields (kind/source/
     # class for a split seed; nothing for a skill seed, which is not a
