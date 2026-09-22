@@ -20,13 +20,22 @@ calls :func:`nvsh.tiers.bench.bench` with ``tier1=None`` and
 ``options.tier2`` set to that tier. Scoring is the bench's own
 (``_is_correct``, ``compute_escalation``, ``compute_false_mutating``); this
 script only adds the per-source vote (one vote per ``source_id``: the majority
-over its variations, a tie counts against the model) and the count of explain
-outcomes on explain entries.
+over its variations, a tie counts against the model), the count of explain
+outcomes on explain entries, and a separate count of mutating proposals of the
+expected operation with wrong arguments (bench counts only a wrong operation
+name as a wrong mutating pick; the use-case bar is judged on both rows).
 
 Guards:
 
-* a split named ``held-out.json`` needs ``--acceptance``; one named
-  ``test.json`` needs ``--final`` (and each flag is refused on any other file);
+* the split's side is read from BOTH its file name and its header (split.py's
+  ``Split '<side>' of <corpus>`` note, or held-out.json's own header), so a
+  renamed file keeps its side: held-out needs ``--acceptance``, test needs
+  ``--final`` (each flag is refused on any other file), and a file whose side
+  neither names is refused unless it is the plain dev corpus;
+* ``--revision`` is verified, not just recorded: for an engine that downloads
+  by repo id into ``[tiers.lfm] hf_cache_dir`` the cache's ``refs/main`` must
+  equal it before that model runs (exit 2 otherwise); a mounted model file or
+  an attached endpoint is recorded as operator-supplied, not verified;
 * in managed mode it refuses to start while a container named
   ``nvsh-tier2-<uid>`` is already running -- it never stops one it did not
   start;
@@ -63,14 +72,17 @@ from nvsh.tiers import bench as tier_bench  # noqa: E402
 from nvsh.tiers.base import Tier  # noqa: E402
 from nvsh.tiers.router import AGENT, TierOutcome  # noqa: E402
 from nvsh.tiers.runtime import Runtime, RuntimeUnavailable  # noqa: E402
-from nvsh.tiers.runtime_docker import container_name  # noqa: E402
+from nvsh.tiers.runtime_docker import (  # noqa: E402
+    DEFAULT_ENGINE,
+    HF_CACHE_NAME,
+    container_name,
+    engine_template,
+)
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _BENCHMARKS_DIR = _REPO_ROOT / "docs" / "benchmarks"
 _SCRIPT_NAME = "scripts/lfm-finetune/measure.py"
 
-HELD_OUT_NAME = "held-out.json"
-TEST_NAME = "test.json"
 MANAGED = "managed"
 FINAL_MARKER = "- Final run: yes"
 
@@ -81,6 +93,9 @@ EXIT_ENV = 2
 _LABEL_RE = re.compile(r"^[a-z0-9][a-z0-9.-]*$")
 _SEED_RE = re.compile(r"seed=(\d+)")
 _RUN_TIMEOUT = 30.0
+
+WRONG_MUTATING_ROW = "Wrong mutating proposals, per source / per variation"
+WRONG_ARGUMENTS_ROW = "Mutating proposals with wrong arguments, per source / per variation"
 
 #: ``[tiers.lfm]`` keys recorded in the results file. ``base_url`` is left
 #: out on purpose: no endpoint is ever written into a committed file.
@@ -193,25 +208,125 @@ class Seams:
 # ---------------------------------------------------------------------------
 
 
-def check_split_allowed(path: Path, *, acceptance: bool, final: bool) -> None:
-    """Refuse the held-out file without ``--acceptance`` and the test side without ``--final``."""
+#: The sides a split file can be. ``held-out`` and ``test`` need a flag.
+HELD_OUT = "held-out"
+TEST = "test"
+DEV = "dev"
+_NAMED_SIDES = ("train", "val", TEST)
+#: ``split.py`` appends ``Split '<side>' of <corpus> (seed=<n>).`` to the header.
+_SPLIT_NOTE_RE = re.compile(r"Split '([A-Za-z0-9_-]+)' of (\S+?) \(seed=")
+#: The first words of the committed corpora's own headers.
+_HELD_OUT_HEADER_START = "held-out split"
+_DEV_HEADER_START = "development split"
+_UNREAD = object()
+
+
+def _compact(text: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", text.lower())
+
+
+def sides_from_name(path: Path) -> set[str]:
+    """What the file name says: ``test``/``val``/``train`` as a word, or held-out."""
+    stem = path.stem.lower()
+    words = {word for word in re.split(r"[^a-z0-9]+", stem) if word}
+    sides = {side for side in _NAMED_SIDES if side in words}
+    if _compact(HELD_OUT) in _compact(stem):
+        sides.add(HELD_OUT)
+    return sides
+
+
+def _header_text(header: object) -> str:
+    if header is None:
+        return ""
+    if isinstance(header, str):
+        return header
+    return json.dumps(header, sort_keys=True)
+
+
+def sides_from_header(header: object) -> set[str]:
+    """What the header says: every ``split.py`` note, and the committed corpora's own."""
+    text = _header_text(header)
+    sides: set[str] = set()
+    notes = _SPLIT_NOTE_RE.findall(text)
+    for side, corpus in notes:
+        sides.add(side.lower())
+        if _compact(HELD_OUT) in _compact(corpus):
+            sides.add(HELD_OUT)
+    start = text.lstrip().lower()
+    if start.startswith(_HELD_OUT_HEADER_START):
+        sides.add(HELD_OUT)
+    if start.startswith(_DEV_HEADER_START) and not notes:
+        sides.add(DEV)
+    return sides
+
+
+def _read_header(path: Path) -> object:
+    try:
+        with open(path, encoding="utf-8") as handle:
+            raw = json.load(handle)
+    except (OSError, ValueError):
+        return None
+    return raw.get("header") if isinstance(raw, dict) else None
+
+
+def _is_dev_corpus(path: Path) -> bool:
+    try:
+        return path.resolve() == tier_bench.dev_corpus_path().resolve()
+    except OSError:
+        return False
+
+
+def check_split_allowed(
+    path: Path, *, acceptance: bool, final: bool, header: object = _UNREAD
+) -> None:
+    """Refuse the held-out file without ``--acceptance`` and the test side without ``--final``.
+
+    The side comes from BOTH the file name and its header (read from *path*
+    when *header* is not given), so renaming a file does not change what it
+    is: either one marking it test needs ``--final``, either one marking it
+    held-out needs ``--acceptance``. A file neither one places is refused
+    unless it is the plain dev corpus.
+    """
+    if header is _UNREAD:
+        header = _read_header(path)
     name = path.name
-    if name == HELD_OUT_NAME and not acceptance:
+    by_name, by_header = sides_from_name(path), sides_from_header(header)
+    sides = by_name | by_header
+    if _is_dev_corpus(path):
+        sides.add(DEV)
+
+    def origin(side: str) -> str:
+        return " and ".join(
+            where for where, found in (("name", by_name), ("header", by_header)) if side in found
+        )
+
+    if not sides:
         raise MeasureError(
             EXIT_USER,
-            f"{name} is the acceptance split; refusing to measure it by default",
+            f"cannot tell which side {name} is: neither its name nor its header "
+            "names train, val, test, held-out or the dev corpus",
+            "measure a file written by split.py, or nvsh/tiers/corpus/dev.json",
+        )
+    if HELD_OUT in sides and not acceptance:
+        raise MeasureError(
+            EXIT_USER,
+            f"{name} is the acceptance split (by its {origin(HELD_OUT)}); "
+            "refusing to measure it without --acceptance",
             "pass --acceptance only for the one adoption measurement",
         )
-    if name == TEST_NAME and not final:
+    if TEST in sides and not final:
         raise MeasureError(
             EXIT_USER,
-            f"{name} is the test side; it is only measured on final runs",
+            f"{name} is the test side (by its {origin(TEST)}); "
+            "it is only measured on final runs (--final)",
             "iterate on val.json; pass --final for a final run",
         )
-    if acceptance and name != HELD_OUT_NAME:
-        raise MeasureError(EXIT_USER, f"--acceptance applies to {HELD_OUT_NAME} only, not {name}")
-    if final and name != TEST_NAME:
-        raise MeasureError(EXIT_USER, f"--final applies to {TEST_NAME} only, not {name}")
+    if acceptance and HELD_OUT not in sides:
+        raise MeasureError(
+            EXIT_USER, f"--acceptance applies to the held-out split only, not {name}"
+        )
+    if final and TEST not in sides:
+        raise MeasureError(EXIT_USER, f"--final applies to the test side only, not {name}")
 
 
 def read_split(path: Path) -> dict:
@@ -295,6 +410,21 @@ def _false_mutating(item: tier_bench.ItemResult) -> bool:
     return tier_bench.compute_false_mutating([item])["count"] == 1
 
 
+def _wrong_arguments_mutating(item: tier_bench.ItemResult) -> bool:
+    """A mutating operation proposed where that very operation was expected, but wrong.
+
+    ``bench._is_false_mutating`` compares operation names only, so
+    ``container_restart(container="inference")`` where ``container="trainer"``
+    was expected is not a wrong mutating pick there. Bench's scoring is left as
+    it is (honesty h20); this is the separate count for exactly that case --
+    decided from the operation table's ``read_only`` flag, never from a name.
+    """
+    if not _is_mutating_proposal(item):
+        return False
+    expected = item.entry.expect.get("operation")
+    return expected == item.outcome.operation and not tier_bench._is_correct(item)  # type: ignore
+
+
 def _explained(item: tier_bench.ItemResult) -> bool:
     outcome = item.outcome
     return outcome is not None and outcome.handled_by is not None and outcome.operation is None
@@ -366,6 +496,10 @@ def score(
         "wrong_mutating": {
             "variation": tier_bench.compute_false_mutating(items)["count"],
             "source": _per_source_bad(all_groups, _false_mutating),
+        },
+        "wrong_arguments_mutating": {
+            "variation": sum(1 for item in items if _wrong_arguments_mutating(item)),
+            "source": _per_source_bad(all_groups, _wrong_arguments_mutating),
         },
         "explain": {
             "total": len(kinds["explain"]),
@@ -442,6 +576,80 @@ def nvsh_commit(run: RunFn) -> str:
 
 
 # ---------------------------------------------------------------------------
+# --revision: verified against what the engine will serve, or said not to be
+# ---------------------------------------------------------------------------
+
+REVISION_VERIFIED = "revision verified from the cache"
+REVISION_UNVERIFIED = "operator-supplied, not verified"
+
+
+def hf_cache_dir(settings: Mapping[str, object]) -> Path:
+    """The host HF cache the managed launcher mounts as ``HF_HOME``.
+
+    ``[tiers.lfm] hf_cache_dir``, or the launcher's own default
+    (``runtime_docker._with_cache_dir``: the tier cache's ``hf`` directory).
+    """
+    configured = settings.get("hf_cache_dir")
+    if configured is not None:
+        return Path(str(configured))
+    from nvsh.tiers.fetch import default_cache_dir
+
+    return default_cache_dir() / HF_CACHE_NAME
+
+
+def cached_revision(cache: Path, repo_id: str) -> tuple[Path, str | None]:
+    """``(refs/main path, commit)`` for *repo_id* in *cache*; commit ``None`` if absent.
+
+    The launcher sets ``HF_HOME`` to the mount of *cache*, so the hub cache
+    is ``<cache>/hub``; ``<cache>`` itself is tried too, for a cache laid out
+    as a bare hub directory. The first ``refs/main`` found is the one read.
+    """
+    folder = "models--" + repo_id.replace("/", "--")
+    candidates = [cache / "hub" / folder / "refs" / "main", cache / folder / "refs" / "main"]
+    for ref in candidates:
+        try:
+            return ref, ref.read_text(encoding="utf-8").strip()
+        except OSError:
+            continue
+    return candidates[0], None
+
+
+def verify_revision(settings: Mapping[str, object], model: str, revision: str) -> str:
+    """How *revision* is known to be what the engine serves for *model*.
+
+    An engine that downloads by repo id serves whatever the host cache's
+    ``refs/main`` resolves to, so that ref must equal *revision* or the run is
+    refused (exit 2). An engine handed a mounted model file, or an endpoint
+    nvsh did not launch, gives nothing to check: the revision is recorded as
+    operator-supplied.
+    """
+    if str(settings.get("mode") or MANAGED) != MANAGED:
+        return f"{REVISION_UNVERIFIED}: attached endpoint"
+    try:
+        template = engine_template(str(settings.get("engine") or DEFAULT_ENGINE))
+    except RuntimeUnavailable as exc:
+        raise MeasureError(EXIT_ENV, f"cannot verify --revision for {model}: {exc}") from exc
+    if template.needs_model_mount or not template.downloads_model:
+        return REVISION_UNVERIFIED
+    ref, found = cached_revision(hf_cache_dir(settings), model)
+    if found is None:
+        raise MeasureError(
+            EXIT_ENV,
+            f"cannot verify --revision {revision} for {model}: {ref} does not exist",
+            "fetch the pinned revision into [tiers.lfm] hf_cache_dir first, so refs/main "
+            "names it; the engine serves whatever refs/main resolves to",
+        )
+    if found != revision:
+        raise MeasureError(
+            EXIT_ENV,
+            f"{model}: the cache's refs/main is {found}, not --revision {revision}; "
+            f"the engine would serve {found}",
+            f"re-fetch {model} at {revision} into the cache, or pass the revision it holds",
+        )
+    return REVISION_VERIFIED
+
+
+# ---------------------------------------------------------------------------
 # One run per model
 # ---------------------------------------------------------------------------
 
@@ -450,6 +658,7 @@ def nvsh_commit(run: RunFn) -> str:
 class RunRecord:
     model: str
     revision: str
+    revision_status: str = ""
     docker_ps: str = ""
     nvidia_smi: str = ""
     background: tuple[str, ...] | None = None
@@ -481,11 +690,12 @@ def measure_one(plan: RunPlan, model: str, revision: str, seams: Seams) -> RunRe
     own = container_name(uid)
     if managed:
         guard_container(seams.run, uid)
+    settings = {**plan.lfm_settings, "model": model}
+    record.revision_status = verify_revision(settings, model, revision)
     record.docker_ps = _capture(seams.run, ["docker", "ps"])
     record.nvidia_smi = _capture(seams.run, ["nvidia-smi"])
     record.background = background_set(seams.run, own)
 
-    settings = {**plan.lfm_settings, "model": model}
     spec = TierSpec(
         lfm_settings=settings,
         runtime_platform=plan.runtime_platform,
@@ -562,7 +772,10 @@ def result_rows(records: Sequence[RunRecord]) -> list[tuple[str, list[str]]]:
     comparable = latency_comparable(records) or len(records) == 1
     mark = "" if comparable else " (not comparable)"
     return [
-        ("Model revision", [f"`{record.revision}`" for record in records]),
+        (
+            "Model revision",
+            [f"`{record.revision}` ({record.revision_status})" for record in records],
+        ),
         (
             "Right operation and arguments proposed, per source",
             cells(lambda r: _of(s(r, "right")["source"], s(r, "right")["source_total"])),
@@ -582,10 +795,17 @@ def result_rows(records: Sequence[RunRecord]) -> list[tuple[str, list[str]]]:
             ),
         ),
         (
-            "Wrong mutating proposals, per source / per variation",
+            WRONG_MUTATING_ROW,
             cells(
                 lambda r: f"{s(r, 'wrong_mutating')['source']} / "
                 f"{s(r, 'wrong_mutating')['variation']}"
+            ),
+        ),
+        (
+            WRONG_ARGUMENTS_ROW,
+            cells(
+                lambda r: f"{s(r, 'wrong_arguments_mutating')['source']} / "
+                f"{s(r, 'wrong_arguments_mutating')['variation']}"
             ),
         ),
         (
@@ -668,7 +888,10 @@ def render_markdown(prov: Provenance, records: Sequence[RunRecord]) -> str:
         f"- Seed: {seed}",
         f"- nvsh: {__version__}, commit `{prov.commit}`",
         "- Models (repo id @ revision): "
-        + "; ".join(f"`{record.model}` @ `{record.revision}`" for record in records),
+        + "; ".join(
+            f"`{record.model}` @ `{record.revision}` ({record.revision_status})"
+            for record in records
+        ),
         f"- Tier 2 settings, identical for every run except the model: {settings or 'defaults'}",
         f"- Grounding: {prov.grounding}",
         f"- Acceptance run: {'yes' if prov.acceptance else 'no'}",
@@ -683,6 +906,11 @@ def render_markdown(prov: Provenance, records: Sequence[RunRecord]) -> str:
         "Per-source figures (one vote per `source_id`, majority over its variations, a",
         "tie counts against the model) are the ones claims are judged on; per-variation",
         "figures show paraphrase robustness.",
+        "",
+        'The use-case bar\'s "0 wrong mutating proposals" is judged on the sum of both rows:',
+        f'"{WRONG_MUTATING_ROW}" (bench\'s own count: a mutating operation other than the',
+        f'expected one) plus "{WRONG_ARGUMENTS_ROW}" (the expected mutating',
+        "operation with arguments bench does not accept, e.g. the wrong container).",
         "",
         render_table(records),
         "",
@@ -784,8 +1012,10 @@ def run(argv: Sequence[str], seams: Seams) -> int:
             "give one --revision (the pinned commit) after each --model",
         )
     split_path = Path(args.split)
-    check_split_allowed(split_path, acceptance=args.acceptance, final=args.final)
     raw = read_split(split_path)
+    check_split_allowed(
+        split_path, acceptance=args.acceptance, final=args.final, header=raw.get("header")
+    )
     loaded = tier_bench.load_corpus(split_path)
     if not loaded.entries:
         raise MeasureError(EXIT_USER, f"{split_path} has no valid entries")
@@ -828,6 +1058,8 @@ def run(argv: Sequence[str], seams: Seams) -> int:
         runner=runner,
         grounding=grounding,
     )
+    for model, revision in zip(args.model, args.revision):  # refuse before any run starts
+        verify_revision({**lfm_settings, "model": model}, model, revision)
     finals_before = _count_finals(out.parent, out) if args.final else 0
     records = [
         measure_one(plan, model, revision, seams)
