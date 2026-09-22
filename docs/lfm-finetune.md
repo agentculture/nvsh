@@ -378,3 +378,31 @@ What changed: `augment.py` gained bounded workers, retries with backoff on
 `pipeline.sh` so the operator can run and repeat it outside an agent session.
 Lesson: a shared gateway is part of someone else's machine; start at 2
 workers and watch the error rate before adding more.
+
+### 2026-09-23: what the reviewers and the generator got wrong
+
+Reading the rejected and accepted variations, not only their counts, found
+four faults in `augment.py`'s prompts, each fixed and committed:
+
+1. Shown the expected answer as JSON, both reviewers rejected every request
+   that did not spell out the operation's identifier ("set max performance
+   mode" was "not power_set"). Answers are now described in words from the
+   operation table.
+2. A third of all rejections (34 of 105) were **empty replies**: a reasoning
+   reviewer used its whole 2,048-token budget thinking. An empty reply is now
+   an error retried on resume, not a reject, and reviewers get 8,192 tokens.
+3. Asked whether a request "means" an escalation, reviewer B rejected ordinary
+   investigation requests for not asking for a hand-off. Reviewers are now
+   asked whether the stated response is exactly right for the request.
+4. **The generator copied the answer's wording into requests** ("Propose this
+   action: Restart a named container, with container = inference", "please
+   hand this request to the full agent"), and reviewer A accepted them; 18 of
+   193 accepted variations did this. The generator no longer sees the answer
+   at all, and a deterministic check rejects operation identifiers and
+   answer-template wording whatever the reviewers say.
+
+After the fixes a probe accepted 9 of 18 with no leaks: reviewer B (Nemotron)
+stays strict, and some of its rejections are right (a rewrite of an
+escalation into "explain why ..." drifts toward the explain answer). The
+lesson for the guide: never trust an acceptance rate; read samples of both
+files after every prompt change.
