@@ -478,7 +478,7 @@ def render_results(
     if model_revision:
         lines.append(f"- model revision: `{model_revision}`")
     for prov in manifest_provenance:
-        lines.append(f"- {prov['repo']}: {prov['url']} at commit `{prov['commit']}`")
+        lines.append(f"- {prov['repo']}: <{prov['url']}> at commit `{prov['commit']}`")
     lines.append("")
 
     lines += [

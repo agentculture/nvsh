@@ -237,3 +237,38 @@ Built with `split.py` (seed 39: train 301, val 65, test 65) and
   covers exactly the tool call and its `<|im_end|>` (25 of 1,272 tokens for
   the propose example). Train on those ids with the mask as the label mask;
   this also avoids the doubled BOS that tokenizing rendered text gives.
+
+### 2026-09-22: stock re-measured (t12)
+
+Stock `LiquidAI/LFM2.5-350M@9e6c6cc`, the real Tier 2 launcher (vLLM image
+`vllm/vllm-openai@sha256:8bd082c2...`, `--tool-call-parser lfm2`,
+`--gpu-memory-utilization 0.08`), fixture-world grounding, split seed 39.
+Results files: `docs/benchmarks/2026-09-22-lfm-stock-val.md`,
+`2026-09-22-lfm-stock-test.md` (final run 1 on the test side) and
+`2026-09-22-skills-stock.md`.
+
+| Measure | Validation (66) | Test (64) |
+|---|---|---|
+| Right operation and arguments proposed | 1 of 32 | 0 of 32 |
+| Should-escalate asks escalated | 0 of 16 | 0 of 15 |
+| Explain asks explained | 18 of 18 | 15 of 17 |
+| Wrong mutating proposals (both rows) | 0 | 0 |
+| Warm latency, median / p95 | 257 / 1088 ms | 280 / 717 ms |
+
+Stock answers nearly everything in words, which is also why it explains almost
+every explain ask: the tuned model has to keep that while learning to propose
+and escalate.
+
+Skill routing on NVIDIA's 104 evals: **35 of 104 (34%)** overall, 23 of 34
+where the prompt names the skill and 12 of 70 where it does not; 39 wrong
+skill, 26 no call, 4 several calls; median 92 ms.
+
+The test fold is large enough to separate the use-case bar from stock (0 of
+32 against a floor of at least 70%, 0 of 15 against at least 60%), so the
+nvsh corpus is **not** augmented for separation (t13, decision c41's
+condition does not hold).
+
+**Method-validation margin, stated before any tuned model is scored (h25):**
+the tuned model must reach at least **+15 points overall** on the 104 evals
+(from 34% to at least 49%) **and** at least double the not-named figure (at
+least 24 of 70), because requests that name their skill mostly test copying.
