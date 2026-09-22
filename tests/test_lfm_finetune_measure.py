@@ -708,3 +708,25 @@ def test_wrong_arguments_row_is_zero_when_arguments_match(measure, tmp_path):
         "0 / 0",
         "0 / 0",
     ]
+
+
+def test_details_write_one_row_per_entry_per_model(measure, tmp_path):
+    split = _split(tmp_path, "val.json")
+    harness = Harness(measure, tmp_path, FakeDocker())
+    details = tmp_path / "details.jsonl"
+    argv = _argv(split, tmp_path / "r.md", "--details", str(details))
+    assert measure.main(argv, seams=harness.seams) == 0
+    rows = [json.loads(line) for line in details.read_text(encoding="utf-8").splitlines()]
+    assert {row["model"] for row in rows} == {STOCK, TUNED}
+    assert all({"id", "expect", "did", "correct"} <= set(row) for row in rows)
+    assert {row["did"] for row in rows} <= {"propose", "escalate", "explain"}
+
+
+@pytest.mark.parametrize("flag", ["--final", "--acceptance"])
+def test_details_are_refused_on_test_and_held_out_runs(measure, tmp_path, flag):
+    name = "test.json" if flag == "--final" else "held-out.json"
+    split = _split(tmp_path, name)
+    harness = Harness(measure, tmp_path, FakeDocker())
+    argv = _argv(split, tmp_path / "r.md", flag, "--details", str(tmp_path / "d.jsonl"))
+    assert measure.main(argv, seams=harness.seams) == 1
+    assert harness.specs == [] and not (tmp_path / "d.jsonl").exists()

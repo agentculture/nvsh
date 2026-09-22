@@ -394,6 +394,32 @@ def items_from_result(
     return items
 
 
+def detail_rows(model: str, result: Mapping[str, object], entries) -> list[dict]:
+    """One row per entry: what was expected, what the tier did, and whether it was right."""
+    rows = []
+    for item in items_from_result(result, entries):
+        outcome = item.outcome
+        if outcome.escalated_to is not None:
+            did = "escalate"
+        elif outcome.operation is None:
+            did = "explain"
+        else:
+            did = "propose"
+        rows.append(
+            {
+                "model": model,
+                "id": item.entry.id,
+                "expect": item.entry.expect,
+                "did": did,
+                "operation": outcome.operation,
+                "args": dict(outcome.args),
+                "correct": tier_bench._is_correct(item),
+                "text": item.entry.text,
+            }
+        )
+    return rows
+
+
 def _expect_kind(entry: tier_bench.CorpusEntry) -> str:
     if entry.expect.get("escalate"):
         return "escalate"
@@ -969,6 +995,12 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--acceptance", action="store_true", help="allow held-out.json")
     parser.add_argument("--final", action="store_true", help="allow test.json (a final run)")
     parser.add_argument("--out", default=None, help="results file (default: docs/benchmarks/)")
+    parser.add_argument(
+        "--details",
+        default=None,
+        help="also write one JSON line per entry (expected, outcome, correct) here;"
+        " refused with --final or --acceptance, so test and held-out failures are never studied",
+    )
     parser.add_argument("--force", action="store_true", help="overwrite an existing results file")
     return parser
 
@@ -1060,6 +1092,12 @@ def run(argv: Sequence[str], seams: Seams) -> int:
     )
     for model, revision in zip(args.model, args.revision):  # refuse before any run starts
         verify_revision({**lfm_settings, "model": model}, model, revision)
+    if args.details and (args.final or args.acceptance):
+        raise MeasureError(
+            EXIT_USER,
+            "--details is for iterating on validation, never on the test or held-out side",
+            "drop --details",
+        )
     finals_before = _count_finals(out.parent, out) if args.final else 0
     records = [
         measure_one(plan, model, revision, seams)
@@ -1083,6 +1121,11 @@ def run(argv: Sequence[str], seams: Seams) -> int:
         acceptance=args.acceptance,
         finals_before=finals_before,
     )
+    if args.details:
+        with open(args.details, "w", encoding="utf-8") as handle:
+            for record in records:
+                for row in detail_rows(record.model, record.result, loaded.entries):
+                    handle.write(json.dumps(row, ensure_ascii=False) + "\n")
     text = render_markdown(prov, records)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(text, encoding="utf-8")
