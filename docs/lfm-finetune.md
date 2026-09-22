@@ -209,3 +209,31 @@ started with the launcher's own arguments plus `-e HF_HUB_OFFLINE=1`, served
 answered an `escalate` request with structured `tool_calls`. Without the
 offline flag vLLM asks the Hub for the repository first, which a private repo
 refuses without a token; the launcher gains an option for it (plan task t15).
+
+### 2026-09-22: chat template and base model (t11)
+
+Base model: `LiquidAI/LFM2.5-350M` at commit
+`9e6c6ccf47cd318696e137d381a7ded8fe4df09f` (the Hub's `main` on 2026-09-22,
+last modified 2026-08-05, and the snapshot in the local cache). Stock is
+measured as this id and commit and training starts from it.
+
+Built with `split.py` (seed 39: train 301, val 65, test 65) and
+`build_dataset.py --split train.json`, then rendered with
+`tokenizer.apply_chat_template(messages, tools=tools)`:
+
+- The tools render inside the system turn as `List of tools: [...]`, after
+  the system brief, exactly as vLLM renders them from the same template.
+- The assistant turn renders as a Pythonic call between
+  `<|tool_call_start|>` and `<|tool_call_end|>`, for example
+  `[propose(arguments={"mode": "max_performance"}, operation='power_set')]`,
+  `[escalate(reason='this needs the full agent')]` and
+  `[explain(text='It records which L4T release ...')]`.
+- **Argument form: object.** The LFM2.5 template refuses string arguments
+  ("Tool call arguments must be a mapping, got a JSON-encoded string"), so
+  `--arguments-as object` (the default) is the only form that renders.
+- **Loss mask: assistant turn only.** The template marks the assistant turn
+  with generation markers, so `apply_chat_template(..., tokenize=True,
+  return_dict=True, return_assistant_tokens_mask=True)` returns a mask that
+  covers exactly the tool call and its `<|im_end|>` (25 of 1,272 tokens for
+  the propose example). Train on those ids with the mask as the label mask;
+  this also avoids the doubled BOS that tokenizing rendered text gives.
