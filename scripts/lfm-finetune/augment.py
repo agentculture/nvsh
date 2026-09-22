@@ -358,7 +358,10 @@ def load_seeds(path: Path, side: str | None = None) -> list[Seed]:
 
 def _expected_description(seed: Seed) -> str:
     if seed.seed_format == "skills":
-        return f"the {seed.expect['skill']!r} capability, and only that capability, handles this"
+        return (
+            f"the {seed.expect['skill']!r} capability, and only that capability, handles this."
+            f" That capability is described as: {seed.seed_text}"
+        )
     return json.dumps(seed.expect, sort_keys=True)
 
 
@@ -397,6 +400,17 @@ REVIEWER_SYSTEM = (
     "short reason. Start your reply with the single word 'yes' or 'no'."
 )
 
+#: Skill seeds have no fixed answer text to compare against, only a capability
+#: and its description, so their reviewers are asked the routing question.
+REVIEWER_SYSTEM_SKILL = (
+    "You are a strict reviewer for a dataset that teaches a router which "
+    "capability should handle a user request. You are given one capability's "
+    "description and a user request. Answer 'yes' only if this capability is "
+    "the right one to handle the request and the request does not name the "
+    "capability outright; otherwise answer 'no'. Start your reply with the "
+    "single word 'yes' or 'no', then a short reason."
+)
+
 REVIEWER_SYSTEM_CHANGE_CHECK = REVIEWER_SYSTEM + (
     " The fixed answer here is read-only or an escalation, so it must never "
     "involve changing the machine. If the request could reasonably be read "
@@ -430,6 +444,15 @@ def corrector_prompt(seed: Seed, text: str) -> tuple[str, str]:
 
 
 def reviewer_prompt(seed: Seed, text: str) -> tuple[str, str]:
+    if seed.seed_format == "skills":
+        user = (
+            f"Capability: {seed.expect['skill']}\n"
+            f"Description: {seed.seed_text}\n\n"
+            f"User request: {text}\n\n"
+            "Is this capability the right one to handle this request? Answer 'yes' "
+            "or 'no' and then a short reason."
+        )
+        return REVIEWER_SYSTEM_SKILL, user
     system = REVIEWER_SYSTEM_CHANGE_CHECK if seed.needs_change_check else REVIEWER_SYSTEM
     user = (
         f"Fixed answer: {_expected_description(seed)}\n\n"

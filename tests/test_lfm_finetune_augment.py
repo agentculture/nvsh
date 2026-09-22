@@ -919,3 +919,19 @@ def test_accepted_split_record_loads_via_bench_load_corpus(tmp_path, monkeypatch
     assert result.problems == ()
     assert len(result.entries) == 1
     assert result.entries[0].kind == "explicit"
+
+
+def test_a_skill_seed_reviewer_sees_the_capability_description() -> None:
+    module = _module()
+    seed = module.Seed(
+        source_id="jetson-diagnostic",
+        side="train",
+        seed_text="Read-only Jetson health snapshot.",
+        expect={"skill": "jetson-diagnostic"},
+        seed_format="skills",
+        needs_change_check=False,
+    )
+    system, user = module.reviewer_prompt(seed, "Give me a health check of this Jetson")
+    assert system == module.REVIEWER_SYSTEM_SKILL
+    assert "Read-only Jetson health snapshot." in user
+    assert "Give me a health check of this Jetson" in user
