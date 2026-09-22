@@ -427,12 +427,20 @@ def _answer_in_words(expect: dict[str, Any]) -> str:
     name = str(expect.get("operation"))
     operation = get_operation(name)
     what = operation.description if operation is not None else "the expected action"
-    args = ", ".join(f"{key} = {value}" for key, value in sorted(expect.get("args", {}).items()))
     # Described by what it does, never by its identifier: a reviewer told that
     # users never name identifiers rejected responses that carried one, and a
-    # generator shown one copied it into the request.
-    what = what.rstrip(".")
-    return f"take this action: {what}" + (f" ({args})" if args else "")
+    # generator shown one copied it into the request. A read-only operation
+    # answers the request by being run; a mutating one is proposed for the
+    # user to approve (a reviewer read "take this action" as a non-answer).
+    what = what.rstrip(".").lower()
+    values = ", ".join(
+        f"{key} {str(value).replace('_', ' ')}"
+        for key, value in sorted(expect.get("args", {}).items())
+    )
+    detail = f" -- {values}" if values else ""
+    if operation is not None and operation.read_only:
+        return f"run a read-only check and report what it shows: {what}{detail}"
+    return f"propose this change for the user to approve: {what}{detail}"
 
 
 #: Phrasing styles the generator rotates through, one per variation number,
@@ -469,9 +477,8 @@ GENERATOR_SYSTEM_SKILL = (
 )
 
 CORRECTOR_SYSTEM = (
-    "You copyedit short user requests for a training dataset. Fix grammar, "
-    "spelling and clarity only. You are given the fixed answer the request "
-    "must produce; it must stay exactly the same after your edit -- do not "
+    "You copyedit short user requests for a training dataset. Fix grammar and "
+    "spelling only; keep the user's wording, tone and meaning, and do not "
     "change what the request is asking for. Reply with only the corrected "
     "request, nothing else."
 )
@@ -483,8 +490,11 @@ REVIEWER_SYSTEM = (
     "one for the request -- not a different operation, different arguments, "
     "or a different kind of response -- then a short reason. Users never "
     "name internal operations or their argument identifiers, and never ask "
-    "for a hand-off in so many words: judge what the request needs. Start "
-    "your reply with the single word 'yes' or 'no'."
+    "for a hand-off in so many words: judge what the request needs. This "
+    "assistant always asks the user to approve a change before making it, "
+    "so proposing a change for approval is the right way to carry out a "
+    "request to change something. Start your reply with the single word "
+    "'yes' or 'no'."
 )
 
 #: Skill seeds have no fixed answer text to compare against, only a capability
@@ -532,11 +542,9 @@ def generator_prompt(seed: Seed, variation: int = 0) -> tuple[str, str]:
 
 
 def corrector_prompt(seed: Seed, text: str) -> tuple[str, str]:
-    user = (
-        f"Fixed answer (must stay exactly this): {_expected_description(seed)}\n\n"
-        f"Request to copyedit:\n{text}"
-    )
-    return CORRECTOR_SYSTEM, user
+    # Like the generator, the corrector never sees the expected answer: shown
+    # it, it pasted the answer's wording into the request.
+    return CORRECTOR_SYSTEM, f"Request to copyedit:\n{text}"
 
 
 def reviewer_prompt(seed: Seed, text: str) -> tuple[str, str]:
@@ -731,7 +739,11 @@ _HEDGE_WORDS = (
     "unclear",
     "partially",
 )
-_NO_RE = re.compile(r"\bno\b", re.IGNORECASE)
+#: A "no" that reads as a verdict: at the start of a line or sentence, or
+#: right after a slash or colon ("yes/no: no", "yes? No, it changes ...").
+#: A "no" inside a clause ("with no machine changes involved") is not one --
+#: counting it rejected clear yeses in a real run.
+_NO_RE = re.compile(r"(?:^\s*|[\n.?!:;/]\s*)no\b", re.IGNORECASE)
 _HEDGE_RE = re.compile(r"\b(" + "|".join(_HEDGE_WORDS) + r")\b", re.IGNORECASE)
 
 
@@ -851,7 +863,8 @@ def _validate_seed_consistency(seeds: list[Seed]) -> None:
 #: corrector and reviewers. A request that carries it was copied from the
 #: answer, not written as a user would, and is rejected whatever the reviewers say.
 _ANSWER_TEMPLATE_RE = re.compile(
-    r"take this action|propose this action|more capable assistant|full agent"
+    r"take this action|propose this (?:action|change)|read-only check|report what it shows"
+    r"|user to approve|more capable assistant|full agent"
     r"|hand (?:the|this) request|reply in words|\b\w+ = \S+",
     re.IGNORECASE,
 )

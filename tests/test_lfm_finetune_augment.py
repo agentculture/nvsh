@@ -1497,7 +1497,7 @@ def test_a_skill_seed_reviewer_sees_the_capability_description() -> None:
 def test_the_expected_answer_is_described_in_words_not_json() -> None:
     module = _module()
     words = module._answer_in_words({"operation": "power_set", "args": {"mode": "max_performance"}})
-    assert "power mode" in words and "mode = max_performance" in words and "{" not in words
+    assert "power mode" in words and "mode max performance" in words and "{" not in words
     assert "power_set" not in words
     assert "more capable assistant" in module._answer_in_words({"escalate": True})
     assert "It pins clocks." in module._answer_in_words(
@@ -1579,3 +1579,16 @@ def test_the_generator_never_sees_the_expected_answer() -> None:
     _system, user = module.generator_prompt(seed, 1)
     assert "Restart the trainer container" in user
     assert "take this action" not in user and "container =" not in user
+
+
+@pytest.mark.parametrize(
+    "reply,accepted",
+    [
+        ("yes\nThe response runs a read-only check with no machine changes involved.", True),
+        ("yes/no: no", False),
+        ("yes? No, this changes the answer.", False),
+        ("Yes. No change is needed.", False),
+    ],
+)
+def test_only_a_verdict_like_no_rejects_a_yes(reply, accepted) -> None:
+    assert _module().parse_verdict(reply)[0] is accepted
