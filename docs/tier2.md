@@ -56,6 +56,7 @@ image  = "vllm/vllm-openai@sha256:<digest>"
 | `gpu_memory_fraction` | Up-front GPU share for vLLM and SGLang, default `0.08` |
 | `tool_call_parser` | Server-side tool-call parser; vLLM defaults to `lfm2` |
 | `hf_cache_dir` | Host download cache; defaults to nvsh's own tier cache |
+| `hf_offline` | `true` serves only from `hf_cache_dir` (`HF_HUB_OFFLINE=1`), for a private model fetched on the host; nvsh never passes a token into the container |
 | `port`, `ctx`, `startup_timeout_seconds` | Host port (1024 to 65535), context length, start-up wait |
 
 Every value is validated before a launch line is built; a bad one costs one

@@ -342,6 +342,18 @@ def check_gpu_memory_fraction(value: object) -> float:
     return float(value)
 
 
+def check_hf_offline(value: object) -> bool:
+    """Whether the engine must serve from the host cache without asking the Hub.
+
+    A private repository cannot be fetched without a token, and nvsh never
+    passes one into the container: the operator fills ``hf_cache_dir`` on the
+    host and the engine runs offline against it (``HF_HUB_OFFLINE=1``).
+    """
+    if not isinstance(value, bool):
+        raise _refuse("hf_offline", "must be true or false", value)
+    return value
+
+
 #: Checks for the settings that are optional but, when present, must be
 #: well-formed. Keyed by setting name so adding one is a table entry.
 SETTING_CHECKS: Mapping[str, Callable[[object], object]] = {
@@ -352,6 +364,7 @@ SETTING_CHECKS: Mapping[str, Callable[[object], object]] = {
     "gpu_memory_fraction": check_gpu_memory_fraction,
     "tool_call_parser": check_tool_call_parser,
     "hf_cache_dir": lambda value: check_host_dir("hf_cache_dir", value),
+    "hf_offline": check_hf_offline,
 }
 
 
@@ -490,7 +503,16 @@ def _mount_args(template: EngineTemplate, settings: Mapping[str, object], uid: i
     # The engine runs as the operator, not root, so what it downloads into the
     # host cache stays the operator's to delete (``nvsh uninstall`` does).
     host = check_host_dir("hf_cache_dir", cache)
-    return ["--user", f"{uid}:{uid}", "-e", f"HF_HOME={CACHE_MOUNT}", "-v", f"{host}:{CACHE_MOUNT}"]
+    offline = ["-e", "HF_HUB_OFFLINE=1"] if settings.get("hf_offline") is True else []
+    return [
+        "--user",
+        f"{uid}:{uid}",
+        "-e",
+        f"HF_HOME={CACHE_MOUNT}",
+        *offline,
+        "-v",
+        f"{host}:{CACHE_MOUNT}",
+    ]
 
 
 def _engine_args(template: EngineTemplate, settings: Mapping[str, object]) -> list[str]:
