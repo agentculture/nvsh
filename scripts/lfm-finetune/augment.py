@@ -195,11 +195,17 @@ def load_all_roles(env: dict[str, str] | None = None) -> dict[str, RoleConfig]:
 @dataclass(frozen=True)
 class Seed:
     source_id: str
-    kind: str  # "split" or "skill"
+    seed_format: str  # "split" or "skills" -- which seed file shape this came from
     side: str | None
     seed_text: str  # text to rephrase (split), or the skill's own description
     expect: dict[str, Any]  # split: the entry's own expect block; skill: {"skill": name}
     needs_change_check: bool  # h30: ask the extra "could this be a change?" question
+    #: For a split seed only: the source entry's own corpus fields --
+    #: ``kind`` ("explicit"/"failure"), and ``source``/``class`` when
+    #: present -- carried through unchanged so an accepted/rejected record
+    #: still loads via ``nvsh.tiers.bench.load_corpus``. Empty for a skill
+    #: seed, which is not a corpus entry at all.
+    corpus_fields: dict[str, Any] = field(default_factory=dict)
 
 
 def _refuse_if_eval(path: Path, records: list[Any]) -> None:
@@ -213,8 +219,46 @@ def _refuse_if_eval(path: Path, records: list[Any]) -> None:
             )
 
 
-def _infer_side(path: Path) -> str | None:
-    return path.stem if path.stem in ("train", "val", "test") else None
+#: split.py writes this header text (``_write_side``'s ``note``) onto every
+#: side file it produces: "Split 'train' of dev.json (seed=42).". Matching it
+#: lets a seed file be recognized even when it was renamed away from
+#: train/val/test.json.
+_HEADER_SIDE_RE = re.compile(r"split\s+['\"](train|val|test)['\"]", re.IGNORECASE)
+
+
+def _infer_side(path: Path, header: str | None = None) -> str | None:
+    if path.stem in ("train", "val", "test"):
+        return path.stem
+    if header:
+        match = _HEADER_SIDE_RE.search(header)
+        if match:
+            return match.group(1).lower()
+    return None
+
+
+def _resolve_side(path: Path, header: str | None, side: str | None) -> str:
+    """Reconcile an explicit ``--side`` against the side inferred from *path*
+    itself (filename stem or split.py's own header text).
+
+    ``--side`` exists only for a file whose own side cannot be told: when the
+    file's side *can* be inferred, ``--side`` must agree with it or the run
+    refuses outright, rather than silently relabeling entries onto the wrong
+    side.
+    """
+    inferred = _infer_side(path, header)
+    if side is not None:
+        if inferred is not None and side != inferred:
+            raise ConfigError(
+                f"{path}: --side {side!r} conflicts with this file's own side "
+                f"{inferred!r}; --side is only for files whose side cannot be inferred"
+            )
+        return side
+    if inferred is None:
+        raise ConfigError(
+            f"{path}: cannot infer the split side from the filename or header; "
+            "pass --side explicitly"
+        )
+    return inferred
 
 
 def _needs_change_check(expect: dict[str, Any]) -> bool:
@@ -238,15 +282,26 @@ def _needs_change_check(expect: dict[str, Any]) -> bool:
     return bool(operation.read_only)
 
 
-def _seed_from_split_entry(entry: dict[str, Any], side: str | None) -> Seed:
+def _seed_from_split_entry(entry: dict[str, Any], side: str) -> Seed:
     expect = entry["expect"]
+    if "kind" not in entry:
+        raise ValueError(
+            f"{entry.get('id', entry.get('source_id', '?'))}: split seed entry is missing "
+            "its own corpus 'kind' (explicit/failure)"
+        )
+    corpus_fields: dict[str, Any] = {"kind": entry["kind"]}
+    if "source" in entry:
+        corpus_fields["source"] = entry["source"]
+    if "class" in entry:
+        corpus_fields["class"] = entry["class"]
     return Seed(
         source_id=entry.get("source_id", entry["id"]),
-        kind="split",
+        seed_format="split",
         side=side,
         seed_text=entry["text"],
         expect=expect,
         needs_change_check=_needs_change_check(expect),
+        corpus_fields=corpus_fields,
     )
 
 
@@ -255,7 +310,7 @@ def _seed_from_skill_record(record: dict[str, Any], side: str | None) -> Seed:
     description = record.get("tool", {}).get("function", {}).get("description", "")
     return Seed(
         source_id=skill_name,
-        kind="skill",
+        seed_format="skills",
         side=side,
         seed_text=description,
         expect={"skill": skill_name},
@@ -275,6 +330,7 @@ def load_seeds(path: Path, side: str | None = None) -> list[Seed]:
     "tool"}``). Refuses any file that looks like an NVIDIA eval (h30's
     sibling rule) -- see :func:`_refuse_if_eval`.
     """
+    header: str | None = None
     if path.suffix == ".jsonl":
         records: list[Any] = [
             json.loads(line)
@@ -285,6 +341,7 @@ def load_seeds(path: Path, side: str | None = None) -> list[Seed]:
         raw = json.loads(path.read_text(encoding="utf-8"))
         if isinstance(raw, dict) and "entries" in raw:
             records = raw["entries"]
+            header = raw.get("header")
         elif isinstance(raw, list):
             records = raw
         else:
@@ -295,16 +352,12 @@ def load_seeds(path: Path, side: str | None = None) -> list[Seed]:
     if _looks_like_skill_records(records):
         return [_seed_from_skill_record(r, side) for r in records]
 
-    inferred_side = side or _infer_side(path)
-    if inferred_side is None:
-        raise ConfigError(
-            f"{path}: cannot infer the split side from the filename; pass --side explicitly"
-        )
-    return [_seed_from_split_entry(r, inferred_side) for r in records]
+    resolved_side = _resolve_side(path, header, side)
+    return [_seed_from_split_entry(r, resolved_side) for r in records]
 
 
 def _expected_description(seed: Seed) -> str:
-    if seed.kind == "skill":
+    if seed.seed_format == "skills":
         return f"the {seed.expect['skill']!r} capability, and only that capability, handles this"
     return json.dumps(seed.expect, sort_keys=True)
 
@@ -354,7 +407,7 @@ REVIEWER_SYSTEM_CHANGE_CHECK = REVIEWER_SYSTEM + (
 
 def generator_prompt(seed: Seed) -> tuple[str, str]:
     """Return ``(system, user)`` for the generator role."""
-    if seed.kind == "skill":
+    if seed.seed_format == "skills":
         user = (
             f"Capability description: {seed.seed_text}\n\n"
             "Write one user request this capability answers."
@@ -441,19 +494,53 @@ def default_caller(role: RoleConfig, system: str, user: str) -> str:
 # reviewer verdict parsing (robust: anything but a clear "yes" is "no")
 # ---------------------------------------------------------------------------
 
-_VERDICT_RE = re.compile(r"^\W*(yes|no)\b[:,.\-]?\s*", re.IGNORECASE)
+#: The first word, allowing it to be wrapped in markdown emphasis/quoting
+#: (``**yes**``, ``"yes"``, ``_yes_``) and followed by one piece of
+#: sentence punctuation (``yes,`` / ``yes:`` / ``yes.``).
+_FIRST_WORD_RE = re.compile(r"""^[\s*_`"']*([A-Za-z]+)[.,:;]?""")
+
+#: A verdict that hedges -- even one that starts with "yes" -- is not a
+#: clear accept. Matched as a standalone word so "couldn't"/"unlikely"-style
+#: words don't false-positive.
+_HEDGE_WORDS = (
+    "but",
+    "however",
+    "although",
+    "though",
+    "unless",
+    "could",
+    "might",
+    "may",
+    "ambiguous",
+    "unclear",
+    "partially",
+)
+_NO_RE = re.compile(r"\bno\b", re.IGNORECASE)
+_HEDGE_RE = re.compile(r"\b(" + "|".join(_HEDGE_WORDS) + r")\b", re.IGNORECASE)
 
 
 def parse_verdict(text: str) -> tuple[bool, str]:
+    """Parse a reviewer's free-text reply into ``(accepted, reason)``.
+
+    A verdict is an accept ONLY if the first word is exactly "yes" (allowing
+    surrounding markdown and one trailing punctuation mark) AND the rest of
+    the reply contains no standalone "no" and none of :data:`_HEDGE_WORDS`.
+    Anything else -- including a hedged "yes, but ..." -- is a reject, with
+    the full reply kept as the reason so a rejection is auditable. An empty
+    reply is a reject with reason "empty reply", never an accept.
+    """
     stripped = text.strip()
     if not stripped:
         return False, "empty reply"
-    match = _VERDICT_RE.match(stripped)
-    if match is None:
+    match = _FIRST_WORD_RE.match(stripped)
+    first_word = match.group(1) if match else ""
+    if first_word.lower() != "yes":
         return False, stripped
-    accepted = match.group(1).lower() == "yes"
-    reason = stripped[match.end() :].strip() or stripped
-    return accepted, reason
+    rest = stripped[match.end() :]
+    if _NO_RE.search(rest) or _HEDGE_RE.search(rest):
+        return False, stripped
+    reason = rest.strip(" \t\n*_`\"'.,:;-—") or stripped
+    return True, reason
 
 
 def _reviewer_verdict(
@@ -511,6 +598,30 @@ def _append_jsonl(path: Path, record: dict[str, Any]) -> None:
         handle.write(json.dumps(record, sort_keys=True) + "\n")
 
 
+def _validate_seed_consistency(seeds: list[Seed]) -> None:
+    """Refuse before any model call if one ``source_id`` shows up with more
+    than one side or more than one ``expect`` block -- two seeds that
+    disagree about what their shared id even means must never both be
+    accepted under the same variation id ``"{source_id}~vN"``.
+    """
+    seen: dict[str, Seed] = {}
+    for seed in seeds:
+        prior = seen.get(seed.source_id)
+        if prior is None:
+            seen[seed.source_id] = seed
+            continue
+        if prior.side != seed.side:
+            raise ValueError(
+                f"source_id {seed.source_id!r} appears with more than one side "
+                f"({prior.side!r} and {seed.side!r})"
+            )
+        if prior.expect != seed.expect:
+            raise ValueError(
+                f"source_id {seed.source_id!r} appears with more than one expect block "
+                f"({prior.expect!r} and {seed.expect!r})"
+            )
+
+
 def _process_variation(
     seed: Seed,
     variation_id: str,
@@ -551,28 +662,26 @@ def _process_variation(
     }
 
     accepted = accept_a and accept_b
+    # The record keeps the source entry's own corpus fields (kind/source/
+    # class for a split seed; nothing for a skill seed, which is not a
+    # corpus entry) and separately records which seed file shape produced
+    # it, so an accepted split-seed record still loads via
+    # nvsh.tiers.bench.load_corpus (bug: it used to overwrite "kind" with
+    # "split"/"skill", which load_corpus rejects as an unknown kind).
+    record: dict[str, Any] = {
+        "id": variation_id,
+        "source_id": seed.source_id,
+        "side": seed.side,
+        "seed_format": seed.seed_format,
+        "text": corrected_text,
+        "expect": seed.expect,
+        "models": models,
+    }
+    record.update(seed.corpus_fields)
     if accepted:
         counts.accepted += 1
-        record: dict[str, Any] = {
-            "id": variation_id,
-            "source_id": seed.source_id,
-            "side": seed.side,
-            "kind": seed.kind,
-            "text": corrected_text,
-            "expect": seed.expect,
-            "models": models,
-        }
     else:
-        record = {
-            "id": variation_id,
-            "source_id": seed.source_id,
-            "side": seed.side,
-            "kind": seed.kind,
-            "text": corrected_text,
-            "expect": seed.expect,
-            "models": models,
-            "verdicts": verdicts,
-        }
+        record["verdicts"] = verdicts
     return {"accepted": accepted, "record": record}
 
 
@@ -589,6 +698,7 @@ def run_pipeline(
     seeds: list[Seed] = []
     for seed_file in seed_files:
         seeds.extend(load_seeds(seed_file, side))
+    _validate_seed_consistency(seeds)
 
     done = _existing_ids(accepted_out) | _existing_ids(rejected_out)
     counts = PipelineCounts()
@@ -612,6 +722,11 @@ def run_pipeline(
                 _append_jsonl(accepted_out, outcome["record"])
             else:
                 _append_jsonl(rejected_out, outcome["record"])
+            # Reserve the id the moment it is written: two seeds that share a
+            # source_id (already proven consistent above, e.g. the same
+            # entry loaded from two seed files) must never both write the
+            # same variation id in one run.
+            done.add(variation_id)
             processed += 1
     return counts
 
@@ -624,7 +739,14 @@ def run_pipeline(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("seed_files", nargs="+", help="split-side file(s) or a jetson tools.json")
-    parser.add_argument("--side", default=None, help="train/val/test; inferred from the filename")
+    parser.add_argument(
+        "--side",
+        default=None,
+        help=(
+            "train/val/test; only for a file whose side cannot be inferred from its "
+            "filename or header -- must agree with an inferable file's own side"
+        ),
+    )
     parser.add_argument("--per-source", type=int, default=3, help="variations to attempt per seed")
     parser.add_argument("--limit", type=int, default=None, help="cap total variations (dry runs)")
     parser.add_argument("--accepted-out", default="accepted.jsonl")
