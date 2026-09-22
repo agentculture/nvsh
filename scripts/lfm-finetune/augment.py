@@ -472,8 +472,9 @@ GENERATOR_SYSTEM_SKILL = (
     "You write realistic user requests for a training dataset that teaches a "
     "router which capability should handle a request. You are given the "
     "description of one capability. Write one natural user request that this "
-    "capability -- and only this capability -- would answer. Do not name the "
-    "capability outright. Reply with only the request, nothing else."
+    "capability -- and only this capability -- would answer. Do not use the "
+    "capability's identifier; describing the task in ordinary words is fine. "
+    "Reply with only the request, nothing else."
 )
 
 CORRECTOR_SYSTEM = (
@@ -527,9 +528,12 @@ REVIEWER_SYSTEM_SKILL = (
     "You are a strict reviewer for a dataset that teaches a router which "
     "capability should handle a user request. You are given one capability's "
     "description and a user request. Answer 'yes' only if this capability is "
-    "the right one to handle the request and the request does not name the "
-    "capability outright; otherwise answer 'no'. Start your reply with the "
-    "single word 'yes' or 'no', then a short reason."
+    "the right one to handle the request and the request does not use the "
+    "capability's identifier (its name as given, e.g. with hyphens or "
+    "underscores); otherwise answer 'no'. Naming the technique or task in "
+    'ordinary words ("speculative decoding", "headless mode") is how '
+    "real users write and is fine. Start your reply with the single word "
+    "'yes' or 'no', then a short reason."
 )
 
 REVIEWER_SYSTEM_CHANGE_CHECK = REVIEWER_SYSTEM + (

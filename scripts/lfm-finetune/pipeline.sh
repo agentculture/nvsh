@@ -20,6 +20,11 @@
 # `grant run --inject VAR=NAME -- ...`), never from this file or the env file.
 set -euo pipefail
 
+# Everything runs inside main(), called on the last line, so bash parses the
+# whole file before executing any of it: a stage that runs for hours is not
+# broken by the script being edited or updated underneath it.
+main() {
+
 HERE=$(cd "$(dirname "$0")" && pwd)
 REPO_ROOT=$(cd "$HERE/../.." && pwd)
 
@@ -135,3 +140,6 @@ case "$STAGE" in
     die "unknown stage '$STAGE' (see the header of $0)"
     ;;
 esac
+}
+
+main "$@"
