@@ -545,19 +545,42 @@ def _find_contamination(
         if not norm_t:
             continue
         train_tokens = norm_t.split()
-        if len(eval_tokens) >= MIN_TOKENS_FOR_EXACT_MATCH and _contains_token_sequence(
-            eval_tokens, train_tokens
-        ):
+        # Both sides must be long enough: a one-word training string ("it")
+        # contained in an eval is not evidence the eval was copied.
+        if min(
+            len(eval_tokens), len(train_tokens)
+        ) >= MIN_TOKENS_FOR_EXACT_MATCH and _contains_token_sequence(eval_tokens, train_tokens):
             return Contamination(eval_id, field, "exact", raw[:200])
-        sim = _jaccard(eval_shingles, _shingles(norm_t))
-        if sim >= threshold:
-            return Contamination(eval_id, field, f"near-duplicate (jaccard={sim:.2f})", raw[:200])
-        words = _jaccard(frozenset(eval_tokens), frozenset(train_tokens))
-        if len(eval_tokens) >= MIN_TOKENS_FOR_EXACT_MATCH and words >= PARAPHRASE_WORD_JACCARD:
-            return Contamination(
-                eval_id, field, f"paraphrase (word jaccard={words:.2f})", raw[:200]
-            )
+        if len(train_tokens) < MIN_TOKENS_FOR_EXACT_MATCH:
+            continue
+        # Compare eval-sized windows, so a near-copy buried in unrelated
+        # text is not diluted by it.
+        for window in _windows(train_tokens, len(eval_tokens)):
+            sim = _jaccard(eval_shingles, _shingles(" ".join(window)))
+            if sim >= threshold:
+                return Contamination(
+                    eval_id, field, f"near-duplicate (jaccard={sim:.2f})", raw[:200]
+                )
+            words = _jaccard(frozenset(eval_tokens), frozenset(window))
+            if len(eval_tokens) >= MIN_TOKENS_FOR_EXACT_MATCH and words >= PARAPHRASE_WORD_JACCARD:
+                return Contamination(
+                    eval_id, field, f"paraphrase (word jaccard={words:.2f})", raw[:200]
+                )
     return None
+
+
+def _windows(tokens: list[str], size: int) -> Iterable[list[str]]:
+    """Every run of *tokens* the length of the eval, give or take a quarter.
+
+    A training string no longer than that is compared whole.
+    """
+    slack = max(1, size // 4)
+    if len(tokens) <= size + slack:
+        yield tokens
+        return
+    for length in range(max(1, size - slack), size + slack + 1):
+        for start in range(len(tokens) - length + 1):
+            yield tokens[start : start + length]
 
 
 def scan_contamination(
@@ -657,13 +680,36 @@ def write_outputs(result: BuildResult, out_dir: Path) -> None:
 
 
 def fetch_repo(url: str, sha: str, dest: Path) -> None:
-    """``git clone`` *url* into *dest* and check out *sha*. Refuses to clone
-    over an existing, non-empty *dest* (assumed already checked out)."""
+    """``git clone`` *url* into *dest* and check out *sha*.
+
+    An existing, non-empty *dest* is reused only if it is a clean checkout of
+    exactly *sha*; anything else raises, so the manifest never records a
+    commit other than the files it was built from.
+    """
     if dest.exists() and any(dest.iterdir()):
+        verify_checkout(dest, sha)
         return
     dest.parent.mkdir(parents=True, exist_ok=True)
     subprocess.run(["git", "clone", "--quiet", url, str(dest)], check=True)
     subprocess.run(["git", "-C", str(dest), "checkout", "--quiet", sha], check=True)
+
+
+def verify_checkout(dest: Path, sha: str) -> None:
+    """Raise ``ValueError`` unless *dest* is a clean git checkout at *sha*."""
+    head = subprocess.run(
+        ["git", "-C", str(dest), "rev-parse", "HEAD"], capture_output=True, text=True
+    )
+    if head.returncode != 0:
+        raise ValueError(
+            f"{dest} exists but is not a git checkout; remove it or pick another --work-dir"
+        )
+    if head.stdout.strip() != sha:
+        raise ValueError(f"{dest} is at {head.stdout.strip()}, not the pinned {sha}")
+    dirty = subprocess.run(
+        ["git", "-C", str(dest), "status", "--porcelain"], capture_output=True, text=True
+    )
+    if dirty.stdout.strip():
+        raise ValueError(f"{dest} has local changes; the manifest would not describe it")
 
 
 # ---------------------------------------------------------------------------
@@ -676,8 +722,12 @@ def _cmd_build(args: argparse.Namespace) -> int:
     device_root = work_dir / DEVICE_REPO
     bsp_root = work_dir / BSP_REPO
     if not args.skip_fetch:
-        fetch_repo(args.device_url, args.device_sha, device_root)
-        fetch_repo(args.bsp_url, args.bsp_sha, bsp_root)
+        try:
+            fetch_repo(args.device_url, args.device_sha, device_root)
+            fetch_repo(args.bsp_url, args.bsp_sha, bsp_root)
+        except ValueError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
 
     result = build_from_checkout(
         device_root, bsp_root, args.device_sha, args.bsp_sha, args.device_url, args.bsp_url

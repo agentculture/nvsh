@@ -455,9 +455,17 @@ def compute_false_mutating(items: Sequence[ItemResult]) -> dict:
 
 
 def compute_escalation(items: Sequence[ItemResult]) -> dict:
-    """Precision/recall of "this request should escalate" over the whole corpus."""
+    """Precision/recall of "this request should escalate" over the whole corpus.
+
+    Explain entries are left out: a decline is the right Tier 1 answer for
+    them (see :func:`_is_correct`), so counting one as a false escalation
+    would penalise a correct outcome; how often they are explained is
+    reported separately.
+    """
     tp = fp = fn = tn = 0
     for item in items:
+        if item.entry.expect.get("explain"):
+            continue
         expected = bool(item.entry.expect.get("escalate"))
         got = item.outcome is not None and item.outcome.escalated_to is not None
         if expected and got:
@@ -490,7 +498,7 @@ def _pick_is_correct(entry: CorpusEntry, outcome: TierOutcome) -> bool:
     wrong service or container as a positive calibration/threshold sample,
     even though the main accuracy score correctly marks it wrong.
     """
-    if entry.expect.get("escalate"):
+    if _expects_decline(entry):
         return False
     if outcome.operation != entry.expect.get("operation"):
         return False

@@ -215,3 +215,38 @@ def test_a_kind_too_small_for_every_side_is_named() -> None:
     sides, _ = split.stratified_split(entries)
     gaps = split.absent_from_sides(sides)
     assert gaps and all(kind == "explain" for kind, _ in gaps)
+
+
+def test_fractions_outside_zero_to_one_are_refused() -> None:
+    split = _module()
+    entries = [_escalate_entry(str(i)) for i in range(10)]
+    with pytest.raises(ValueError, match="between 0 and 1"):
+        split.stratified_split(entries, fractions=(-0.5, 0.75, 0.75))
+
+
+def test_variations_of_one_source_stay_on_one_side_and_keep_their_source_id() -> None:
+    split = _module()
+    entries = [_operation_entry(f"o{i}") for i in range(9)]
+    entries += [{**_escalate_entry(f"v{i}"), "source_id": "parent"} for i in range(3)] + [
+        _escalate_entry(f"e{i}") for i in range(6)
+    ]
+    sides, _ = split.stratified_split(entries)
+    holding = [
+        name for name, side in sides.items() if any(e["source_id"] == "parent" for e in side)
+    ]
+    assert len(holding) == 1
+    assert sum(1 for e in sides[holding[0]] if e["source_id"] == "parent") == 3
+
+
+def test_cli_fails_when_a_kind_cannot_reach_every_side(tmp_path, capsys) -> None:
+    split = _module()
+    entries = [_operation_entry(f"o{i}") for i in range(3)] + [
+        _escalate_entry(f"e{i}") for i in range(3)
+    ]
+    entries += [_entry(f"x{i}", {"explain": True}) for i in range(2)]
+    corpus = tmp_path / "c.json"
+    corpus.write_text(json.dumps({"entries": entries}))
+    with pytest.raises(SystemExit):
+        split.main(["--corpus", str(corpus), "--out-dir", str(tmp_path / "out")])
+    assert "too few entries" in capsys.readouterr().err
+    assert not (tmp_path / "out" / "train.json").exists()

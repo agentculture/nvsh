@@ -438,3 +438,43 @@ def test_scan_leaves_a_different_request_about_the_same_device_clean() -> None:
         "e1", "text", eval_text, [training], [module.normalize_text(training)], 0.8
     )
     assert hit is None
+
+
+def test_a_one_word_training_string_is_not_an_exact_copy() -> None:
+    module = _module()
+    hit = module._find_contamination("e1", "text", _PROBE_EVAL, ["it"], ["it"], 0.8)
+    assert hit is None
+
+
+def test_a_paraphrase_buried_in_unrelated_text_is_flagged() -> None:
+    module = _module()
+    padding = "Simmer the onions slowly and water the tomatoes twice a week in summer. " * 4
+    training = padding + _PROBE_PARAPHRASE + " " + padding
+    hit = module._find_contamination(
+        "e1", "text", _PROBE_EVAL, [training], [module.normalize_text(training)], 0.8
+    )
+    assert hit is not None
+
+
+def test_an_existing_checkout_at_another_commit_is_refused(tmp_path) -> None:
+    import subprocess
+
+    module = _module()
+    repo = tmp_path / "device"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    (repo / "f").write_text("x")
+    subprocess.run(["git", "-C", str(repo), "add", "f"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "x"],
+        check=True,
+    )
+    head = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True, check=True
+    ).stdout.strip()
+    module.verify_checkout(repo, head)
+    with pytest.raises(ValueError, match="not the pinned"):
+        module.fetch_repo("unused", "0" * 40, repo)
+    (repo / "f").write_text("changed")
+    with pytest.raises(ValueError, match="local changes"):
+        module.verify_checkout(repo, head)

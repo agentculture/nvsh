@@ -857,3 +857,21 @@ def test_load_corpus_reports_an_expect_that_mixes_a_decline_with_an_operation(tm
     loaded = bench_mod.load_corpus(path)
     assert loaded.entries == ()
     assert len(loaded.problems) == 2
+
+
+def test_an_escalated_explain_entry_is_not_a_false_escalation() -> None:
+    entry = bench_mod.CorpusEntry(
+        id="x1", kind="explicit", text="q", expect={"explain": True}, source="t"
+    )
+    item = bench_mod.ItemResult(
+        entry=entry, outcome=bench_mod.TierOutcome(escalated_to="agent"), latency_ms=1.0
+    )
+    result = bench_mod.compute_escalation([item])
+    assert result["fp"] == 0 and result["tp"] == 0
+
+
+def test_a_pick_against_an_explain_entry_is_never_a_correct_calibration_sample() -> None:
+    entry = bench_mod.CorpusEntry(
+        id="x1", kind="explicit", text="q", expect={"explain": True}, source="t"
+    )
+    assert bench_mod._pick_is_correct(entry, bench_mod.TierOutcome()) is False
