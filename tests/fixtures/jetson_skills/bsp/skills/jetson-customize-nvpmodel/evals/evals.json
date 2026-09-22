@@ -1,0 +1,24 @@
+[
+  {
+    "id": "jetson-customize-nvpmodel-001",
+    "question": "I downloaded a custom 30W nvpmodel.conf from the NVIDIA Power Estimator for my P3767-0001. Add it as ID 8 NAME 30W_CUSTOM and make it the boot default with /jetson-customize-nvpmodel.",
+    "expected_skill": "jetson-customize-nvpmodel",
+    "expected_script": null,
+    "ground_truth": "Resolve <active-sku>, verify the file exists, apply the Overlay edit recipe, insert the new POWER_MODEL block, edit PM_CONFIG DEFAULT, propagate to siblings, commit, and deploy via /jetson-promote-image then /jetson-flash-image.",
+    "expected_behavior": [
+      "Read skills/jetson-customize-nvpmodel/SKILL.md",
+      "Resolve <active-sku> and verify the file exists"
+    ]
+  },
+  {
+    "id": "jetson-customize-nvpmodel-002",
+    "question": "My GPU MAX_FREQ edit in nvpmodel doesn't take effect. What's the right fix?",
+    "expected_skill": "jetson-customize-nvpmodel",
+    "expected_script": null,
+    "ground_truth": "Frequency values must come from the kernel's available_frequencies table; a value outside the table gets silently rounded. Re-run the Power Estimator and apply the fresh conf via the Overlay edit recipe.",
+    "expected_behavior": [
+      "Identify the silent-rounding cause",
+      "Re-run the Power Estimator for a fresh conf"
+    ]
+  }
+]

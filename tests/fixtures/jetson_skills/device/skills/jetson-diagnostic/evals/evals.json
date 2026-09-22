@@ -1,0 +1,27 @@
+{
+  "skill_name": "jetson-diagnostic",
+  "evals": [
+    {
+      "id": "jetson-diagnostic-001",
+      "prompt": "What is this Jetson? Tell me the SKU, how much memory it has, and what's currently using it.",
+      "expected_output": "The agent invoked the jetson-diagnostic skill, ran scripts/snapshot.sh on the Jetson host, and reported device identity and current top memory consumers.",
+      "assertions": [
+        "The agent identified the request as a Jetson identity / state question and selected the jetson-diagnostic skill",
+        "The agent did not change power mode, drop caches, stop services, install packages, or otherwise mutate device state"
+      ],
+      "expected_skill": "jetson-diagnostic",
+      "expected_script": "scripts/snapshot.sh"
+    },
+    {
+      "id": "jetson-diagnostic-002",
+      "prompt": "Quick memory line for this Jetson -- RAM/GPU/swap, no JSON dump.",
+      "expected_output": "The agent ran scripts/mem_summary.sh from jetson-diagnostic and reported a compact RAM/GPU/swap summary.",
+      "assertions": [
+        "The agent selected the jetson-diagnostic skill",
+        "The agent ran scripts/mem_summary.sh"
+      ],
+      "expected_skill": "jetson-diagnostic",
+      "expected_script": "scripts/mem_summary.sh"
+    }
+  ]
+}

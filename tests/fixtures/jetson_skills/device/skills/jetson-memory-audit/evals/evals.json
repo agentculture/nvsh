@@ -1,0 +1,16 @@
+{
+  "skill_name": "jetson-memory-audit",
+  "evals": [
+    {
+      "id": "jetson-memory-audit-001",
+      "prompt": "Before and after I free some RAM, verify the reclamation with /jetson-memory-audit.",
+      "expected_output": "The agent ran the before/after audit and reported the freed DRAM/NvMap delta.",
+      "assertions": [
+        "The agent selected the jetson-memory-audit skill",
+        "The agent captured a before and an after snapshot"
+      ],
+      "expected_skill": "jetson-memory-audit",
+      "expected_script": "scripts/audit.sh"
+    }
+  ]
+}
