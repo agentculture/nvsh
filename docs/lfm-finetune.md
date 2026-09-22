@@ -337,6 +337,7 @@ side with `measure.py --details`; the test side is not looked at.
 | stock | - | 1 of 32 | 0 of 16 | 18 of 18 | 0 | 257 ms |
 | r1 | 20 epochs, lr 5e-4, r32/a64 | 20 of 32 | 13 of 16 | 18 of 18 | 1 | 150 ms |
 | r2 | 8 epochs, lr 5e-4, r32/a64 | 12 of 32 | 15 of 16 | 16 of 18 | 0 | 189 ms |
+| r3 | 30 epochs, lr 5e-4, r64/a128 | 19 of 32 | 13 of 16 | 18 of 18 | 1 | 146 ms |
 
 r1's export check (12 of its own training entries through the launcher)
 passed 11 of 12 before its validation figure was taken (h8). Neither run meets
@@ -346,6 +347,13 @@ became `service_restart docker.service` (restarting the whole daemon)
 instead of `container_restart inference`. r2 shows fewer epochs under-trains
 on 301 examples: read-only asks (thermal, swap, power mode, services) fall
 back to words or escalation.
+
+r3 (more epochs, larger rank) lands where r1 did and repeats r1's dangerous
+`docker restart inference` mistake: settings have stopped mattering, the 301
+examples (about nine per operation) are the limit. Its first validation
+attempt failed at start-up (`No such container: nvsh-tier2-1000`) while the
+gateway's Gemma server was reloading on the same GPU; the re-run passed.
+This is why the operator approved augmenting the train side (deviation d2).
 
 Measurement ceiling (plan risk r5): nvsh deliberately refuses to render
 `power_set` for `balanced` and `low_power` (per-board nvpmodel ids are
