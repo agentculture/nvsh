@@ -937,8 +937,11 @@ def _plan_tasks(
     """
     reserved = set(done)
     tasks: list[tuple[Seed, str]] = []
-    for seed in seeds:
-        for n in range(1, per_source + 1):
+    # Round-robin: variation 1 of every seed, then variation 2, ... so a run
+    # stopped part-way (or a --limit) leaves every seed equally covered, and
+    # raising --per-source later only adds further rounds.
+    for n in range(1, per_source + 1):
+        for seed in seeds:
             if limit is not None and len(tasks) >= limit:
                 return tasks
             variation_id = f"{seed.source_id}~v{n}"

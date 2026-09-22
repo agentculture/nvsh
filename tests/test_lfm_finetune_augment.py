@@ -1530,3 +1530,20 @@ def test_each_variation_number_asks_for_a_different_phrasing_style() -> None:
 )
 def test_a_variation_that_names_an_internal_operation_is_caught(text, leak) -> None:
     assert _module().names_internal_operation(text) == leak
+
+
+def test_tasks_are_planned_round_robin_across_seeds() -> None:
+    module = _module()
+
+    def seed(source_id: str):
+        return module.Seed(
+            source_id=source_id,
+            seed_format="split",
+            side="train",
+            seed_text="x",
+            expect={"escalate": True},
+            needs_change_check=True,
+        )
+
+    tasks = module._plan_tasks([seed("a"), seed("b")], per_source=2, limit=3, done=set())
+    assert [variation_id for _, variation_id in tasks] == ["a~v1", "b~v1", "a~v2"]
