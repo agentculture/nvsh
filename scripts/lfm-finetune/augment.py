@@ -109,6 +109,7 @@ from typing import Any, Callable
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # runnable from any directory
 
 from nvsh.ops.table import get as get_operation  # noqa: E402
+from nvsh.ops.table import names as operation_names  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # seed refusal (NVIDIA evals are never a seed)
@@ -406,7 +407,45 @@ def _expected_description(seed: Seed) -> str:
             f"the {seed.expect['skill']!r} capability, and only that capability, handles this."
             f" That capability is described as: {seed.seed_text}"
         )
-    return json.dumps(seed.expect, sort_keys=True)
+    return _answer_in_words(seed.expect)
+
+
+def _answer_in_words(expect: dict[str, Any]) -> str:
+    """The expected answer as a person would state it, not as a JSON block.
+
+    Reviewers shown the raw block rejected every request that did not spell
+    out the operation's identifier (a real user never says "power_set"), so
+    the operation is named with the table's own description and arguments.
+    """
+    if expect.get("escalate"):
+        return (
+            "hand the request to the full agent: it needs investigation or changes"
+            " beyond a small fixed set of machine operations"
+        )
+    if expect.get("explain"):
+        return (
+            "answer in plain words without inspecting or changing the machine, along"
+            f" the lines of: {expect.get('answer', '')}"
+        )
+    name = str(expect.get("operation"))
+    operation = get_operation(name)
+    what = operation.description if operation is not None else name
+    args = ", ".join(f"{key} = {value}" for key, value in sorted(expect.get("args", {}).items()))
+    return f"the operation {name!r} ({what})" + (f" with {args}" if args else "")
+
+
+#: Phrasing styles the generator rotates through, one per variation number,
+#: so variations of one request differ in more than word order.
+PHRASING_STYLES = (
+    "a short imperative, as typed at a shell prompt",
+    "a polite question",
+    "a description of the symptom or situation, without saying what to do",
+    "terse, a few words, like a note to self",
+    "with technical jargon an experienced Jetson or Linux user would use",
+    "casual and conversational",
+    "as part of a longer sentence that gives a reason",
+    "as a request from a teammate who is in a hurry",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -441,7 +480,9 @@ REVIEWER_SYSTEM = (
     "You are a strict reviewer for a training dataset. You are given a user "
     "request and the fixed answer it must mean. Answer strictly 'yes' or "
     "'no' to whether the request still means exactly this answer, then a "
-    "short reason. Start your reply with the single word 'yes' or 'no'."
+    "short reason. Users never name internal operations or their argument "
+    "identifiers: judge what the request asks for, not whether it repeats "
+    "those names. Start your reply with the single word 'yes' or 'no'."
 )
 
 #: Skill seeds have no fixed answer text to compare against, only a capability
@@ -463,18 +504,24 @@ REVIEWER_SYSTEM_CHANGE_CHECK = REVIEWER_SYSTEM + (
 )
 
 
-def generator_prompt(seed: Seed) -> tuple[str, str]:
-    """Return ``(system, user)`` for the generator role."""
+def generator_prompt(seed: Seed, variation: int = 0) -> tuple[str, str]:
+    """Return ``(system, user)`` for the generator role.
+
+    *variation* picks the phrasing style (split seeds), so the Nth variation
+    of a request is asked for in a different register from the (N+1)th.
+    """
     if seed.seed_format == "skills":
         user = (
             f"Capability description: {seed.seed_text}\n\n"
             "Write one user request this capability answers."
         )
         return GENERATOR_SYSTEM_SKILL, user
+    style = PHRASING_STYLES[variation % len(PHRASING_STYLES)]
     user = (
         f"Fixed answer (do not change this): {_expected_description(seed)}\n\n"
         f"Original request: {seed.seed_text}\n\n"
         "Rewrite the request above in different words, keeping exactly the same meaning."
+        f" Write it {style}. Do not name internal operations or their identifiers."
     )
     return GENERATOR_SYSTEM_SPLIT, user
 
@@ -788,6 +835,25 @@ def _validate_seed_consistency(seeds: list[Seed]) -> None:
             )
 
 
+def names_internal_operation(text: str) -> str:
+    """The first operation-table identifier *text* names, or "" if none.
+
+    Checked on every variation after the reviewers: they let "What is the
+    operation 'memory_stats' (...)" through once in a real run.
+    """
+    lowered = text.lower()
+    for name in operation_names():
+        if re.search(rf"(?<![a-z0-9_]){re.escape(name.lower())}(?![a-z0-9_])", lowered):
+            return name
+    return ""
+
+
+def _variation_number(variation_id: str) -> int:
+    """The N in ``<source_id>~vN``; 0 when the id has no such suffix."""
+    _, _, tail = variation_id.rpartition("~v")
+    return int(tail) if tail.isdigit() else 0
+
+
 def _process_variation(
     seed: Seed,
     variation_id: str,
@@ -800,7 +866,7 @@ def _process_variation(
     Returns the record to append, tagged with ``_accepted`` (bool) so the
     caller knows which file to write it to.
     """
-    gen_system, gen_user = generator_prompt(seed)
+    gen_system, gen_user = generator_prompt(seed, _variation_number(variation_id))
     generated_text = caller(roles["GENERATOR"], gen_system, gen_user).strip()
     if not generated_text:
         raise ValueError("empty reply from generator")
@@ -827,7 +893,12 @@ def _process_variation(
         "reviewer_b": {"accept": accept_b, "reason": reason_b},
     }
 
-    accepted = accept_a and accept_b
+    leaked = names_internal_operation(corrected_text)
+    if leaked:
+        # Deterministic, whatever the reviewers said: a request that names an
+        # internal operation teaches the model that users talk in identifiers.
+        verdicts["identifier_check"] = {"accept": False, "reason": f"names {leaked!r}"}
+    accepted = accept_a and accept_b and not leaked
     # The record keeps the source entry's own corpus fields (kind/source/
     # class for a split seed; nothing for a skill seed, which is not a
     # corpus entry) and separately records which seed file shape produced

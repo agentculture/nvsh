@@ -75,3 +75,9 @@ def test_a_variation_whose_source_is_missing_is_refused() -> None:
 def test_a_variation_with_a_different_answer_is_refused() -> None:
     with pytest.raises(ValueError, match="differs"):
         _module().merge(_split(), [_variation("GPU busy?", expect={"escalate": True})])
+
+
+def test_a_repeat_differing_only_in_punctuation_is_dropped() -> None:
+    variations = [_variation("GPU busy?"), _variation("gpu busy")]
+    _, counts = _module().merge(_split(), variations)
+    assert counts == {"kept": 1, "duplicate": 1}

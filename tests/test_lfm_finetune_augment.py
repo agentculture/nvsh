@@ -1491,3 +1491,42 @@ def test_a_skill_seed_reviewer_sees_the_capability_description() -> None:
     assert system == module.REVIEWER_SYSTEM_SKILL
     assert "Read-only Jetson health snapshot." in user
     assert "Give me a health check of this Jetson" in user
+
+
+def test_the_expected_answer_is_described_in_words_not_json() -> None:
+    module = _module()
+    words = module._answer_in_words({"operation": "power_set", "args": {"mode": "max_performance"}})
+    assert "power mode" in words and "mode = max_performance" in words and "{" not in words
+    assert "full agent" in module._answer_in_words({"escalate": True})
+    assert "plain words" in module._answer_in_words({"explain": True, "answer": "It pins clocks."})
+
+
+def test_each_variation_number_asks_for_a_different_phrasing_style() -> None:
+    module = _module()
+    seed = module.Seed(
+        source_id="g1",
+        seed_format="split",
+        side="train",
+        seed_text="Show GPU load",
+        expect={"operation": "gpu_stats", "args": {}},
+        needs_change_check=True,
+    )
+    styles = {module.generator_prompt(seed, n)[1] for n in range(len(module.PHRASING_STYLES))}
+    assert len(styles) == len(module.PHRASING_STYLES)
+    assert module._variation_number("g1~v12") == 12 and module._variation_number("g1") == 0
+
+
+@pytest.mark.parametrize(
+    "text,leak",
+    [
+        (
+            "What is the operation 'memory_stats' (Show the current memory usage statistics.)",
+            "memory_stats",
+        ),
+        ("run POWER_SET to max", "power_set"),
+        ("How much memory is this Jetson using?", ""),
+        ("show the memory stats please", ""),
+    ],
+)
+def test_a_variation_that_names_an_internal_operation_is_caught(text, leak) -> None:
+    assert _module().names_internal_operation(text) == leak

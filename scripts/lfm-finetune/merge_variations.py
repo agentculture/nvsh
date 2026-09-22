@@ -29,7 +29,8 @@ _TRAIN_HEADER = re.compile(r"Split 'train' of ")
 
 
 def _normal(text: str) -> str:
-    return " ".join(text.lower().split())
+    """Case, spacing and punctuation folded, so "Restart it." repeats "restart it"."""
+    return " ".join(re.sub(r"[^\w\s]", " ", text.lower()).split())
 
 
 def merge(split: dict, variations: list[dict]) -> tuple[dict, dict[str, int]]:
