@@ -11,6 +11,15 @@ Usage::
 The script reads the nvsh benchmark corpus (and an optional export bundle),
 converts entries into JSONL examples, deduplicates, and writes the result
 for use with ``needle finetune``.
+
+Corpus entries whose ``expect`` is ``{"escalate": true}`` *or*
+``{"explain": true}`` both become the same should-decline training example
+(an empty ``answers`` list): Tier 1 (Needle3) has no explain capability --
+only Tier 2 can inspect, propose, explain or escalate -- so the honest
+mapping for a query the corpus expects to be *explained* is "Tier 1 should
+not call a tool here", the same target already used for escalation. Such an
+entry is neither an error nor a propose example: it is counted under
+``written``, never ``invalid``.
 """
 
 from __future__ import annotations
@@ -51,8 +60,16 @@ def example_from_entry(entry: dict, tools: list) -> dict | None:
 
     expect = entry.get("expect", {})
 
-    # Escalation entry
-    if expect.get("escalate"):
+    # Escalation entry, or an entry whose expectation is ``explain``.
+    #
+    # Tier 2 can inspect, propose, explain or escalate; Tier 1 (Needle3) can
+    # only propose an operation or say nothing. It has no explain
+    # capability, so the honest training target for a corpus entry that
+    # expects an explanation is the same should-decline shape already used
+    # for escalation: an empty ``answers`` list, i.e. "don't call a tool for
+    # this". This is a should-decline *example*, not a validation failure --
+    # it is counted under "written", never "invalid".
+    if expect.get("escalate") or expect.get("explain"):
         return {
             "query": entry.get("text", ""),
             "tools": tools,
