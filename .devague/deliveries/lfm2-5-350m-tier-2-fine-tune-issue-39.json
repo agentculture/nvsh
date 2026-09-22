@@ -1,0 +1,25 @@
+{
+  "plan_slug": "lfm2-5-350m-tier-2-fine-tune-issue-39",
+  "schema_version": 2,
+  "created": "2026-09-22T19:41:18Z",
+  "updated": "2026-09-22T19:41:18Z",
+  "deviations": [
+    {
+      "id": "d1",
+      "what": "Relabel dev.json entries dev-g284 ('What is a Jetson?'), dev-g285 ('How does nvpmodel work?') and dev-g286 ('Explain unified memory') from {escalate: true} to {explain: true, answer: ...}; every other existing entry stays unchanged",
+      "task_ref": "t6",
+      "reason": "t6's new explain entries cover the same topics, so keeping these three as escalate would train the tuned 350M on two opposite answers to the same question; Tier 1 scoring is unchanged because it scores explain and escalate alike as should-decline",
+      "affects": [
+        "h6",
+        "c7"
+      ],
+      "origin": "user",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 1
+    }
+  ],
+  "evidence": [],
+  "deltas": [],
+  "supersessions": []
+}

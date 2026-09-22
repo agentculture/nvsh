@@ -3338,7 +3338,8 @@
       "kind": "explicit",
       "text": "What is a Jetson?",
       "expect": {
-        "escalate": true
+        "explain": true,
+        "answer": "Jetson is NVIDIA's family of embedded computers, modules and developer kits such as Orin and Thor, that pair Arm CPU cores with an NVIDIA GPU for AI at the edge."
       },
       "class": "decline:not_a_request",
       "source": "grid-2026-09-19"
@@ -3348,7 +3349,8 @@
       "kind": "explicit",
       "text": "How does nvpmodel work?",
       "expect": {
-        "escalate": true
+        "explain": true,
+        "answer": "nvpmodel switches between predefined power modes, each of which caps the number of active CPU cores, the clocks and the power budget. `nvpmodel -q` shows the current mode and `sudo nvpmodel -m <id>` selects another."
       },
       "class": "decline:not_a_request",
       "source": "grid-2026-09-19"
@@ -3358,7 +3360,8 @@
       "kind": "explicit",
       "text": "Explain unified memory",
       "expect": {
-        "escalate": true
+        "explain": true,
+        "answer": "Unified memory means the CPU and GPU share one physical pool of memory, as on Jetson and the DGX Spark's GB10, instead of the GPU having its own VRAM, so GPU allocations come out of the same memory the rest of the system uses."
       },
       "class": "decline:not_a_request",
       "source": "grid-2026-09-19"

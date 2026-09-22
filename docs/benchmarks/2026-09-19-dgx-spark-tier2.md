@@ -7,7 +7,9 @@ nvsh at branch `feat/tiers-tier2`. Grounding: the corpus's fixture machine.
 
 Note, 2026-09-22: the dev corpus has since grown to 431 entries, adding 113
 explain entries (read-only questions answered in words, `dev-w001` to
-`dev-w113`) to the 212 operation and 106 escalate entries measured here. Every
+`dev-w113`) to the 212 operation and 106 escalate entries measured here, and
+three of those escalate entries (`dev-g284` to `dev-g286`) now expect explain
+(deviation `d1`), leaving 212 / 103 / 116. Every
 number on this page was measured on the 318-entry grid and has not been re-run.
 
 ## Tier 1, stock Needle3 (cactus-needle 3.0.1 engine, CPU)
