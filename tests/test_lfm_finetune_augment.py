@@ -120,16 +120,19 @@ def _always(text: str) -> Responder:
     return lambda body, auth: text
 
 
-def _split_seed_file(tmp_path: Path, name: str = "val.json", **entry_overrides: Any) -> Path:
+def _split_seed_file(
+    tmp_path: Path, name: str = "val.json", header: str = "fixture", **entry_overrides: Any
+) -> Path:
     entry = {
         "id": "dev-e01~x",
+        "kind": "explicit",
         "text": "How hot is this machine?",
         "expect": {"operation": "thermal_stats", "args": {}},
         "source_id": "dev-e01",
     }
     entry.update(entry_overrides)
     path = tmp_path / name
-    path.write_text(json.dumps({"header": "fixture", "entries": [entry]}), encoding="utf-8")
+    path.write_text(json.dumps({"header": header, "entries": [entry]}), encoding="utf-8")
     return path
 
 
@@ -197,6 +200,11 @@ def test_accepted_variation_inherits_side_answer_and_source(tmp_path, monkeypatc
     assert record["side"] == "val"  # inferred from the val.json filename
     assert record["expect"] == {"operation": "thermal_stats", "args": {}}
     assert record["text"] == "How warm is the box right now?"
+    # bug 4: the record keeps the source entry's own corpus "kind"
+    # (explicit/failure), never a "split"/"skill" seed-format label, and
+    # records the seed format separately.
+    assert record["kind"] == "explicit"
+    assert record["seed_format"] == "split"
     assert not rejected.exists()
 
 
@@ -439,7 +447,9 @@ def test_tools_json_seed_mode(tmp_path, monkeypatch, fake_server):
     assert counts.accepted == 1
     record = json.loads((tmp_path / "accepted.jsonl").read_text().splitlines()[0])
     assert record["source_id"] == "jetson-diagnostic"
-    assert record["kind"] == "skill"
+    assert record["seed_format"] == "skills"
+    # A skill seed is not a corpus entry: it must not carry a corpus "kind".
+    assert "kind" not in record
     assert record["expect"] == {"skill": "jetson-diagnostic"}
     assert record["id"] == "jetson-diagnostic~v1"
     assert "Diagnose common Jetson boot" in seen_prompts["generator_user"]
@@ -664,3 +674,248 @@ def test_source_has_no_non_localhost_url_literal():
     for line in text.splitlines():
         if "http://" in line:
             assert "127.0.0.1" in line or "localhost" in line
+
+
+# ---------------------------------------------------------------------------
+# bug 1: parse_verdict must only accept a clear, unhedged "yes"
+# ---------------------------------------------------------------------------
+
+
+def test_parse_verdict_rejects_yes_no_no():
+    accepted, reason = aug.parse_verdict("yes/no: no")
+    assert accepted is False
+    assert reason == "yes/no: no"
+
+
+def test_parse_verdict_rejects_yes_question_then_no():
+    accepted, reason = aug.parse_verdict("yes? No, this changes the answer.")
+    assert accepted is False
+    assert reason == "yes? No, this changes the answer."
+
+
+def test_parse_verdict_rejects_hedged_yes_but():
+    text = "Yes, but it could also be read as a request to restart"
+    accepted, reason = aug.parse_verdict(text)
+    assert accepted is False
+    assert reason == text
+
+
+def test_parse_verdict_rejects_empty_reply():
+    assert aug.parse_verdict("") == (False, "empty reply")
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "yes",
+        "Yes.",
+        "yes, matches exactly",
+        "**Yes**, this matches",
+        "yes: same request",
+    ],
+)
+def test_parse_verdict_accepts_clear_yes(text):
+    accepted, _reason = aug.parse_verdict(text)
+    assert accepted is True
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "no",
+        "no, this drifts",
+        "maybe",
+        "yesterday this would work",  # not the word "yes"
+        "yes, however it could be read differently",
+        "yes, although unclear",
+        "yes, this is ambiguous",
+        "yes, but only partially",
+    ],
+)
+def test_parse_verdict_rejects_non_clean_yes(text):
+    accepted, _reason = aug.parse_verdict(text)
+    assert accepted is False
+
+
+# ---------------------------------------------------------------------------
+# bug 2: --side must not override a file's own inferable side
+# ---------------------------------------------------------------------------
+
+
+def test_side_flag_conflicting_with_filename_is_refused(tmp_path):
+    seed_file = _split_seed_file(tmp_path, name="test.json")
+    with pytest.raises(aug.ConfigError, match="test"):
+        aug.load_seeds(seed_file, side="train")
+
+
+def test_side_flag_agreeing_with_filename_is_allowed(tmp_path):
+    seed_file = _split_seed_file(tmp_path, name="test.json")
+    seeds = aug.load_seeds(seed_file, side="test")
+    assert seeds[0].side == "test"
+
+
+def test_side_inferred_from_split_py_header_when_filename_is_renamed(tmp_path):
+    header = "Split 'train' of dev.json (seed=42)."
+    seed_file = _split_seed_file(tmp_path, name="renamed_batch.json", header=header)
+    seeds = aug.load_seeds(seed_file)
+    assert seeds[0].side == "train"
+
+
+def test_side_flag_conflicting_with_header_inferred_side_is_refused(tmp_path):
+    header = "Split 'train' of dev.json (seed=42)."
+    seed_file = _split_seed_file(tmp_path, name="renamed_batch.json", header=header)
+    with pytest.raises(aug.ConfigError, match="train"):
+        aug.load_seeds(seed_file, side="val")
+
+
+# ---------------------------------------------------------------------------
+# bug 3: one source_id must not carry two sides or two expect blocks, and an
+# id can never be written twice in one run
+# ---------------------------------------------------------------------------
+
+
+def test_conflicting_side_for_shared_source_id_is_refused_before_any_model_call(
+    tmp_path, monkeypatch, fake_server
+):
+    _server, url = fake_server
+    train_file = _split_seed_file(tmp_path, name="train.json")
+    test_file = _split_seed_file(tmp_path, name="test.json")  # same source_id, different side
+    _set_roles(monkeypatch, url, DEFAULT_MODELS)
+    calls = {"n": 0}
+
+    def _counting(body, auth):
+        calls["n"] += 1
+        return "yes"
+
+    _server.responders.update(
+        {m: _counting for m in ("gen-model", "cor-model", "rev-a-model", "rev-b-model")}
+    )
+    roles = aug.load_all_roles()
+    with pytest.raises(ValueError, match="dev-e01"):
+        aug.run_pipeline(
+            seed_files=[train_file, test_file],
+            roles=roles,
+            accepted_out=tmp_path / "accepted.jsonl",
+            rejected_out=tmp_path / "rejected.jsonl",
+            per_source=1,
+        )
+    assert calls["n"] == 0
+
+
+def test_conflicting_expect_for_shared_source_id_is_refused(tmp_path, monkeypatch, fake_server):
+    _server, url = fake_server
+    file_a = _split_seed_file(tmp_path, name="val.json")
+    file_b = _split_seed_file(
+        tmp_path,
+        name="val2.jsonl",
+    )
+    # val2.jsonl: same source_id, different expect block, side inferred as "val"
+    # via explicit --side since the filename can't be inferred.
+    file_b.write_text(
+        json.dumps(
+            {
+                "id": "dev-e01~y",
+                "kind": "explicit",
+                "text": "How hot is this machine?",
+                "expect": {"operation": "power_stats", "args": {}},
+                "source_id": "dev-e01",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    _set_roles(monkeypatch, url, DEFAULT_MODELS)
+    roles = aug.load_all_roles()
+    with pytest.raises(ValueError, match="dev-e01"):
+        aug.run_pipeline(
+            seed_files=[file_a, file_b],
+            roles=roles,
+            accepted_out=tmp_path / "accepted.jsonl",
+            rejected_out=tmp_path / "rejected.jsonl",
+            per_source=1,
+            side="val",
+        )
+
+
+def test_duplicate_consistent_seed_across_files_never_writes_the_same_id_twice(
+    tmp_path, monkeypatch, fake_server
+):
+    _server, url = fake_server
+    file_a = _split_seed_file(tmp_path, name="val.json")
+    file_b = _split_seed_file(tmp_path, name="val_copy.jsonl")
+    # val_copy.jsonl: the identical source, same side and expect -- e.g. the
+    # same seed accidentally included in two input files.
+    file_b.write_text(
+        json.dumps(
+            {
+                "id": "dev-e01~x",
+                "kind": "explicit",
+                "text": "How hot is this machine?",
+                "expect": {"operation": "thermal_stats", "args": {}},
+                "source_id": "dev-e01",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    _set_roles(monkeypatch, url, DEFAULT_MODELS)
+    _server.responders.update(
+        {
+            "gen-model": _always("rephrased"),
+            "cor-model": _always("rephrased"),
+            "rev-a-model": _always("yes"),
+            "rev-b-model": _always("yes"),
+        }
+    )
+    roles = aug.load_all_roles()
+    counts = aug.run_pipeline(
+        seed_files=[file_a, file_b],
+        roles=roles,
+        accepted_out=tmp_path / "accepted.jsonl",
+        rejected_out=tmp_path / "rejected.jsonl",
+        per_source=1,
+        side="val",
+    )
+    assert counts.accepted == 1
+    lines = (tmp_path / "accepted.jsonl").read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 1
+    assert json.loads(lines[0])["id"] == "dev-e01~v1"
+
+
+# ---------------------------------------------------------------------------
+# bug 4: an accepted split-seed record must load via nvsh.tiers.bench's
+# load_corpus (it keeps the source entry's own corpus "kind"), while a skill
+# seed record is clearly marked as not being a corpus entry at all
+# ---------------------------------------------------------------------------
+
+
+def test_accepted_split_record_loads_via_bench_load_corpus(tmp_path, monkeypatch, fake_server):
+    _server, url = fake_server
+    seed_file = _split_seed_file(tmp_path)
+    _set_roles(monkeypatch, url, DEFAULT_MODELS)
+    _server.responders.update(
+        {
+            "gen-model": _always("How warm is the box right now?"),
+            "cor-model": _always("How warm is the box right now?"),
+            "rev-a-model": _always("yes"),
+            "rev-b-model": _always("yes"),
+        }
+    )
+    roles = aug.load_all_roles()
+    aug.run_pipeline(
+        seed_files=[seed_file],
+        roles=roles,
+        accepted_out=tmp_path / "accepted.jsonl",
+        rejected_out=tmp_path / "rejected.jsonl",
+        per_source=1,
+    )
+    record = json.loads((tmp_path / "accepted.jsonl").read_text().splitlines()[0])
+
+    from nvsh.tiers.bench import load_corpus
+
+    corpus_path = tmp_path / "wrapped_corpus.json"
+    corpus_path.write_text(json.dumps({"entries": [record]}), encoding="utf-8")
+    result = load_corpus(corpus_path)
+    assert result.problems == ()
+    assert len(result.entries) == 1
+    assert result.entries[0].kind == "explicit"
