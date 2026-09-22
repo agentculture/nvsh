@@ -158,3 +158,43 @@ was trained against, `M` the training run. The model card must include the
 LFM Open License text, say that this is a modified LFM2.5 and what was
 changed, keep Liquid AI's notices, link the data set and this recipe, and
 state that the licence's commercial-use threshold applies to each user.
+
+## Run log (issue 39, in progress)
+
+Filed as each step happens; the guide above is rewritten from it once the run
+ends (plan task t17).
+
+### 2026-09-22: training environment on the DGX Spark (t10)
+
+Device: NVIDIA GB10, compute capability 12.1, driver 580.126.09 (CUDA 13.0),
+aarch64. A virtual environment outside the repository:
+
+```bash
+mkdir -p ~/lfm-train && cd ~/lfm-train
+uv venv --python 3.12 .venv
+uv pip install --python .venv/bin/python torch --index-url https://download.pytorch.org/whl/cu130
+uv pip install --python .venv/bin/python numpy unsloth trl peft transformers datasets accelerate
+```
+
+Result: unsloth 2026.9.9, transformers 5.5.0, torch 2.12.1+cu130 (installing
+unsloth replaced the 2.14.0+cu130 torch from the first step; CUDA still
+works). A 20-step LoRA (r 16, alpha 32, lr 2e-4, batch 2) on 10 single-turn
+examples of `LiquidAI/LFM2.5-350M` ran in 11 s at up to 95% GPU use
+(`nvidia-smi`), 1.4 GB peak memory, loss 7.18 to 1.30. Route 1 works on this
+device; Routes 2 and 3 were not tried and stay unverified.
+
+Pitfalls found:
+
+- **Render the chat template before building the `datasets.Dataset`.**
+  `Dataset.from_list(rows)` stores each row's `tools` as an Arrow struct and
+  merges every tool's schema, so each tool gains every other tool's parameter
+  keys as `null`, and the assistant's tool call too:
+  `propose(arguments={"service": null, ...}, operation='thermal_stats', reason=None)`.
+  Tier 2 at run time never sends those keys. Render
+  `tokenizer.apply_chat_template(messages, tools=tools, tokenize=False)` per
+  row first and build the data set from the text; the call then renders as
+  `[propose(arguments={}, operation='thermal_stats')]`.
+- unsloth reports "double BOS tokens" on pre-rendered text and removes one
+  itself.
+- This spike trained on the whole text; the real run must mask the loss to
+  the assistant turn (plan task t11).
