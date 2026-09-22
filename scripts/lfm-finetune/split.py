@@ -31,8 +31,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import random
 import sys
+from collections import Counter
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # runnable from any directory
@@ -103,12 +105,28 @@ def stratified_split(
     not an error, since a corpus may not yet have every kind (dev.json has
     no "explain" entries yet).
     """
+    if any(not math.isfinite(f) or not 0.0 <= f <= 1.0 for f in fractions):
+        raise ValueError(f"each fraction must be between 0 and 1, got {fractions!r}")
     if abs(sum(fractions) - 1.0) > 1e-9:
         raise ValueError(f"fractions must sum to 1.0, got {fractions!r}")
 
-    by_kind: dict[str, list[dict]] = {kind: [] for kind in EXPECTATION_KINDS}
+    id_counts = Counter(entry["id"] for entry in entries)
+    duplicates = sorted(entry_id for entry_id, count in id_counts.items() if count > 1)
+    if duplicates:
+        raise ValueError(f"duplicate entry ids would split one source across sides: {duplicates}")
+
+    # An entry that already carries a source_id (a variation, c42) is kept
+    # with every other entry of that source: sources are what get split.
+    sources: dict[str, list[dict]] = {}
     for entry in entries:
-        by_kind[expectation_kind(entry["expect"])].append(entry)
+        sources.setdefault(entry.get("source_id", entry["id"]), []).append(entry)
+
+    by_kind: dict[str, list[str]] = {kind: [] for kind in EXPECTATION_KINDS}
+    for source_id, members in sources.items():
+        kinds = {expectation_kind(member["expect"]) for member in members}
+        if len(kinds) > 1:
+            raise ValueError(f"source {source_id!r} mixes expectation kinds {sorted(kinds)}")
+        by_kind[kinds.pop()].append(source_id)
 
     missing_kinds = [kind for kind in EXPECTATION_KINDS if not by_kind[kind]]
 
@@ -117,19 +135,36 @@ def stratified_split(
         # Sort before shuffling: JSON array order is already deterministic,
         # but sorting makes that explicit and platform-independent rather
         # than relying on it.
-        group = sorted(by_kind[kind], key=lambda entry: entry["id"])
+        group = sorted(by_kind[kind])
         random.Random(seed).shuffle(group)
         counts = _allocate(len(group), fractions)
         offset = 0
         for name, count in zip(SPLIT_NAMES, counts):
-            for entry in group[offset : offset + count]:
-                sides[name].append({**entry, "source_id": entry["id"]})
+            for source_id in group[offset : offset + count]:
+                for entry in sources[source_id]:
+                    sides[name].append({**entry, "source_id": source_id})
             offset += count
 
     for name in SPLIT_NAMES:
         sides[name].sort(key=lambda entry: entry["id"])
 
     return sides, missing_kinds
+
+
+def absent_from_sides(sides: dict[str, list[dict]]) -> list[tuple[str, str]]:
+    """``(kind, side)`` pairs for a kind present in the split but missing from a side.
+
+    A kind with fewer entries than there are sides cannot reach every side;
+    this names each gap so the caller reports it instead of passing silently.
+    """
+    present = {expectation_kind(e["expect"]) for side in sides.values() for e in side}
+    return [
+        (kind, name)
+        for kind in EXPECTATION_KINDS
+        if kind in present
+        for name in SPLIT_NAMES
+        if not any(expectation_kind(e["expect"]) == kind for e in sides[name])
+    ]
 
 
 def build_splits(
@@ -183,6 +218,10 @@ def main(argv: list[str] | None = None) -> int:
         sides, missing_kinds, header = build_splits(corpus, args.seed, fractions)
     except ValueError as exc:
         parser.error(str(exc))
+    gaps = absent_from_sides(sides)
+    if gaps:
+        described = ", ".join(f"{kind!r} on {name}" for kind, name in gaps)
+        parser.error(f"too few entries to reach every side: missing {described}")
 
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
