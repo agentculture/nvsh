@@ -159,6 +159,42 @@ LFM Open License text, say that this is a modified LFM2.5 and what was
 changed, keep Liquid AI's notices, link the data set and this recipe, and
 state that the licence's commercial-use threshold applies to each user.
 
+## Running it yourself: `pipeline.sh`
+
+The whole run is one script with resumable stages, so it can run outside any
+agent session, be repeated, and be scaled up (for example to 100 variations
+per entry) by changing one number. Copy the configuration, fill it in, and
+run the stages in order:
+
+```bash
+cp scripts/lfm-finetune/pipeline.env.example my-lfm.env   # edit paths, models, sizes
+P=scripts/lfm-finetune/pipeline.sh
+$P --env my-lfm.env split             # seeded train/val/test split (seed 39)
+$P --env my-lfm.env skills            # NVIDIA skills at pinned commits: 38 tools, 104 test evals
+grant run --inject NVSH_GATEWAY_KEY=<secret> -- $P --env my-lfm.env augment-nvsh
+grant run --inject NVSH_GATEWAY_KEY=<secret> -- $P --env my-lfm.env augment-skills
+$P --env my-lfm.env assemble          # nvsh-train.jsonl, skills-train.jsonl (scan-gated)
+$P --env my-lfm.env train r1 nvsh     # train, merge, stage into the HF cache
+$P --env my-lfm.env measure-val r1    # validation run with per-entry details
+$P --env my-lfm.env measure-final r1  # stock and r1 back to back on the test side
+$P --env my-lfm.env measure-skills s1 --margin "+15 points overall"
+$P --env my-lfm.env status
+```
+
+- **Augmentation is resumable.** `augment-nvsh` and `augment-skills` skip
+  every variation id already written, so an interrupted run continues where
+  it stopped; raising `PER_SOURCE_NVSH` from 30 to 100 and running the stage
+  again adds only the new ones. `WORKERS` bounds how many are in flight: the
+  four roles share one gateway, and more than 2-4 workers returned HTTP 503
+  and made a backing model server restart (run log, 2026-09-22).
+- **Only the train side is ever augmented or trained on.** `merge_variations.py`
+  and `build_dataset.py` refuse anything else, and `measure.py` needs
+  `--final` for the test side and `--acceptance` for the held-out split.
+- **Iterate on validation, not test.** `measure-val` writes per-entry
+  details; `measure-final` is a final run and is counted in its results file.
+- **The key never touches a file.** The configuration names the variable that
+  holds the gateway key; `grant run --inject` sets it for one command.
+
 ## Run log (issue 39, in progress)
 
 Filed as each step happens; the guide above is rewritten from it once the run
@@ -316,3 +352,21 @@ Measurement ceiling (plan risk r5): nvsh deliberately refuses to render
 unverified), so an exact proposal for those is declined and escalated in the
 fixture world. At most 29 of 32 validation and 31 of 32 test proposals can
 score right.
+
+### 2026-09-22: augmentation at scale, and a gateway overload (t13, deviation d2)
+
+The operator approved augmenting the nvsh train side (deviation `d2`, about
+30 variations per train entry). The sequential `augment.py` ran at about 1.6
+variations a minute, so 8 processes were started in parallel on shards of the
+train side. Within two minutes the gateway returned `HTTP 503 Service
+Unavailable`, and the server behind one reviewer (`senses`, Gemma 4 on this
+DGX Spark, which was also carrying a training run and a Tier 2 container)
+restarted and spent several minutes reloading. The 8 processes were stopped;
+the skill run, which had been hitting the same 503s, was stopped too (its
+144 accepted requests are kept; the failed attempts are retried on resume).
+
+What changed: `augment.py` gained bounded workers, retries with backoff on
+429/5xx/timeouts, per-role timeouts and progress lines, and the run moved into
+`pipeline.sh` so the operator can run and repeat it outside an agent session.
+Lesson: a shared gateway is part of someone else's machine; start at 2
+workers and watch the error rate before adding more.
