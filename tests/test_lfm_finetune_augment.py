@@ -347,7 +347,7 @@ def test_rejected_when_either_reviewer_says_no(tmp_path, monkeypatch, fake_serve
     assert "something else" in record["verdicts"]["reviewer_b"]["reason"]
 
 
-def test_empty_reviewer_reply_is_a_reject(tmp_path, monkeypatch, fake_server):
+def test_empty_reviewer_reply_is_an_error_retried_on_resume(tmp_path, monkeypatch, fake_server):
     _server, url = fake_server
     seed_file = _split_seed_file(tmp_path)
     _set_roles(monkeypatch, url, DEFAULT_MODELS)
@@ -359,18 +359,19 @@ def test_empty_reviewer_reply_is_a_reject(tmp_path, monkeypatch, fake_server):
             "rev-b-model": _always("yes"),
         }
     )
-    rejected = tmp_path / "rejected.jsonl"
+    accepted, rejected = tmp_path / "accepted.jsonl", tmp_path / "rejected.jsonl"
     roles = aug.load_all_roles()
     counts = aug.run_pipeline(
         seed_files=[seed_file],
         roles=roles,
-        accepted_out=tmp_path / "accepted.jsonl",
+        accepted_out=accepted,
         rejected_out=rejected,
         per_source=1,
     )
-    assert counts.rejected_by_a == 1
-    record = json.loads(rejected.read_text(encoding="utf-8").splitlines()[0])
-    assert record["verdicts"]["reviewer_a"] == {"accept": False, "reason": "empty reply"}
+    # Not a judgement: nothing is written, so the next resume tries it again.
+    assert counts.errors == 1 and counts.rejected_by_a == 0
+    assert not rejected.exists() or rejected.read_text(encoding="utf-8") == ""
+    assert not accepted.exists() or accepted.read_text(encoding="utf-8") == ""
 
 
 def test_reasoning_field_is_never_read_as_the_answer(tmp_path, monkeypatch, request):

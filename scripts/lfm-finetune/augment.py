@@ -478,11 +478,13 @@ CORRECTOR_SYSTEM = (
 
 REVIEWER_SYSTEM = (
     "You are a strict reviewer for a training dataset. You are given a user "
-    "request and the fixed answer it must mean. Answer strictly 'yes' or "
-    "'no' to whether the request still means exactly this answer, then a "
-    "short reason. Users never name internal operations or their argument "
-    "identifiers: judge what the request asks for, not whether it repeats "
-    "those names. Start your reply with the single word 'yes' or 'no'."
+    "request and the response an assistant should give to it. Answer "
+    "strictly 'yes' or 'no' to whether that response is exactly the right "
+    "one for the request -- not a different operation, different arguments, "
+    "or a different kind of response -- then a short reason. Users never "
+    "name internal operations or their argument identifiers, and never ask "
+    "for a hand-off in so many words: judge what the request needs. Start "
+    "your reply with the single word 'yes' or 'no'."
 )
 
 #: Skill seeds have no fixed answer text to compare against, only a capability
@@ -546,10 +548,10 @@ def reviewer_prompt(seed: Seed, text: str) -> tuple[str, str]:
         return REVIEWER_SYSTEM_SKILL, user
     system = REVIEWER_SYSTEM_CHANGE_CHECK if seed.needs_change_check else REVIEWER_SYSTEM
     user = (
-        f"Fixed answer: {_expected_description(seed)}\n\n"
+        f"Response the assistant should give: {_expected_description(seed)}\n\n"
         f"User request: {text}\n\n"
-        "Does this request still mean exactly this answer? Answer 'yes' or 'no' "
-        "and then a short reason."
+        "Is that response exactly the right one for this request? Answer 'yes' "
+        "or 'no' and then a short reason."
     )
     return system, user
 
@@ -757,10 +759,17 @@ def parse_verdict(text: str) -> tuple[bool, str]:
 def _reviewer_verdict(
     role: RoleConfig, system: str, user: str, caller: RoleCaller
 ) -> tuple[bool, str]:
-    """Call one reviewer and parse its verdict. An empty reply (e.g. a
-    reasoning model that spent its whole budget thinking) is never an
-    accept -- it is logged as a reject with reason "empty reply"."""
+    """Call one reviewer and parse its verdict.
+
+    An empty reply (a reasoning model that spent its whole budget thinking)
+    is not a judgement, so it is neither an accept nor a reject: it raises,
+    the variation counts as an error, and the next resume tries it again.
+    In a real run a third of all rejections were empty replies recorded as
+    rejects, which threw those variations away for good.
+    """
     text = caller(role, system, user)
+    if not text.strip():
+        raise ValueError(f"empty reply from reviewer {role.model!r}")
     return parse_verdict(text)
 
 

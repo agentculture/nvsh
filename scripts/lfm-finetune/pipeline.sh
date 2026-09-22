@@ -44,8 +44,15 @@ aug_env() {
   done
   export NVSH_AUG_GENERATOR_MODEL=$AUG_GENERATOR_MODEL NVSH_AUG_CORRECTOR_MODEL=$AUG_CORRECTOR_MODEL
   export NVSH_AUG_REVIEWER_A_MODEL=$AUG_REVIEWER_A_MODEL NVSH_AUG_REVIEWER_B_MODEL=$AUG_REVIEWER_B_MODEL
-  # Rewriting a sentence needs no reasoning; reviewers keep theirs.
+  # Rewriting a sentence needs no reasoning; reviewers keep theirs, and get a
+  # budget large enough to finish thinking and still answer.
   export NVSH_AUG_GENERATOR_DISABLE_THINKING=1 NVSH_AUG_CORRECTOR_DISABLE_THINKING=1
+  export NVSH_AUG_GENERATOR_MAX_TOKENS=${AUG_REWRITE_MAX_TOKENS:-1024}
+  export NVSH_AUG_CORRECTOR_MAX_TOKENS=${AUG_REWRITE_MAX_TOKENS:-1024}
+  export NVSH_AUG_REVIEWER_A_MAX_TOKENS=${AUG_REVIEWER_MAX_TOKENS:-8192}
+  export NVSH_AUG_REVIEWER_B_MAX_TOKENS=${AUG_REVIEWER_MAX_TOKENS:-8192}
+  export NVSH_AUG_REVIEWER_A_TIMEOUT=${AUG_REVIEWER_TIMEOUT:-300}
+  export NVSH_AUG_REVIEWER_B_TIMEOUT=${AUG_REVIEWER_TIMEOUT:-300}
   [ -n "${!AUG_KEY_ENV:-}" ] || die "$AUG_KEY_ENV is not set (e.g. grant run --inject $AUG_KEY_ENV=<secret name> -- $0 ...)"
 }
 
