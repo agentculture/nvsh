@@ -5,6 +5,11 @@ Docker with `--gpus all`. The GPU was shared with the operator's own vLLM
 server (about 42 GiB) during every run, so latencies are under load.
 nvsh at branch `feat/tiers-tier2`. Grounding: the corpus's fixture machine.
 
+Note, 2026-09-22: the dev corpus has since grown to 431 entries, adding 113
+explain entries (read-only questions answered in words, `dev-w001` to
+`dev-w113`) to the 212 operation and 106 escalate entries measured here. Every
+number on this page was measured on the 318-entry grid and has not been re-run.
+
 ## Tier 1, stock Needle3 (cactus-needle 3.0.1 engine, CPU)
 
 Command: `nvsh tiers bench --tier needle`. Corpus: the 318-entry dev grid.
