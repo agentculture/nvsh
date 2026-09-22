@@ -591,7 +591,7 @@ def test_change_check_added_for_read_only_operation(tmp_path, monkeypatch, fake_
         rejected_out=tmp_path / "rejected.jsonl",
         per_source=1,
     )
-    assert "change to be made to the machine" in seen["system"]
+    assert "carried out by one of the changes listed" in seen["system"]
 
 
 def test_no_change_check_for_mutating_operation(tmp_path, monkeypatch, fake_server):
@@ -622,7 +622,7 @@ def test_no_change_check_for_mutating_operation(tmp_path, monkeypatch, fake_serv
         rejected_out=tmp_path / "rejected.jsonl",
         per_source=1,
     )
-    assert "change to be made to the machine" not in seen["system"]
+    assert "carried out by one of the changes listed" not in seen["system"]
 
 
 def test_change_check_added_for_escalate(tmp_path, monkeypatch, fake_server):
@@ -651,7 +651,7 @@ def test_change_check_added_for_escalate(tmp_path, monkeypatch, fake_server):
         rejected_out=tmp_path / "rejected.jsonl",
         per_source=1,
     )
-    assert "change to be made to the machine" in seen["system"]
+    assert "carried out by one of the changes listed" in seen["system"]
 
 
 # ---------------------------------------------------------------------------

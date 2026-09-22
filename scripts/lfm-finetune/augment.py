@@ -483,6 +483,30 @@ CORRECTOR_SYSTEM = (
     "request, nothing else."
 )
 
+
+def _capabilities() -> str:
+    """What the small assistant can do, from the operation table, in words.
+
+    Without it both reviewers judged escalations against a capable general
+    assistant ("freeing disk space is a common task, no need to hand it
+    off") and rejected every one. Built from the table, never hard-coded.
+    """
+    checks, changes = [], []
+    for name in operation_names():
+        operation = get_operation(name)
+        if operation is None:
+            continue
+        (checks if operation.read_only else changes).append(operation.description.rstrip("."))
+    return (
+        "This assistant is small and can only do these things. Checks it can run "
+        f"and report on: {'; '.join(checks)}. Changes it can propose for the user "
+        f"to approve: {'; '.join(changes)}. It can also answer a general question "
+        "in words. Anything else -- including anything that needs investigation, "
+        "several steps, or a change not in that list -- must be passed on to a "
+        "more capable assistant."
+    )
+
+
 REVIEWER_SYSTEM = (
     "You are a strict reviewer for a training dataset. You are given a user "
     "request and the response an assistant should give to it. Answer "
@@ -490,11 +514,11 @@ REVIEWER_SYSTEM = (
     "one for the request -- not a different operation, different arguments, "
     "or a different kind of response -- then a short reason. Users never "
     "name internal operations or their argument identifiers, and never ask "
-    "for a hand-off in so many words: judge what the request needs. This "
-    "assistant always asks the user to approve a change before making it, "
-    "so proposing a change for approval is the right way to carry out a "
-    "request to change something. Start your reply with the single word "
-    "'yes' or 'no'."
+    "for a hand-off in so many words: judge what the request needs. "
+    + _capabilities()
+    + " Asking the user to approve a change before making it is always the "
+    "right way to carry out a request for one of the listed changes. Start "
+    "your reply with the single word 'yes' or 'no'."
 )
 
 #: Skill seeds have no fixed answer text to compare against, only a capability
@@ -509,10 +533,9 @@ REVIEWER_SYSTEM_SKILL = (
 )
 
 REVIEWER_SYSTEM_CHANGE_CHECK = REVIEWER_SYSTEM + (
-    " The fixed answer here is read-only or an escalation, so it must never "
-    "involve changing the machine. If the request could reasonably be read "
-    "as asking for a change to be made to the machine, answer 'no' even if "
-    "it otherwise matches."
+    " The expected response here is not one of the listed changes. If the "
+    "request could reasonably be carried out by one of the changes listed "
+    "above, answer 'no' even if it otherwise matches (h30)."
 )
 
 
