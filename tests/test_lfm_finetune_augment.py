@@ -11,6 +11,8 @@ import importlib.util
 import json
 import sys
 import threading
+import time
+import urllib.error
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable
@@ -45,7 +47,17 @@ class _FakeHandler(BaseHTTPRequestHandler):
             self.send_response(404)
             self.end_headers()
             return
-        content = responder(body, self.headers.get("Authorization"))
+        result = responder(body, self.headers.get("Authorization"))
+        if isinstance(result, tuple):
+            # (status, extra_headers) -- simulates a transient/non-transient
+            # HTTP error, optionally carrying a Retry-After header.
+            status, extra_headers = result
+            self.send_response(status)
+            for header_name, header_value in (extra_headers or {}).items():
+                self.send_header(header_name, header_value)
+            self.end_headers()
+            return
+        content = result
         payload = json.dumps({"choices": [{"message": {"content": content}}]}).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
@@ -120,6 +132,27 @@ def _always(text: str) -> Responder:
     return lambda body, auth: text
 
 
+def _flaky(
+    fail_count: int,
+    status: int = 503,
+    headers: dict[str, str] | None = None,
+    success: str = "ok",
+) -> Responder:
+    """A responder that fails *fail_count* times with an HTTP *status*
+    (optionally carrying *headers*, e.g. Retry-After) then returns *success*
+    forever after."""
+    calls = {"n": 0}
+
+    def _responder(body: dict[str, Any], auth: str | None):
+        calls["n"] += 1
+        if calls["n"] <= fail_count:
+            return (status, headers)
+        return success
+
+    _responder.calls = calls  # type: ignore[attr-defined]
+    return _responder
+
+
 def _split_seed_file(
     tmp_path: Path, name: str = "val.json", header: str = "fixture", **entry_overrides: Any
 ) -> Path:
@@ -191,6 +224,7 @@ def test_accepted_variation_inherits_side_answer_and_source(tmp_path, monkeypatc
         "rejected_by_a": 0,
         "rejected_by_b": 0,
         "errors": 0,
+        "retries": 0,
     }
     lines = accepted.read_text(encoding="utf-8").splitlines()
     assert len(lines) == 1
@@ -919,6 +953,528 @@ def test_accepted_split_record_loads_via_bench_load_corpus(tmp_path, monkeypatch
     assert result.problems == ()
     assert len(result.entries) == 1
     assert result.entries[0].kind == "explicit"
+
+
+def _many_entry_seed_file(tmp_path: Path, count: int, name: str = "val.json") -> Path:
+    entries = [
+        {
+            "id": f"dev-e{i:02d}~x",
+            "kind": "explicit",
+            "text": f"How hot is machine {i}?",
+            "expect": {"operation": "thermal_stats", "args": {}},
+            "source_id": f"dev-e{i:02d}",
+        }
+        for i in range(count)
+    ]
+    path = tmp_path / name
+    path.write_text(json.dumps({"header": "fixture", "entries": entries}), encoding="utf-8")
+    return path
+
+
+# ---------------------------------------------------------------------------
+# --workers: bounded thread pool, deterministic ids, no double writes
+# ---------------------------------------------------------------------------
+
+
+def test_workers_process_variations_concurrently_and_write_whole_records(
+    tmp_path, monkeypatch, fake_server
+):
+    _server, url = fake_server
+    seed_file = _many_entry_seed_file(tmp_path, 6)
+    _set_roles(monkeypatch, url, DEFAULT_MODELS)
+
+    def _slow_always(text: str) -> Responder:
+        def _responder(body, auth):
+            time.sleep(0.02)  # encourage overlap across worker threads
+            return text
+
+        return _responder
+
+    _server.responders.update(
+        {
+            "gen-model": _slow_always("rephrased"),
+            "cor-model": _slow_always("rephrased"),
+            "rev-a-model": _slow_always("yes"),
+            "rev-b-model": _slow_always("yes"),
+        }
+    )
+    roles = aug.load_all_roles()
+    accepted = tmp_path / "accepted.jsonl"
+    counts = aug.run_pipeline(
+        seed_files=[seed_file],
+        roles=roles,
+        accepted_out=accepted,
+        rejected_out=tmp_path / "rejected.jsonl",
+        per_source=1,
+        workers=4,
+    )
+    assert counts.accepted == 6
+    assert counts.errors == 0
+    lines = accepted.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 6
+    ids = set()
+    for line in lines:
+        record = json.loads(line)  # a corrupted/interleaved write would fail to parse
+        ids.add(record["id"])
+    assert len(ids) == 6  # every id is unique -- none written twice
+
+
+def test_workers_default_is_two_and_backward_compatible(tmp_path, monkeypatch, fake_server):
+    # No `workers=` passed at all -- existing callers must keep working.
+    _server, url = fake_server
+    seed_file = _split_seed_file(tmp_path)
+    _set_roles(monkeypatch, url, DEFAULT_MODELS)
+    _server.responders.update(
+        {
+            "gen-model": _always("rephrased"),
+            "cor-model": _always("rephrased"),
+            "rev-a-model": _always("yes"),
+            "rev-b-model": _always("yes"),
+        }
+    )
+    roles = aug.load_all_roles()
+    counts = aug.run_pipeline(
+        seed_files=[seed_file],
+        roles=roles,
+        accepted_out=tmp_path / "accepted.jsonl",
+        rejected_out=tmp_path / "rejected.jsonl",
+        per_source=1,
+    )
+    assert counts.accepted == 1
+
+
+# ---------------------------------------------------------------------------
+# retry with backoff: transient failures, Retry-After, non-transient 4xx,
+# and exhaustion counting as a (still-retryable-on-resume) error
+# ---------------------------------------------------------------------------
+
+
+def test_is_transient_status_codes():
+    def _http_error(code: int) -> urllib.error.HTTPError:
+        return urllib.error.HTTPError("http://127.0.0.1/x", code, "msg", {}, None)
+
+    for code in (429, 500, 502, 503, 504):
+        transient, _retry_after = aug._is_transient(_http_error(code))
+        assert transient is True, code
+    for code in (400, 401, 403, 404):
+        transient, _retry_after = aug._is_transient(_http_error(code))
+        assert transient is False, code
+
+
+def test_is_transient_parses_retry_after_header():
+    exc = urllib.error.HTTPError("http://127.0.0.1/x", 503, "msg", {"Retry-After": "7"}, None)
+    transient, retry_after = aug._is_transient(exc)
+    assert transient is True
+    assert retry_after == 7.0
+
+
+def test_is_transient_connection_error_and_timeout():
+    conn_exc = urllib.error.URLError(ConnectionRefusedError())
+    transient, retry_after = aug._is_transient(conn_exc)
+    assert transient is True
+    assert retry_after is None
+
+    timeout_transient, _timeout_retry_after = aug._is_transient(TimeoutError("timed out"))
+    assert timeout_transient is True
+
+
+def test_compute_backoff_honours_retry_after_and_caps_exponential_growth():
+    assert aug._compute_backoff(1, 2.0, retry_after=10.0, rand_fn=lambda: 0.9) == 10.0
+    # Large attempt count: raw would be huge, but the cap always wins.
+    assert aug._compute_backoff(20, 2.0, retry_after=None, rand_fn=lambda: 1.0) == (
+        aug.MAX_BACKOFF_WAIT
+    )
+    # Zero jitter draw -> zero wait, never negative or the full cap.
+    assert aug._compute_backoff(1, 2.0, retry_after=None, rand_fn=lambda: 0.0) == 0.0
+
+
+def test_retry_recovers_after_transient_failures_and_counts_retries(
+    tmp_path, monkeypatch, fake_server
+):
+    _server, url = fake_server
+    seed_file = _split_seed_file(tmp_path)
+    _set_roles(monkeypatch, url, DEFAULT_MODELS)
+    flaky_generator = _flaky(2, status=503, success="rephrased")
+    _server.responders.update(
+        {
+            "gen-model": flaky_generator,
+            "cor-model": _always("rephrased"),
+            "rev-a-model": _always("yes"),
+            "rev-b-model": _always("yes"),
+        }
+    )
+    sleeps: list[float] = []
+    roles = aug.load_all_roles()
+    counts = aug.run_pipeline(
+        seed_files=[seed_file],
+        roles=roles,
+        accepted_out=tmp_path / "accepted.jsonl",
+        rejected_out=tmp_path / "rejected.jsonl",
+        per_source=1,
+        workers=1,
+        sleep_fn=sleeps.append,
+        rand_fn=lambda: 0.0,
+    )
+    assert counts.errors == 0
+    assert counts.accepted == 1
+    assert counts.retries == 2
+    assert len(sleeps) == 2
+    assert flaky_generator.calls["n"] == 3  # 2 failures + 1 success
+
+
+def test_retry_exhaustion_counts_as_error_and_stays_retryable(tmp_path, monkeypatch, fake_server):
+    _server, url = fake_server
+    seed_file = _split_seed_file(tmp_path)
+    _set_roles(monkeypatch, url, DEFAULT_MODELS)
+    always_503 = _flaky(10_000, status=503)  # never succeeds within this run
+    _server.responders.update(
+        {
+            "gen-model": always_503,
+            "cor-model": _always("rephrased"),
+            "rev-a-model": _always("yes"),
+            "rev-b-model": _always("yes"),
+        }
+    )
+    accepted = tmp_path / "accepted.jsonl"
+    rejected = tmp_path / "rejected.jsonl"
+    roles = aug.load_all_roles()
+    counts = aug.run_pipeline(
+        seed_files=[seed_file],
+        roles=roles,
+        accepted_out=accepted,
+        rejected_out=rejected,
+        per_source=1,
+        workers=1,
+        max_retries=2,
+        sleep_fn=lambda _seconds: None,
+        rand_fn=lambda: 0.0,
+    )
+    assert counts.errors == 1
+    assert counts.retries == 2
+    assert always_503.calls["n"] == 3  # initial attempt + 2 retries
+    assert not accepted.exists()
+    assert not rejected.exists()  # never written -- stays retryable on resume
+
+
+def test_non_transient_4xx_is_not_retried(tmp_path, monkeypatch, fake_server):
+    _server, url = fake_server
+    seed_file = _split_seed_file(tmp_path)
+    _set_roles(monkeypatch, url, DEFAULT_MODELS)
+    calls = {"n": 0}
+
+    def _bad_request(body, auth):
+        calls["n"] += 1
+        return (400, None)
+
+    _server.responders.update(
+        {
+            "gen-model": _bad_request,
+            "cor-model": _always("rephrased"),
+            "rev-a-model": _always("yes"),
+            "rev-b-model": _always("yes"),
+        }
+    )
+    roles = aug.load_all_roles()
+    counts = aug.run_pipeline(
+        seed_files=[seed_file],
+        roles=roles,
+        accepted_out=tmp_path / "accepted.jsonl",
+        rejected_out=tmp_path / "rejected.jsonl",
+        per_source=1,
+        workers=1,
+        sleep_fn=lambda _seconds: None,
+    )
+    assert counts.errors == 1
+    assert counts.retries == 0
+    assert calls["n"] == 1  # no retry attempted at all
+
+
+def test_retry_after_header_is_honoured_over_computed_backoff(tmp_path, monkeypatch, fake_server):
+    _server, url = fake_server
+    seed_file = _split_seed_file(tmp_path)
+    _set_roles(monkeypatch, url, DEFAULT_MODELS)
+    flaky_generator = _flaky(1, status=503, headers={"Retry-After": "5"}, success="rephrased")
+    _server.responders.update(
+        {
+            "gen-model": flaky_generator,
+            "cor-model": _always("rephrased"),
+            "rev-a-model": _always("yes"),
+            "rev-b-model": _always("yes"),
+        }
+    )
+    sleeps: list[float] = []
+    roles = aug.load_all_roles()
+    counts = aug.run_pipeline(
+        seed_files=[seed_file],
+        roles=roles,
+        accepted_out=tmp_path / "accepted.jsonl",
+        rejected_out=tmp_path / "rejected.jsonl",
+        per_source=1,
+        workers=1,
+        sleep_fn=sleeps.append,
+        rand_fn=lambda: 0.99,  # would blow up a naive backoff*rand computation
+    )
+    assert counts.accepted == 1
+    assert sleeps == [5.0]  # Retry-After honoured exactly, not backoff*jitter
+
+
+# ---------------------------------------------------------------------------
+# per-role timeout (NVSH_AUG_<ROLE>_TIMEOUT, default 120s, replaces the old
+# fixed 60s)
+# ---------------------------------------------------------------------------
+
+
+def test_role_config_timeout_default_and_override():
+    role = aug.load_role_config(
+        "GENERATOR",
+        env={"NVSH_AUG_GENERATOR_URL": "http://127.0.0.1:1/x", "NVSH_AUG_GENERATOR_MODEL": "m"},
+    )
+    assert role.timeout == 120.0
+
+    role_override = aug.load_role_config(
+        "GENERATOR",
+        env={
+            "NVSH_AUG_GENERATOR_URL": "http://127.0.0.1:1/x",
+            "NVSH_AUG_GENERATOR_MODEL": "m",
+            "NVSH_AUG_GENERATOR_TIMEOUT": "45",
+        },
+    )
+    assert role_override.timeout == 45.0
+
+
+def test_role_config_timeout_bad_value_raises_named_config_error():
+    with pytest.raises(aug.ConfigError, match="NVSH_AUG_GENERATOR_TIMEOUT"):
+        aug.load_role_config(
+            "GENERATOR",
+            env={
+                "NVSH_AUG_GENERATOR_URL": "http://127.0.0.1:1/x",
+                "NVSH_AUG_GENERATOR_MODEL": "m",
+                "NVSH_AUG_GENERATOR_TIMEOUT": "not-a-number",
+            },
+        )
+
+
+def test_post_chat_completion_passes_role_timeout(monkeypatch):
+    seen: dict[str, Any] = {}
+
+    class _FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc_info):
+            return False
+
+        def read(self):
+            return json.dumps({"choices": [{"message": {"content": "ok"}}]}).encode("utf-8")
+
+    def _fake_urlopen(request, timeout=None):
+        seen["timeout"] = timeout
+        return _FakeResponse()
+
+    monkeypatch.setattr(aug.urllib.request, "urlopen", _fake_urlopen)
+    role = aug.RoleConfig(role="GENERATOR", url="http://127.0.0.1:1/x", model="m", timeout=45.0)
+    result = aug.default_caller(role, "sys", "user")
+    assert result == "ok"
+    assert seen["timeout"] == 45.0
+
+
+# ---------------------------------------------------------------------------
+# progress reporting
+# ---------------------------------------------------------------------------
+
+
+def test_progress_prints_periodic_lines_with_expected_fields(tmp_path, monkeypatch, fake_server):
+    _server, url = fake_server
+    seed_file = _many_entry_seed_file(tmp_path, 3)
+    _set_roles(monkeypatch, url, DEFAULT_MODELS)
+    _server.responders.update(
+        {
+            "gen-model": _always("rephrased"),
+            "cor-model": _always("rephrased"),
+            "rev-a-model": _always("yes"),
+            "rev-b-model": _always("yes"),
+        }
+    )
+    roles = aug.load_all_roles()
+    import io
+
+    progress_out = io.StringIO()
+    counts = aug.run_pipeline(
+        seed_files=[seed_file],
+        roles=roles,
+        accepted_out=tmp_path / "accepted.jsonl",
+        rejected_out=tmp_path / "rejected.jsonl",
+        per_source=1,
+        workers=1,
+        progress_every=1e-9,  # effectively force a line after every completed task
+        progress_out=progress_out,
+    )
+    assert counts.accepted == 3
+    lines = [line for line in progress_out.getvalue().splitlines() if line.startswith("progress:")]
+    assert len(lines) >= 1
+    line = lines[-1]
+    assert "attempted" in line
+    assert "accepted=" in line
+    assert "rejected=" in line
+    assert "errors=" in line
+    assert "retries=" in line
+    assert "rate=" in line
+    assert "eta=" in line
+
+
+def test_progress_every_zero_disabled_via_negative_is_never_forced(
+    tmp_path, monkeypatch, fake_server
+):
+    # progress_every > the whole run's duration -> no progress line at all,
+    # just the (tested elsewhere) final counts.
+    _server, url = fake_server
+    seed_file = _split_seed_file(tmp_path)
+    _set_roles(monkeypatch, url, DEFAULT_MODELS)
+    _server.responders.update(
+        {
+            "gen-model": _always("rephrased"),
+            "cor-model": _always("rephrased"),
+            "rev-a-model": _always("yes"),
+            "rev-b-model": _always("yes"),
+        }
+    )
+    roles = aug.load_all_roles()
+    import io
+
+    progress_out = io.StringIO()
+    aug.run_pipeline(
+        seed_files=[seed_file],
+        roles=roles,
+        accepted_out=tmp_path / "accepted.jsonl",
+        rejected_out=tmp_path / "rejected.jsonl",
+        per_source=1,
+        workers=1,
+        progress_every=3600,
+        progress_out=progress_out,
+    )
+    assert progress_out.getvalue() == ""
+
+
+def test_final_counts_include_retries_field(tmp_path, monkeypatch, fake_server, capsys):
+    _server, url = fake_server
+    seed_file = _split_seed_file(tmp_path)
+    _set_roles(monkeypatch, url, DEFAULT_MODELS)
+    _server.responders.update(
+        {
+            "gen-model": _always("rephrased"),
+            "cor-model": _always("rephrased"),
+            "rev-a-model": _always("yes"),
+            "rev-b-model": _always("yes"),
+        }
+    )
+    rc = aug.main(
+        [
+            str(seed_file),
+            "--per-source",
+            "1",
+            "--accepted-out",
+            str(tmp_path / "accepted.jsonl"),
+            "--rejected-out",
+            str(tmp_path / "rejected.jsonl"),
+        ]
+    )
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "retries=0" in out.splitlines()
+
+
+# ---------------------------------------------------------------------------
+# --dry-run: reports the count, never calls an endpoint, needs no role config
+# ---------------------------------------------------------------------------
+
+
+def test_dry_run_reports_count_without_calling_endpoints(tmp_path, monkeypatch, fake_server):
+    _server, url = fake_server
+    seed_file = _split_seed_file(tmp_path)
+    _set_roles(monkeypatch, url, DEFAULT_MODELS)
+    calls = {"n": 0}
+
+    def _counting(body, auth):
+        calls["n"] += 1
+        return "yes"
+
+    _server.responders.update(
+        {m: _counting for m in ("gen-model", "cor-model", "rev-a-model", "rev-b-model")}
+    )
+    import io
+    from contextlib import redirect_stdout
+
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        rc = aug.main(
+            [
+                str(seed_file),
+                "--per-source",
+                "3",
+                "--dry-run",
+                "--accepted-out",
+                str(tmp_path / "accepted.jsonl"),
+                "--rejected-out",
+                str(tmp_path / "rejected.jsonl"),
+            ]
+        )
+    assert rc == 0
+    assert calls["n"] == 0
+    assert "3" in buf.getvalue()
+
+
+def test_dry_run_does_not_require_role_config(tmp_path, monkeypatch):
+    seed_file = _split_seed_file(tmp_path)
+    for role in aug.ROLES:
+        monkeypatch.delenv(f"NVSH_AUG_{role}_URL", raising=False)
+        monkeypatch.delenv(f"NVSH_AUG_{role}_MODEL", raising=False)
+    import io
+    from contextlib import redirect_stdout
+
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        rc = aug.main(
+            [
+                str(seed_file),
+                "--per-source",
+                "2",
+                "--dry-run",
+                "--accepted-out",
+                str(tmp_path / "accepted.jsonl"),
+                "--rejected-out",
+                str(tmp_path / "rejected.jsonl"),
+            ]
+        )
+    assert rc == 0
+    assert "2" in buf.getvalue()
+
+
+def test_dry_run_subtracts_already_written_ids(tmp_path):
+    seed_file = _split_seed_file(tmp_path)
+    accepted = tmp_path / "accepted.jsonl"
+    accepted.write_text(
+        json.dumps({"id": "dev-e01~v1", "source_id": "dev-e01"}) + "\n", encoding="utf-8"
+    )
+    import io
+    from contextlib import redirect_stdout
+
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        rc = aug.main(
+            [
+                str(seed_file),
+                "--per-source",
+                "3",
+                "--dry-run",
+                "--accepted-out",
+                str(accepted),
+                "--rejected-out",
+                str(seed_file.parent / "rejected.jsonl"),
+            ]
+        )
+    assert rc == 0
+    out = buf.getvalue()
+    assert "dry-run: 2 " in out  # 3 requested minus the 1 already written
 
 
 def test_a_skill_seed_reviewer_sees_the_capability_description() -> None:

@@ -46,9 +46,19 @@ would fail on a committed non-localhost endpoint anyway). For role
                                      ``chat_template_kwargs: {"enable_thinking":
                                      false}`` (optional, off by default --
                                      not every server honours it)
+    NVSH_AUG_<ROLE>_TIMEOUT          per-request timeout in seconds
+                                     (optional, default 120)
 
 A missing required variable is a clear, named error, never a silent
 default.
+
+This is a process the operator runs and repeats themselves, at large scale
+(``--per-source`` x100, tens of thousands of requests total), without an
+agent watching. Two things follow from that: it processes variations
+through a bounded thread pool (``--workers``) instead of one at a time, and
+every role call retries transient failures (429/500/502/503/504, connection
+errors, timeouts) with exponential backoff before counting a variation as an
+error.
 
 Usage::
 
@@ -57,23 +67,39 @@ Usage::
     NVSH_AUG_REVIEWER_A_URL=... NVSH_AUG_REVIEWER_A_MODEL=... \\
     NVSH_AUG_REVIEWER_B_URL=... NVSH_AUG_REVIEWER_B_MODEL=... \\
         python scripts/lfm-finetune/augment.py out/train.json \\
-            --per-source 20 --accepted-out accepted.jsonl --rejected-out rejected.jsonl
+            --per-source 20 --workers 4 \\
+            --accepted-out accepted.jsonl --rejected-out rejected.jsonl
+
+``--workers`` 2-4 is the recommended range for one shared gateway fronting
+four separate model servers: it is enough to keep all four roles busy at
+once, but more workers than that can overload a shared gateway (this is
+exactly how the operator saw HTTP 503s and a backing model server restart
+in a real run) -- raise it only once the gateway is confirmed to take the
+extra load. Run with ``--dry-run`` first on a large seed set to see how
+many variations would actually be attempted (seeds x ``--per-source`` minus
+ids already written) before spending any model calls on it.
 
 Accepted variations go to ``--accepted-out`` (one JSON object per line);
 rejected ones go to ``--rejected-out`` with the source id, every role's
 model id and each reviewer's verdict + reason, so a rejection is auditable
 without re-running the pipeline. The run is resumable: a variation id
-already present in either output file is skipped. NVIDIA's own eval files
-are refused outright as seeds -- see :func:`load_seeds`.
+already present in either output file is skipped, and a variation that
+exhausted its retries is never written to either file, so it is retried
+again on the next resume. NVIDIA's own eval files are refused outright as
+seeds -- see :func:`load_seeds`.
 """
 
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import json
 import os
+import random
 import re
 import sys
+import threading
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
@@ -120,6 +146,10 @@ class ConfigError(ValueError):
 #: the model's own reasoning trace.
 DEFAULT_MAX_TOKENS = 1024
 
+#: Replaces the old fixed 60s timeout on every role's HTTP call; a role
+#: talking to a slower/busier backend can override it independently.
+DEFAULT_TIMEOUT = 120.0
+
 _TRUE_STRINGS = frozenset({"1", "true", "yes", "on"})
 
 
@@ -135,10 +165,13 @@ class RoleConfig:
     #: server understands it, and it is per-role because only some of the
     #: four roles here are reasoning models.
     disable_thinking: bool = False
+    #: Per-request timeout in seconds, from ``NVSH_AUG_<ROLE>_TIMEOUT``.
+    timeout: float = DEFAULT_TIMEOUT
 
 
 def load_role_config(role: str, env: dict[str, str] | None = None) -> RoleConfig:
-    """Read ``NVSH_AUG_<role>_{URL,MODEL,KEY_ENV,MAX_TOKENS,DISABLE_THINKING}``
+    """Read
+    ``NVSH_AUG_<role>_{URL,MODEL,KEY_ENV,MAX_TOKENS,DISABLE_THINKING,TIMEOUT}``
     from *env* (default ``os.environ``). Raises :class:`ConfigError` naming
     the exact variable that is missing."""
     source = os.environ if env is None else env
@@ -147,6 +180,7 @@ def load_role_config(role: str, env: dict[str, str] | None = None) -> RoleConfig
     key_env_var = f"NVSH_AUG_{role}_KEY_ENV"
     max_tokens_var = f"NVSH_AUG_{role}_MAX_TOKENS"
     disable_thinking_var = f"NVSH_AUG_{role}_DISABLE_THINKING"
+    timeout_var = f"NVSH_AUG_{role}_TIMEOUT"
 
     url = source.get(url_var)
     if not url:
@@ -173,6 +207,15 @@ def load_role_config(role: str, env: dict[str, str] | None = None) -> RoleConfig
 
     disable_thinking = source.get(disable_thinking_var, "").strip().lower() in _TRUE_STRINGS
 
+    timeout_raw = source.get(timeout_var)
+    if timeout_raw:
+        try:
+            timeout = float(timeout_raw)
+        except ValueError:
+            raise ConfigError(f"{timeout_var} must be a number, got {timeout_raw!r}")
+    else:
+        timeout = DEFAULT_TIMEOUT
+
     return RoleConfig(
         role=role,
         url=url,
@@ -180,6 +223,7 @@ def load_role_config(role: str, env: dict[str, str] | None = None) -> RoleConfig
         key=key,
         max_tokens=max_tokens,
         disable_thinking=disable_thinking,
+        timeout=timeout,
     )
 
 
@@ -481,7 +525,9 @@ def _extract_content(message: dict[str, Any]) -> str:
     return (message.get("content") or "").strip()
 
 
-def _post_chat_completion(role: RoleConfig, system: str, user: str, timeout: float = 60.0) -> str:
+def _post_chat_completion(
+    role: RoleConfig, system: str, user: str, timeout: float | None = None
+) -> str:
     payload: dict[str, Any] = {
         "model": role.model,
         "messages": [
@@ -499,7 +545,8 @@ def _post_chat_completion(role: RoleConfig, system: str, user: str, timeout: flo
     request = urllib.request.Request(
         role.url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST"
     )
-    with urllib.request.urlopen(request, timeout=timeout) as response:
+    effective_timeout = role.timeout if timeout is None else timeout
+    with urllib.request.urlopen(request, timeout=effective_timeout) as response:
         body = json.loads(response.read().decode("utf-8"))
     return _extract_content(body["choices"][0]["message"])
 
@@ -511,6 +558,100 @@ RoleCaller = Callable[[RoleConfig, str, str], str]
 
 def default_caller(role: RoleConfig, system: str, user: str) -> str:
     return _post_chat_completion(role, system, user)
+
+
+# ---------------------------------------------------------------------------
+# retry with exponential backoff + jitter (transient HTTP/connection/timeout
+# failures only -- a real workforce-scale run cannot afford to lose a
+# variation to one flaky 503 from a shared gateway)
+# ---------------------------------------------------------------------------
+
+#: HTTP statuses worth retrying. A non-transient 4xx (400/401/403/404, or any
+#: other status not listed here) is never retried -- it means the request
+#: itself is wrong, and retrying it would just repeat the same failure.
+_TRANSIENT_STATUS = frozenset({429, 500, 502, 503, 504})
+
+DEFAULT_MAX_RETRIES = 6
+DEFAULT_BACKOFF_BASE = 2.0
+#: Cap on any single backoff wait, regardless of attempt count or Retry-After.
+MAX_BACKOFF_WAIT = 60.0
+
+
+def _is_transient(exc: BaseException) -> tuple[bool, float | None]:
+    """Classify *exc* as transient or not, and pull a ``Retry-After`` seconds
+    value out of it when present. A connection error or a read timeout is
+    always transient (there is no status code to check); an HTTP response is
+    transient only for :data:`_TRANSIENT_STATUS`.
+    """
+    if isinstance(exc, urllib.error.HTTPError):
+        retry_after: float | None = None
+        headers = exc.headers
+        header_value = headers.get("Retry-After") if headers is not None else None
+        if header_value:
+            try:
+                retry_after = float(header_value)
+            except ValueError:
+                retry_after = None
+        return exc.code in _TRANSIENT_STATUS, retry_after
+    if isinstance(exc, TimeoutError):
+        return True, None
+    if isinstance(exc, urllib.error.URLError):
+        # HTTPError is a URLError subclass and is handled above; anything
+        # else here is a connection-level failure (refused, DNS, reset...).
+        return True, None
+    return False, None
+
+
+def _compute_backoff(
+    attempt: int,
+    backoff_base: float,
+    retry_after: float | None,
+    rand_fn: Callable[[], float] = random.random,
+) -> float:
+    """Wait time before retry number *attempt* (1-based). A server-supplied
+    ``Retry-After`` is honoured exactly, bypassing backoff/jitter entirely.
+    Otherwise: full jitter over an exponential curve, capped at
+    :data:`MAX_BACKOFF_WAIT` before the jitter is applied."""
+    if retry_after is not None:
+        return max(0.0, retry_after)
+    raw = backoff_base * (2 ** (attempt - 1))
+    capped = min(raw, MAX_BACKOFF_WAIT)
+    return capped * rand_fn()
+
+
+@dataclass(frozen=True)
+class RetryPolicy:
+    max_retries: int = DEFAULT_MAX_RETRIES
+    backoff_base: float = DEFAULT_BACKOFF_BASE
+    #: Injectable so tests never actually sleep.
+    sleep_fn: Callable[[float], None] = time.sleep
+    rand_fn: Callable[[], float] = random.random
+
+
+def _call_with_retry(
+    caller: RoleCaller,
+    role: RoleConfig,
+    system: str,
+    user: str,
+    policy: RetryPolicy,
+    on_retry: Callable[[], None] | None = None,
+) -> str:
+    """Call *caller* once, retrying a transient failure up to
+    ``policy.max_retries`` times with backoff. Raises the last exception once
+    retries are exhausted, or immediately for a non-transient failure."""
+    attempt = 0
+    while True:
+        try:
+            return caller(role, system, user)
+        except (urllib.error.URLError, TimeoutError) as exc:
+            transient, retry_after = _is_transient(exc)
+            if not transient or attempt >= policy.max_retries:
+                raise
+            attempt += 1
+            if on_retry is not None:
+                on_retry()
+            wait = _compute_backoff(attempt, policy.backoff_base, retry_after, policy.rand_fn)
+            policy.sleep_fn(wait)
 
 
 # ---------------------------------------------------------------------------
@@ -589,6 +730,7 @@ class PipelineCounts:
     rejected_by_a: int = 0
     rejected_by_b: int = 0
     errors: int = 0
+    retries: int = 0
 
     def as_dict(self) -> dict[str, int]:
         return {
@@ -598,6 +740,7 @@ class PipelineCounts:
             "rejected_by_a": self.rejected_by_a,
             "rejected_by_b": self.rejected_by_b,
             "errors": self.errors,
+            "retries": self.retries,
         }
 
 
@@ -708,6 +851,52 @@ def _process_variation(
     return {"accepted": accepted, "record": record}
 
 
+def _plan_tasks(
+    seeds: list[Seed],
+    per_source: int,
+    limit: int | None,
+    done: set[str],
+) -> list[tuple[Seed, str]]:
+    """Build the ordered ``(seed, variation_id)`` work list: skip any id
+    already in *done*, reserve every id it does decide to attempt (so two
+    seeds sharing a ``source_id`` -- already proven consistent by
+    :func:`_validate_seed_consistency` -- never both get a task for the same
+    variation id), and stop once *limit* total tasks have been planned.
+    *done* itself is never mutated here.
+    """
+    reserved = set(done)
+    tasks: list[tuple[Seed, str]] = []
+    for seed in seeds:
+        for n in range(1, per_source + 1):
+            if limit is not None and len(tasks) >= limit:
+                return tasks
+            variation_id = f"{seed.source_id}~v{n}"
+            if variation_id in reserved:
+                continue
+            reserved.add(variation_id)
+            tasks.append((seed, variation_id))
+    return tasks
+
+
+def _print_progress(
+    done: int, total: int, counts: PipelineCounts, elapsed: float, out: Any
+) -> None:
+    """One progress line: done/total attempted, accepted, rejected, errors,
+    retries so far, rate per minute, and an ETA. ``rejected`` is derived
+    (every attempted, non-error variation is exactly accepted or rejected)
+    rather than tracked separately."""
+    rejected = done - counts.accepted - counts.errors
+    rate = done / (elapsed / 60) if elapsed > 0 else 0.0
+    remaining = total - done
+    eta = f"{remaining / rate:.1f}m" if rate > 0 else "?"
+    print(
+        f"progress: {done}/{total} attempted accepted={counts.accepted} "
+        f"rejected={rejected} errors={counts.errors} retries={counts.retries} "
+        f"rate={rate:.1f}/min eta={eta}",
+        file=out,
+    )
+
+
 def run_pipeline(
     seed_files: list[Path],
     roles: dict[str, RoleConfig],
@@ -717,6 +906,14 @@ def run_pipeline(
     side: str | None = None,
     limit: int | None = None,
     caller: RoleCaller = default_caller,
+    workers: int = 2,
+    max_retries: int = DEFAULT_MAX_RETRIES,
+    backoff_base: float = DEFAULT_BACKOFF_BASE,
+    sleep_fn: Callable[[float], None] = time.sleep,
+    rand_fn: Callable[[], float] = random.random,
+    progress_every: float = 60.0,
+    now_fn: Callable[[], float] = time.monotonic,
+    progress_out: Any = None,
 ) -> PipelineCounts:
     seeds: list[Seed] = []
     for seed_file in seed_files:
@@ -724,33 +921,76 @@ def run_pipeline(
     _validate_seed_consistency(seeds)
 
     done = _existing_ids(accepted_out) | _existing_ids(rejected_out)
-    counts = PipelineCounts()
-    processed = 0
+    tasks = _plan_tasks(seeds, per_source, limit, done)
 
-    for seed in seeds:
-        for n in range(1, per_source + 1):
-            if limit is not None and processed >= limit:
-                return counts
-            variation_id = f"{seed.source_id}~v{n}"
-            if variation_id in done:
-                continue
-            try:
-                outcome = _process_variation(seed, variation_id, roles, counts, caller)
-            except (urllib.error.URLError, KeyError, ValueError) as exc:
+    counts = PipelineCounts()
+    if not tasks:
+        return counts
+
+    retry_policy = RetryPolicy(
+        max_retries=max_retries, backoff_base=backoff_base, sleep_fn=sleep_fn, rand_fn=rand_fn
+    )
+    lock = threading.Lock()
+    out = progress_out if progress_out is not None else sys.stderr
+    total = len(tasks)
+    start = now_fn()
+    last_print = start
+    completed = 0
+
+    def _run_one(seed: Seed, variation_id: str) -> None:
+        # Thread-local: never touched by any other task, so no lock is
+        # needed while accumulating it -- only merging it into the shared
+        # `counts` below needs the lock.
+        local_counts = PipelineCounts()
+        local_retries = [0]
+
+        def on_retry() -> None:
+            local_retries[0] += 1
+
+        def caller_with_retry(role: RoleConfig, system: str, user: str) -> str:
+            return _call_with_retry(caller, role, system, user, retry_policy, on_retry)
+
+        try:
+            outcome = _process_variation(seed, variation_id, roles, local_counts, caller_with_retry)
+        except (urllib.error.URLError, TimeoutError, KeyError, ValueError) as exc:
+            with lock:
+                counts.generated += local_counts.generated
+                counts.corrected += local_counts.corrected
+                counts.retries += local_retries[0]
                 counts.errors += 1
-                print(f"error: {variation_id}: {exc}", file=sys.stderr)
-                processed += 1
-                continue
+            print(f"error: {variation_id}: {exc}", file=sys.stderr)
+            return
+
+        with lock:
+            counts.generated += local_counts.generated
+            counts.corrected += local_counts.corrected
+            counts.accepted += local_counts.accepted
+            counts.rejected_by_a += local_counts.rejected_by_a
+            counts.rejected_by_b += local_counts.rejected_by_b
+            counts.retries += local_retries[0]
+            if variation_id in done:  # pragma: no cover - _plan_tasks already dedupes
+                return
+            # One record, one write, one line -- the lock is held across the
+            # whole append so a record is never interleaved with another
+            # thread's write, and `done` is updated in the same critical
+            # section so no id can ever be written twice.
             if outcome["accepted"]:
                 _append_jsonl(accepted_out, outcome["record"])
             else:
                 _append_jsonl(rejected_out, outcome["record"])
-            # Reserve the id the moment it is written: two seeds that share a
-            # source_id (already proven consistent above, e.g. the same
-            # entry loaded from two seed files) must never both write the
-            # same variation id in one run.
             done.add(variation_id)
-            processed += 1
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, workers)) as executor:
+        futures = [executor.submit(_run_one, seed, variation_id) for seed, variation_id in tasks]
+        for future in concurrent.futures.as_completed(futures):
+            future.result()
+            completed += 1
+            now = now_fn()
+            if progress_every > 0 and (now - last_print) >= progress_every:
+                with lock:
+                    _print_progress(completed, total, counts, now - start, out)
+                last_print = now
+
     return counts
 
 
@@ -774,7 +1014,56 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--limit", type=int, default=None, help="cap total variations (dry runs)")
     parser.add_argument("--accepted-out", default="accepted.jsonl")
     parser.add_argument("--rejected-out", default="rejected.jsonl")
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=2,
+        help=(
+            "thread-pool size for parallel variation processing (default 2; 2-4 is "
+            "recommended -- more can overload a shared gateway)"
+        ),
+    )
+    parser.add_argument(
+        "--max-retries",
+        type=int,
+        default=DEFAULT_MAX_RETRIES,
+        help="retries for a transient failure (429/500/502/503/504, connection, timeout)",
+    )
+    parser.add_argument(
+        "--backoff",
+        type=float,
+        default=DEFAULT_BACKOFF_BASE,
+        dest="backoff_base",
+        help="base seconds for exponential backoff between retries (capped at 60s per wait)",
+    )
+    parser.add_argument(
+        "--progress-every",
+        type=float,
+        default=60.0,
+        help="seconds between progress lines on stderr (0 disables progress lines)",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="report how many variations would be attempted and exit without calling any endpoint",
+    )
     args = parser.parse_args(argv)
+
+    seed_paths = [Path(p) for p in args.seed_files]
+
+    if args.dry_run:
+        try:
+            seeds: list[Seed] = []
+            for seed_file in seed_paths:
+                seeds.extend(load_seeds(seed_file, args.side))
+            _validate_seed_consistency(seeds)
+            done = _existing_ids(Path(args.accepted_out)) | _existing_ids(Path(args.rejected_out))
+            tasks = _plan_tasks(seeds, args.per_source, args.limit, done)
+        except (SeedRefused, ConfigError, ValueError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        print(f"dry-run: {len(tasks)} variation(s) would be attempted; no endpoint was called")
+        return 0
 
     try:
         roles = load_all_roles()
@@ -784,13 +1073,17 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         counts = run_pipeline(
-            seed_files=[Path(p) for p in args.seed_files],
+            seed_files=seed_paths,
             roles=roles,
             accepted_out=Path(args.accepted_out),
             rejected_out=Path(args.rejected_out),
             per_source=args.per_source,
             side=args.side,
             limit=args.limit,
+            workers=args.workers,
+            max_retries=args.max_retries,
+            backoff_base=args.backoff_base,
+            progress_every=args.progress_every,
         )
     except (SeedRefused, ConfigError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
