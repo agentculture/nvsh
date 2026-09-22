@@ -247,3 +247,20 @@ def test_cli_refuses_split_with_explicit_corpus(tmp_path):
         _module().main(
             ["--split", str(split), "--corpus", str(dev_corpus_path()), "--out", str(out)]
         )
+
+
+def test_a_split_built_example_matches_the_corpus_built_one(tmp_path) -> None:
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "lfm_split_for_builder",
+        Path(__file__).resolve().parents[1] / "scripts/lfm-finetune/split.py",
+    )
+    split = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(split)
+    split.main(["--corpus", str(dev_corpus_path()), "--out-dir", str(tmp_path)])
+    from_split = {ex["source_id"]: ex for ex in _module().build(tmp_path / "train.json")}
+    from_corpus = {ex["source_id"]: ex for ex in _module().build(dev_corpus_path())}
+    assert from_split
+    for source_id, example in from_split.items():
+        assert example["messages"] == from_corpus[source_id]["messages"]
