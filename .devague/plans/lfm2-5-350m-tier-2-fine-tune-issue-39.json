@@ -5,7 +5,7 @@
   "schema_version": 5,
   "status": "exported",
   "created": "2026-09-22T18:34:33Z",
-  "updated": "2026-09-22T19:26:26Z",
+  "updated": "2026-09-22T20:33:45Z",
   "targets": [
     {
       "id": "c1",
@@ -834,6 +834,14 @@
       "text": "The four generator/reviewer API endpoints were not probed during speccing; availability and throughput for a x100 run are unknown",
       "kind": "unknown_nonblocking",
       "task_id": "t13",
+      "resolved": true,
+      "resolution": "Probed 2026-09-22: all four roles are on the local gateway localhost:8001/v1 (Bearer key; 401 without): worker = nvidia/Qwen3.6-35B-A3B-NVFP4 (Thor), cortex = unsloth/Qwen3.8-27B-NVFP4 (spark2), senses = nvidia/Gemma-4-26B-A4B-NVFP4 (this Spark), associate = nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4 (Orin); each answered in under 1 s. worker, cortex and associate returned empty content at max_tokens=8 (reasoning models); t7 was told to use a generous max_tokens and treat empty replies as no. Throughput for a x100 run is still unmeasured."
+    },
+    {
+      "id": "r5",
+      "text": "power_set with mode balanced or low_power can never score right in the fixture world: nvsh/ops/render.py deliberately refuses to render those modes (per-board nvpmodel ids are unverified), so even an exact proposal is declined as not_renderable and escalated. Attainable right proposals: val 29 of 32, test 31 of 32; 8 of 148 training operation examples teach a proposal nvsh will always decline. Reported as a ceiling, corpus unchanged; a follow-up should decide whether those entries should expect escalate on an unrendered board.",
+      "kind": "follow_up",
+      "task_id": "t16",
       "resolved": false,
       "resolution": ""
     }

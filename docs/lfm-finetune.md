@@ -289,3 +289,30 @@ base tokenizer unchanged; `train.py --merge-only <adapter>` redoes just that
 step. `stage_cache.py` then found the merged chat template byte-identical to
 the base's and staged it as `jetson-ai-lab/lfm2.5-350m-nvsh-triage` at
 revision `467ce549fc53...` in `hf_cache_dir`.
+
+### 2026-09-22: validation runs (t14, iterating on validation only)
+
+Every candidate is merged, staged with `stage_cache.py`, served through the
+real launcher (`hf_offline = true`) and measured on the 66-entry validation
+side with `measure.py --details`; the test side is not looked at.
+
+| Run | Settings | Right proposals | Escalated | Explained | Wrong mutating | Median |
+|---|---|---|---|---|---|---|
+| stock | - | 1 of 32 | 0 of 16 | 18 of 18 | 0 | 257 ms |
+| r1 | 20 epochs, lr 5e-4, r32/a64 | 20 of 32 | 13 of 16 | 18 of 18 | 1 | 150 ms |
+| r2 | 8 epochs, lr 5e-4, r32/a64 | 12 of 32 | 15 of 16 | 16 of 18 | 0 | 189 ms |
+
+r1's export check (12 of its own training entries through the launcher)
+passed 11 of 12 before its validation figure was taken (h8). Neither run meets
+the use-case bar (at least 70% right proposals, 0 wrong mutating). r1's one
+wrong mutating proposal is the dangerous kind: "docker restart inference"
+became `service_restart docker.service` (restarting the whole daemon)
+instead of `container_restart inference`. r2 shows fewer epochs under-trains
+on 301 examples: read-only asks (thermal, swap, power mode, services) fall
+back to words or escalation.
+
+Measurement ceiling (plan risk r5): nvsh deliberately refuses to render
+`power_set` for `balanced` and `low_power` (per-board nvpmodel ids are
+unverified), so an exact proposal for those is declined and escalated in the
+fixture world. At most 29 of 32 validation and 31 of 32 test proposals can
+score right.
