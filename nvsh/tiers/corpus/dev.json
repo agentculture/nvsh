@@ -3532,6 +3532,1249 @@
       },
       "class": "decline:outside_table",
       "source": "grid-2026-09-19"
+    },
+    {
+      "id": "dev-w001",
+      "kind": "explicit",
+      "text": "What is the difference between JetPack and L4T?",
+      "expect": {
+        "explain": true,
+        "answer": "L4T (Linux for Tegra) is the board support package: the kernel, bootloader, drivers and Ubuntu-based root filesystem for a Jetson. JetPack is the larger SDK that bundles L4T with CUDA, cuDNN, TensorRT and other libraries and developer tools."
+      },
+      "class": "explain:question",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w002",
+      "kind": "explicit",
+      "text": "jetpack vs l4t?",
+      "expect": {
+        "explain": true,
+        "answer": "L4T is the Jetson operating system layer (kernel, drivers, root filesystem); JetPack is L4T plus the CUDA, cuDNN and TensorRT software stack on top of it."
+      },
+      "class": "explain:terse",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w003",
+      "kind": "explicit",
+      "text": "What does the file /etc/nv_tegra_release tell you?",
+      "expect": {
+        "explain": true,
+        "answer": "It records which L4T release is installed on a Jetson, so it is the usual place to look up the board's L4T version. It only exists on Jetson systems."
+      },
+      "class": "explain:question",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w004",
+      "kind": "explicit",
+      "text": "Which L4T major release goes with JetPack 6?",
+      "expect": {
+        "explain": true,
+        "answer": "JetPack 6 is built on L4T R36. The L4T release number is therefore a way to tell which JetPack line a board is on."
+      },
+      "class": "explain:question",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w005",
+      "kind": "explicit",
+      "text": "Explain what L4T stands for",
+      "expect": {
+        "explain": true,
+        "answer": "L4T stands for Linux for Tegra, NVIDIA's Linux distribution and board support package for Tegra-based Jetson modules."
+      },
+      "class": "explain:imperative",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w006",
+      "kind": "explicit",
+      "text": "What is the difference between a Jetson module and a developer kit?",
+      "expect": {
+        "explain": true,
+        "answer": "The module is the compute board itself (SoC, memory, storage). A developer kit pairs a module with a carrier board that provides the connectors, power input and I/O for development."
+      },
+      "class": "explain:question",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w007",
+      "kind": "explicit",
+      "text": "How is Jetson AGX Thor different from AGX Orin?",
+      "expect": {
+        "explain": true,
+        "answer": "AGX Orin uses an Ampere-generation GPU, while AGX Thor uses a Blackwell-generation GPU and a newer SoC with much more AI compute. Both use unified memory shared between CPU and GPU."
+      },
+      "class": "explain:question",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w008",
+      "kind": "explicit",
+      "text": "What GPU architecture does Jetson Orin use?",
+      "expect": {
+        "explain": true,
+        "answer": "Jetson Orin modules use an NVIDIA Ampere architecture GPU integrated into the SoC."
+      },
+      "class": "explain:question",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w009",
+      "kind": "explicit",
+      "text": "thor gpu architecture?",
+      "expect": {
+        "explain": true,
+        "answer": "Jetson Thor uses an NVIDIA Blackwell architecture GPU integrated into its SoC."
+      },
+      "class": "explain:terse",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w010",
+      "kind": "explicit",
+      "text": "How is a Jetson normally flashed?",
+      "expect": {
+        "explain": true,
+        "answer": "From a separate Ubuntu host PC over USB, with the Jetson in recovery mode, using NVIDIA SDK Manager or the flash scripts shipped with the L4T driver package."
+      },
+      "class": "explain:question",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w011",
+      "kind": "explicit",
+      "text": "What is recovery mode on a Jetson?",
+      "expect": {
+        "explain": true,
+        "answer": "A boot state in which the Jetson waits for a host PC over USB instead of booting its OS, so the host can flash new firmware and a root filesystem onto it."
+      },
+      "class": "explain:question",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w012",
+      "kind": "explicit",
+      "text": "What is NVIDIA SDK Manager?",
+      "expect": {
+        "explain": true,
+        "answer": "A tool that runs on a host PC to flash Jetson devices and install JetPack components on them."
+      },
+      "class": "explain:question",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w013",
+      "kind": "explicit",
+      "text": "Can a Jetson move to a new JetPack major version with apt alone?",
+      "expect": {
+        "explain": true,
+        "answer": "Usually not: point releases within a JetPack line can come through apt, but moving between major L4T releases generally means reflashing the board."
+      },
+      "class": "explain:question",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w014",
+      "kind": "explicit",
+      "text": "What is the DLA on Jetson Orin?",
+      "expect": {
+        "explain": true,
+        "answer": "The Deep Learning Accelerator, a fixed-function inference engine next to the GPU. It runs supported network layers at low power, and is used through TensorRT."
+      },
+      "class": "explain:question",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w015",
+      "kind": "explicit",
+      "text": "What are NVENC and NVDEC?",
+      "expect": {
+        "explain": true,
+        "answer": "They are NVIDIA's dedicated hardware video encode and decode engines, which process video streams without using the GPU's general-purpose CUDA cores."
+      },
+      "class": "explain:question",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w016",
+      "kind": "explicit",
+      "text": "Explain what a Jetson is in one sentence",
+      "expect": {
+        "explain": true,
+        "answer": "A Jetson is NVIDIA's family of embedded computers for edge AI: an Arm SoC with an integrated CUDA-capable GPU and shared memory, running L4T Linux."
+      },
+      "class": "explain:imperative",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w017",
+      "kind": "explicit",
+      "text": "Is a Jetson an x86 or an Arm machine?",
+      "expect": {
+        "explain": true,
+        "answer": "Arm: Jetson modules use 64-bit Arm (aarch64) CPUs, so software and container images must be built for arm64."
+      },
+      "class": "explain:question",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w018",
+      "kind": "explicit",
+      "text": "What are nvpmodel power modes?",
+      "expect": {
+        "explain": true,
+        "answer": "They are predefined power profiles on a Jetson. Each mode sets a power budget and caps the number of online CPU cores and the maximum CPU, GPU and memory clocks, trading speed for power draw and heat."
+      },
+      "class": "explain:question",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w019",
+      "kind": "explicit",
+      "text": "Explain the nvpmodel modes to me",
+      "expect": {
+        "explain": true,
+        "answer": "nvpmodel selects one of the board's predefined power modes. Higher modes allow more CPU cores and higher clocks at more power; lower modes cap them to save power and run cooler."
+      },
+      "class": "explain:imperative",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w020",
+      "kind": "explicit",
+      "text": "What does MAXN mean in nvpmodel?",
+      "expect": {
+        "explain": true,
+        "answer": "MAXN is the maximum-performance power mode: it lifts the power budget cap and allows all cores and the highest clock limits the board supports."
+      },
+      "class": "explain:question",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w021",
+      "kind": "explicit",
+      "text": "maxn meaning",
+      "expect": {
+        "explain": true,
+        "answer": "MAXN is the Jetson power mode with no power budget cap: all cores online and the highest clock limits allowed."
+      },
+      "class": "explain:terse",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w022",
+      "kind": "explicit",
+      "text": "What does jetson_clocks do?",
+      "expect": {
+        "explain": true,
+        "answer": "It pins the CPU, GPU and memory clocks at the maximum allowed by the current nvpmodel mode instead of letting them scale with load. It does not change the power mode itself."
+      },
+      "class": "explain:question",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w023",
+      "kind": "explicit",
+      "text": "jetson_clocks vs nvpmodel",
+      "expect": {
+        "explain": true,
+        "answer": "nvpmodel chooses the power mode, which sets the clock and core limits. jetson_clocks then locks clocks at the top of those limits instead of letting them scale dynamically."
+      },
+      "class": "explain:jargon",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w024",
+      "kind": "explicit",
+      "text": "Does jetson_clocks stay on after a reboot?",
+      "expect": {
+        "explain": true,
+        "answer": "No, jetson_clocks settings are not persistent; the clocks return to normal dynamic scaling after a reboot unless it is run again, for example from a startup service."
+      },
+      "class": "explain:question",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w025",
+      "kind": "explicit",
+      "text": "what does jetson_clocks --show print",
+      "expect": {
+        "explain": true,
+        "answer": "It prints the current clock configuration, such as CPU, GPU and memory controller frequency limits, without changing anything."
+      },
+      "class": "explain:jargon",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w026",
+      "kind": "explicit",
+      "text": "What do jetson_clocks --store and --restore do?",
+      "expect": {
+        "explain": true,
+        "answer": "--store saves the current clock settings to a file and --restore puts those saved settings back, so you can undo a jetson_clocks run without rebooting."
+      },
+      "class": "explain:question",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w027",
+      "kind": "explicit",
+      "text": "Why does changing the power mode need sudo?",
+      "expect": {
+        "explain": true,
+        "answer": "Changing the power mode rewrites CPU, GPU and memory clock limits and core settings, which are system-wide kernel settings that only root may change."
+      },
+      "class": "explain:question",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w028",
+      "kind": "explicit",
+      "text": "What is the trade-off between max performance and low power mode?",
+      "expect": {
+        "explain": true,
+        "answer": "Max performance allows higher clocks and more cores, so work finishes faster but draws more power and runs hotter. Low power caps them, saving energy and heat at the cost of speed."
+      },
+      "class": "explain:question",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w029",
+      "kind": "explicit",
+      "text": "Explain what DVFS is",
+      "expect": {
+        "explain": true,
+        "answer": "Dynamic voltage and frequency scaling: the chip raises and lowers clock speed and voltage with load, saving power when idle and speeding up when busy."
+      },
+      "class": "explain:imperative",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w030",
+      "kind": "explicit",
+      "text": "Does the DGX Spark have nvpmodel?",
+      "expect": {
+        "explain": true,
+        "answer": "No, nvpmodel is a Jetson tool. DGX Spark does not ship it, so Jetson power-mode commands do not apply there."
+      },
+      "class": "explain:question",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w031",
+      "kind": "explicit",
+      "text": "What is thermal throttling?",
+      "expect": {
+        "explain": true,
+        "answer": "When a chip gets too hot, the system lowers its clock speeds to reduce heat and protect the hardware, so performance drops until the temperature comes down."
+      },
+      "class": "explain:question",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w032",
+      "kind": "explicit",
+      "text": "What is a thermal zone in Linux?",
+      "expect": {
+        "explain": true,
+        "answer": "A kernel object that represents one temperature sensor, exposed under sysfs, together with the trip points at which cooling or throttling kicks in."
+      },
+      "class": "explain:question",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w033",
+      "kind": "explicit",
+      "text": "What do the fields in tegrastats mean?",
+      "expect": {
+        "explain": true,
+        "answer": "tegrastats prints a line per interval with RAM and swap use, per-core CPU load and frequency, EMC_FREQ (memory controller), GR3D_FREQ (GPU load), temperatures per sensor, and power rails as current/average milliwatts."
+      },
+      "class": "explain:question",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w034",
+      "kind": "explicit",
+      "text": "GR3D_FREQ meaning",
+      "expect": {
+        "explain": true,
+        "answer": "GR3D_FREQ is the GPU's load as a percentage, sometimes followed by its current clock. It is the tegrastats field to read for GPU utilisation on a Jetson."
+      },
+      "class": "explain:jargon",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w035",
+      "kind": "explicit",
+      "text": "what is EMC_FREQ in tegrastats",
+      "expect": {
+        "explain": true,
+        "answer": "EMC is the external memory controller. EMC_FREQ shows how busy the memory interface is (as a percentage, with its clock), a rough signal of memory bandwidth use."
+      },
+      "class": "explain:jargon",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w036",
+      "kind": "explicit",
+      "text": "tegrastats lfb meaning",
+      "expect": {
+        "explain": true,
+        "answer": "lfb means largest free block: it reports how many free memory blocks of the largest contiguous size remain, a rough indicator of memory fragmentation."
+      },
+      "class": "explain:jargon",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w037",
+      "kind": "explicit",
+      "text": "what are the VDD_ entries in tegrastats",
+      "expect": {
+        "explain": true,
+        "answer": "They are power rails, printed as current/average power in milliwatts. On Orin, VDD_IN is the module's total input power, and the other rails break that down by subsystem."
+      },
+      "class": "explain:jargon",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w038",
+      "kind": "explicit",
+      "text": "What does the CPU section of tegrastats show?",
+      "expect": {
+        "explain": true,
+        "answer": "One entry per CPU core as load percentage at clock frequency in MHz; a core shown as off is disabled by the current power mode."
+      },
+      "class": "explain:question",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w039",
+      "kind": "explicit",
+      "text": "Tell me how to read a tegrastats line",
+      "expect": {
+        "explain": true,
+        "answer": "Read it left to right: RAM and swap usage, CPU load per core with frequency, memory controller and GPU load (EMC_FREQ, GR3D_FREQ), then temperatures and power rails in current/average milliwatts."
+      },
+      "class": "explain:imperative",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w040",
+      "kind": "explicit",
+      "text": "What is jtop?",
+      "expect": {
+        "explain": true,
+        "answer": "jtop is an interactive terminal monitor for Jetson from the community jetson-stats package. It shows CPU, GPU, memory, temperatures, power and power mode in one view."
+      },
+      "class": "explain:question",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w041",
+      "kind": "explicit",
+      "text": "What is unified memory?",
+      "expect": {
+        "explain": true,
+        "answer": "On Jetson and GB10 systems the CPU and GPU share one physical memory pool instead of the GPU having its own VRAM. GPU allocations come out of the same RAM that the OS and other processes use."
+      },
+      "class": "explain:question",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w042",
+      "kind": "explicit",
+      "text": "Why does a CUDA out-of-memory error mean something different on a Jetson?",
+      "expect": {
+        "explain": true,
+        "answer": "On a Jetson the GPU has no separate VRAM, so a CUDA out-of-memory error means the whole shared system memory is under pressure. Other processes, containers and caches compete for it, so check available system memory, not a GPU memory counter."
+      },
+      "class": "explain:question",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w043",
+      "kind": "explicit",
+      "text": "How is CUDA OOM on the DGX Spark different from OOM on a discrete GPU?",
+      "expect": {
+        "explain": true,
+        "answer": "On a discrete GPU it means the card's own VRAM is full. On DGX Spark the GB10 shares one memory pool between CPU and GPU, so it means the system as a whole is short of memory, and the useful signal is MemAvailable."
+      },
+      "class": "explain:question",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w044",
+      "kind": "explicit",
+      "text": "On a Jetson, nvidia-smi shows N/A for memory used. Is that normal?",
+      "expect": {
+        "explain": true,
+        "answer": "Yes. With unified memory there is no dedicated VRAM pool for nvidia-smi to report, so memory total and used show N/A; system memory figures such as MemAvailable are the ones that matter."
+      },
+      "class": "explain:symptom",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w045",
+      "kind": "explicit",
+      "text": "nvidia-smi memory says [N/A] on GB10, why?",
+      "expect": {
+        "explain": true,
+        "answer": "GB10 uses unified memory shared by CPU and GPU, so there is no separate GPU memory pool to report and nvidia-smi prints [N/A] by design."
+      },
+      "class": "explain:symptom",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w046",
+      "kind": "explicit",
+      "text": "Why can a GPU job on a Jetson make the Linux OOM killer fire?",
+      "expect": {
+        "explain": true,
+        "answer": "Because GPU allocations come from the same system RAM as everything else. A large GPU allocation can push the whole system out of memory, and the kernel then kills a process to recover."
+      },
+      "class": "explain:question",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w047",
+      "kind": "explicit",
+      "text": "What is the difference between an integrated and a discrete GPU?",
+      "expect": {
+        "explain": true,
+        "answer": "An integrated GPU sits on the same chip or package as the CPU and shares system memory. A discrete GPU is a separate card with its own VRAM, connected over PCIe."
+      },
+      "class": "explain:question",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w048",
+      "kind": "explicit",
+      "text": "On an RTX workstation, what does CUDA out of memory mean?",
+      "expect": {
+        "explain": true,
+        "answer": "On a discrete RTX card it means the GPU's own VRAM is full. System RAM being free does not help, so the fix is a smaller model, batch or context, or freeing other GPU processes."
+      },
+      "class": "explain:question",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w049",
+      "kind": "explicit",
+      "text": "unified memory vs vram",
+      "expect": {
+        "explain": true,
+        "answer": "VRAM is memory dedicated to a discrete GPU. Unified memory is one pool shared by CPU and GPU, as on Jetson and DGX Spark, so GPU and system workloads compete for the same bytes."
+      },
+      "class": "explain:terse",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w050",
+      "kind": "explicit",
+      "text": "Why is MemAvailable the number to watch on a unified-memory machine?",
+      "expect": {
+        "explain": true,
+        "answer": "Because GPU allocations draw from system RAM there, so MemAvailable, the kernel's estimate of memory usable without swapping, is the closest thing to free GPU memory."
+      },
+      "class": "explain:question",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w051",
+      "kind": "explicit",
+      "text": "What is the difference between MemFree and MemAvailable?",
+      "expect": {
+        "explain": true,
+        "answer": "MemFree is memory not used for anything. MemAvailable estimates how much a new program could get without swapping, counting cache the kernel can reclaim, so it is the better free-memory figure."
+      },
+      "class": "explain:question",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w052",
+      "kind": "explicit",
+      "text": "Why does Linux show so little free memory when nothing is running?",
+      "expect": {
+        "explain": true,
+        "answer": "Linux uses spare RAM as page cache for files and hands it back when programs need it. Low free memory is normal; available memory is the figure that shows real headroom."
+      },
+      "class": "explain:question",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w053",
+      "kind": "explicit",
+      "text": "What is swap?",
+      "expect": {
+        "explain": true,
+        "answer": "Disk or compressed-RAM space the kernel moves rarely used memory pages into when RAM runs short. It prevents out-of-memory kills but is much slower than RAM."
+      },
+      "class": "explain:question",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w054",
+      "kind": "explicit",
+      "text": "Describe zram",
+      "expect": {
+        "explain": true,
+        "answer": "zram is a compressed block device that lives in RAM and is commonly used as swap. It gives more effective memory by compressing pages, at the cost of some CPU time."
+      },
+      "class": "explain:imperative",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w055",
+      "kind": "explicit",
+      "text": "zram vs swapfile",
+      "expect": {
+        "explain": true,
+        "answer": "zram swaps into compressed RAM, so it is fast but uses memory and CPU. A swapfile swaps to disk, so it adds real capacity but is much slower."
+      },
+      "class": "explain:jargon",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w056",
+      "kind": "explicit",
+      "text": "What is the Linux OOM killer?",
+      "expect": {
+        "explain": true,
+        "answer": "When the system runs out of memory and cannot reclaim enough, the kernel picks a process, usually the largest, and kills it to free memory. It logs this in the kernel log."
+      },
+      "class": "explain:question",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w057",
+      "kind": "explicit",
+      "text": "What does the buff/cache column in free mean?",
+      "expect": {
+        "explain": true,
+        "answer": "Memory the kernel is using for file buffers and page cache. Most of it can be reclaimed when programs need memory, so it is not lost."
+      },
+      "class": "explain:question",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w058",
+      "kind": "explicit",
+      "text": "what is dmesg",
+      "expect": {
+        "explain": true,
+        "answer": "dmesg prints the kernel's message buffer: driver messages, hardware errors and events such as out-of-memory kills."
+      },
+      "class": "explain:terse",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w059",
+      "kind": "explicit",
+      "text": "What is a DGX Spark?",
+      "expect": {
+        "explain": true,
+        "answer": "A compact NVIDIA desktop AI system built on the GB10 Grace Blackwell superchip, with unified memory shared between CPU and GPU, running NVIDIA's Ubuntu-based DGX OS."
+      },
+      "class": "explain:question",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w060",
+      "kind": "explicit",
+      "text": "What is the GB10 chip?",
+      "expect": {
+        "explain": true,
+        "answer": "GB10 is a Grace Blackwell superchip: an Arm-based Grace CPU and a Blackwell GPU in one package, linked with NVLink-C2C and sharing coherent unified memory."
+      },
+      "class": "explain:question",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w061",
+      "kind": "explicit",
+      "text": "gb10?",
+      "expect": {
+        "explain": true,
+        "answer": "GB10 is the Grace Blackwell superchip in the DGX Spark: Arm CPU plus Blackwell GPU sharing one unified memory pool."
+      },
+      "class": "explain:terse",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w062",
+      "kind": "explicit",
+      "text": "What is DGX OS?",
+      "expect": {
+        "explain": true,
+        "answer": "NVIDIA's Ubuntu-based operating system for DGX systems, shipped with the NVIDIA driver, CUDA stack and container tooling preinstalled."
+      },
+      "class": "explain:question",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w063",
+      "kind": "explicit",
+      "text": "What does /etc/dgx-release contain?",
+      "expect": {
+        "explain": true,
+        "answer": "It identifies a DGX system and its DGX OS software release, for example the product name and the software build version."
+      },
+      "class": "explain:question",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w064",
+      "kind": "explicit",
+      "text": "Is the DGX Spark an Arm machine?",
+      "expect": {
+        "explain": true,
+        "answer": "Yes. Its Grace CPU is Arm (aarch64), so software and container images need arm64 builds."
+      },
+      "class": "explain:question",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w065",
+      "kind": "explicit",
+      "text": "What is NVLink-C2C?",
+      "expect": {
+        "explain": true,
+        "answer": "NVIDIA's chip-to-chip interconnect that links a Grace CPU and a GPU with high bandwidth and cache-coherent access to shared memory."
+      },
+      "class": "explain:question",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w066",
+      "kind": "explicit",
+      "text": "What is the difference between the CUDA driver and the CUDA toolkit?",
+      "expect": {
+        "explain": true,
+        "answer": "The driver is the kernel module and libcuda that let programs use the GPU. The toolkit is the compiler (nvcc), runtime and libraries used to build and run CUDA code. The driver must support the CUDA version the application was built for."
+      },
+      "class": "explain:question",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w067",
+      "kind": "explicit",
+      "text": "Why does nvidia-smi show a different CUDA version than nvcc?",
+      "expect": {
+        "explain": true,
+        "answer": "nvidia-smi shows the newest CUDA version the installed driver supports; nvcc --version shows the toolkit actually installed. They differ often, and that alone is not a problem."
+      },
+      "class": "explain:question",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w068",
+      "kind": "explicit",
+      "text": "what does the CUDA Version in nvidia-smi mean",
+      "expect": {
+        "explain": true,
+        "answer": "It is the highest CUDA version the driver supports, not the version of any installed toolkit."
+      },
+      "class": "explain:jargon",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w069",
+      "kind": "explicit",
+      "text": "What is compute capability?",
+      "expect": {
+        "explain": true,
+        "answer": "A version number for a GPU architecture's features. CUDA code is compiled for specific compute capabilities, and a binary only runs on GPUs it has code for, or can JIT from PTX."
+      },
+      "class": "explain:question",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w070",
+      "kind": "explicit",
+      "text": "What does 'no kernel image is available for execution on the device' mean?",
+      "expect": {
+        "explain": true,
+        "answer": "The program was built without machine code for this GPU's compute capability and without PTX it could JIT-compile, so it needs a build that targets this GPU architecture."
+      },
+      "class": "explain:symptom",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w071",
+      "kind": "explicit",
+      "text": "What is PTX?",
+      "expect": {
+        "explain": true,
+        "answer": "PTX is CUDA's intermediate assembly language. The driver can JIT-compile it to machine code for the GPU at load time when no ready-made binary for that GPU is included."
+      },
+      "class": "explain:question",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w072",
+      "kind": "explicit",
+      "text": "Why is the first CUDA call in a program slow?",
+      "expect": {
+        "explain": true,
+        "answer": "The first call creates the CUDA context and loads GPU modules, and may JIT-compile PTX, all of which takes time once per process."
+      },
+      "class": "explain:question",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w073",
+      "kind": "explicit",
+      "text": "cuda context?",
+      "expect": {
+        "explain": true,
+        "answer": "The per-process state the driver keeps for using a GPU: memory allocations, loaded modules and streams. Creating one costs time and some memory."
+      },
+      "class": "explain:terse",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w074",
+      "kind": "explicit",
+      "text": "Tell me what cuDNN is",
+      "expect": {
+        "explain": true,
+        "answer": "cuDNN is NVIDIA's GPU-accelerated library of deep-learning primitives such as convolutions, pooling and normalization, used by frameworks like PyTorch and TensorFlow."
+      },
+      "class": "explain:imperative",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w075",
+      "kind": "explicit",
+      "text": "What is TensorRT?",
+      "expect": {
+        "explain": true,
+        "answer": "NVIDIA's SDK for optimizing trained neural networks for inference: it fuses layers, picks fast kernels and can lower precision, then runs the resulting engine."
+      },
+      "class": "explain:question",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w076",
+      "kind": "explicit",
+      "text": "Can a TensorRT engine be copied to a different device?",
+      "expect": {
+        "explain": true,
+        "answer": "Generally no. A TensorRT engine is built for the GPU and TensorRT version it was built on, so it is normally rebuilt on each target device or after an upgrade."
+      },
+      "class": "explain:question",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w077",
+      "kind": "explicit",
+      "text": "What are tensor cores?",
+      "expect": {
+        "explain": true,
+        "answer": "Specialized GPU units that do matrix multiply-accumulate at low precision very quickly, which is what speeds up deep-learning training and inference."
+      },
+      "class": "explain:question",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w078",
+      "kind": "explicit",
+      "text": "What does quantizing a model to FP8 or INT4 do?",
+      "expect": {
+        "explain": true,
+        "answer": "It stores weights, and sometimes activations, in fewer bits, cutting memory use and often raising speed, at the cost of some accuracy."
+      },
+      "class": "explain:question",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w079",
+      "kind": "explicit",
+      "text": "What does CUDA_VISIBLE_DEVICES do?",
+      "expect": {
+        "explain": true,
+        "answer": "It limits which GPUs a CUDA process can see, and in what order, by listing their indices or UUIDs."
+      },
+      "class": "explain:question",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w080",
+      "kind": "explicit",
+      "text": "What is NCCL?",
+      "expect": {
+        "explain": true,
+        "answer": "NVIDIA Collective Communications Library: it implements operations like all-reduce and broadcast across GPUs and machines for distributed training and inference."
+      },
+      "class": "explain:question",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w081",
+      "kind": "explicit",
+      "text": "Explain the NVIDIA Container Toolkit",
+      "expect": {
+        "explain": true,
+        "answer": "It lets containers use NVIDIA GPUs by configuring the container runtime to expose the GPU devices and driver libraries inside the container."
+      },
+      "class": "explain:imperative",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w082",
+      "kind": "explicit",
+      "text": "--gpus all vs --runtime nvidia",
+      "expect": {
+        "explain": true,
+        "answer": "Both give a container GPU access through the NVIDIA Container Toolkit. --gpus uses Docker's device request support, while --runtime nvidia selects the NVIDIA runtime directly, which is common on Jetson."
+      },
+      "class": "explain:jargon",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w083",
+      "kind": "explicit",
+      "text": "What does default-runtime nvidia in daemon.json do?",
+      "expect": {
+        "explain": true,
+        "answer": "It makes every container use the NVIDIA runtime without passing a flag, so containers get GPU access by default."
+      },
+      "class": "explain:question",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w084",
+      "kind": "explicit",
+      "text": "What is CDI in the container world?",
+      "expect": {
+        "explain": true,
+        "answer": "The Container Device Interface, a standard way of describing devices such as GPUs so container runtimes can inject them into containers."
+      },
+      "class": "explain:question",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w085",
+      "kind": "explicit",
+      "text": "What does 'exec format error' mean when a container starts?",
+      "expect": {
+        "explain": true,
+        "answer": "The binary or image was built for a different CPU architecture, usually amd64 on an Arm host such as a Jetson or DGX Spark; an arm64 build of the image is needed."
+      },
+      "class": "explain:symptom",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w086",
+      "kind": "explicit",
+      "text": "Why do Jetson container images carry an L4T version in their tag?",
+      "expect": {
+        "explain": true,
+        "answer": "They are built against a particular L4T/JetPack release, so the image should match the L4T release of the host it runs on."
+      },
+      "class": "explain:question",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w087",
+      "kind": "explicit",
+      "text": "What is the difference between a docker image and a container?",
+      "expect": {
+        "explain": true,
+        "answer": "An image is a read-only template of files and settings. A container is a running or stopped instance of that image with its own writable layer."
+      },
+      "class": "explain:question",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w088",
+      "kind": "explicit",
+      "text": "Does docker restart pick up a new image?",
+      "expect": {
+        "explain": true,
+        "answer": "No. Restarting stops and starts the same container with the same configuration and image; using a newer image or different options means recreating the container."
+      },
+      "class": "explain:question",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w089",
+      "kind": "explicit",
+      "text": "What does exit code 137 mean for a container?",
+      "expect": {
+        "explain": true,
+        "answer": "137 is 128 + 9: the process was killed with SIGKILL, most often by the out-of-memory killer or because it did not stop in time after docker stop."
+      },
+      "class": "explain:question",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w090",
+      "kind": "explicit",
+      "text": "container exit 139?",
+      "expect": {
+        "explain": true,
+        "answer": "Exit code 139 is 128 + 11, a segmentation fault (SIGSEGV) in the container's main process."
+      },
+      "class": "explain:terse",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w091",
+      "kind": "explicit",
+      "text": "What does exit code 143 mean?",
+      "expect": {
+        "explain": true,
+        "answer": "143 is 128 + 15: the process ended on SIGTERM, the normal polite stop signal, for example from docker stop or systemctl stop."
+      },
+      "class": "explain:question",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w092",
+      "kind": "explicit",
+      "text": "What does docker system prune remove?",
+      "expect": {
+        "explain": true,
+        "answer": "Stopped containers, unused networks, dangling images and build cache; with -a it also removes every image not used by a container."
+      },
+      "class": "explain:question",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w093",
+      "kind": "explicit",
+      "text": "Why do PyTorch containers often need --ipc=host or a bigger --shm-size?",
+      "expect": {
+        "explain": true,
+        "answer": "Docker gives containers a small /dev/shm by default, and PyTorch data loader workers pass data through shared memory, so they can fail without more of it."
+      },
+      "class": "explain:question",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w094",
+      "kind": "explicit",
+      "text": "What happens when a container hits its --memory limit?",
+      "expect": {
+        "explain": true,
+        "answer": "The kernel's cgroup memory controller kills a process in that container, so it exits with an out-of-memory kill even if the host still has free memory."
+      },
+      "class": "explain:question",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w095",
+      "kind": "explicit",
+      "text": "What is the difference between systemctl enable and systemctl start?",
+      "expect": {
+        "explain": true,
+        "answer": "start runs the service now; enable makes it start automatically at boot. They are independent, and enable --now does both."
+      },
+      "class": "explain:question",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w096",
+      "kind": "explicit",
+      "text": "What does a failed state mean for a systemd service?",
+      "expect": {
+        "explain": true,
+        "answer": "The service exited with an error, crashed, was killed or timed out. systemd keeps it marked failed until it is restarted or the state is reset."
+      },
+      "class": "explain:question",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w097",
+      "kind": "explicit",
+      "text": "journalctl?",
+      "expect": {
+        "explain": true,
+        "answer": "The tool for reading the systemd journal, which collects logs from services, the kernel and the system in one place."
+      },
+      "class": "explain:terse",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w098",
+      "kind": "explicit",
+      "text": "What does shell exit code 127 mean?",
+      "expect": {
+        "explain": true,
+        "answer": "Command not found: the shell could not find the program on PATH or at the given path."
+      },
+      "class": "explain:question",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w099",
+      "kind": "explicit",
+      "text": "What is PIPESTATUS in bash?",
+      "expect": {
+        "explain": true,
+        "answer": "An array with the exit status of every command in the most recent pipeline, since $? only gives the last stage's status."
+      },
+      "class": "explain:question",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w100",
+      "kind": "explicit",
+      "text": "What does set -o pipefail do?",
+      "expect": {
+        "explain": true,
+        "answer": "It makes a pipeline's status the last non-zero exit status of any stage, instead of just the status of the final command."
+      },
+      "class": "explain:question",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w101",
+      "kind": "explicit",
+      "text": "What is PROMPT_COMMAND in bash?",
+      "expect": {
+        "explain": true,
+        "answer": "A variable, or array, of commands bash runs just before it prints each primary prompt; hooks use it to act after every command finishes."
+      },
+      "class": "explain:question",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w102",
+      "kind": "explicit",
+      "text": "What does nvsh doctor check in general?",
+      "expect": {
+        "explain": true,
+        "answer": "It checks nvsh's own setup: platform detection, whether an agent backend is configured and reachable, and from a hooked shell whether the hook is sourced first in PROMPT_COMMAND, its key bindings, output capture and the daemon."
+      },
+      "class": "explain:question",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w103",
+      "kind": "explicit",
+      "text": "What does nvsh do when a command fails?",
+      "expect": {
+        "explain": true,
+        "answer": "Its bash hook notices a qualifying failure and calls an agent to diagnose it and propose a fix. Nothing runs until you approve it, then nvsh can retry the command and check the result."
+      },
+      "class": "explain:question",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w104",
+      "kind": "explicit",
+      "text": "Why does pressing Ctrl-C not trigger nvsh?",
+      "expect": {
+        "explain": true,
+        "answer": "Exit status 130 means the command was interrupted by Ctrl-C, which is your choice, not an error, so nvsh's trigger rules ignore it."
+      },
+      "class": "explain:question",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w105",
+      "kind": "explicit",
+      "text": "Will nvsh ever run a fix without asking me?",
+      "expect": {
+        "explain": true,
+        "answer": "No. nvsh proposes a command and shows what it understood; it only runs after you approve it."
+      },
+      "class": "explain:question",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w106",
+      "kind": "explicit",
+      "text": "What is vLLM?",
+      "expect": {
+        "explain": true,
+        "answer": "An open-source engine for serving large language models, known for PagedAttention memory management and an OpenAI-compatible API server."
+      },
+      "class": "explain:question",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w107",
+      "kind": "explicit",
+      "text": "What does vLLM's --gpu-memory-utilization setting mean?",
+      "expect": {
+        "explain": true,
+        "answer": "It is the fraction of GPU memory vLLM may take for weights and KV cache. On a unified-memory box that fraction comes from the shared pool, so a high value leaves little for the rest of the system."
+      },
+      "class": "explain:question",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w108",
+      "kind": "explicit",
+      "text": "What is the KV cache in LLM inference?",
+      "expect": {
+        "explain": true,
+        "answer": "Stored attention keys and values for tokens already processed, so they are not recomputed for each new token. It grows with context length and the number of concurrent requests."
+      },
+      "class": "explain:question",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w109",
+      "kind": "explicit",
+      "text": "max-model-len meaning",
+      "expect": {
+        "explain": true,
+        "answer": "It is the longest context, prompt plus output, a model server will accept. Larger values need more KV cache memory."
+      },
+      "class": "explain:jargon",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w110",
+      "kind": "explicit",
+      "text": "What is the difference between prefill and decode?",
+      "expect": {
+        "explain": true,
+        "answer": "Prefill processes the whole prompt at once and is mostly compute-bound. Decode generates tokens one at a time and is mostly limited by memory bandwidth."
+      },
+      "class": "explain:question",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w111",
+      "kind": "explicit",
+      "text": "Why does memory bandwidth matter so much for LLM speed?",
+      "expect": {
+        "explain": true,
+        "answer": "Generating each token reads the model's active weights from memory, so tokens per second during decode is limited mainly by how fast memory can be read."
+      },
+      "class": "explain:question",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w112",
+      "kind": "explicit",
+      "text": "Explain what llama.cpp is",
+      "expect": {
+        "explain": true,
+        "answer": "An open-source C/C++ LLM inference engine that runs quantized GGUF models on CPUs and GPUs with few dependencies."
+      },
+      "class": "explain:imperative",
+      "source": "explain-2026-09-22"
+    },
+    {
+      "id": "dev-w113",
+      "kind": "explicit",
+      "text": "What is HF_TOKEN used for?",
+      "expect": {
+        "explain": true,
+        "answer": "It holds a Hugging Face access token for downloading gated or private models. It is a secret and should never be pasted into logs or shared."
+      },
+      "class": "explain:question",
+      "source": "explain-2026-09-22"
     }
   ]
 }

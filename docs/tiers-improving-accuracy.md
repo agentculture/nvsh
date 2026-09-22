@@ -77,6 +77,27 @@ The scripts for all of this (`foldbench.py`, `jaxfold.py`, `jaxcheck.py`,
 `promptmatch.py`) are development tools kept outside the repository; the
 recipe in `needle-finetune.md` has the commands.
 
+## Update, 2026-09-22: explain entries in the dev corpus
+
+The dev corpus now has **431 entries**: 212 expect an operation, 106 expect
+escalate, and 113 new ones expect **explain** (ids `dev-w001` to `dev-w113`,
+source `explain-2026-09-22`, class `explain:<phrasing>`). An explain entry is
+a read-only question a person answers in words — what `jetson_clocks` does,
+what `tegrastats` fields mean, why a CUDA out-of-memory error means something
+different on unified memory — that no table operation answers by inspecting
+the machine and that does not need the full agent. Each carries an authored
+1 to 3 sentence answer in `expect.answer`, used to train Tier 2 (issue 39).
+The seeded split (`scripts/lfm-finetune/split.py`, seed 39) puts them
+79 / 17 / 17 across train / val / test, next to 74 / 16 / 16 escalate and
+148 / 32 / 32 operation entries. The numbers in the sections above were
+measured on the 318-entry grid, before these were added; for Tier 1 an
+explain entry is scored as a should-decline, and the per-operation accuracy
+leaves it out.
+
+Five older entries (`dev-g284` to `dev-g288`, such as "Explain unified memory"
+and "How does nvpmodel work?") are the same kind of question but still expect
+escalate; they were left unchanged.
+
 ## What was tried, and did not work
 
 - **Rewording operation descriptions.** 5 of 9 became 6 of 9, and a request
