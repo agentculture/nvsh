@@ -7,16 +7,26 @@ the nvsh package -- nothing under nvsh/ may depend on it.
 Usage::
 
     python scripts/lfm-finetune/build_dataset.py --out train.jsonl [--corpus PATH]
+    python scripts/lfm-finetune/build_dataset.py --out train.jsonl --split train.json
 
-Each output line is ``{"messages": [...], "tools": [...]}`` in the shape the
-Hugging Face chat templates, TRL's ``SFTTrainer`` and unsloth accept. The tools
-and the system brief are the ones Tier 2 really sends (``nvsh.tiers.lfm``), so
-a model tuned on this file sees at run time exactly what it saw in training.
+Each output line is ``{"messages": [...], "tools": [...], "source_id": ...}``
+in the shape the Hugging Face chat templates, TRL's ``SFTTrainer`` and
+unsloth accept (an extra ``source_id`` key travels along for later grouping;
+none of those consumers look at unknown keys). The tools and the system
+brief are the ones Tier 2 really sends (``nvsh.tiers.lfm``), so a model
+tuned on this file sees at run time exactly what it saw in training.
 
 Only single-turn examples can be built from the corpus: an explicit request
-answered by ``propose``, and a should-decline request answered by ``escalate``.
-Multi-round inspection examples need real Tier 2 records; they are not invented
-here.
+answered by ``propose``, a should-decline request answered by ``escalate``,
+and a read-only question answered in words by ``explain`` (the corpus
+entry's own ``answer`` text -- never generated here). Multi-round inspection
+examples need real Tier 2 records; they are not invented here.
+
+``--split PATH`` reads a train/val/test side written by
+``scripts/lfm-finetune/split.py`` instead of a raw corpus (``--corpus`` and
+``--split`` are mutually exclusive); each output example carries the split
+entry's ``source_id`` so later steps can group by source. The held-out split
+is refused either way.
 """
 
 from __future__ import annotations
@@ -79,6 +89,14 @@ def _call(name: str, arguments: dict, arguments_as: str) -> dict:
 
 def answer_for(entry: CorpusEntry, arguments_as: str = ARGUMENTS_AS_OBJECT) -> dict:
     """The assistant turn the corpus expects for *entry*."""
+    if entry.expect.get("explain"):
+        answer = entry.expect.get("answer")
+        if not isinstance(answer, str) or not answer.strip():
+            raise ValueError(
+                f"{entry.id}: an explain entry needs a non-empty 'answer' in its expect block"
+                " -- explain text is authored with the corpus entry, never generated here"
+            )
+        return _call(lfm.EXPLAIN_TOOL, {"text": answer}, arguments_as)
     if entry.expect.get("escalate"):
         return _call(lfm.ESCALATE_TOOL, {"reason": ESCALATE_REASON}, arguments_as)
     arguments = {
@@ -108,7 +126,10 @@ def user_message_for(entry: CorpusEntry) -> str:
 
 
 def example_from_entry(
-    entry: CorpusEntry, platform: Platform, arguments_as: str = ARGUMENTS_AS_OBJECT
+    entry: CorpusEntry,
+    platform: Platform,
+    arguments_as: str = ARGUMENTS_AS_OBJECT,
+    source_id: str | None = None,
 ) -> dict:
     """One training example: Tier 2's own brief and tools, the request, the expected call."""
     messages = [
@@ -116,21 +137,61 @@ def example_from_entry(
         {"role": "user", "content": user_message_for(entry)},
         answer_for(entry, arguments_as),
     ]
-    return {"messages": messages, "tools": lfm.tools_for()}
+    return {
+        "messages": messages,
+        "tools": lfm.tools_for(),
+        "source_id": entry.id if source_id is None else source_id,
+    }
 
 
-def build(corpus: Path, arguments_as: str = ARGUMENTS_AS_OBJECT) -> list[dict]:
-    """Every example the corpus at *corpus* yields. Refuses the held-out split."""
-    if corpus.name == HELD_OUT_NAME:
+def _source_ids(path: Path) -> dict[str, str]:
+    """Map each entry id in *path* to its ``source_id`` (itself, absent one).
+
+    Read straight from the file's raw JSON, the way ``split.py`` reads it --
+    :class:`CorpusEntry` (``load_corpus``) doesn't carry ``source_id``, since
+    only a split file (never a plain corpus) has one.
+    """
+    with open(path, encoding="utf-8") as handle:
+        raw = json.load(handle)
+    raw_entries = raw.get("entries", []) if isinstance(raw, dict) else raw
+    if not isinstance(raw_entries, list):
+        return {}
+    ids: dict[str, str] = {}
+    for item in raw_entries:
+        if isinstance(item, dict) and "id" in item:
+            entry_id = str(item["id"])
+            ids[entry_id] = str(item.get("source_id", entry_id))
+    return ids
+
+
+def build(source: Path, arguments_as: str = ARGUMENTS_AS_OBJECT) -> list[dict]:
+    """Every example *source* yields. Refuses the held-out split.
+
+    *source* is either a plain corpus (``--corpus``) or a train/val/test
+    split file written by ``split.py`` (``--split``): both share the same
+    ``{"header", "entries"}`` shape, so the same loading path builds either
+    one -- a split file's ``world`` is simply absent, giving the default
+    platform, and its entries' ``source_id`` travels into each example.
+    """
+    if source.name == HELD_OUT_NAME:
         raise ValueError("the held-out split is for judging a tuned model, never for training it")
-    loaded = load_corpus(corpus)
-    platform = world_platform(load_world(corpus))
-    return [example_from_entry(entry, platform, arguments_as) for entry in loaded.entries]
+    loaded = load_corpus(source)
+    platform = world_platform(load_world(source))
+    source_ids = _source_ids(source)
+    return [
+        example_from_entry(entry, platform, arguments_as, source_ids.get(entry.id))
+        for entry in loaded.entries
+    ]
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--corpus", default=str(_REPO_ROOT / "nvsh/tiers/corpus/dev.json"))
+    parser.add_argument("--corpus", default=None, help="a plain corpus file (default: dev.json)")
+    parser.add_argument(
+        "--split",
+        default=None,
+        help="a train/val/test side written by split.py, in place of --corpus",
+    )
     parser.add_argument("--out", required=True)
     parser.add_argument(
         "--arguments-as",
@@ -143,11 +204,17 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     args = parser.parse_args(argv)
-    corpus, out = Path(args.corpus), Path(args.out)
-    if out.resolve() == corpus.resolve():
+    if args.split and args.corpus:
+        parser.error("--split and --corpus are mutually exclusive")
+    if args.split:
+        source = Path(args.split)
+    else:
+        source = Path(args.corpus or str(_REPO_ROOT / "nvsh/tiers/corpus/dev.json"))
+    out = Path(args.out)
+    if out.resolve() == source.resolve():
         parser.error("--out must not be the corpus file")
     try:
-        examples = build(corpus, args.arguments_as)
+        examples = build(source, args.arguments_as)
     except ValueError as exc:
         parser.error(str(exc))
     with open(out, "w", encoding="utf-8") as handle:
