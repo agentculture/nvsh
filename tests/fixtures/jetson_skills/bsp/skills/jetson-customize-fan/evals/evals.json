@@ -1,0 +1,13 @@
+[
+  {
+    "id": "jetson-customize-fan-001",
+    "question": "Add a new quiet fan profile that ramps slower under 60C.",
+    "expected_skill": "jetson-customize-fan",
+    "expected_script": null,
+    "ground_truth": "Apply the Overlay edit recipe on the nvfancontrol conf, insert the new profile block with the slower ramp table, set it as the default if requested, and propagate to sibling confs.",
+    "expected_behavior": [
+      "Read skills/jetson-customize-fan/SKILL.md",
+      "Apply the Overlay edit recipe on the nvfancontrol conf"
+    ]
+  }
+]
