@@ -86,6 +86,26 @@ def tokenize_example(tokenizer, example: dict, max_length: int) -> dict:
     }
 
 
+def merge_adapter(base: str, revision: str, adapter: Path, out: Path) -> None:  # pragma: no cover
+    """Merge a saved LoRA adapter into a fresh copy of the base and save it to *out*.
+
+    Uses plain transformers + peft rather than unsloth's merged saver, which
+    copies the base weights out of the Hugging Face cache with their
+    read-only permissions and then fails to overwrite them (run log, t14).
+    The tokenizer, and so the chat template, is saved from the base
+    unchanged; stage_cache.py checks that byte for byte.
+    """
+    import torch
+    from peft import PeftModel
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+
+    model = AutoModelForCausalLM.from_pretrained(base, revision=revision, dtype=torch.bfloat16)
+    merged = PeftModel.from_pretrained(model, str(adapter)).merge_and_unload()
+    out.mkdir(parents=True, exist_ok=True)
+    merged.save_pretrained(str(out))
+    AutoTokenizer.from_pretrained(base, revision=revision).save_pretrained(str(out))
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--train", required=True, type=Path)
@@ -101,11 +121,21 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--max-length", type=int, default=4096)
     parser.add_argument("--no-merge", action="store_true", help="save the adapter only")
+    parser.add_argument(
+        "--merge-only",
+        type=Path,
+        metavar="ADAPTER",
+        help="skip training; merge this saved adapter into the base and write --out/merged",
+    )
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:  # pragma: no cover - needs a GPU stack
     args = _parser().parse_args(argv)
+    if args.merge_only is not None:
+        merge_adapter(args.base, args.revision, args.merge_only, args.out / "merged")
+        print(f"merged {args.merge_only} into {args.out / 'merged'}")
+        return 0
 
     # Imported here so the helpers above work without a training environment.
     # unsloth must come first: importing it patches transformers.
@@ -161,9 +191,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - needs a GP
     model.save_pretrained(str(args.out / "adapter"))
     tokenizer.save_pretrained(str(args.out / "adapter"))
     if not args.no_merge:
-        model.save_pretrained_merged(
-            str(args.out / "merged"), tokenizer, save_method="merged_16bit"
-        )
+        merge_adapter(args.base, args.revision, args.out / "adapter", args.out / "merged")
 
     log = {
         "base": args.base,

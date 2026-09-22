@@ -272,3 +272,20 @@ condition does not hold).
 the tuned model must reach at least **+15 points overall** on the 104 evals
 (from 34% to at least 49%) **and** at least double the not-named figure (at
 least 24 of 70), because requests that name their skill mostly test copying.
+
+### 2026-09-22: first training run, nvsh use case (t14, r1)
+
+`build_dataset.py --split train.json` (301 examples: 148 propose, 72
+escalate, 81 explain), then `train.py --epochs 20 --lr 5e-4 --rank 32
+--alpha 64 --batch 8 --seed 7` (the settings that worked for Needle3):
+760 steps in 558 s on the GB10, training loss 2.10 to 0.0012.
+
+Pitfall: **unsloth's `save_pretrained_merged` failed** with
+`Permission denied: .../merged/model.safetensors`. It copies the base weights
+out of the Hugging Face cache, where they are read-only, and then cannot
+overwrite them. `train.py` now merges with plain `transformers` + `peft`
+(`PeftModel.from_pretrained(base, adapter).merge_and_unload()`) and saves the
+base tokenizer unchanged; `train.py --merge-only <adapter>` redoes just that
+step. `stage_cache.py` then found the merged chat template byte-identical to
+the base's and staged it as `jetson-ai-lab/lfm2.5-350m-nvsh-triage` at
+revision `467ce549fc53...` in `hf_cache_dir`.
