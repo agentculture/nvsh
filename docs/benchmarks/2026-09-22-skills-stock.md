@@ -4,7 +4,7 @@
 
 - command: `measure_skills.py --tools /home/spark/lfm-train/jetson/tools.json --test /home/spark/lfm-train/jetson/test.jsonl --model LiquidAI/LFM2.5-350M --model-revision 9e6c6ccf47cd318696e137d381a7ded8fe4df09f --manifest /home/spark/lfm-train/jetson/manifest.json --label stock --launch --config /home/spark/lfm-train/measure-config.toml`
 - date: 2026-09-22
-- endpoint: <local endpoint> (a local endpoint was used; never recorded)
+- endpoint: `<local endpoint>` (a local endpoint was used; never recorded)
 - model: `LiquidAI/LFM2.5-350M`
 - model revision: `9e6c6ccf47cd318696e137d381a7ded8fe4df09f`
 - device: <https://github.com/NVIDIA-AI-IOT/jetson-device-skills> at commit `20137897aef549cc2fa36a18c10e45da94967c3e`

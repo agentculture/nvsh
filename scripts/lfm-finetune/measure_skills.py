@@ -472,7 +472,7 @@ def render_results(
         "",
         f"- command: `{command_line}`",
         f"- date: {when}",
-        f"- endpoint: {LOCAL_ENDPOINT_LABEL} (a local endpoint was used; " "never recorded)",
+        f"- endpoint: `{LOCAL_ENDPOINT_LABEL}` (a local endpoint was used; " "never recorded)",
         f"- model: `{model}`",
     ]
     if model_revision:
