@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -57,6 +58,23 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 
 #: The split a tuned model is judged on. Training on it would make that judgement worthless.
 HELD_OUT_NAME = "held-out.json"
+
+#: ``split.py``'s own note, written verbatim into a split file's header by
+#: ``_write_side``: ``f"Split '{name}' of {corpus_name} (seed={seed})."``.
+#: Matched here to learn which side a ``--split`` file claims to be, without
+#: importing split.py (this script and split.py are deliberately independent
+#: of each other -- see split.py's module docstring).
+_SPLIT_SIDE_RE = re.compile(r"Split '(\w+)' of ")
+
+#: nvsh/tiers/corpus/held-out.json's own header opens with this exact
+#: phrase; matched so a held-out file is refused even if renamed away from
+#: ``held-out.json``.
+_HELD_OUT_HEADER_MARKER = "Held-out split"
+
+#: The only side a ``--split`` file may train from (decision c31: iterate on
+#: val, test only measured on final runs -- and both val and test exist to
+#: be held out of training so a measured run's fold stays clean, honesty h7).
+TRAIN_SIDE = "train"
 
 #: What the assistant says when it hands a request up. Short on purpose: the
 #: reason is for the audit log, the behaviour being taught is the call itself.
@@ -109,20 +127,19 @@ def answer_for(entry: CorpusEntry, arguments_as: str = ARGUMENTS_AS_OBJECT) -> d
 def user_message_for(entry: CorpusEntry) -> str:
     """The user message Tier 2 itself would see for *entry*'s request.
 
-    A "failure" entry is built through ``nvsh.tiers.bench``'s own
-    ``request_for``/``context_for`` (the same construction ``bench.py``'s
-    ``run_items`` uses) and ``nvsh.tiers.lfm``'s ``request_message`` (the
-    function ``LfmTier.select`` calls) -- so its user message has the
-    runtime shape (``command:``/``exit status:``/``output tail:``), not the
-    corpus entry's raw text verbatim. An "explicit" entry's message is the
-    entry's text unchanged, matching what ``request_message`` itself does
-    for a non-FAILURE request (modulo the redaction/length clamp it also
-    applies at run time, deliberately not replayed here so training text
-    stays exactly what a human wrote in the corpus).
+    Built through ``nvsh.tiers.bench``'s own ``request_for``/``context_for``
+    (the same construction ``bench.py``'s ``run_items`` uses) and
+    ``nvsh.tiers.lfm``'s ``request_message`` (the function ``LfmTier.select``
+    calls itself), for *every* entry kind -- a "failure" entry gets the
+    runtime shape (``command:``/``exit status:``/``output tail:``); an
+    "explicit" entry gets its text run through the same redaction and
+    ``REQUEST_CHARS`` clamp ``request_message`` applies at run time. A model
+    tuned on this file must see in training exactly what it sees at run
+    time, redaction and clamp included -- training on the raw corpus text
+    would teach it a request shape it will never actually receive (honesty
+    h7).
     """
-    if entry.kind == "failure":
-        return lfm.request_message(request_for(entry), context_for(entry))
-    return entry.text
+    return lfm.request_message(request_for(entry), context_for(entry))
 
 
 def example_from_entry(
@@ -164,7 +181,20 @@ def _source_ids(path: Path) -> dict[str, str]:
     return ids
 
 
-def build(source: Path, arguments_as: str = ARGUMENTS_AS_OBJECT) -> list[dict]:
+def _header(source: Path) -> str:
+    """*source*'s raw ``"header"`` string, or ``""`` if absent/unreadable."""
+    try:
+        with open(source, encoding="utf-8") as handle:
+            raw = json.load(handle)
+    except (OSError, ValueError):
+        return ""
+    header = raw.get("header") if isinstance(raw, dict) else None
+    return header if isinstance(header, str) else ""
+
+
+def build(
+    source: Path, arguments_as: str = ARGUMENTS_AS_OBJECT, is_split: bool = False
+) -> list[dict]:
     """Every example *source* yields. Refuses the held-out split.
 
     *source* is either a plain corpus (``--corpus``) or a train/val/test
@@ -172,9 +202,35 @@ def build(source: Path, arguments_as: str = ARGUMENTS_AS_OBJECT) -> list[dict]:
     ``{"header", "entries"}`` shape, so the same loading path builds either
     one -- a split file's ``world`` is simply absent, giving the default
     platform, and its entries' ``source_id`` travels into each example.
+
+    *is_split* is ``True`` when *source* is being used as a ``--split``
+    file (a train/val/test side written by ``split.py``, never a plain
+    corpus): only the train side may then be used, because training on val
+    or test would contaminate the fold a tuned model is later measured on
+    (honesty h7). A ``--split`` file whose header does not name a side at
+    all is refused too -- a corpus's header never claims to be a split
+    side, so a file that is supposed to be one but doesn't say so cannot be
+    trusted to be the train side (e.g. a renamed ``test.json`` whose header
+    was stripped or hand-edited away from ``split.py``'s own wording).
     """
     if source.name == HELD_OUT_NAME:
         raise ValueError("the held-out split is for judging a tuned model, never for training it")
+    header = _header(source)
+    if _HELD_OUT_HEADER_MARKER in header:
+        raise ValueError("the held-out split is for judging a tuned model, never for training it")
+    if is_split:
+        match = _SPLIT_SIDE_RE.search(header)
+        side = match.group(1) if match else None
+        if side is None:
+            raise ValueError(
+                f"{source}: --split file's header names no side -- only a train-side split "
+                "file written by split.py may be used for training"
+            )
+        if side != TRAIN_SIDE:
+            raise ValueError(
+                f"{source}: --split file is the {side!r} side -- only the {TRAIN_SIDE!r} side "
+                "may be used for training; val/test are held out for evaluation"
+            )
     loaded = load_corpus(source)
     platform = world_platform(load_world(source))
     source_ids = _source_ids(source)
@@ -214,7 +270,7 @@ def main(argv: list[str] | None = None) -> int:
     if out.resolve() == source.resolve():
         parser.error("--out must not be the corpus file")
     try:
-        examples = build(source, args.arguments_as)
+        examples = build(source, args.arguments_as, is_split=bool(args.split))
     except ValueError as exc:
         parser.error(str(exc))
     with open(out, "w", encoding="utf-8") as handle:
