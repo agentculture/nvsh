@@ -71,10 +71,9 @@ def test_an_explicit_request_is_answered_by_propose_with_a_table_operation():
 def test_a_should_decline_request_is_answered_by_escalate():
     examples = _module().build(dev_corpus_path())
     names = {_calls(e)["name"] for e in examples}
-    # dev.json has no "explain" entries yet, but the closed set of tool
-    # names a corpus can produce is {propose, escalate, explain} (task t4).
-    assert names <= _CLOSED_TOOL_NAMES
-    assert names == {lfm.PROPOSE_TOOL, lfm.ESCALATE_TOOL}
+    # The closed set of tool names a corpus can produce (task t4); dev.json
+    # has all three since the explain entries landed (task t6).
+    assert names == _CLOSED_TOOL_NAMES
 
 
 def test_an_explain_entry_is_answered_by_explain_with_its_answer_text(tmp_path):
