@@ -828,3 +828,32 @@ def test_load_corpus_reads_the_class_field(tmp_path):
 def test_bench_result_carries_both_breakdowns():
     result = _run_bench()
     assert {"accuracy_by_operation", "accuracy_by_class"} <= set(result)
+
+
+def test_load_corpus_reports_an_expect_that_mixes_a_decline_with_an_operation(tmp_path) -> None:
+    path = tmp_path / "mixed.json"
+    path.write_text(
+        json.dumps(
+            {
+                "entries": [
+                    {
+                        "id": "m1",
+                        "kind": "explicit",
+                        "text": "q",
+                        "expect": {"explain": True, "operation": "gpu_stats", "args": {}},
+                        "source": "t",
+                    },
+                    {
+                        "id": "m2",
+                        "kind": "explicit",
+                        "text": "q",
+                        "expect": {"explain": True, "escalate": True},
+                        "source": "t",
+                    },
+                ]
+            }
+        )
+    )
+    loaded = bench_mod.load_corpus(path)
+    assert loaded.entries == ()
+    assert len(loaded.problems) == 2

@@ -445,6 +445,11 @@ def render_readme(
 NEAR_DUP_SHINGLE_SIZE = 5
 NEAR_DUP_JACCARD_THRESHOLD = 0.8
 MIN_TOKENS_FOR_EXACT_MATCH = 4
+#: A light paraphrase keeps most of the eval's words in a different order, which
+#: the 5-token shingles miss. Word-set Jaccard at or above this is flagged too.
+#: Rewording that changes most words (a Jaccard near 0.3) is not caught by any
+#: lexical check; that limit is documented in docs/lfm-finetune.md.
+PARAPHRASE_WORD_JACCARD = 0.6
 
 _PUNCT_RE = re.compile(r"[^a-z0-9\s]+")
 _WS_RE = re.compile(r"\s+")
@@ -494,7 +499,7 @@ def _jaccard(a: frozenset, b: frozenset) -> float:
 class Contamination:
     eval_id: str
     field: str  # "text" or "ground_truth"
-    reason: str  # "exact" or "near-duplicate (jaccard=0.NN)"
+    reason: str  # "exact", "near-duplicate (jaccard=0.NN)" or "paraphrase (...)"
     training_excerpt: str
 
 
@@ -547,6 +552,11 @@ def _find_contamination(
         sim = _jaccard(eval_shingles, _shingles(norm_t))
         if sim >= threshold:
             return Contamination(eval_id, field, f"near-duplicate (jaccard={sim:.2f})", raw[:200])
+        words = _jaccard(frozenset(eval_tokens), frozenset(train_tokens))
+        if len(eval_tokens) >= MIN_TOKENS_FOR_EXACT_MATCH and words >= PARAPHRASE_WORD_JACCARD:
+            return Contamination(
+                eval_id, field, f"paraphrase (word jaccard={words:.2f})", raw[:200]
+            )
     return None
 
 

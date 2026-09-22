@@ -196,3 +196,22 @@ def test_main_reports_a_missing_kind(tmp_path, capsys):
     module.main(["--corpus", str(path), "--out-dir", str(tmp_path / "out")])
     captured = capsys.readouterr()
     assert "explain" in captured.out
+
+
+def test_duplicate_ids_are_refused() -> None:
+    split = _module()
+    entries = [
+        {"id": "a", "expect": {"escalate": True}},
+        {"id": "a", "expect": {"explain": True}},
+    ]
+    with pytest.raises(ValueError, match="duplicate entry ids"):
+        split.stratified_split(entries)
+
+
+def test_a_kind_too_small_for_every_side_is_named() -> None:
+    split = _module()
+    entries = [{"id": f"o{i}", "expect": {"operation": "gpu_stats", "args": {}}} for i in range(9)]
+    entries += [{"id": f"x{i}", "expect": {"explain": True}} for i in range(2)]
+    sides, _ = split.stratified_split(entries)
+    gaps = split.absent_from_sides(sides)
+    assert gaps and all(kind == "explain" for kind, _ in gaps)

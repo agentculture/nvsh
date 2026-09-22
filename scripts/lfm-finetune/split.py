@@ -33,6 +33,7 @@ import argparse
 import json
 import random
 import sys
+from collections import Counter
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # runnable from any directory
@@ -106,6 +107,11 @@ def stratified_split(
     if abs(sum(fractions) - 1.0) > 1e-9:
         raise ValueError(f"fractions must sum to 1.0, got {fractions!r}")
 
+    id_counts = Counter(entry["id"] for entry in entries)
+    duplicates = sorted(entry_id for entry_id, count in id_counts.items() if count > 1)
+    if duplicates:
+        raise ValueError(f"duplicate entry ids would split one source across sides: {duplicates}")
+
     by_kind: dict[str, list[dict]] = {kind: [] for kind in EXPECTATION_KINDS}
     for entry in entries:
         by_kind[expectation_kind(entry["expect"])].append(entry)
@@ -130,6 +136,22 @@ def stratified_split(
         sides[name].sort(key=lambda entry: entry["id"])
 
     return sides, missing_kinds
+
+
+def absent_from_sides(sides: dict[str, list[dict]]) -> list[tuple[str, str]]:
+    """``(kind, side)`` pairs for a kind present in the split but missing from a side.
+
+    A kind with fewer entries than there are sides cannot reach every side;
+    this names each gap so the caller reports it instead of passing silently.
+    """
+    present = {expectation_kind(e["expect"]) for side in sides.values() for e in side}
+    return [
+        (kind, name)
+        for kind in EXPECTATION_KINDS
+        if kind in present
+        for name in SPLIT_NAMES
+        if not any(expectation_kind(e["expect"]) == kind for e in sides[name])
+    ]
 
 
 def build_splits(
@@ -191,6 +213,8 @@ def main(argv: list[str] | None = None) -> int:
 
     for kind in missing_kinds:
         print(f"note: no {kind!r} entries in {corpus.name}; not present on any side")
+    for kind, name in absent_from_sides(sides):
+        print(f"warning: {kind!r} entries are too few to reach the {name} side")
     for name in SPLIT_NAMES:
         print(f"{name}={len(sides[name])}")
     return 0

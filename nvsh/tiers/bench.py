@@ -155,9 +155,12 @@ def _parse_entry(index: int, item: object) -> CorpusEntry | str:
 
 
 def _validate_expect(entry: CorpusEntry) -> str | None:
-    if entry.expect.get("escalate") is True:
-        return None
-    if entry.expect.get("explain") is True:
+    declines = [key for key in ("escalate", "explain") if entry.expect.get(key) is True]
+    if len(declines) > 1 or (declines and "operation" in entry.expect):
+        return (
+            f"{entry.id}: expect mixes {', '.join(declines)} with another answer; give exactly one"
+        )
+    if declines:
         return None
     operation = entry.expect.get("operation")
     args = entry.expect.get("args", {})

@@ -408,3 +408,33 @@ def test_cli_build_fails_and_writes_nothing_when_training_contaminates(mod, tmp_
     )
     assert rc == 1
     assert not out_dir.exists()
+
+
+_PROBE_EVAL = (
+    "What is this Jetson? Tell me the SKU, how much memory it has, "
+    "and what's currently using it."
+)
+_PROBE_PARAPHRASE = (
+    "What Jetson is this? Tell me its SKU, how much memory it has, "
+    "and what is using it right now."
+)
+
+
+def test_scan_flags_a_light_paraphrase_of_an_eval() -> None:
+    module = _module()
+    eval_text = _PROBE_EVAL
+    training = _PROBE_PARAPHRASE
+    hit = module._find_contamination(
+        "e1", "text", eval_text, [training], [module.normalize_text(training)], 0.8
+    )
+    assert hit is not None and hit.reason.startswith("paraphrase")
+
+
+def test_scan_leaves_a_different_request_about_the_same_device_clean() -> None:
+    module = _module()
+    eval_text = _PROBE_EVAL
+    training = "Tell me the power mode of this Jetson and whether jetson_clocks is on."
+    hit = module._find_contamination(
+        "e1", "text", eval_text, [training], [module.normalize_text(training)], 0.8
+    )
+    assert hit is None
