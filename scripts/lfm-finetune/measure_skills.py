@@ -8,9 +8,10 @@ that build's ``tools.json`` (one no-argument function tool per skill,
 38 at the time this script was written) and ``tool_choice: "auto"``, then
 scores which skill the model called against the eval's ``expected_skill``.
 
-This script never launches or stops a model server. Serve it the same way
-nvsh's own Tier 2 launcher does -- vLLM with ``--tool-call-parser lfm2``
-(see ``nvsh/tiers/runtime_docker.py`` and ``docs/tier2.md``) -- for example::
+By default this script never launches or stops a model server: serve it the
+same way nvsh's own Tier 2 launcher does -- vLLM with
+``--tool-call-parser lfm2`` (see ``nvsh/tiers/runtime_docker.py`` and
+``docs/tier2.md``) -- for example::
 
     docker run --rm --gpus all -p 127.0.0.1:8000:8000 \\
         vllm/vllm-openai@sha256:<pinned digest> \\
@@ -30,9 +31,25 @@ then point this script at it::
 ``--url`` / ``--model`` override the environment variables; neither is read
 from a config file, and the endpoint is never launched, stopped or
 configured by this script -- only called. The URL is restricted to
-``127.0.0.1`` / ``localhost`` / ``::1`` so an eval prompt (which may carry
-whatever a Jetson operator typed) is never sent anywhere but the box the
-operator is measuring.
+``127.0.0.1`` / ``localhost`` / ``::1`` (and must carry no userinfo/
+credentials) so an eval prompt (which may carry whatever a Jetson operator
+typed) is never sent anywhere but the box the operator is measuring.
+
+Pass ``--launch`` to have this script serve the model itself, the same way
+nvsh's daemon does: it reads ``[tiers.lfm]`` from the operator's nvsh config
+(``nvsh.config.load``), overrides only ``model`` from ``--model``, builds the
+runtime with :func:`nvsh.tiers.runtime_docker.build_runtime` (the same
+launcher ``nvsh/tiers/manager.py`` uses for Tier 2), calls ``ensure()`` to
+start it, measures against its base URL, and always stops it again in a
+``finally``. As with ``measure.py``, ``--launch`` refuses to start while a
+container named ``nvsh-tier2-<uid>`` is already running, and it never stops
+one it did not start. Without ``--launch``, behaviour is unchanged: an
+endpoint from the environment, localhost only.
+
+Neither the endpoint URL nor the raw command line is ever written into the
+results file: only the fact that a local endpoint was used, and the command
+line with any ``--url`` value replaced by ``<local endpoint>``. Recorded
+text is also passed through :func:`nvsh.redact.redact` before it is written.
 
 A **tuned** run -- any ``--label`` other than ``stock``, or ``--tuned`` --
 is refused unless ``--margin`` is given: the improvement the run is expected
@@ -66,6 +83,7 @@ import json
 import math
 import os
 import statistics
+import subprocess  # nosec B404 - fixed argv lists, never a shell
 import sys
 import time
 import urllib.error
@@ -74,10 +92,17 @@ from collections import Counter
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Mapping
 from urllib.parse import urlsplit
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(_REPO_ROOT))  # runnable from any directory
+
+from nvsh import config as nvsh_config  # noqa: E402
+from nvsh.platform._model import Platform  # noqa: E402
+from nvsh.redact import redact  # noqa: E402
+from nvsh.tiers.runtime import Runtime, RuntimeUnavailable  # noqa: E402
+from nvsh.tiers.runtime_docker import build_runtime, container_name  # noqa: E402
 
 #: Environment variables the endpoint is read from; ``--url`` / ``--model``
 #: override them. No config file is read.
@@ -90,6 +115,14 @@ DEFAULT_URL = "http://127.0.0.1:8000/v1"
 _HOST_ACCEPT: frozenset[str] = frozenset({"127.0.0.1", "localhost", "::1"})
 
 DEFAULT_TIMEOUT = 30.0
+
+EXIT_OK = 0
+EXIT_USER = 1
+EXIT_ENV = 2
+
+#: Never the real endpoint: this is what stands in for it in anything
+#: written to disk (the results file, the recorded command line).
+LOCAL_ENDPOINT_LABEL = "<local endpoint>"
 
 STOCK_LABEL = "stock"
 
@@ -106,10 +139,17 @@ OUTCOMES = (OUTCOME_CORRECT, OUTCOME_WRONG_SKILL, OUTCOME_NO_CALL, OUTCOME_SEVER
 
 
 def require_localhost(base_url: str) -> None:
-    """Raise ``ValueError`` unless *base_url* is ``http://`` to this machine."""
+    """Raise ``ValueError`` unless *base_url* is ``http://`` to this machine.
+
+    Also refuses any URL carrying userinfo (a username and/or password):
+    such a URL is a credential leak waiting to happen the moment it is
+    logged, echoed on a command line, or written to a results file.
+    """
     parsed = urlsplit(base_url)
     if parsed.scheme != "http":
         raise ValueError(f"only http:// scheme accepted (got {parsed.scheme!r})")
+    if parsed.username or parsed.password:
+        raise ValueError("URL must not contain credentials (userinfo)")
     if parsed.hostname not in _HOST_ACCEPT:
         raise ValueError(f"host must be 127.0.0.1, ::1 or localhost (got {parsed.hostname!r})")
 
@@ -384,12 +424,36 @@ def _fmt_bucket(bucket: Bucket, label: str) -> str:
     return f"| {label} | {bucket.correct} of {bucket.total} ({bucket.pct:.0f}%) |"
 
 
+def redact_command_line(argv: list[str]) -> str:
+    """The command line as run, with any ``--url`` value replaced.
+
+    Never write the endpoint URL (which may carry credentials in its
+    userinfo) into a committed or long-lived file. ``--url VALUE`` and
+    ``--url=VALUE`` are both stripped.
+    """
+    redacted: list[str] = []
+    skip_next = False
+    for token in argv:
+        if skip_next:
+            redacted.append(LOCAL_ENDPOINT_LABEL)
+            skip_next = False
+            continue
+        if token == "--url":
+            redacted.append(token)
+            skip_next = True
+            continue
+        if token.startswith("--url="):
+            redacted.append(f"--url={LOCAL_ENDPOINT_LABEL}")
+            continue
+        redacted.append(token)
+    return " ".join(["measure_skills.py", *redacted])
+
+
 def render_results(
     *,
     label: str,
     model: str,
     model_revision: str | None,
-    base_url: str,
     command_line: str,
     when: str,
     margin: str | None,
@@ -408,7 +472,7 @@ def render_results(
         "",
         f"- command: `{command_line}`",
         f"- date: {when}",
-        f"- endpoint: `{base_url}`",
+        f"- endpoint: {LOCAL_ENDPOINT_LABEL} (a local endpoint was used; " "never recorded)",
         f"- model: `{model}`",
     ]
     if model_revision:
@@ -448,6 +512,100 @@ def render_results(
 
 def default_out_path(label: str, when: str) -> Path:
     return _REPO_ROOT / "docs" / "benchmarks" / f"{when}-skills-{label}.md"
+
+
+# ---------------------------------------------------------------------------
+# --launch: serve the model through nvsh's own Tier 2 launcher
+# ---------------------------------------------------------------------------
+
+_GUARD_TIMEOUT = 30.0
+
+
+def default_run_docker(argv: list[str], timeout: float) -> tuple[int, str]:  # pragma: no cover
+    """Run *argv* (a fixed list, no shell) and return ``(exit code, output)``."""
+    try:
+        completed = subprocess.run(  # nosec B603 - fixed argv list, no shell=True
+            argv, check=False, capture_output=True, text=True, timeout=timeout
+        )
+    except FileNotFoundError:
+        return (127, f"{argv[0]}: not found")
+    except (OSError, subprocess.SubprocessError) as exc:
+        return (1, f"{type(exc).__name__}: {exc}")
+    return (completed.returncode, (completed.stdout or "") + (completed.stderr or ""))
+
+
+def default_detect_platform() -> Platform:  # pragma: no cover - reads the real machine
+    from nvsh import platform as platform_mod
+
+    return platform_mod.detect()
+
+
+def default_build_runtime(
+    lfm_settings: Mapping[str, object],
+    platform: Platform,
+    *,
+    floor_check: Callable[[], object],
+) -> Runtime:
+    """The runtime ``nvsh.tiers.manager.TierManager._lfm`` builds for Tier 2."""
+    return build_runtime(lfm_settings, platform, floor_check=floor_check)
+
+
+@dataclass
+class LaunchSeams:
+    """Everything ``--launch`` touches on the machine, injectable for tests."""
+
+    run_docker: Callable[[list[str], float], tuple[int, str]] = default_run_docker
+    detect_platform: Callable[[], Platform] = default_detect_platform
+    load_config: Callable[[Path | None], object] = nvsh_config.load
+    build_runtime: Callable[..., Runtime] = default_build_runtime
+    uid: Callable[[], int] = os.getuid
+
+
+def guard_container_not_running(seams: LaunchSeams) -> str | None:
+    """``None`` when it is safe to launch; otherwise an error message.
+
+    Refuses (never stops) while a container named ``nvsh-tier2-<uid>`` is
+    already running -- the same guard ``measure.py`` uses.
+    """
+    uid = int(seams.uid())
+    name = container_name(uid)
+    code, output = seams.run_docker(
+        ["docker", "ps", "--filter", f"name=^{name}$", "--format", "{{.Names}}"], _GUARD_TIMEOUT
+    )
+    if code != 0:
+        return f"cannot check whether {name} is running: docker ps exited {code}"
+    if name in output.split():
+        return f"container {name} is already running; refusing to start (it was not stopped)"
+    return None
+
+
+def build_lfm_settings(cfg: object, model: str) -> dict[str, object]:
+    """``[tiers.lfm]`` from *cfg* with only ``model`` overridden from ``--model``."""
+    tiers = dict(getattr(cfg, "tiers", {}) or {})
+    lfm = tiers.get("lfm")
+    settings = dict(lfm) if isinstance(lfm, Mapping) else {}
+    settings["model"] = model
+    return settings
+
+
+def memory_floor_mb(cfg: object) -> int:
+    tiers = dict(getattr(cfg, "tiers", {}) or {})
+    return int(tiers.get("memory_floor_mb", 1024))  # type: ignore[arg-type]
+
+
+def launch_runtime(model: str, config_path: Path | None, seams: LaunchSeams) -> Runtime:
+    """Build (never starts) the Tier 2 runtime ``--launch`` will call ``ensure()`` on."""
+    from nvsh.tiers.memfloor import check_floor
+
+    cfg = seams.load_config(config_path)
+    lfm_settings = build_lfm_settings(cfg, model)
+    floor_mb = memory_floor_mb(cfg)
+
+    def floor_check():
+        return check_floor(floor_mb)
+
+    platform = seams.detect_platform()
+    return seams.build_runtime(lfm_settings, platform, floor_check=floor_check)
 
 
 # ---------------------------------------------------------------------------
@@ -527,12 +685,28 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--json", action="store_true", help="also print the aggregated result as JSON to stdout"
     )
+    parser.add_argument(
+        "--launch",
+        action="store_true",
+        help=(
+            "serve --model through nvsh's own Tier 2 launcher ([tiers.lfm] settings, "
+            "same build_runtime as nvsh/tiers/manager.py) instead of calling --url; "
+            "refuses to start while nvsh-tier2-<uid> is already running, and always "
+            "stops what it started"
+        ),
+    )
+    parser.add_argument(
+        "--config",
+        default=None,
+        help="nvsh config.toml to read [tiers.lfm] from with --launch (default: XDG path)",
+    )
     return parser
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None, *, launch_seams: LaunchSeams | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    launch_seams = launch_seams or LaunchSeams()
 
     if not args.model:
         parser.error(f"--model is required ({MODEL_ENV_VAR} is not set)")
@@ -544,40 +718,74 @@ def main(argv: list[str] | None = None) -> int:
             f"'{STOCK_LABEL}', or --tuned) can be scored"
         )
 
-    try:
-        require_localhost(args.url)
-    except ValueError as exc:
-        parser.error(str(exc))
+    if not args.launch:
+        try:
+            require_localhost(args.url)
+        except ValueError as exc:
+            parser.error(str(exc))
 
     tools = load_tools(args.tools)
     evals = load_evals(args.test)
     if args.limit is not None:
         evals = evals[: args.limit]
 
+    runtime: Runtime | None = None
+    if args.launch:
+        problem = guard_container_not_running(launch_seams)
+        if problem is not None:
+            print(f"error: {problem}", file=sys.stderr)
+            return EXIT_ENV
+        config_path = Path(args.config) if args.config else None
+        try:
+            runtime = launch_runtime(args.model, config_path, launch_seams)
+        except (OSError, ValueError) as exc:
+            print(f"error: cannot load nvsh config: {exc}", file=sys.stderr)
+            return EXIT_USER
+
     try:
-        results = run_measurement(args.url, args.model, tools, evals, timeout=args.timeout)
-    except (RuntimeError, ValueError) as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return 1
+        if runtime is not None:
+            try:
+                base_url = runtime.ensure()
+            except RuntimeUnavailable as exc:
+                print(f"error: {exc}", file=sys.stderr)
+                return EXIT_ENV
+            try:
+                require_localhost(base_url)
+            except ValueError as exc:
+                print(
+                    f"error: Tier 2 runtime returned an unusable endpoint: {exc}", file=sys.stderr
+                )
+                return EXIT_ENV
+        else:
+            base_url = args.url
+
+        try:
+            results = run_measurement(base_url, args.model, tools, evals, timeout=args.timeout)
+        except (RuntimeError, ValueError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return EXIT_USER
+    finally:
+        if runtime is not None:
+            runtime.stop()
 
     aggregated = aggregate(results)
     when = date.today().isoformat()
     out_path = args.out if args.out is not None else default_out_path(args.label, when)
     provenance = load_manifest_provenance(args.manifest)
     raw_argv = argv if argv is not None else sys.argv[1:]
-    command_line = " ".join(["measure_skills.py", *raw_argv])
+    command_line = redact_command_line(raw_argv)
 
     rendered = render_results(
         label=args.label,
         model=args.model,
         model_revision=args.model_revision,
-        base_url=args.url,
         command_line=command_line,
         when=when,
         margin=args.margin,
         manifest_provenance=provenance,
         aggregated=aggregated,
     )
+    rendered = redact(rendered.encode("utf-8")).decode("utf-8")
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(rendered, encoding="utf-8")
     print(f"wrote {out_path}")
@@ -586,7 +794,7 @@ def main(argv: list[str] | None = None) -> int:
         payload = aggregated.as_dict()
         payload["generated_at"] = datetime.now(timezone.utc).isoformat()
         print(json.dumps(payload, indent=2))
-    return 0
+    return EXIT_OK
 
 
 if __name__ == "__main__":
