@@ -173,8 +173,21 @@ class ClosingFakeTier(FakeTier):
         self.runtime.stop()
 
 
+def _hf_cache(tmp_path: Path, refs: dict[str, str], *, hub: bool = True) -> Path:
+    """A host HF cache whose ``refs/main`` resolves each repo id to a commit."""
+    cache = tmp_path / "hf-cache"
+    base = cache / "hub" if hub else cache
+    for repo_id, commit in refs.items():
+        ref = base / f"models--{repo_id.replace('/', '--')}" / "refs" / "main"
+        ref.parent.mkdir(parents=True, exist_ok=True)
+        ref.write_text(commit, encoding="utf-8")
+    return cache
+
+
 class Harness:
-    def __init__(self, measure, docker: FakeDocker, scripts=None, lfm=None, fail=None) -> None:
+    def __init__(
+        self, measure, tmp_path: Path, docker: FakeDocker, scripts=None, lfm=None, fail=None
+    ) -> None:
         self.docker = docker
         self.scripts = dict(scripts or {STOCK: _stock_script(), TUNED: _tuned_script()})
         self.fail = dict(fail or {})
@@ -185,6 +198,7 @@ class Harness:
             "mode": "managed",
             "tool_call_parser": "lfm2",
             "gpu_memory_fraction": 0.08,
+            "hf_cache_dir": str(_hf_cache(tmp_path, {STOCK: "rev0", TUNED: "rev1"})),
         }
         counter = itertools.count()
         self.seams = measure.Seams(
@@ -222,7 +236,7 @@ def _argv(split: Path, out: Path, *extra: str, models=(STOCK, TUNED)) -> list[st
 
 def test_refuses_held_out_without_acceptance(measure, tmp_path, capsys):
     split = _split(tmp_path, "held-out.json")
-    harness = Harness(measure, FakeDocker())
+    harness = Harness(measure, tmp_path, FakeDocker())
     code = measure.main(_argv(split, tmp_path / "r.md"), seams=harness.seams)
     assert code == 1
     assert "--acceptance" in capsys.readouterr().err
@@ -231,7 +245,7 @@ def test_refuses_held_out_without_acceptance(measure, tmp_path, capsys):
 
 def test_held_out_runs_with_acceptance(measure, tmp_path):
     split = _split(tmp_path, "held-out.json")
-    harness = Harness(measure, FakeDocker())
+    harness = Harness(measure, tmp_path, FakeDocker())
     out = tmp_path / "r.md"
     assert measure.main(_argv(split, out, "--acceptance"), seams=harness.seams) == 0
     assert "- Acceptance run: yes" in out.read_text(encoding="utf-8")
@@ -239,7 +253,7 @@ def test_held_out_runs_with_acceptance(measure, tmp_path):
 
 def test_refuses_test_side_without_final(measure, tmp_path, capsys):
     split = _split(tmp_path, "test.json")
-    harness = Harness(measure, FakeDocker())
+    harness = Harness(measure, tmp_path, FakeDocker())
     assert measure.main(_argv(split, tmp_path / "r.md"), seams=harness.seams) == 1
     assert "--final" in capsys.readouterr().err
     assert harness.specs == []
@@ -248,7 +262,7 @@ def test_refuses_test_side_without_final(measure, tmp_path, capsys):
 @pytest.mark.parametrize("flag", ["--final", "--acceptance"])
 def test_final_and_acceptance_refused_on_other_files(measure, tmp_path, flag):
     split = _split(tmp_path, "val.json")
-    harness = Harness(measure, FakeDocker())
+    harness = Harness(measure, tmp_path, FakeDocker())
     assert measure.main(_argv(split, tmp_path / "r.md", flag), seams=harness.seams) == 1
     assert harness.specs == []
 
@@ -260,7 +274,7 @@ def test_final_run_counts_previous_final_runs(measure, tmp_path):
     (results / "2026-09-01-lfm-old.md").write_text("# old\n\n- Final run: yes\n", encoding="utf-8")
     (results / "2026-09-02-lfm-val.md").write_text("# val\n\n- Final run: no\n", encoding="utf-8")
     out = results / "2026-09-22-lfm-final.md"
-    harness = Harness(measure, FakeDocker())
+    harness = Harness(measure, tmp_path, FakeDocker())
     assert measure.main(_argv(split, out, "--final"), seams=harness.seams) == 0
     text = out.read_text(encoding="utf-8")
     assert "- Final run: yes" in text
@@ -269,7 +283,7 @@ def test_final_run_counts_previous_final_runs(measure, tmp_path):
 
 def test_revision_required_per_model(measure, tmp_path, capsys):
     split = _split(tmp_path)
-    harness = Harness(measure, FakeDocker())
+    harness = Harness(measure, tmp_path, FakeDocker())
     argv = ["--split", str(split), "--out", str(tmp_path / "r.md"), "--model", STOCK]
     assert measure.main(argv, seams=harness.seams) == 1
     assert "--revision" in capsys.readouterr().err
@@ -279,7 +293,7 @@ def test_refuses_to_overwrite_results(measure, tmp_path):
     split = _split(tmp_path)
     out = tmp_path / "r.md"
     out.write_text("keep me\n", encoding="utf-8")
-    harness = Harness(measure, FakeDocker())
+    harness = Harness(measure, tmp_path, FakeDocker())
     assert measure.main(_argv(split, out), seams=harness.seams) == 1
     assert out.read_text(encoding="utf-8") == "keep me\n"
     assert measure.main(_argv(split, out, "--force"), seams=harness.seams) == 0
@@ -293,7 +307,7 @@ def test_refuses_to_overwrite_results(measure, tmp_path):
 def test_refuses_when_own_container_running_and_never_stops_it(measure, tmp_path, capsys):
     split = _split(tmp_path)
     docker = FakeDocker(running=[OWN])
-    harness = Harness(measure, docker)
+    harness = Harness(measure, tmp_path, docker)
     out = tmp_path / "r.md"
     assert measure.main(_argv(split, out), seams=harness.seams) == 2
     err = capsys.readouterr().err
@@ -306,21 +320,21 @@ def test_refuses_when_own_container_running_and_never_stops_it(measure, tmp_path
 
 def test_refuses_when_docker_ps_fails(measure, tmp_path):
     split = _split(tmp_path)
-    harness = Harness(measure, FakeDocker(ps_code=1))
+    harness = Harness(measure, tmp_path, FakeDocker(ps_code=1))
     assert measure.main(_argv(split, tmp_path / "r.md"), seams=harness.seams) == 2
     assert harness.specs == []
 
 
 def test_other_containers_do_not_trip_the_guard(measure, tmp_path):
     split = _split(tmp_path)
-    harness = Harness(measure, FakeDocker(running=["nvsh-tier2-1000", "lobes-stt"]))
+    harness = Harness(measure, tmp_path, FakeDocker(running=["nvsh-tier2-1000", "lobes-stt"]))
     assert measure.main(_argv(split, tmp_path / "r.md"), seams=harness.seams) == 0
 
 
 def test_attach_mode_skips_the_guard(measure, tmp_path):
     split = _split(tmp_path)
     docker = FakeDocker(running=[OWN])
-    harness = Harness(measure, docker, lfm={"engine": "vllm", "mode": "attach"})
+    harness = Harness(measure, tmp_path, docker, lfm={"engine": "vllm", "mode": "attach"})
     out = tmp_path / "r.md"
     assert measure.main(_argv(split, out), seams=harness.seams) == 0
     assert not any(argv[:3] == ["docker", "ps", "--filter"] for argv in docker.calls)
@@ -343,7 +357,7 @@ def test_full_run_scores_and_records(measure, tmp_path, capsys):
     split = _split(tmp_path)
     out = tmp_path / "2026-09-22-lfm-val-350m.md"
     docker = FakeDocker()
-    harness = Harness(measure, docker)
+    harness = Harness(measure, tmp_path, docker)
     assert measure.main(_argv(split, out), seams=harness.seams) == 0
     text = out.read_text(encoding="utf-8")
     printed = capsys.readouterr().out
@@ -352,7 +366,10 @@ def test_full_run_scores_and_records(measure, tmp_path, capsys):
     # Provenance: command line, seed, model repo ids and revisions, nvsh commit.
     assert "--model LiquidAI/LFM2.5-350M --revision rev0" in text
     assert "- Seed: 39 (from the split header)" in text
-    assert f"`{STOCK}` @ `rev0`; `{TUNED}` @ `rev1`" in text
+    assert (
+        f"`{STOCK}` @ `rev0` (revision verified from the cache); "
+        f"`{TUNED}` @ `rev1` (revision verified from the cache)"
+    ) in text
     assert "commit `abc1234def`" in text
     assert "- Final run: no" in text
     assert "(6 entries, 4 sources)" in text
@@ -397,7 +414,7 @@ def test_full_run_scores_and_records(measure, tmp_path, capsys):
 
 def test_runs_differ_only_in_the_model(measure, tmp_path):
     split = _split(tmp_path)
-    harness = Harness(measure, FakeDocker())
+    harness = Harness(measure, tmp_path, FakeDocker())
     assert measure.main(_argv(split, tmp_path / "r.md"), seams=harness.seams) == 0
     stock, tuned = harness.specs
     assert stock.lfm_settings["model"] == STOCK and tuned.lfm_settings["model"] == TUNED
@@ -411,7 +428,7 @@ def test_runs_differ_only_in_the_model(measure, tmp_path):
 
 def test_seed_flag_overrides_header(measure, tmp_path):
     split = _split(tmp_path, header="Fixture with no seed recorded.")
-    harness = Harness(measure, FakeDocker())
+    harness = Harness(measure, tmp_path, FakeDocker())
     out = tmp_path / "r.md"
     assert measure.main(_argv(split, out, "--seed", "7"), seams=harness.seams) == 0
     assert "- Seed: 7 (--seed)" in out.read_text(encoding="utf-8")
@@ -420,7 +437,7 @@ def test_seed_flag_overrides_header(measure, tmp_path):
 def test_latency_marked_not_comparable_when_background_differs(measure, tmp_path):
     split = _split(tmp_path)
     docker = FakeDocker(backgrounds=[("vllm-server",), ("vllm-server", "lobes-stt")])
-    harness = Harness(measure, docker)
+    harness = Harness(measure, tmp_path, docker)
     out = tmp_path / "r.md"
     assert measure.main(_argv(split, out), seams=harness.seams) == 0
     text = out.read_text(encoding="utf-8")
@@ -431,7 +448,7 @@ def test_latency_marked_not_comparable_when_background_differs(measure, tmp_path
 
 def test_startup_failure_is_recorded_not_hidden(measure, tmp_path):
     split = _split(tmp_path)
-    harness = Harness(measure, FakeDocker(), fail={TUNED: "image not pinned"})
+    harness = Harness(measure, tmp_path, FakeDocker(), fail={TUNED: "image not pinned"})
     out = tmp_path / "r.md"
     assert measure.main(_argv(split, out), seams=harness.seams) == 2
     text = out.read_text(encoding="utf-8")
@@ -466,7 +483,7 @@ def test_uses_bench_with_tier2_and_its_scoring_helpers(measure, tmp_path, monkey
         monkeypatch.setattr(tier_bench, name, spy)
 
     split = _split(tmp_path)
-    harness = Harness(measure, FakeDocker())
+    harness = Harness(measure, tmp_path, FakeDocker())
     assert measure.main(_argv(split, tmp_path / "r.md"), seams=harness.seams) == 0
     assert [(t1, t2, s) for t1, t2, s in calls["bench"]] == [
         (None, harness.tiers[0], "val"),
@@ -530,3 +547,164 @@ def test_scoring_helpers_on_explain_rows(measure):
     (item,) = measure.items_from_result(result, [loaded])
     assert tier_bench._is_correct(item)
     assert item.outcome.escalated_to is None and item.outcome.explanation == ""
+
+
+# ---------------------------------------------------------------------------
+# Split sides come from the file name AND its header (renaming is no bypass)
+# ---------------------------------------------------------------------------
+
+_TEST_HEADER = "Fixture corpus. Split 'test' of dev.json (seed=39)."
+_HELD_OUT_HEADER = json.loads(
+    (Path(__file__).resolve().parents[1] / "nvsh/tiers/corpus/held-out.json").read_text(
+        encoding="utf-8"
+    )
+)["header"]
+
+
+def test_renamed_test_side_still_needs_final(measure, tmp_path):
+    with pytest.raises(measure.MeasureError, match="--final"):
+        measure.check_split_allowed(Path("test-copy.json"), acceptance=False, final=False)
+    renamed = _split(tmp_path, "renamed.json", header=_TEST_HEADER)
+    with pytest.raises(measure.MeasureError, match="--final"):
+        measure.check_split_allowed(renamed, acceptance=False, final=False)
+    measure.check_split_allowed(renamed, acceptance=False, final=True)
+
+
+def test_val_named_file_with_test_header_needs_final(measure, tmp_path):
+    split = _split(tmp_path, "val.json", header=_TEST_HEADER)
+    with pytest.raises(measure.MeasureError, match="--final"):
+        measure.check_split_allowed(split, acceptance=False, final=False)
+
+
+def test_renamed_held_out_still_needs_acceptance(measure, tmp_path, capsys):
+    split = _split(tmp_path, "adoption.json", header=_HELD_OUT_HEADER)
+    harness = Harness(measure, tmp_path, FakeDocker())
+    assert measure.main(_argv(split, tmp_path / "r.md"), seams=harness.seams) == 1
+    assert "--acceptance" in capsys.readouterr().err
+    assert harness.specs == []
+    measure.check_split_allowed(split, acceptance=True, final=False)
+
+
+def test_split_of_held_out_is_held_out(measure, tmp_path):
+    header = "Held-out corpus. Split 'val' of held-out.json (seed=3)."
+    split = _split(tmp_path, "val.json", header=header)
+    with pytest.raises(measure.MeasureError, match="--acceptance"):
+        measure.check_split_allowed(split, acceptance=False, final=False)
+
+
+def test_undetermined_side_is_refused(measure, tmp_path):
+    split = _split(tmp_path, "notes.json", header="Some corpus with no split note.")
+    with pytest.raises(measure.MeasureError, match="cannot tell"):
+        measure.check_split_allowed(split, acceptance=False, final=False)
+
+
+def test_plain_dev_corpus_is_allowed(measure):
+    measure.check_split_allowed(tier_bench.dev_corpus_path(), acceptance=False, final=False)
+    with pytest.raises(measure.MeasureError):
+        measure.check_split_allowed(tier_bench.dev_corpus_path(), acceptance=False, final=True)
+
+
+def test_train_split_of_dev_is_allowed(measure, tmp_path):
+    dev_header = json.loads(tier_bench.dev_corpus_path().read_text(encoding="utf-8"))["header"]
+    # dev.json's own header mentions held-out.json; that must not mark its splits held-out.
+    split = _split(
+        tmp_path, "train.json", header=f"{dev_header} Split 'train' of dev.json (seed=39)."
+    )
+    measure.check_split_allowed(split, acceptance=False, final=False)
+
+
+# ---------------------------------------------------------------------------
+# --revision is verified against what the engine will actually serve
+# ---------------------------------------------------------------------------
+
+
+def test_revision_mismatch_refuses_before_any_run(measure, tmp_path, capsys):
+    split = _split(tmp_path)
+    harness = Harness(measure, tmp_path, FakeDocker())
+    _hf_cache(tmp_path, {TUNED: "someothercommit"})
+    out = tmp_path / "r.md"
+    assert measure.main(_argv(split, out), seams=harness.seams) == 2
+    err = capsys.readouterr().err
+    assert TUNED in err and "someothercommit" in err and "rev1" in err
+    assert harness.specs == [] and not out.exists()
+
+
+def test_revision_missing_from_cache_refuses(measure, tmp_path, capsys):
+    split = _split(tmp_path)
+    harness = Harness(measure, tmp_path, FakeDocker())
+    ref = tmp_path / "hf-cache/hub" / f"models--{STOCK.replace('/', '--')}" / "refs/main"
+    ref.unlink()
+    assert measure.main(_argv(split, tmp_path / "r.md"), seams=harness.seams) == 2
+    assert "refs/main" in capsys.readouterr().err
+    assert harness.specs == []
+
+
+def test_revision_verified_is_recorded(measure, tmp_path):
+    split = _split(tmp_path)
+    harness = Harness(measure, tmp_path, FakeDocker())
+    out = tmp_path / "r.md"
+    assert measure.main(_argv(split, out), seams=harness.seams) == 0
+    text = out.read_text(encoding="utf-8")
+    assert f"`{STOCK}` @ `rev0` (revision verified from the cache)" in text
+    assert f"`{TUNED}` @ `rev1` (revision verified from the cache)" in text
+
+
+def test_revision_found_without_hub_level(measure, tmp_path):
+    split = _split(tmp_path)
+    cache = tmp_path / "flat"
+    for repo_id, commit in ((STOCK, "rev0"), (TUNED, "rev1")):
+        ref = cache / f"models--{repo_id.replace('/', '--')}" / "refs" / "main"
+        ref.parent.mkdir(parents=True)
+        ref.write_text(commit + "\n", encoding="utf-8")
+    lfm = {"engine": "vllm", "mode": "managed", "hf_cache_dir": str(cache)}
+    harness = Harness(measure, tmp_path, FakeDocker(), lfm=lfm)
+    out = tmp_path / "r.md"
+    assert measure.main(_argv(split, out), seams=harness.seams) == 0
+    assert "(revision verified from the cache)" in out.read_text(encoding="utf-8")
+
+
+def test_mounted_model_revision_is_operator_supplied(measure, tmp_path):
+    split = _split(tmp_path)
+    lfm = {"engine": "llama-server", "mode": "managed", "model_dir": str(tmp_path / "gguf")}
+    scripts = {"stock.gguf": _stock_script(), "tuned.gguf": _tuned_script()}
+    harness = Harness(measure, tmp_path, FakeDocker(), lfm=lfm, scripts=scripts)
+    out = tmp_path / "r.md"
+    argv = _argv(split, out, models=("stock.gguf", "tuned.gguf"))
+    assert measure.main(argv, seams=harness.seams) == 0
+    text = out.read_text(encoding="utf-8")
+    assert "`stock.gguf` @ `rev0` (operator-supplied, not verified)" in text
+
+
+# ---------------------------------------------------------------------------
+# A mutating proposal with the right operation but wrong arguments
+# ---------------------------------------------------------------------------
+
+
+def test_wrong_arguments_to_mutating_operation_are_reported(measure, tmp_path):
+    split = _split(tmp_path)
+    wrong_args = _tuned_script()
+    wrong_args[2] = _call("container_restart", container="inference")  # expected "trainer"
+    wrong_args[5] = Explanation(text="nothing to restart")
+    harness = Harness(measure, tmp_path, FakeDocker(), scripts={STOCK: wrong_args})
+    out = tmp_path / "r.md"
+    assert measure.main(_argv(split, out, models=(STOCK,)), seams=harness.seams) == 0
+    text = out.read_text(encoding="utf-8")
+    # bench's own row still compares operation names only (unchanged scoring) ...
+    assert _row(text, "Wrong mutating proposals, per source / per variation") == ["0 / 0"]
+    # ... and the separate row catches the wrong target.
+    assert _row(text, "Mutating proposals with wrong arguments, per source / per variation") == [
+        "1 / 1"
+    ]
+    assert "judged on the sum of both rows" in text
+
+
+def test_wrong_arguments_row_is_zero_when_arguments_match(measure, tmp_path):
+    split = _split(tmp_path)
+    harness = Harness(measure, tmp_path, FakeDocker())
+    out = tmp_path / "r.md"
+    assert measure.main(_argv(split, out), seams=harness.seams) == 0
+    text = out.read_text(encoding="utf-8")
+    assert _row(text, "Mutating proposals with wrong arguments, per source / per variation") == [
+        "0 / 0",
+        "0 / 0",
+    ]
