@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-09-22T17:34:36Z",
-  "updated": "2026-09-22T18:34:28Z",
+  "updated": "2026-09-22T19:21:23Z",
   "claims": [
     {
       "id": "c1",
@@ -1149,6 +1149,18 @@
       ]
     }
   ],
-  "lapses": [],
+  "lapses": [
+    {
+      "id": "l1",
+      "code": "grader-unverified",
+      "what": "The wave-1 qwen worker review (qwen -m worker --approval-mode plan -p) never ran: non-interactive plan mode refused every read_file/grep_search tool call, so it produced ~1.5 KB of warnings and no verdicts. Caught by reading its output before merging; the Codex review (codex exec -s read-only) plus the lead's probes stood in for it.",
+      "skipped_check": "second-opinion review of wave 1 by the qwen worker",
+      "refs": [
+        "wave 1 (t1 t2 t3 t8)"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    }
+  ],
   "obligations": []
 }

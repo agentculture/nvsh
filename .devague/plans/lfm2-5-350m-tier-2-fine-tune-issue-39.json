@@ -5,7 +5,7 @@
   "schema_version": 5,
   "status": "exported",
   "created": "2026-09-22T18:34:33Z",
-  "updated": "2026-09-22T18:45:05Z",
+  "updated": "2026-09-22T19:26:26Z",
   "targets": [
     {
       "id": "c1",
@@ -826,8 +826,8 @@
       "text": "Whether vLLM in the pinned image serves a private repo from the pre-filled cache without a token (offline flag) is unverified",
       "kind": "unknown_nonblocking",
       "task_id": "t15",
-      "resolved": false,
-      "resolution": ""
+      "resolved": true,
+      "resolution": "Probed 2026-09-22: the pinned vllm/vllm-openai@sha256:8bd082c2... image, launched as nvsh's launcher does (--user uid, HF_HOME=/cache, host HF cache mounted, lfm2 parser) plus -e HF_HUB_OFFLINE=1 and no token, served LiquidAI/LFM2.5-350M from the cache (healthy in ~130 s) and returned a structured tool_calls reply. So the offline flag is needed and sufficient; t15 adds it as a small [tiers.lfm] option (render_launch sets no such env today)."
     },
     {
       "id": "r4",

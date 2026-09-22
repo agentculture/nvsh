@@ -198,3 +198,14 @@ Pitfalls found:
   itself.
 - This spike trained on the whole text; the real run must mask the loss to
   the assistant turn (plan task t11).
+
+### 2026-09-22: serving from the cache without a token (plan risk r3)
+
+The launcher gives vLLM no Hugging Face token (by design), so a private tuned
+repository must already be in `[tiers.lfm] hf_cache_dir`. Probe: the pinned
+image `vllm/vllm-openai@sha256:8bd082c274fae025b7079498fe1da65182ba1d4c2188c0f5a68c1042c38c3695`,
+started with the launcher's own arguments plus `-e HF_HUB_OFFLINE=1`, served
+`LiquidAI/LFM2.5-350M` from the mounted cache (healthy after about 130 s) and
+answered an `escalate` request with structured `tool_calls`. Without the
+offline flag vLLM asks the Hub for the repository first, which a private repo
+refuses without a token; the launcher gains an option for it (plan task t15).
