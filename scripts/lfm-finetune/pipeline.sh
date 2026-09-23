@@ -1,25 +1,60 @@
 #!/usr/bin/env bash
-# The LFM2.5 fine-tune pipeline for issue 39, one resumable stage at a time.
+# The LFM2.5 / Qwen3.5-0.8B fine-tune pipeline for issues 39 and 46, one
+# resumable stage at a time.
 #
 #   scripts/lfm-finetune/pipeline.sh --env my.env <stage> [args]
 #
-# Stages (run in this order; each one skips work it has already done):
+# Stages (run in this order; each one skips work it has already done). The
+# full, authoritative list is $STAGES below -- an unknown stage prints it.
 #   split                 seeded train/val/test split of nvsh/tiers/corpus/dev.json
 #   skills                NVIDIA's Jetson skills at pinned commits: tools + 104 test evals
 #   augment-nvsh          variations of every train entry (augment.py, resumable)
 #   augment-skills        skill requests written from each SKILL.md (SKILLS_SEED:
 #                         tools.json for the description, bodies.json for the body)
+#   rereview              re-review stored accepted+rejected nvsh candidates with
+#                         REVIEWER_B only (augment.py --rereview, decisions c38/c41);
+#                         writes to separate *-rereview.jsonl files -- inspect them
+#                         and copy over the accepted/rejected files by hand
+#   filter-variations     count accepted variations against the train split with
+#                         --filter-to-split, without touching assemble's own output
+#                         (a leakage check between augment/rereview and assemble)
 #   assemble              training sets: nvsh-train.jsonl, $SKILLS_SET-train.jsonl
 #   train <name> [nvsh|skills]   train, merge, stage into HF_CACHE as REPO
+#                         (a training stage: runs under TRAIN_MEMORY_MAX, mem.log)
+#   train-scorer          train the acceptance-margin scorer on split.py's own
+#                         train/val sides (train_scorer.py, a training stage)
 #   measure-val <name>    validation run with per-entry details (iterate on this)
 #   measure-final <name>  stock and <name> back to back on the test side (a final run)
 #   measure-skills <name> stock and <name> on the 104 skill evals (margin required)
+#   scan <name>           scan a trained run's merged checkpoint for secrets/binaries
+#                         (scan_bundle.py scan; writes scan.json next to it)
+#   quantize <name>       Q4_K_M GGUF + INT4 AWQ export of a merged checkpoint
+#                         (quantize.py, a training stage: needs LLAMA_CPP_CONVERT,
+#                         LLAMA_CPP_QUANTIZE, LLAMA_CPP_IMATRIX, LLM_COMPRESSOR)
+#   heal <name> <base-run> [nvsh|skills]   a healing fine-tune that continues
+#                         training from <base-run>'s own merged checkpoint instead
+#                         of BASE (decisions c42/c43; a training stage). Whether
+#                         healing is needed is quantize.py's heal_needed(), decided
+#                         by a separate run (issue 46, task t18), not by this stage.
+#   upload <name>         push a run's merged checkpoint to REPO on the Hub, private.
+#                         Refuses without FINAL=1 set and a scan_bundle.py verify
+#                         pass on the exact folder; the token comes only from the
+#                         env var HF_TOKEN_ENV names, injected by the operator.
 #   status                what exists so far
 #
-# Nothing here uploads anything, and nvsh itself never runs any of it. The
-# gateway key is read from the variable AUG_KEY_ENV names (set it with
-# `grant run --inject VAR=NAME -- ...`), never from this file or the env file.
+# Nothing here uploads anything except the guarded `upload` stage above, and
+# nvsh itself never runs any of it. The gateway key is read from the variable
+# AUG_KEY_ENV names (set it with `grant run --inject VAR=NAME -- ...`), never
+# from this file or the env file; the same is true of the Hub token and
+# HF_TOKEN_ENV.
 set -euo pipefail
+
+#: Every valid stage name, in the order above -- the unknown-stage message
+#: below is the one place this list is printed, so it never drifts from the
+#: case statement silently.
+STAGES="split skills augment-nvsh augment-skills rereview filter-variations \
+assemble train train-scorer measure-val measure-final measure-skills scan \
+quantize heal upload status"
 
 # Everything runs inside main(), called on the last line, so bash parses the
 # whole file before executing any of it: a stage that runs for hours is not
@@ -64,6 +99,10 @@ aug_env() {
 
 base_snapshot() { echo "$HF_CACHE/hub/models--${BASE%%/*}--${BASE##*/}/snapshots/$BASE_REV"; }
 
+
+# shellcheck source=scripts/lfm-finetune/capped.sh
+source "$(dirname "${BASH_SOURCE[0]}")/capped.sh"
+
 case "$STAGE" in
   split)
     py scripts/lfm-finetune/split.py --out-dir "$WORK/splits" --seed "$SEED"
@@ -84,6 +123,18 @@ case "$STAGE" in
       --accepted-out "$WORK/aug/${SKILLS_SET:-skills}-accepted.jsonl" \
       --rejected-out "$WORK/aug/${SKILLS_SET:-skills}-rejected.jsonl"
     ;;
+  rereview)
+    aug_env
+    py scripts/lfm-finetune/augment.py "$WORK/aug/nvsh-accepted.jsonl" "$WORK/aug/nvsh-rejected.jsonl" \
+      --rereview --accepted-out "$WORK/aug/nvsh-accepted-rereview.jsonl" \
+      --rejected-out "$WORK/aug/nvsh-rejected-rereview.jsonl"
+    ;;
+  filter-variations)
+    touch "$WORK/aug/nvsh-accepted.jsonl"
+    py scripts/lfm-finetune/merge_variations.py --split "$WORK/splits/train.json" \
+      --accepted "$WORK/aug/nvsh-accepted.jsonl" --out "$WORK/data/train-augmented.filtered.json" \
+      --exclude "$WORK/splits/val.json" "$WORK/splits/test.json" --filter-to-split
+    ;;
   assemble)
     touch "$WORK/aug/nvsh-accepted.jsonl"
     supplement=()
@@ -92,7 +143,7 @@ case "$STAGE" in
       --accepted "$WORK/aug/nvsh-accepted.jsonl" --out "$WORK/data/train-augmented.json" \
       --exclude "$WORK/splits/val.json" "$WORK/splits/test.json" "${supplement[@]}"
     py scripts/lfm-finetune/build_dataset.py --split "$WORK/data/train-augmented.json" \
-      --out "$WORK/data/nvsh-train.jsonl"
+      --out "$WORK/data/nvsh-train.jsonl" --base "$BASE" --revision "$BASE_REV"
     skills_set=${SKILLS_SET:-skills}
     if [ -s "$WORK/aug/$skills_set-accepted.jsonl" ]; then
       py scripts/lfm-finetune/skills_dataset.py --accepted "$WORK/aug/$skills_set-accepted.jsonl" \
@@ -105,11 +156,18 @@ case "$STAGE" in
     data="$WORK/data/$set-train.jsonl"; [ -s "$data" ] || die "no $data; run assemble first"
     run="$WORK/runs/$name"; mkdir -p "$run"
     # shellcheck disable=SC2086
-    "$TRAIN_PY" "$HERE/train.py" --train "$data" --out "$run" --base "$BASE" --revision "$BASE_REV" \
-      $TRAIN_ARGS 2>&1 | tee "$run/train.log"
+    run_capped "$run" "$TRAIN_PY" "$HERE/train.py" --train "$data" --out "$run" --base "$BASE" \
+      --revision "$BASE_REV" $TRAIN_ARGS
     py scripts/lfm-finetune/stage_cache.py --merged "$run/merged" --repo "$REPO" \
       --cache "$HF_CACHE" --base-snapshot "$(base_snapshot)" | tee "$run/stage.log"
     awk '/staged/{print $NF}' "$run/stage.log" > "$run/revision"
+    ;;
+  train-scorer)
+    run="$WORK/runs/scorer"; mkdir -p "$run"
+    # shellcheck disable=SC2086
+    run_capped "$run" "$TRAIN_PY" "$HERE/train_scorer.py" --train "$WORK/splits/train.json" \
+      --val "$WORK/splits/val.json" --out "$run" --base "$BASE" --revision "$BASE_REV" \
+      ${TRAIN_SCORER_ARGS:-}
     ;;
   measure-val)
     name=${1:?measure-val <name>}; rev=$(cat "$WORK/runs/$name/revision")
@@ -134,6 +192,63 @@ case "$STAGE" in
         --timeout "${SKILLS_TIMEOUT:-180}" --out "$WORK/measure/skills-$label.md" "${extra[@]}"
     done
     ;;
+  scan)
+    name=${1:?scan <name>}
+    py scripts/lfm-finetune/scan_bundle.py scan "$WORK/runs/$name/merged"
+    ;;
+  quantize)
+    name=${1:?quantize <name>}
+    run="$WORK/runs/$name"; [ -d "$run/merged" ] || die "no $run/merged; run train $name first"
+    work="$WORK/quant/$name"; mkdir -p "$work"
+    calibration=()
+    [ -n "${CALIBRATION_LIMIT:-}" ] && calibration=(--calibration-limit "$CALIBRATION_LIMIT")
+    run_capped "$work" env -C "$REPO_ROOT" uv run --frozen python scripts/lfm-finetune/quantize.py \
+      --model-dir "$run/merged" --train "$WORK/splits/train.json" --val "$WORK/splits/val.json" \
+      --test "$WORK/splits/test.json" --work-dir "$work" "${calibration[@]}"
+    ;;
+  heal)
+    name=${1:?heal <name> <base-run> [nvsh|skills]}
+    base_run=${2:?heal <name> <base-run> [nvsh|skills]}; set="${3:-nvsh}"
+    data="$WORK/data/$set-train.jsonl"; [ -s "$data" ] || die "no $data; run assemble first"
+    base_merged="$WORK/runs/$base_run/merged"
+    [ -d "$base_merged" ] || die "no $base_merged; run train $base_run first"
+    run="$WORK/runs/$name"; mkdir -p "$run"
+    # A healing fine-tune continues from its own checkpoint, not from BASE
+    # (decisions c42/c43); train.py's --revision is meaningless for a local
+    # checkpoint directory and is left at its default, which transformers
+    # ignores when --base is a local path.
+    # shellcheck disable=SC2086
+    run_capped "$run" "$TRAIN_PY" "$HERE/train.py" --train "$data" --out "$run" --base "$base_merged" \
+      $TRAIN_ARGS
+    py scripts/lfm-finetune/stage_cache.py --merged "$run/merged" --repo "$REPO" \
+      --cache "$HF_CACHE" --base-snapshot "$(base_snapshot)" | tee "$run/stage.log"
+    awk '/staged/{print $NF}' "$run/stage.log" > "$run/revision"
+    ;;
+  upload)
+    name=${1:?upload <name>}
+    [ "${FINAL:-0}" = 1 ] || die "upload refuses without FINAL=1 set (mirrors measure.py's --final)"
+    bundle="$WORK/runs/$name/merged"
+    [ -d "$bundle" ] || die "no $bundle; run train $name first"
+    py scripts/lfm-finetune/scan_bundle.py verify "$bundle" \
+      || die "scan_bundle.py verify failed for $bundle; run 'scan $name' again on this exact folder"
+    : "${HF_TOKEN_ENV:?}"
+    [ -n "${!HF_TOKEN_ENV:-}" ] \
+      || die "$HF_TOKEN_ENV is not set (e.g. grant run --inject $HF_TOKEN_ENV=<secret name> -- $0 ...)"
+    HF_TOKEN_ENV="$HF_TOKEN_ENV" REPO="$REPO" BUNDLE="$bundle" \
+      py - <<'PYEOF'
+import os
+
+from huggingface_hub import HfApi
+
+hf_token = os.environ[os.environ["HF_TOKEN_ENV"]]
+api = HfApi(token=hf_token)
+repo = os.environ["REPO"]
+api.create_repo(repo, private=True, exist_ok=True)
+api.update_repo_visibility(repo, private=True)
+api.upload_folder(folder_path=os.environ["BUNDLE"], repo_id=repo, repo_type="model")
+print(f"uploaded {os.environ['BUNDLE']} to {repo} (private)")
+PYEOF
+    ;;
   status)
     for f in splits/train.json splits/val.json splits/test.json skills/tools.json skills/test.jsonl \
              aug/nvsh-accepted.jsonl aug/skills-accepted.jsonl data/nvsh-train.jsonl data/skills-train.jsonl; do
@@ -142,7 +257,7 @@ case "$STAGE" in
     find "$WORK/runs" -mindepth 1 -maxdepth 1 -type d -printf 'run: %f\n' 2>/dev/null
     ;;
   *)
-    die "unknown stage '$STAGE' (see the header of $0)"
+    die "unknown stage '$STAGE' -- one of: $STAGES"
     ;;
 esac
 }
