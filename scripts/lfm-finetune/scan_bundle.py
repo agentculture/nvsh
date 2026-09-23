@@ -4,6 +4,12 @@ Before a merged checkpoint is pushed to the Hugging Face Hub this script
 scans the bundle directory for leaked credentials, non-localhost endpoints,
 and anything else ``nvsh.redact`` would redact, producing a ``scan.json``
 that downstream CI and the stage-cache script can verify to be clean.
+``.json``/``.jsonl`` files are also parsed and every decoded string value is
+scanned recursively, so an escape sequence hiding a credential from the raw
+byte scan does not slip through. Expected model-weight binaries
+(``*.safetensors``, ``*.gguf``, ``*.bin``) are listed under ``scan.json``'s
+``binaries`` key instead of being scanned; any other file that is not valid
+UTF-8 is reported as an ``unscanned_binary`` finding rather than skipped.
 
     python scripts/lfm-finetune/scan_bundle.py scan <folder>
     python scripts/lfm-finetune/scan_bundle.py verify <folder>
@@ -79,6 +85,10 @@ _PRIVATE_NAME_RE = re.compile(
 #: Tailscale and carrier-grade NAT (100.64.0.0/10) are private in practice, not in ipaddress.
 _CGNAT = ipaddress.ip_network("100.64.0.0/10")
 
+#: Model weight files are expected binaries: listed under scan.json's ``binaries``
+#: key rather than scanned for text-shaped findings or flagged as unreadable.
+_EXPECTED_BINARY_EXTS = {".safetensors", ".gguf", ".bin"}
+
 
 def private_hosts(text: str) -> list[tuple[int, str]]:
     """``(line, host)`` for every private address or private-suffix host name in *text*.
@@ -102,10 +112,95 @@ def private_hosts(text: str) -> list[tuple[int, str]]:
     return found
 
 
+def _iter_json_strings(obj):
+    """Yield every string leaf reachable from *obj* through nested dicts/lists."""
+    if isinstance(obj, str):
+        yield obj
+    elif isinstance(obj, dict):
+        for value in obj.values():
+            yield from _iter_json_strings(value)
+    elif isinstance(obj, list):
+        for item in obj:
+            yield from _iter_json_strings(item)
+
+
+def _scan_fragment(rel: str, base_line: int, fragment: str, scan_secrets: object) -> list[dict]:
+    """Run the credential/redact/private-host checks against a decoded JSON string.
+
+    *base_line* is the physical line the JSON value came from (the record's line
+    for JSONL, or 1 for a whole-file JSON parse); a fragment's own internal line
+    offset (for a multi-line decoded string) is added on top of it.
+    """
+    findings: list[dict] = []
+    for finding in scan_secrets._scan_credentials(rel, fragment):  # noqa: SLF001
+        findings.append(
+            {
+                "path": rel,
+                "line": base_line + finding.line - 1,
+                "kind": finding.kind,
+                "detail": finding.detail,
+            }
+        )
+    for offset, host in private_hosts(fragment):
+        findings.append(
+            {
+                "path": rel,
+                "line": base_line + offset - 1,
+                "kind": "private_host",
+                "detail": host,
+            }
+        )
+    _, fired_rules = redact_report(fragment.encode("utf-8"))
+    for rule_name in fired_rules:
+        findings.append({"path": rel, "line": base_line, "kind": "redact", "detail": rule_name})
+    return findings
+
+
+def _scan_json_strings(rel: str, suffix: str, text: str, scan_secrets: object) -> list[dict]:
+    """Recursively scan decoded JSON string values for ``.json``/``.jsonl`` files.
+
+    Serialized bytes already went through the byte/text scan above; this covers
+    values an escape sequence (``\\uXXXX``, ``\\n``, ...) hides from that scan
+    until the JSON is actually decoded.
+    """
+    findings: list[dict] = []
+    if suffix == ".json":
+        try:
+            data = json.loads(text)
+        except ValueError:
+            return findings
+        for fragment in _iter_json_strings(data):
+            findings.extend(_scan_fragment(rel, 1, fragment, scan_secrets))
+    elif suffix == ".jsonl":
+        for lineno, line in enumerate(text.splitlines(), start=1):
+            if not line.strip():
+                continue
+            try:
+                record = json.loads(line)
+            except ValueError:
+                continue
+            for fragment in _iter_json_strings(record):
+                findings.extend(_scan_fragment(rel, lineno, fragment, scan_secrets))
+    return findings
+
+
+def list_binaries(folder: Path) -> list[str]:
+    """Relative POSIX paths of expected weight-file binaries under *folder*."""
+    return sorted(
+        f.relative_to(folder).as_posix()
+        for f in folder.rglob("*")
+        if f.is_file() and f.suffix.lower() in _EXPECTED_BINARY_EXTS
+    )
+
+
 def scan_folder(folder: Path, scan_secrets: object) -> list[dict]:
     """Return one finding dict per credential / endpoint / redact issue.
 
-    Only scans UTF-8 decodable regular files, skipping ``scan.json``.
+    Scans UTF-8 decodable regular files, skipping ``scan.json`` and the expected
+    weight-file binaries (see ``list_binaries``). A file that is neither of
+    those but still fails UTF-8 decoding is reported as an ``unscanned_binary``
+    finding instead of being silently skipped, so an unexpected binary upload
+    stays visible.
 
     Each dict has keys: ``path``, ``line``, ``kind``, ``detail`` — all
     ``path`` values are relative to *folder* as POSIX strings.
@@ -118,10 +213,17 @@ def scan_folder(folder: Path, scan_secrets: object) -> list[dict]:
         rel = path.relative_to(folder).as_posix()
         if rel == "scan.json":
             continue
+        if path.suffix.lower() in _EXPECTED_BINARY_EXTS:
+            continue
 
         try:
             text = path.read_text(encoding="utf-8")
-        except (UnicodeDecodeError, OSError):
+        except UnicodeDecodeError:
+            findings.append(
+                {"path": rel, "line": 0, "kind": "unscanned_binary", "detail": "non-UTF-8 file"}
+            )
+            continue
+        except OSError:
             continue
 
         # _scan_credentials expects (path, text) and returns Finding objects.
@@ -162,17 +264,20 @@ def scan_folder(folder: Path, scan_secrets: object) -> list[dict]:
                 }
             )
 
+        findings.extend(_scan_json_strings(rel, path.suffix.lower(), text, scan_secrets))
+
     return findings
 
 
 def write_scan(folder: Path, scan_secrets: object) -> dict:
-    """Compute findings and hash, write ``scan.json``, return the payload."""
+    """Compute findings, hash and the binaries list, write ``scan.json``, return it."""
     findings = scan_folder(folder, scan_secrets)
     hash_hex = folder_hash(folder)
     payload = {
         "hash": hash_hex,
         "findings": findings,
         "clean": len(findings) == 0,
+        "binaries": list_binaries(folder),
     }
     (folder / "scan.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
     return payload

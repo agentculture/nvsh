@@ -155,3 +155,81 @@ def test_localhost_public_hosts_and_versions_are_not_private_hosts(tmp_path):
     )
     findings = module.scan_folder(tmp_path, _load_scan_secrets())
     assert [f for f in findings if f["kind"] == "private_host"] == []
+
+
+def test_json_file_scans_decoded_unicode_escaped_string_value(tmp_path):
+    """A \\u-escaped credential inside a JSON string value is invisible to a raw-byte
+    scan (the literal bytes never contain "hf_") but must be caught once decoded."""
+    module = _module()
+    _write_file(
+        tmp_path,
+        "record.json",
+        '{"field": "\\u0068\\u0066_abcdefghijklmnopqrstuvwxyz0123456789"}\n',
+    )
+    findings = module.scan_folder(tmp_path, _load_scan_secrets())
+    assert any(f["kind"] == "redact" and f["detail"] == "hf_token" for f in findings)
+    assert all(f["path"] == "record.json" for f in findings)
+
+
+def test_jsonl_file_scans_decoded_string_value_per_line(tmp_path):
+    """Each JSONL line that parses as JSON gets its decoded string values scanned,
+    and the finding's line number is the physical line inside the file."""
+    module = _module()
+    _write_file(
+        tmp_path,
+        "records.jsonl",
+        '{"ok": "nothing here"}\n'
+        '{"field": "\\u0068\\u0066_abcdefghijklmnopqrstuvwxyz0123456789"}\n',
+    )
+    findings = module.scan_folder(tmp_path, _load_scan_secrets())
+    hits = [f for f in findings if f["kind"] == "redact" and f["detail"] == "hf_token"]
+    assert len(hits) == 1
+    assert hits[0]["line"] == 2
+
+
+def test_json_recursive_scan_covers_nested_objects_and_arrays(tmp_path):
+    """The decoded-string scan recurses through nested dicts and lists, not just
+    top-level values."""
+    module = _module()
+    _write_file(
+        tmp_path,
+        "nested.json",
+        json.dumps(
+            {
+                "outer": [
+                    {"inner": "hf_abcdefghijklmnopqrstuvwxyz0123456789"},
+                ]
+            }
+        ),
+    )
+    findings = module.scan_folder(tmp_path, _load_scan_secrets())
+    assert any(f["kind"] == "redact" and f["detail"] == "hf_token" for f in findings)
+
+
+def test_non_utf8_file_is_an_unscanned_binary_finding(tmp_path):
+    """A non-UTF-8 file that is not an expected weight file must be visible as a
+    finding, not silently skipped."""
+    module = _module()
+    (tmp_path / "mystery.dat").write_bytes(b"\xff\xfe\x00\x01garbage")
+    findings = module.scan_folder(tmp_path, _load_scan_secrets())
+    kinds = [f for f in findings if f["kind"] == "unscanned_binary"]
+    assert len(kinds) == 1
+    assert kinds[0]["path"] == "mystery.dat"
+    module_result = module.main(["scan", str(tmp_path)])
+    assert module_result == 1
+
+
+def test_expected_binary_extensions_are_listed_not_flagged(tmp_path):
+    """*.safetensors / *.gguf / *.bin are expected binaries: listed under scan.json's
+    'binaries' key, never reported as findings and never as unscanned_binary."""
+    module = _module()
+    (tmp_path / "model.safetensors").write_bytes(b"\x00\x01\x02\x03")
+    (tmp_path / "adapter.gguf").write_bytes(b"\x00\x01\x02\x03")
+    (tmp_path / "weights.bin").write_bytes(b"\x00\x01\x02\x03")
+    _write_file(tmp_path, "readme.txt", "harmless\n")
+    findings = module.scan_folder(tmp_path, _load_scan_secrets())
+    assert findings == []
+    payload = module.write_scan(tmp_path, _load_scan_secrets())
+    assert payload["clean"] is True
+    assert payload["binaries"] == ["adapter.gguf", "model.safetensors", "weights.bin"]
+    assert module.main(["scan", str(tmp_path)]) == 0
