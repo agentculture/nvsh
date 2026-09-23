@@ -199,11 +199,14 @@ def gpu_memory_fraction(gb: str, total_bytes: int) -> float:
 def cap_gpu_memory(torch, environ=os.environ) -> float | None:
     """Apply $NVSH_TRAIN_GPU_MEMORY_GB to CUDA device 0 before a model loads.
 
-    Returns the fraction set, or None when the variable is unset or there is
-    no CUDA device. Raises ValueError for a budget gpu_memory_fraction refuses.
+    Returns the fraction set, or None when the variable is unset, empty, or
+    whitespace-only (pipeline.sh exports it empty, and the shipped env
+    examples ship it empty too; both mean "no cap", the same as unset), or
+    there is no CUDA device. Raises ValueError for a budget
+    gpu_memory_fraction refuses.
     """
     gb = environ.get(GPU_MEMORY_ENV)
-    if gb is None:
+    if gb is None or not gb.strip():
         return None
     if not torch.cuda.is_available():
         print(f"{GPU_MEMORY_ENV} set but no CUDA device; no GPU cap applied", file=sys.stderr)
