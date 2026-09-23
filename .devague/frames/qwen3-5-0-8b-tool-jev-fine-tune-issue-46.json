@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-09-23T06:56:50Z",
-  "updated": "2026-09-23T10:42:15Z",
+  "updated": "2026-09-23T19:19:31Z",
   "claims": [
     {
       "id": "c1",
@@ -1320,6 +1320,20 @@
       "skipped_check": "cross-module check: scorer output through metrics.compute before merge",
       "refs": [
         "t10"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l2",
+      "code": "grader-unverified",
+      "what": "The augmentation reviewer (reviewer B) was used as the t18 grader, first at temperature 0.7 and then at reasoning effort xhigh (the template default, never set), without ever being checked against known-good and known-bad candidates; its systematic false rejections (a check read as a non-answer, 'no' or a hedge word inside an explanation read as the verdict) surfaced only by chance in an effort A/B. The lead also stated 'thinking is short, 300-600 tokens' from two probe calls at 0.7; the measured xhigh average was about 1,250",
+      "skipped_check": "a known-good/known-bad calibration probe of the reviewer before a full pass",
+      "refs": [
+        "t18",
+        "d8",
+        "d9",
+        "d10"
       ],
       "origin": "llm",
       "status": "proposed"

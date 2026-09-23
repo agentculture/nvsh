@@ -2,7 +2,7 @@
   "plan_slug": "qwen3-5-0-8b-tool-jev-fine-tune-issue-46",
   "schema_version": 2,
   "created": "2026-09-23T10:18:50Z",
-  "updated": "2026-09-23T18:27:09Z",
+  "updated": "2026-09-23T19:19:31Z",
   "deviations": [
     {
       "id": "d1",
@@ -130,6 +130,19 @@
       "status": "approved",
       "classification": "acceptable",
       "seq": 9
+    },
+    {
+      "id": "d10",
+      "what": "t18's reviewer is fixed and calibrated before the clean-slate pass restarts: (1) a read-only check's expected answer is worded 'run this read-only check (its output is shown to the user as the answer)', and the reviewer system prompt states a check is a complete answer; at reasoning effort xhigh 10 of 13 rejections were correct read-only requests rejected as 'only describes running the check instead of reporting'; (2) parse_verdict counts a 'no' as a verdict only when it stands alone (followed by punctuation or the end), and a hedge word only within the first 6 words after 'yes', since both rules rejected clear yeses (4 and 3 stored replies); (3) the reviewer's reasoning effort (cortex chat template: xhigh default, medium, low; never set so far) is chosen by a probe of known-good and known-bad candidates before restarting; the xhigh/0.2 pass (158 records) is archived to aug/xhigh02/ and the restart is a fresh clean-slate pass of all 1,176",
+      "task_ref": "t18",
+      "reason": "operator, 2026-09-23 22:20: accepted the recommendation after the effort A/B (low/medium accepted 7-8 of 10 xhigh rejections; those rejections were mostly spurious) and the parser audit",
+      "affects": [
+        "t19"
+      ],
+      "origin": "user",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 10
     }
   ],
   "evidence": [],
