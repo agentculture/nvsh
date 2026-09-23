@@ -1527,6 +1527,25 @@ def main(argv: list[str] | None = None) -> int:
         except ConfigError as exc:
             parser.error(str(exc))
             return 2  # pragma: no cover - parser.error already exits
+        if args.dry_run:
+            # Codex review finding #7: dry-run must be handled before any
+            # dispatch to the reviewer -- report the count, the limit and
+            # the reviewer B model, and exit without calling anything or
+            # writing accepted/rejected output.
+            try:
+                candidates = load_rereview_candidates(seed_paths)
+            except (ConfigError, ValueError) as exc:
+                print(f"error: {exc}", file=sys.stderr)
+                return 2
+            done = _existing_ids(Path(args.accepted_out)) | _existing_ids(Path(args.rejected_out))
+            tasks = [record for record in candidates if record.get("id") not in done]
+            if args.limit is not None:
+                tasks = tasks[: args.limit]
+            print(
+                f"dry-run: {len(tasks)} candidate(s) would be re-reviewed with REVIEWER_B "
+                f"({reviewer_b.model}); no endpoint was called"
+            )
+            return 0
         try:
             counts = run_rereview(
                 candidate_files=seed_paths,

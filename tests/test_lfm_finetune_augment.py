@@ -2190,6 +2190,54 @@ def test_main_rereview_mode_needs_only_reviewer_b_config(
     )
 
 
+def test_rereview_dry_run_reports_without_calling_reviewer_or_writing(
+    tmp_path, monkeypatch
+) -> None:
+    """Codex finding #7: ``--rereview --dry-run`` must report the candidate
+    count, the limit and the reviewer B model, then exit 0 without calling
+    any reviewer or writing accepted/rejected output. The rereview branch
+    used to return before the dry-run check was ever reached (dispatching a
+    real re-review), so the caller here fails the test if it is invoked."""
+    monkeypatch.setenv("NVSH_AUG_REVIEWER_B_URL", "http://fake-gateway")
+    monkeypatch.setenv("NVSH_AUG_REVIEWER_B_MODEL", "qwen-3.8-27b")
+
+    def _fails_if_called(role, system, user):
+        raise AssertionError("reviewer B must not be called under --dry-run")
+
+    monkeypatch.setattr(aug, "_post_chat_completion", _fails_if_called)
+
+    candidates = _write_jsonl(
+        tmp_path / "accepted.jsonl",
+        [_stored_candidate(record_id=f"dev-e0{i}~v1", source_id=f"dev-e0{i}") for i in range(3)],
+    )
+    accepted_out = tmp_path / "out-accepted.jsonl"
+    rejected_out = tmp_path / "out-rejected.jsonl"
+    import io
+    from contextlib import redirect_stdout
+
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        rc = aug.main(
+            [
+                str(candidates),
+                "--rereview",
+                "--dry-run",
+                "--accepted-out",
+                str(accepted_out),
+                "--rejected-out",
+                str(rejected_out),
+                "--limit",
+                "2",
+            ]
+        )
+    assert rc == 0
+    out = buf.getvalue()
+    assert "2" in out  # limit applied to the reported candidate count
+    assert "qwen-3.8-27b" in out  # reviewer B model
+    assert not accepted_out.exists()
+    assert not rejected_out.exists()
+
+
 def test_sample_is_an_alias_for_limit_in_dry_run(tmp_path) -> None:
     seed_file = _split_seed_file(tmp_path)
     import io
