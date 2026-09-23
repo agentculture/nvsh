@@ -53,8 +53,22 @@ schema and scores it with ``metrics.py`` (``read_predictions`` then
 ``compute``), so the stock baseline, Track A (generative) and Track B
 (candidate scoring) are compared on one set of figures. The metrics go into
 the results file; ``--predictions DIR`` also keeps each model's predictions
-and metrics JSON there (refused with ``--final`` or ``--acceptance``, like
-``--details``: a final run reports the figures, never the per-entry rows).
+and metrics JSON there. Deviation d6 reads a final run's predictions file as
+Track A's input, so ``--predictions`` is allowed with ``--final`` and
+``--acceptance`` (a predictions line carries only ids, expected blocks and
+outcomes, never request text); ``--details`` stays refused there, since it
+does write the entry text and is for iterating on validation only.
+
+Before the first entry, every served run (attach or managed, once the
+launch reports ready) is preflighted: a ``GET <base_url>/models`` must
+answer 200 with the configured model among the ids returned, or the run is
+refused (exit 2) before anything is measured -- a crashed or missing server
+otherwise produces a plausible-looking results page whose every decision is
+really a tier error. A run that still comes back with any ``tier_error``
+prediction (the server died mid-run) is a failed run: the predictions file
+and metrics are written for debugging, but not the results page, unless
+``--allow-tier-errors N`` permits up to that many (the count is then shown
+prominently in the results page).
 
 Generative runs (the default) drive the same :class:`LfmTier` through a
 recording chat client (:class:`RecordingChat`, a non-streaming
@@ -214,6 +228,32 @@ def default_run(argv: list[str], timeout: float) -> tuple[int, str]:  # pragma: 
     return (completed.returncode, (completed.stdout or "") + (completed.stderr or ""))
 
 
+#: ``GET <base_url>/models`` timeout: short, since it only checks the server is up.
+PREFLIGHT_TIMEOUT = 5.0
+#: Issue 46 finding: a stopped/crashed server still exits 0 with a plausible-looking
+#: results page (every decision a tier error). This is that reason's literal value
+#: (``nvsh.tiers.base.DeclineReason.TIER_ERROR.value``, kept as a literal so this
+#: script never imports the router's internals just for one string).
+TIER_ERROR_REASON = "tier_error"
+
+
+def preflight_models(base_url: str, model: str, timeout: float = PREFLIGHT_TIMEOUT) -> None:
+    """Refuse to measure a server that is not actually serving *model* (exit 2).
+
+    Called before the first entry, for an attached endpoint and for a
+    managed launch once it reports ready alike: a stopped or crashed server
+    otherwise answers nothing (or the wrong model), every entry becomes a
+    tier error, and the run still exits 0 with a plausible-looking results
+    page (the live finding this guards against). The check itself
+    (``GET <base_url>/models``, localhost only) is ``measure_skills.py``'s,
+    shared so both scripts refuse the same way.
+    """
+    try:
+        measure_skills.preflight_models(base_url, model, timeout)
+    except RuntimeError as exc:
+        raise MeasureError(EXIT_ENV, str(exc)) from exc
+
+
 @dataclass(frozen=True)
 class TierSpec:
     """What :func:`build_lfm_tier` needs for one run: identical across runs but ``model``."""
@@ -278,6 +318,8 @@ class Seams:
     uid: Callable[[], int] = os.getuid
     load_config: Callable[[Path | None], object] = nvsh_config.load
     build_scorer: Callable[["ScorerSpec"], "ScorerHandle"] = lambda spec: build_scorer(spec)
+    #: ``GET <base_url>/models`` before the first entry; raises MeasureError on failure.
+    preflight: Callable[[str, str], None] = preflight_models
 
 
 # ---------------------------------------------------------------------------
@@ -1630,11 +1672,12 @@ def measure_one(plan: RunPlan, model: str, revision: str, seams: Seams) -> RunRe
     try:
         started = seams.clock()
         try:
-            runtime.ensure()
+            base_url = runtime.ensure()
         except RuntimeUnavailable as exc:
             record.failure = f"start-up failed: {exc}"
             return record
         record.startup_s = seams.clock() - started
+        seams.preflight(base_url, model)
         record.result = tier_bench.bench(
             plan.entries,
             split=plan.split,
@@ -1841,6 +1884,10 @@ class Provenance:
     slice_note: str = ""
     snapshot_note: str = ""
     scorer_run: bool = False
+    #: A crashed/unreachable server mid-run (tier_error predictions), permitted by
+    #: --allow-tier-errors; 0 unless that happened and the run was allowed to proceed.
+    tier_errors: int = 0
+    tier_errors_allowed: int = 0
 
 
 def serving_record(settings: Mapping[str, object]) -> dict[str, str]:
@@ -2008,6 +2055,15 @@ def render_markdown(prov: Provenance, records: Sequence[RunRecord]) -> str:
     lines = [
         f"# Tier 2 measurement, {prov.date}: {prov.label}",
         "",
+    ]
+    if prov.tier_errors:
+        lines += [
+            f"**{prov.tier_errors} tier-error prediction(s) permitted by "
+            f"`--allow-tier-errors {prov.tier_errors_allowed}`** -- the server was "
+            "unreachable for at least one entry; this run is not a clean measurement.",
+            "",
+        ]
+    lines += [
         f"- Command: `{prov.command}`",
         f"- Split: `{prov.split_path}` ({prov.split_count} entries, {prov.source_count} sources)",
         f"- Seed: {seed}",
@@ -2151,8 +2207,18 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--predictions",
         default=None,
-        help="keep each model's predictions JSONL and metrics JSON in this directory;"
-        " refused with --final or --acceptance (the figures are still reported)",
+        help="keep each model's predictions JSONL and metrics JSON in this directory; allowed"
+        " with --final or --acceptance (deviation d6 reads a final run's file), unlike"
+        " --details -- a predictions line never carries request text",
+    )
+    parser.add_argument(
+        "--allow-tier-errors",
+        type=int,
+        default=0,
+        metavar="N",
+        help="permit up to N tier_error predictions (the server died mid-run) before refusing"
+        " to write the results page; default 0. The count is shown in the results page"
+        " when it is above 0",
     )
     parser.add_argument(
         "--enable-thinking",
@@ -2264,13 +2330,8 @@ def _slug(model: str) -> str:
 
 def _check_issue46_flags(args: argparse.Namespace, lfm_settings: Mapping[str, object]) -> None:
     """Refuse flag combinations before anything is loaded or started."""
-    if args.predictions and (args.final or args.acceptance):
-        raise MeasureError(
-            EXIT_USER,
-            "--predictions keeps per-entry rows, which are for validation, never the test or"
-            " held-out side",
-            "drop --predictions; the metrics are still in the results file",
-        )
+    if args.allow_tier_errors < 0:
+        raise MeasureError(EXIT_USER, "--allow-tier-errors must be 0 or more")
     if args.live and args.ground_snapshot:
         raise MeasureError(EXIT_USER, "--live and --ground-snapshot are two different groundings")
     if args.top_logprobs < 0:
@@ -2451,6 +2512,45 @@ def _run(
         for model, revision in zip(args.model, args.revision)
     ]
 
+    keep = Path(args.predictions) if args.predictions else None
+    for index, record in enumerate(records, start=1):
+        if record.failure:
+            continue
+        name = f"{args.label}-{index}-{_slug(record.model)}"
+        path = (keep or workdir) / f"{name}.predictions.jsonl"
+        record.metrics = score_predictions(record.predictions, path)
+        if keep is not None:
+            (keep / f"{name}.metrics.json").write_text(
+                json.dumps(record.metrics, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+            )
+    if args.details:
+        with open(args.details, "w", encoding="utf-8") as handle:
+            for record in records:
+                for row in detail_rows(record.model, record.result, loaded.entries):
+                    handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+    # Issue 46 finding: a crashed/unreachable server mid-run turns every remaining
+    # entry into a tier_error, not a real decision -- the predictions file and
+    # metrics are kept for debugging, but the results page is refused unless the
+    # operator explicitly permitted this many with --allow-tier-errors.
+    tier_error_total = sum(
+        record.metrics.get("invalid", {}).get("by_reason", {}).get(TIER_ERROR_REASON, 0)
+        for record in records
+        if not record.failure
+    )
+    if tier_error_total > args.allow_tier_errors:
+        print(
+            f"error: {tier_error_total} tier_error prediction(s) (server unreachable mid-run),"
+            f" above --allow-tier-errors {args.allow_tier_errors}; not writing {out}",
+            file=sys.stderr,
+        )
+        print(
+            "hint: fix or restart the server and re-run, or pass --allow-tier-errors N to"
+            " permit up to N",
+            file=sys.stderr,
+        )
+        return EXIT_ENV
+
     prov = Provenance(
         date=date,
         label=args.label,
@@ -2478,23 +2578,9 @@ def _run(
         ),
         snapshot_note=snapshot_note,
         scorer_run=bool(args.scorer),
+        tier_errors=tier_error_total,
+        tier_errors_allowed=args.allow_tier_errors,
     )
-    keep = Path(args.predictions) if args.predictions else None
-    for index, record in enumerate(records, start=1):
-        if record.failure:
-            continue
-        name = f"{args.label}-{index}-{_slug(record.model)}"
-        path = (keep or workdir) / f"{name}.predictions.jsonl"
-        record.metrics = score_predictions(record.predictions, path)
-        if keep is not None:
-            (keep / f"{name}.metrics.json").write_text(
-                json.dumps(record.metrics, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-            )
-    if args.details:
-        with open(args.details, "w", encoding="utf-8") as handle:
-            for record in records:
-                for row in detail_rows(record.model, record.result, loaded.entries):
-                    handle.write(json.dumps(row, ensure_ascii=False) + "\n")
     text = render_markdown(prov, records)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(text, encoding="utf-8")
