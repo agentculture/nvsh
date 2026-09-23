@@ -2,7 +2,7 @@
   "plan_slug": "qwen3-5-0-8b-tool-jev-fine-tune-issue-46",
   "schema_version": 2,
   "created": "2026-09-23T10:18:50Z",
-  "updated": "2026-09-23T17:32:03Z",
+  "updated": "2026-09-23T18:27:09Z",
   "deviations": [
     {
       "id": "d1",
@@ -117,6 +117,19 @@
       "status": "approved",
       "classification": "acceptable",
       "seq": 8
+    },
+    {
+      "id": "d9",
+      "what": "t18/t19 reviewer calls run at temperature 0.2 (NVSH_AUG_<ROLE>_TEMPERATURE, recorded per record/verdict; generator keeps 0.7), a 900 s timeout, and --workers 2 to match cortex's --max-num-seqs=2 (about 45 tok/s shared across the 2 slots); the gateway never propagates a client disconnect (vLLM aborts = 0), so a 300 s timeout left each long-thinking call running upstream while the client retried it up to 6 times",
+      "task_ref": "t18",
+      "reason": "operator, 2026-09-23 21:30: temperature 0.7 is too hallucination-prone for a judge, use 0.1-0.3; cortex runs at about 45 tok/s and 2 concurrent requests share it. Measured: queueing and orphaned retries, not thinking length (300-600 reasoning tokens per call), made the re-review 10x slower",
+      "affects": [
+        "t19"
+      ],
+      "origin": "user",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 9
     }
   ],
   "evidence": [],
