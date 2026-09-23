@@ -18,6 +18,19 @@ environment has neither.
         --model-dir <merged checkpoint> --calibration-file <one text per line> \\
         --out-dir <awq output dir> --num-calibration-samples 128 \\
         --max-seq-length 512
+
+Live lead check on commit 47d3af3: a stock-copy source dir already carries
+our greedy-decoding ``generation_config.json`` (deviation d3: ``temperature``
+0.0, ``do_sample`` false), which ``from_pretrained`` loads onto the model.
+transformers >= 5.17 validates that config on ``save_pretrained`` and
+refuses it -- ``temperature`` set with ``do_sample`` not ``True`` is an
+invalid combination to persist, so the save failed with no
+``model.safetensors`` written at all. :func:`sanitize_generation_config`
+replaces the model's generation config with a bare one carrying only its
+token ids right before the save, since ``quantize.py``'s
+``finish_awq_export`` writes the real vLLM-facing
+``generation_config.json`` immediately afterward anyway (:func:`main`'s
+order is therefore quantize -> sanitize -> save).
 """
 
 from __future__ import annotations
@@ -34,6 +47,10 @@ AWQ_IGNORE = ["lm_head", "re:.*visual.*", "re:.*linear_attn.*", "re:.*mtp.*"]
 
 #: The spike's calibration rendering: max sequence length for tokenization.
 MAX_SEQ_LENGTH = 512
+
+#: Token ids worth carrying over from a loaded generation config, if present.
+#: Mirrors gen_config.py's own list.
+_TOKEN_ID_KEYS = ("eos_token_id", "bos_token_id", "pad_token_id")
 
 
 def read_calibration_texts(path: Path) -> list[str]:
@@ -61,6 +78,33 @@ def build_recipe():
     from llmcompressor.modifiers.awq import AWQModifier
 
     return [AWQModifier(targets=list(AWQ_TARGETS), scheme=AWQ_SCHEME, ignore=list(AWQ_IGNORE))]
+
+
+def sanitize_generation_config(model) -> None:
+    """Replace *model*'s generation config with a save-valid one, token ids only.
+
+    A stock-copy source dir carries our own greedy-decoding
+    ``generation_config.json`` (deviation d3: ``temperature`` 0.0,
+    ``do_sample`` false), which ``from_pretrained`` loads straight onto the
+    model. transformers >= 5.17 validates the loaded config on
+    ``save_pretrained`` and refuses that combination outright ("temperature
+    is set to 0.0 ... however do_sample is not set to True"), so a save right
+    after quantization fails with no ``model.safetensors`` written. This
+    model-side config only needs to survive the save; ``quantize.py``'s
+    ``finish_awq_export`` writes the real vLLM-facing
+    ``generation_config.json`` (temperature 0, do_sample false) immediately
+    afterward, so nothing here needs to carry sampling settings at all --
+    only whatever token ids the loaded config named.
+    """
+    from transformers import GenerationConfig
+
+    current = getattr(model, "generation_config", None)
+    token_ids = {}
+    for key in _TOKEN_ID_KEYS:
+        value = getattr(current, key, None) if current is not None else None
+        if value is not None:
+            token_ids[key] = value
+    model.generation_config = GenerationConfig(**token_ids)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -98,6 +142,8 @@ def main(argv: list[str] | None = None) -> int:
         max_seq_length=args.max_seq_length,
         num_calibration_samples=len(rendered),
     )
+
+    sanitize_generation_config(model)
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
     model.save_pretrained(args.out_dir, save_compressed=True)
