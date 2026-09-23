@@ -2,7 +2,7 @@
   "plan_slug": "lfm2-5-350m-tier-2-fine-tune-issue-39",
   "schema_version": 2,
   "created": "2026-09-22T19:41:18Z",
-  "updated": "2026-09-23T03:39:44Z",
+  "updated": "2026-09-23T05:08:15Z",
   "deviations": [
     {
       "id": "d1",
@@ -49,7 +49,298 @@
       "seq": 3
     }
   ],
-  "evidence": [],
-  "deltas": [],
+  "evidence": [
+    {
+      "id": "e1",
+      "obligation_ref": "o1",
+      "test_ref": "docs/benchmarks/2026-09-23-lfm-final-r8.md (measure.py --final, stock and r8 back to back)",
+      "behavior_text": "r8: 28/32 right proposals (88%), 13/15 escalations (87%), 119 ms median; 1 wrong mutating proposal",
+      "contract_text": "c26 use-case bar",
+      "evidence_type": "integration",
+      "strength": "execution",
+      "strength_basis": "real vLLM launcher on the DGX Spark, test side never trained on; wrong mutating count is 1, bar requires 0",
+      "outcome": "fail",
+      "run": {
+        "timestamp": "2026-09-23T05:10:00Z",
+        "commit": "70182afc0210b246e8a3ef13a57e73483b1fd481"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 4
+    },
+    {
+      "id": "e2",
+      "obligation_ref": "o2",
+      "test_ref": "docs/benchmarks/2026-09-23-lfm-final-r8.md explain rows",
+      "behavior_text": "r8 explained 17/17 vs stock 15/17; 0 mutating proposals on explain asks",
+      "contract_text": "c27 explain kept",
+      "evidence_type": "integration",
+      "strength": "execution",
+      "strength_basis": "same final run as c26",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-23T05:10:00Z",
+        "commit": "70182afc0210b246e8a3ef13a57e73483b1fd481"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 5
+    },
+    {
+      "id": "e3",
+      "obligation_ref": "o3",
+      "test_ref": "tests/test_lfm_finetune_stage_cache.py, tests/test_lfm_finetune_release_bundle.py::test_a_changed_chat_template_is_refused; stage_cache run for r8",
+      "behavior_text": "a changed template is refused; r8 staged, so its template matched",
+      "contract_text": "c33 template unchanged",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "unit tests pass in the full suite (3521 passed) and the real r8 staging succeeded",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-23T05:07:46Z",
+        "commit": "c4fd84c9e76fbe90a1dec1989c26113e023b4a3f"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 6
+    },
+    {
+      "id": "e4",
+      "obligation_ref": "o4",
+      "test_ref": "tests/test_lfm_finetune_split.py",
+      "behavior_text": "determinism, stratification, held-out refusal, duplicate ids, lineage grouping",
+      "contract_text": "c28 seeded split script",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "full suite 3521 passed at HEAD",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-23T05:07:46Z",
+        "commit": "c4fd84c9e76fbe90a1dec1989c26113e023b4a3f"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 7
+    },
+    {
+      "id": "e5",
+      "obligation_ref": "o5",
+      "test_ref": "tests/test_lfm_finetune_measure.py; real runs r1-r8 val and final run 2",
+      "behavior_text": "revision verified from cache, --final/--acceptance guards, both wrong-mutating rows reported",
+      "contract_text": "c29 measurement script",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "unit tests pass; used for every reported number",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-23T05:07:46Z",
+        "commit": "c4fd84c9e76fbe90a1dec1989c26113e023b4a3f"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 8
+    },
+    {
+      "id": "e6",
+      "obligation_ref": "o6",
+      "test_ref": "tests/test_tier_bench.py explain cases",
+      "behavior_text": "explain expect validated, mixed expect rejected, excluded from escalation",
+      "contract_text": "c30 explain first-class",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "full suite passes",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-23T05:07:46Z",
+        "commit": "c4fd84c9e76fbe90a1dec1989c26113e023b4a3f"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 9
+    },
+    {
+      "id": "e7",
+      "obligation_ref": "o7",
+      "test_ref": "tests/test_lfm_finetune_measure.py final guard; docs/lfm-finetune.md run log r1-r8 on val",
+      "behavior_text": "all iteration on val; two final runs (stock t12, final run 2)",
+      "contract_text": "c31 three sides",
+      "evidence_type": "observation",
+      "strength": "fidelity",
+      "strength_basis": "guard is tested; process adherence recorded in run log; lapse l2 (one test entry seen in a grep) is disclosed",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-23T05:07:46Z",
+        "commit": "c4fd84c9e76fbe90a1dec1989c26113e023b4a3f"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 10
+    },
+    {
+      "id": "e8",
+      "obligation_ref": "o8",
+      "test_ref": "none run as a separate step",
+      "behavior_text": "not checked as a separate export check; validation runs through the same launcher returned structured tool_calls for 64/66 entries",
+      "contract_text": "c9 export check",
+      "evidence_type": "observation",
+      "strength": "coverage",
+      "strength_basis": "the explicit training-request check was not run",
+      "outcome": "fail",
+      "run": {
+        "timestamp": "2026-09-23T05:07:46Z",
+        "commit": "c4fd84c9e76fbe90a1dec1989c26113e023b4a3f"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 11
+    },
+    {
+      "id": "e9",
+      "obligation_ref": "o9",
+      "test_ref": "tests/test_tier_runtime_docker.py hf_offline cases; all measurements with hf_offline=true",
+      "behavior_text": "launcher adds HF_HUB_OFFLINE=1 and no token",
+      "contract_text": "c38 tokens on host",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "tests pass; private push itself blocked by token scope",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-23T05:07:46Z",
+        "commit": "c4fd84c9e76fbe90a1dec1989c26113e023b4a3f"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 12
+    },
+    {
+      "id": "e10",
+      "obligation_ref": "o10",
+      "test_ref": "tests/test_lfm_finetune_release_bundle.py",
+      "behavior_text": "bundle refuses missing/different LICENSE, empty data summary; card carries lfm1.0, threshold, teachers",
+      "contract_text": "c15 licence first",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "tests pass; nothing was published (push blocked)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-23T05:07:46Z",
+        "commit": "c4fd84c9e76fbe90a1dec1989c26113e023b4a3f"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 13
+    },
+    {
+      "id": "e11",
+      "obligation_ref": "o11",
+      "test_ref": "python3 scripts/scan-secrets.py",
+      "behavior_text": "clean (461 files)",
+      "contract_text": "c44 no secrets",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "scan run at HEAD",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-23T05:07:46Z",
+        "commit": "c4fd84c9e76fbe90a1dec1989c26113e023b4a3f"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 14
+    },
+    {
+      "id": "e12",
+      "obligation_ref": "o8",
+      "test_ref": "none run as a separate step",
+      "behavior_text": "the explicit >=10-training-requests export check was not run; r8's validation run through the same launcher counted 28 right proposals and 14 escalations, which bench only credits from structured tool_calls. This record supersedes e8, which quoted an unmeasured figure",
+      "contract_text": "c9 export check",
+      "evidence_type": "observation",
+      "strength": "coverage",
+      "strength_basis": "the named check was not run; the indirect signal is the validation run",
+      "outcome": "fail",
+      "run": {
+        "timestamp": "2026-09-23T05:07:57Z",
+        "commit": "c4fd84c9e76fbe90a1dec1989c26113e023b4a3f"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 15
+    },
+    {
+      "id": "e13",
+      "obligation_ref": "o8",
+      "test_ref": "none run as a separate step",
+      "behavior_text": "the explicit >=10-training-requests export check was not run. Indirect signal only: r8's validation run through the same launcher counted 28 right proposals, and a proposal is only ever read from a structured propose tool call. Supersedes e8 and e12",
+      "contract_text": "c9 export check",
+      "evidence_type": "observation",
+      "strength": "coverage",
+      "strength_basis": "the named check was not run",
+      "outcome": "fail",
+      "run": {
+        "timestamp": "2026-09-23T05:08:07Z",
+        "commit": "c4fd84c9e76fbe90a1dec1989c26113e023b4a3f"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 16
+    }
+  ],
+  "deltas": [
+    {
+      "id": "b1",
+      "kind": "amended",
+      "behavior_text": "dev-g284..g286 expect escalate -> explain (d1); dev.json 431 entries: 212 operation / 103 escalate / 116 explain",
+      "caused_by": [
+        "d1"
+      ],
+      "evidence_refs": [
+        "e6"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    },
+    {
+      "id": "b2",
+      "kind": "added",
+      "behavior_text": "the nvsh train side is augmented with reviewed variations (724 in r8's set) via augment.py; val and test untouched (d2)",
+      "caused_by": [
+        "d2"
+      ],
+      "evidence_refs": [
+        "e1"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    },
+    {
+      "id": "b3",
+      "kind": "added",
+      "behavior_text": "a committed train-only supplement (train-supplement.json, 15 entries: stop/shut down/disable -> escalate, restart contrasts including sup-13..15 docker restart forms added after r7) is merged into training only (d3)",
+      "caused_by": [
+        "d3"
+      ],
+      "evidence_refs": [
+        "e1"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    }
+  ],
   "supersessions": []
 }

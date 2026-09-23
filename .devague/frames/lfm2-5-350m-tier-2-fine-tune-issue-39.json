@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-09-22T17:34:36Z",
-  "updated": "2026-09-23T01:28:09Z",
+  "updated": "2026-09-23T05:08:07Z",
   "claims": [
     {
       "id": "c1",
@@ -1172,7 +1172,118 @@
       ],
       "origin": "llm",
       "status": "proposed"
+    },
+    {
+      "id": "l3",
+      "code": "provenance-missing",
+      "what": "validate-delivery: evidence e8 quoted '64/66 entries returned tool_calls', a figure never measured; e12 overstated how escalations are counted. e13 restates c9 without either; e8 and e12 should be rejected",
+      "skipped_check": "check every figure in an evidence record against a measurement file before filing",
+      "refs": [
+        "o8"
+      ],
+      "origin": "llm",
+      "status": "proposed"
     }
   ],
-  "obligations": []
+  "obligations": [
+    {
+      "id": "o1",
+      "claim_id": "c26",
+      "seam": "measure.py --final on the test side through the real launcher",
+      "behavior": "tuned >=70% right proposals, >=60% escalations, 0 wrong mutating, warm median <500 ms",
+      "source_text": "Use-case bar: on the committed test fold, through the real launcher and vLLM on the DGX Spark, the tuned 350M reaches >= 70% right proposals and >= 60% correct escalations, above stock re-measured on the same fold, with 0 wrong mutating proposals and a warm median < 500 ms (indicative; formal acceptance is the held-out run, c21). Meeting this bar or the method-validation bar counts as success (decision on q6).",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o2",
+      "claim_id": "c27",
+      "seam": "measure.py --final explain rows",
+      "behavior": "tuned explains explain-labelled questions at least as often as stock, never a mutating proposal on them",
+      "source_text": "Explain examples keep words where words are right: on the test fold's explain-labelled read-only questions, the tuned model answers with explain (or plain text) at least as often as stock, and never turns one into a mutating proposal (0).",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o3",
+      "claim_id": "c33",
+      "seam": "stage_cache.py / release_bundle.py template check",
+      "behavior": "merged checkpoint's chat template is byte-identical to the base's",
+      "source_text": "The merged checkpoint carries the base model's chat template unchanged: training, vLLM serving and the stock baseline must all render tools and tool calls with the same template, so the pushed tokenizer_config.json chat_template is byte-compared with the base model's before measuring; the same check confirms the rendered assistant tool call is parsed by vLLM's lfm2 tool parser into structured tool_calls (toolchat.py reads message.tool_calls first, 405-415).",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o4",
+      "claim_id": "c28",
+      "seam": "scripts/lfm-finetune/split.py",
+      "behavior": "seeded stratified train/val/test split, refuses held-out.json",
+      "source_text": "Commit a seeded split script under scripts/lfm-finetune/ that splits dev.json deterministically (fixed seed, stratified by expectation: operation, escalate, explain) into train and test files, refuses held-out.json by name exactly as build_dataset.py does, and is covered by a test that pins the split for a given seed.",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o5",
+      "claim_id": "c29",
+      "seam": "scripts/lfm-finetune/measure.py",
+      "behavior": "stock-vs-tuned measurement via nvsh.tiers.bench.bench, final/acceptance guards",
+      "source_text": "Commit the stock-versus-tuned measurement as a script under scripts/lfm-finetune/ that builds an LfmTier for a given [tiers.lfm] model and calls nvsh.tiers.bench.bench with options.tier2 (bench.py already accepts it) on a named split file, so neither the stock re-measure nor the tuned run is a scratch script (lapse l9); issue 40 later replaces it with nvsh tiers bench --tier2 lfm.",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o6",
+      "claim_id": "c30",
+      "seam": "nvsh/tiers/bench.py _validate_expect",
+      "behavior": "explain expectation accepted everywhere dev.json is read, never counted as escalation",
+      "source_text": "The explain expectation is a first-class corpus form everywhere dev.json is read: nvsh.tiers.bench._validate_expect (bench.py:153-161) today accepts only escalate or a table-valid operation, so an {explain: true} entry is reported as a problem and silently skipped; load_corpus, the Tier 1 bench (nvsh tiers bench, cli/_commands/tiers.py:439-447, where an explain entry for Tier 1 counts as should-decline), scripts/needle-finetune/build_dataset.py (expect handling lines 52-66) and the lfm builder must each accept it explicitly, and the docs quoting the 318-entry / 212 / 106 grid (docs/tiers-improving-accuracy.md:30, docs/benchmarks/2026-09-19-dgx-spark-tier2.md:10) are updated to the new counts.",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o7",
+      "claim_id": "c31",
+      "seam": "measure.py --final guard and run log",
+      "behavior": "iteration judged on validation only; test side measured only in final runs",
+      "source_text": "The seeded split has three sides, train, validation and test: every iteration h19 allows (hyperparameters, data changes, epochs) is judged on validation only, and the test fold is measured once per candidate the operator declares final, so repeated unsuccessful attempts cannot tune against the test fold.",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o8",
+      "claim_id": "c9",
+      "seam": "export check through real launcher",
+      "behavior": ">=10 training requests come back as structured tool_calls before a test figure",
+      "source_text": "Before measuring a tuned model, ask the exported/merged model a handful of its own training requests through the real launcher; if it fails them, the numbers describe an export fault, not the model (lesson from cactus-compute/needle#134: 42/53 in JAX vs 2/30 after export, docs/needle-finetune.md:106-114).",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o9",
+      "claim_id": "c38",
+      "seam": "grant run HF_TOKEN -- hf ...; hf_offline launcher option",
+      "behavior": "no token enters the container; push/fetch under grant",
+      "source_text": "Tokens stay on the host: pushing and fetching the private tuned repo run under 'grant run HF_TOKEN -- hf ...', vLLM serves the tuned weights from the pre-filled hf_cache_dir mount with no token in the container, and if vLLM needs an offline flag to serve from cache a small [tiers.lfm] launcher option is added (nothing else in render_launch changes).",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o10",
+      "claim_id": "c15",
+      "seam": "release_bundle.py",
+      "behavior": "nothing published before licence duties are met",
+      "source_text": "Nothing is published before the licence duties in docs/lfm-license-notes.md:36-42 are met (LFM Open License text, modified-work statement linking dataset and recipe, Liquid AI notices kept, no trademark use, the per-user commercial threshold stated), and nvsh itself never trains or uploads: training code stays in scripts/, which nvsh/ never imports (build_dataset.py:4-5).",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o11",
+      "claim_id": "c44",
+      "seam": "scripts/scan-secrets.py; pipeline.env.example",
+      "behavior": "no endpoint or key committed; generation code outside nvsh/",
+      "source_text": "The generation and review pipeline lives in scripts/lfm-finetune/, never in nvsh/, and never commits an endpoint or key: model endpoints and ids come from the environment at run time (keys via grant run), since scripts/scan-secrets.py rejects committed non-localhost endpoints; generated data is committed or pushed only with the model ids and versions that produced it.",
+      "origin": "llm",
+      "status": "proposed"
+    }
+  ]
 }
