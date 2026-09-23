@@ -1998,7 +1998,12 @@ def test_rereview_is_a_clean_slate_a_stored_rejection_can_be_accepted(tmp_path) 
     assert counts.rejected == 0
     record = json.loads((tmp_path / "accepted.jsonl").read_text(encoding="utf-8"))
     assert record["verdicts"] == {
-        "reviewer_b": {"accept": True, "reason": "yes", "temperature": 0.7}
+        "reviewer_b": {
+            "accept": True,
+            "reason": "yes",
+            "temperature": 0.7,
+            "reasoning_effort": None,
+        }
     }
     assert record["prior_verdicts"]["reviewer_a"] == {
         "accept": False,
@@ -2681,3 +2686,252 @@ def test_rereview_records_the_reviewer_temperature(tmp_path) -> None:
     )
     record = json.loads((tmp_path / "acc.jsonl").read_text(encoding="utf-8"))
     assert record["verdicts"]["reviewer_b"]["temperature"] == 0.2
+
+
+# ---------------------------------------------------------------------------
+# issue 46, d10: real reviewer replies from the t18 re-review
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["yes. No.", "yes; no", "yes? no -- wrong operation", "yes\nNo, it asks for a restart"],
+)
+def test_parse_verdict_still_rejects_a_standalone_no_verdict(text):
+    accepted, _reason = aug.parse_verdict(text)
+    assert accepted is False
+
+
+def test_reviewer_is_told_a_check_is_a_complete_answer() -> None:
+    # t18 at reasoning effort xhigh rejected 10 of 13 correct read-only
+    # requests as "it only describes running the check instead of actually
+    # reporting" -- the check's output reaches the user after it runs.
+    seed = aug.Seed(
+        source_id="s",
+        seed_format="split",
+        side="train",
+        seed_text="Show the current swap usage.",
+        expect={"operation": "swap_status", "args": {}},
+        needs_change_check=False,
+    )
+    system, user = aug.reviewer_prompt(seed, "Show the current swap usage.")
+    assert "complete answer" in system
+    assert "report what it shows" not in user
+    assert "output is shown to the user" in user
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "yes, but it could also be read as a restart",
+        "yes, this is ambiguous between two checks",
+        "yes, though it might mean the logs",
+        "yes, it could mean either check",
+    ],
+)
+def test_parse_verdict_still_rejects_a_hedge_that_qualifies_the_yes(text):
+    assert aug.parse_verdict(text)[0] is False
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # Codex review of d10: real rejections a looser parser accepted.
+        "Yes, the operation matches the requested check, but the arguments target the "
+        "wrong device.",
+        "Yes. The operation matches the request. The arguments do not match, however.",
+        "Yes. No it does not preserve the requested operation.",
+        "Yes. On closer inspection: no it targets the wrong service.",
+        "Yes. Final verdict: no \u2013 wrong operation.",
+        "Yes. Final verdict: no (the device is wrong).",
+        # ... and ones the parser already missed before d10.
+        "Yes, not equivalent: the device is different.",
+        "Yes. Final verdict: **no**.",
+        'Yes. Final verdict: "no".',
+    ],
+)
+def test_parse_verdict_rejects_a_yes_that_is_really_a_rejection(text):
+    assert aug.parse_verdict(text)[0] is False
+
+
+# ---------------------------------------------------------------------------
+# per-role reasoning effort (issue 46, d10: cortex's template defaults to
+# xhigh, which was never chosen)
+# ---------------------------------------------------------------------------
+
+
+def test_reasoning_effort_is_unset_by_default_and_overridable() -> None:
+    assert aug.load_role_config("REVIEWER_B", _role_env()).reasoning_effort is None
+    cfg = aug.load_role_config(
+        "REVIEWER_B", _role_env(NVSH_AUG_REVIEWER_B_REASONING_EFFORT="medium")
+    )
+    assert cfg.reasoning_effort == "medium"
+
+
+def test_reasoning_effort_rejects_an_unknown_level() -> None:
+    with pytest.raises(aug.ConfigError, match="NVSH_AUG_REVIEWER_B_REASONING_EFFORT"):
+        aug.load_role_config("REVIEWER_B", _role_env(NVSH_AUG_REVIEWER_B_REASONING_EFFORT="max"))
+
+
+def test_reasoning_effort_is_sent_with_disable_thinking_and_recorded(
+    tmp_path, monkeypatch, fake_server
+):
+    _server, url = fake_server
+    seen: dict[str, Any] = {}
+
+    def _reviewer_b(body, auth):
+        seen["kwargs"] = body.get("chat_template_kwargs")
+        return "yes"
+
+    _server.responders.update(
+        {
+            "gen-model": _always("rephrased"),
+            "cor-model": _always("rephrased"),
+            "rev-a-model": _always("yes"),
+            "rev-b-model": _reviewer_b,
+        }
+    )
+    _set_roles(monkeypatch, url, DEFAULT_MODELS, NVSH_AUG_REVIEWER_B_REASONING_EFFORT="low")
+    aug.run_pipeline(
+        seed_files=[_split_seed_file(tmp_path)],
+        roles=aug.load_all_roles(),
+        accepted_out=tmp_path / "accepted.jsonl",
+        rejected_out=tmp_path / "rejected.jsonl",
+        per_source=1,
+    )
+    assert seen["kwargs"] == {"reasoning_effort": "low"}
+    record = json.loads((tmp_path / "accepted.jsonl").read_text(encoding="utf-8").splitlines()[0])
+    assert record["reasoning_efforts"]["REVIEWER_B"] == "low"
+
+
+def test_rereview_records_the_reviewer_reasoning_effort(tmp_path) -> None:
+    candidates = _write_jsonl(tmp_path / "accepted.jsonl", [_stored_candidate()])
+    role = aug.RoleConfig(
+        role="REVIEWER_B", url="http://fake", model="cortex", reasoning_effort="medium"
+    )
+    aug.run_rereview(
+        candidate_files=[candidates],
+        role=role,
+        accepted_out=tmp_path / "acc.jsonl",
+        rejected_out=tmp_path / "rej.jsonl",
+        caller=lambda role, system, user: "yes",
+    )
+    record = json.loads((tmp_path / "acc.jsonl").read_text(encoding="utf-8"))
+    assert record["verdicts"]["reviewer_b"]["reasoning_effort"] == "medium"
+
+
+@pytest.mark.parametrize(
+    "text,found",
+    [
+        ("Could you please escalate this issue to a senior agent?", "escalate this"),
+        ("Escalate this to a human agent: it needs investigation.", "Escalate this"),
+        ("Hand this off to someone who can dig into the logs", "Hand this off"),
+        ("Can you pass this for a human operator to look at?", "for a human operator"),
+        ("Temperatures keep escalating on the GPU, how hot is it?", ""),
+        ("Is a human in the loop needed to approve a restart?", ""),
+    ],
+)
+def test_asks_for_handoff(text, found) -> None:
+    assert aug.asks_for_handoff(text) == found
+
+
+def test_rereview_rejects_a_handoff_request_whatever_the_reviewer_says(tmp_path) -> None:
+    candidates = _write_jsonl(
+        tmp_path / "accepted.jsonl",
+        [
+            _stored_candidate(
+                text="Escalate this to a human agent please", expect={"escalate": True}
+            )
+        ],
+    )
+    counts = aug.run_rereview(
+        candidate_files=[candidates],
+        role=_fake_reviewer_b(),
+        accepted_out=tmp_path / "acc.jsonl",
+        rejected_out=tmp_path / "rej.jsonl",
+        caller=lambda role, system, user: "yes",
+    )
+    assert counts.accepted == 0
+    record = json.loads((tmp_path / "rej.jsonl").read_text(encoding="utf-8"))
+    assert record["verdicts"]["handoff_check"]["accept"] is False
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # Codex's second review of d10.
+        "Yes. Final verdict: __no__.",
+        "Yes — not equivalent: the device is different.",
+        "Yes, my final answer is no.",
+        "Yes, probably.",
+        "Yes, likely the memory check.",
+        "yes. no",
+    ],
+)
+def test_parse_verdict_rejects_more_disguised_rejections(text):
+    assert aug.parse_verdict(text)[0] is False
+
+
+def test_chat_payload_is_what_augment_sends(tmp_path) -> None:
+    role = aug.RoleConfig(
+        role="REVIEWER_B",
+        url="http://fake",
+        model="cortex",
+        disable_thinking=True,
+        reasoning_effort="low",
+        temperature=0.2,
+    )
+    payload = aug.chat_payload(role, "sys", "usr")
+    assert payload["chat_template_kwargs"] == {"enable_thinking": False, "reasoning_effort": "low"}
+    assert payload["temperature"] == 0.2
+    assert payload["messages"] == [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "usr"},
+    ]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Investigate privilege escalation vulnerabilities on this machine",
+        "Escalate privileges for the deploy user",
+        "The escalation policy on this box is unclear, can you check it?",
+    ],
+)
+def test_asks_for_handoff_ignores_other_senses_of_escalation(text) -> None:
+    assert aug.asks_for_handoff(text) == ""
+
+
+def test_parse_verdict_keeps_likely_inside_an_escalation_reason() -> None:
+    # 7 of 977 stored escalate accepts reasoned this way (issue 46, d10).
+    reply = (
+        "yes, resolving a network issue requires investigation and likely changes beyond "
+        "the assistant's fixed set of checks, so it should be passed on."
+    )
+    assert aug.parse_verdict(reply)[0] is True
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # Codex's third review of d10.
+        "Yes, my final answer is __no__.",
+        "Yes, on second thought, no, the device is different.",
+        "Yes (probably).",
+        "Yes, it is probably equivalent.",
+    ],
+)
+def test_parse_verdict_rejects_codex_round_three(text):
+    assert aug.parse_verdict(text)[0] is False
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Escalate to root so I can install the driver.",
+        "The Jetson hangs during the UEFI handoff to the kernel; investigate the boot logs.",
+        "A senior engineer changed the network configuration and now DNS fails; investigate.",
+    ],
+)
+def test_asks_for_handoff_ignores_codex_round_three(text) -> None:
+    assert aug.asks_for_handoff(text) == ""

@@ -48,6 +48,9 @@ would fail on a committed non-localhost endpoint anyway). For role
                                      not every server honours it)
     NVSH_AUG_<ROLE>_TIMEOUT          per-request timeout in seconds
                                      (optional, default 120)
+    NVSH_AUG_<ROLE>_REASONING_EFFORT chat-template reasoning effort (optional:
+                                     low/medium/high/xhigh; unset leaves the
+                                     server template's default). Recorded.
     NVSH_AUG_<ROLE>_TEMPERATURE      sampling temperature, 0-2 (optional,
                                      default 0.7; judging roles should set
                                      0.1-0.3). Recorded on every output
@@ -161,6 +164,13 @@ DEFAULT_TIMEOUT = 120.0
 #: low one through ``NVSH_AUG_<ROLE>_TEMPERATURE`` (issue 46: 0.1-0.3).
 DEFAULT_TEMPERATURE = 0.7
 
+#: Reasoning-effort levels a chat template may accept through
+#: ``chat_template_kwargs`` (the Qwen 3.8 template: xhigh, its default, medium
+#: and low; "high" is its alias for xhigh). Unset sends nothing, so the
+#: server's template default applies -- which is how issue 46's reviewer ran
+#: at xhigh without anyone choosing it (d10).
+REASONING_EFFORTS = ("low", "medium", "high", "xhigh")
+
 _TRUE_STRINGS = frozenset({"1", "true", "yes", "on"})
 
 
@@ -180,6 +190,8 @@ class RoleConfig:
     timeout: float = DEFAULT_TIMEOUT
     #: Sampling temperature, from ``NVSH_AUG_<ROLE>_TEMPERATURE`` (0-2).
     temperature: float = DEFAULT_TEMPERATURE
+    #: ``NVSH_AUG_<ROLE>_REASONING_EFFORT``; ``None`` leaves the template default.
+    reasoning_effort: str | None = None
 
 
 def load_role_config(role: str, env: dict[str, str] | None = None) -> RoleConfig:
@@ -195,6 +207,7 @@ def load_role_config(role: str, env: dict[str, str] | None = None) -> RoleConfig
     disable_thinking_var = f"NVSH_AUG_{role}_DISABLE_THINKING"
     timeout_var = f"NVSH_AUG_{role}_TIMEOUT"
     temperature_var = f"NVSH_AUG_{role}_TEMPERATURE"
+    effort_var = f"NVSH_AUG_{role}_REASONING_EFFORT"
 
     url = source.get(url_var)
     if not url:
@@ -241,6 +254,12 @@ def load_role_config(role: str, env: dict[str, str] | None = None) -> RoleConfig
     else:
         temperature = DEFAULT_TEMPERATURE
 
+    reasoning_effort = (source.get(effort_var) or "").strip().lower() or None
+    if reasoning_effort is not None and reasoning_effort not in REASONING_EFFORTS:
+        raise ConfigError(
+            f"{effort_var} must be one of {', '.join(REASONING_EFFORTS)}, got {reasoning_effort!r}"
+        )
+
     return RoleConfig(
         role=role,
         url=url,
@@ -250,6 +269,7 @@ def load_role_config(role: str, env: dict[str, str] | None = None) -> RoleConfig
         disable_thinking=disable_thinking,
         timeout=timeout,
         temperature=temperature,
+        reasoning_effort=reasoning_effort,
     )
 
 
@@ -473,7 +493,12 @@ def _answer_in_words(expect: dict[str, Any]) -> str:
     )
     detail = f" -- {values}" if values else ""
     if operation is not None and operation.read_only:
-        return f"run a read-only check and report what it shows: {what}{detail}"
+        # "report what it shows" read, at high reasoning effort, as a demand
+        # that the response already contain the results (issue 46, t18).
+        return (
+            f"run this read-only check (its output is shown to the user as the answer): "
+            f"{what}{detail}"
+        )
     return f"propose this change for the user to approve: {what}{detail}"
 
 
@@ -565,8 +590,11 @@ REVIEWER_SYSTEM = (
     "for a hand-off in so many words: judge what the request needs. "
     + _capabilities()
     + " Asking the user to approve a change before making it is always the "
-    "right way to carry out a request for one of the listed changes. Start "
-    "your reply with the single word 'yes' or 'no'."
+    "right way to carry out a request for one of the listed changes. Running "
+    "one of the listed checks is a complete answer to a request for what that "
+    "check reports: its output is what the user then sees, so never reject a "
+    "check for not already containing its results. Start your reply with the "
+    "single word 'yes' or 'no'."
 )
 
 #: Skill seeds have no fixed answer text to compare against, only a capability
@@ -671,9 +699,9 @@ def _extract_content(message: dict[str, Any]) -> str:
     return (message.get("content") or "").strip()
 
 
-def _post_chat_completion(
-    role: RoleConfig, system: str, user: str, timeout: float | None = None
-) -> str:
+def chat_payload(role: RoleConfig, system: str, user: str) -> dict[str, Any]:
+    """The chat-completion request body every role call sends (also used by
+    ``calibrate_reviewer.py``, so the probe measures the same configuration)."""
     payload: dict[str, Any] = {
         "model": role.model,
         "messages": [
@@ -683,8 +711,20 @@ def _post_chat_completion(
         "temperature": role.temperature,
         "max_tokens": role.max_tokens,
     }
+    template_kwargs: dict[str, Any] = {}
     if role.disable_thinking:
-        payload["chat_template_kwargs"] = {"enable_thinking": False}
+        template_kwargs["enable_thinking"] = False
+    if role.reasoning_effort is not None:
+        template_kwargs["reasoning_effort"] = role.reasoning_effort
+    if template_kwargs:
+        payload["chat_template_kwargs"] = template_kwargs
+    return payload
+
+
+def _post_chat_completion(
+    role: RoleConfig, system: str, user: str, timeout: float | None = None
+) -> str:
+    payload = chat_payload(role, system, user)
     headers = {"Content-Type": "application/json"}
     if role.key:
         headers["Authorization"] = f"Bearer {role.key}"
@@ -841,12 +881,33 @@ _HEDGE_WORDS = (
     "ambiguous",
     "unclear",
     "partially",
+    "unsure",
+)
+#: Certainty words hedge only when they qualify the yes itself ("Yes,
+#: probably.", "Yes, likely the memory check"). Anywhere later they are the
+#: reviewer's own reasoning -- "requires investigation and likely changes
+#: beyond the fixed set" justified 7 of 977 stored escalate accepts.
+_YES_CERTAINTY_RE = re.compile(
+    r"""^\W*(?:\w+\W+){0,3}?(probably|likely|perhaps|possibly|maybe)\b""",
+    re.IGNORECASE,
 )
 #: A "no" that reads as a verdict: at the start of a line or sentence, or
-#: right after a slash or colon ("yes/no: no", "yes? No, it changes ...").
-#: A "no" inside a clause ("with no machine changes involved") is not one --
-#: counting it rejected clear yeses in a real run.
-_NO_RE = re.compile(r"(?:^\s*|[\n.?!:;/]\s*)no\b", re.IGNORECASE)
+#: right after a slash or colon ("yes/no: no", "yes? No, it changes ..."),
+#: allowing markdown or quotes around it ("Final verdict: **no**"). A "no"
+#: inside a clause ("with no machine changes involved") is not one --
+#: counting it rejected clear yeses in a real run. Deliberately conservative
+#: after a sentence break ("Yes. No change is needed." rejects): a false
+#: reject only loses a candidate, a false accept trains on a bad one
+#: (issue 46, d10: loosening this let real rejections through).
+_NO_RE = re.compile(
+    r"""(?:(?:^\s*|[\n.?!:;/]\s*)[*_`"']*no(?![a-z])"""
+    r"""|,\s*[*_`"']*no[*_`"']*\s*[,.;:!?\-\u2013\u2014]"""
+    r"""|(?<![a-z])no[*_`"'.!\s]*$)""",
+    re.IGNORECASE,
+)
+
+#: "Yes, not ..." negates the yes it follows ("Yes, not equivalent: ...").
+_YES_NOT_RE = re.compile(r"""^[\s*_`"',.:;\-\u2013\u2014]*not\b""", re.IGNORECASE)
 _HEDGE_RE = re.compile(r"\b(" + "|".join(_HEDGE_WORDS) + r")\b", re.IGNORECASE)
 
 
@@ -868,7 +929,12 @@ def parse_verdict(text: str) -> tuple[bool, str]:
     if first_word.lower() != "yes":
         return False, stripped
     rest = stripped[match.end() :]
-    if _NO_RE.search(rest) or _HEDGE_RE.search(rest):
+    if (
+        _NO_RE.search(rest)
+        or _HEDGE_RE.search(rest)
+        or _YES_NOT_RE.match(rest)
+        or _YES_CERTAINTY_RE.match(rest)
+    ):
         return False, stripped
     reason = rest.strip(" \t\n*_`\"'.,:;-—") or stripped
     return True, reason
@@ -979,6 +1045,26 @@ def copies_answer_template(text: str) -> str:
     return match.group(0) if match else ""
 
 
+#: A request that asks for the hand-off in so many words: users never do
+#: (the reviewer rule), yet the reviewer let two such escalate variations
+#: through (issue 46, d10 reviewer probe). Words only -- "escalating
+#: temperatures" is not a hand-off request.
+_HANDOFF_RE = re.compile(
+    r"\b(escalate (?:this|it|that|the (?:issue|problem|request|ticket))|"
+    r"escalate to (?:a|an|the) (?:human|senior|support|more capable|person|expert)|"
+    r"hand (?:it|this|that) (?:off|over)|hand-?off to (?:a|an|someone|another)|"
+    r"(?:to|for) (?:a|an|the) (?:human|senior|more capable) "
+    r"(?:agent|assistant|operator|engineer))\b",
+    re.IGNORECASE,
+)
+
+
+def asks_for_handoff(text: str) -> str:
+    """The hand-off wording *text* uses, or "" if none."""
+    match = _HANDOFF_RE.search(text)
+    return match.group(0) if match else ""
+
+
 def names_internal_operation(text: str) -> str:
     """The first operation-table identifier *text* names, or "" if none.
 
@@ -1044,6 +1130,7 @@ def _process_variation(
 
     models = {role: cfg.model for role, cfg in roles.items()}
     temperatures = {role: cfg.temperature for role, cfg in roles.items()}
+    reasoning_efforts = {role: cfg.reasoning_effort for role, cfg in roles.items()}
     verdicts = {
         "reviewer_a": {"accept": accept_a, "reason": reason_a},
         "reviewer_b": {"accept": accept_b, "reason": reason_b},
@@ -1060,6 +1147,10 @@ def _process_variation(
     if copied:
         verdicts["template_check"] = {"accept": False, "reason": f"copies {copied!r}"}
         leaked = copied
+    handoff = asks_for_handoff(corrected_text)
+    if handoff:
+        verdicts["handoff_check"] = {"accept": False, "reason": f"asks for {handoff!r}"}
+        leaked = leaked or handoff
     accepted = accept_a and accept_b and not leaked
     # The record keeps the source entry's own corpus fields (kind/source/
     # class for a split seed; nothing for a skill seed, which is not a
@@ -1076,6 +1167,7 @@ def _process_variation(
         "expect": seed.expect,
         "models": models,
         "temperatures": temperatures,
+        "reasoning_efforts": reasoning_efforts,
     }
     record.update(seed.corpus_fields)
     if accepted:
@@ -1178,6 +1270,9 @@ def _rereview_guard_verdicts(text: str, seed: Seed) -> dict[str, dict[str, Any]]
     copied = "" if leaked else copies_answer_template(text)
     if copied:
         guard_verdicts["template_check"] = {"accept": False, "reason": f"copies {copied!r}"}
+    handoff = asks_for_handoff(text)
+    if handoff:
+        guard_verdicts["handoff_check"] = {"accept": False, "reason": f"asks for {handoff!r}"}
     return guard_verdicts
 
 
@@ -1229,6 +1324,7 @@ def _process_rereview_candidate(
             "accept": accept_b,
             "reason": reason_b,
             "temperature": role.temperature,
+            "reasoning_effort": role.reasoning_effort,
         },
         **guard_verdicts,
     }
