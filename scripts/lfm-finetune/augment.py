@@ -1226,12 +1226,20 @@ def run_rereview(
     backoff_base: float = DEFAULT_BACKOFF_BASE,
     sleep_fn: Callable[[float], None] = time.sleep,
     rand_fn: Callable[[], float] = random.random,
+    workers: int = 1,
 ) -> RereviewCounts:
     """Re-review stored accepted+rejected candidates with REVIEWER_B only
     (decisions c38/c41). Resumable like :func:`run_pipeline`: an id already
     present in *accepted_out* or *rejected_out* is skipped. *limit* caps how
     many candidates are attempted, which is what the non-thinking pilot
-    (about 150 candidates, c41) uses."""
+    (about 150 candidates, c41) uses.
+
+    *workers* processes candidates through a bounded thread pool, exactly
+    like :func:`run_pipeline` (deviation d4: the thinking-mode reviewer-B
+    re-review takes about 44s per candidate, which is too slow to run one
+    at a time at pilot scale). ``main()`` passes the existing ``--workers``
+    value here; the default of 1 here keeps a direct call serial, matching
+    the pre-concurrency behaviour, for a caller that never passes it."""
     candidates = load_rereview_candidates(candidate_files)
     done = _existing_ids(accepted_out) | _existing_ids(rejected_out)
     tasks = [record for record in candidates if record.get("id") not in done]
@@ -1242,11 +1250,15 @@ def run_rereview(
         max_retries=max_retries, backoff_base=backoff_base, sleep_fn=sleep_fn, rand_fn=rand_fn
     )
     counts = RereviewCounts()
+    if not tasks:
+        return counts
+
+    lock = threading.Lock()
 
     def caller_with_retry(role_config: RoleConfig, system: str, user: str) -> str:
         return _call_with_retry(caller, role_config, system, user, retry_policy)
 
-    for record in tasks:
+    def _run_one(record: dict[str, Any]) -> None:
         record_id = record.get("id", "?")
         try:
             outcome = _process_rereview_candidate(record, role, caller_with_retry)
@@ -1258,24 +1270,38 @@ def run_rereview(
             KeyError,
             ValueError,
         ) as exc:
-            counts.errors += 1
+            with lock:
+                counts.errors += 1
             print(f"error: {record_id}: {exc}", file=sys.stderr)
-            continue
+            return
 
-        counts.processed += 1
-        if outcome["accepted"]:
-            counts.accepted += 1
-            _append_jsonl(accepted_out, outcome["record"])
-        else:
-            counts.rejected += 1
-            _append_jsonl(rejected_out, outcome["record"])
-        done.add(record_id)
+        with lock:
+            if record_id in done:  # pragma: no cover - tasks already dedupes against done
+                return
+            counts.processed += 1
+            # One record, one write, one line -- the lock is held across the
+            # whole append (and the accept/reject/agreement bookkeeping) so a
+            # record is never interleaved with another thread's write, and
+            # `done` is updated in the same critical section so no id can
+            # ever be written twice, exactly as run_pipeline's _run_one does.
+            if outcome["accepted"]:
+                counts.accepted += 1
+                _append_jsonl(accepted_out, outcome["record"])
+            else:
+                counts.rejected += 1
+                _append_jsonl(rejected_out, outcome["record"])
+            done.add(record_id)
 
-        old_accept_b = outcome["old_accept_b"]
-        if old_accept_b is not None:
-            counts.compared += 1
-            if old_accept_b == outcome["new_accept_b"]:
-                counts.agreed += 1
+            old_accept_b = outcome["old_accept_b"]
+            if old_accept_b is not None:
+                counts.compared += 1
+                if old_accept_b == outcome["new_accept_b"]:
+                    counts.agreed += 1
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, workers)) as executor:
+        futures = [executor.submit(_run_one, record) for record in tasks]
+        for future in concurrent.futures.as_completed(futures):
+            future.result()
 
     return counts
 
@@ -1555,6 +1581,7 @@ def main(argv: list[str] | None = None) -> int:
                 limit=args.limit,
                 max_retries=args.max_retries,
                 backoff_base=args.backoff_base,
+                workers=args.workers,
             )
         except (ConfigError, ValueError) as exc:
             print(f"error: {exc}", file=sys.stderr)
