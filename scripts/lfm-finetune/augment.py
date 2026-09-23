@@ -48,6 +48,9 @@ would fail on a committed non-localhost endpoint anyway). For role
                                      not every server honours it)
     NVSH_AUG_<ROLE>_TIMEOUT          per-request timeout in seconds
                                      (optional, default 120)
+    NVSH_AUG_<ROLE>_REASONING_EFFORT chat-template reasoning effort (optional:
+                                     low/medium/high/xhigh; unset leaves the
+                                     server template's default). Recorded.
     NVSH_AUG_<ROLE>_TEMPERATURE      sampling temperature, 0-2 (optional,
                                      default 0.7; judging roles should set
                                      0.1-0.3). Recorded on every output
@@ -161,6 +164,13 @@ DEFAULT_TIMEOUT = 120.0
 #: low one through ``NVSH_AUG_<ROLE>_TEMPERATURE`` (issue 46: 0.1-0.3).
 DEFAULT_TEMPERATURE = 0.7
 
+#: Reasoning-effort levels a chat template may accept through
+#: ``chat_template_kwargs`` (the Qwen 3.8 template: xhigh, its default, medium
+#: and low; "high" is its alias for xhigh). Unset sends nothing, so the
+#: server's template default applies -- which is how issue 46's reviewer ran
+#: at xhigh without anyone choosing it (d10).
+REASONING_EFFORTS = ("low", "medium", "high", "xhigh")
+
 _TRUE_STRINGS = frozenset({"1", "true", "yes", "on"})
 
 
@@ -180,6 +190,8 @@ class RoleConfig:
     timeout: float = DEFAULT_TIMEOUT
     #: Sampling temperature, from ``NVSH_AUG_<ROLE>_TEMPERATURE`` (0-2).
     temperature: float = DEFAULT_TEMPERATURE
+    #: ``NVSH_AUG_<ROLE>_REASONING_EFFORT``; ``None`` leaves the template default.
+    reasoning_effort: str | None = None
 
 
 def load_role_config(role: str, env: dict[str, str] | None = None) -> RoleConfig:
@@ -195,6 +207,7 @@ def load_role_config(role: str, env: dict[str, str] | None = None) -> RoleConfig
     disable_thinking_var = f"NVSH_AUG_{role}_DISABLE_THINKING"
     timeout_var = f"NVSH_AUG_{role}_TIMEOUT"
     temperature_var = f"NVSH_AUG_{role}_TEMPERATURE"
+    effort_var = f"NVSH_AUG_{role}_REASONING_EFFORT"
 
     url = source.get(url_var)
     if not url:
@@ -241,6 +254,12 @@ def load_role_config(role: str, env: dict[str, str] | None = None) -> RoleConfig
     else:
         temperature = DEFAULT_TEMPERATURE
 
+    reasoning_effort = (source.get(effort_var) or "").strip().lower() or None
+    if reasoning_effort is not None and reasoning_effort not in REASONING_EFFORTS:
+        raise ConfigError(
+            f"{effort_var} must be one of {', '.join(REASONING_EFFORTS)}, got {reasoning_effort!r}"
+        )
+
     return RoleConfig(
         role=role,
         url=url,
@@ -250,6 +269,7 @@ def load_role_config(role: str, env: dict[str, str] | None = None) -> RoleConfig
         disable_thinking=disable_thinking,
         timeout=timeout,
         temperature=temperature,
+        reasoning_effort=reasoning_effort,
     )
 
 
@@ -691,8 +711,13 @@ def _post_chat_completion(
         "temperature": role.temperature,
         "max_tokens": role.max_tokens,
     }
+    template_kwargs: dict[str, Any] = {}
     if role.disable_thinking:
-        payload["chat_template_kwargs"] = {"enable_thinking": False}
+        template_kwargs["enable_thinking"] = False
+    if role.reasoning_effort is not None:
+        template_kwargs["reasoning_effort"] = role.reasoning_effort
+    if template_kwargs:
+        payload["chat_template_kwargs"] = template_kwargs
     headers = {"Content-Type": "application/json"}
     if role.key:
         headers["Authorization"] = f"Bearer {role.key}"
@@ -1058,6 +1083,7 @@ def _process_variation(
 
     models = {role: cfg.model for role, cfg in roles.items()}
     temperatures = {role: cfg.temperature for role, cfg in roles.items()}
+    reasoning_efforts = {role: cfg.reasoning_effort for role, cfg in roles.items()}
     verdicts = {
         "reviewer_a": {"accept": accept_a, "reason": reason_a},
         "reviewer_b": {"accept": accept_b, "reason": reason_b},
@@ -1090,6 +1116,7 @@ def _process_variation(
         "expect": seed.expect,
         "models": models,
         "temperatures": temperatures,
+        "reasoning_efforts": reasoning_efforts,
     }
     record.update(seed.corpus_fields)
     if accepted:
@@ -1243,6 +1270,7 @@ def _process_rereview_candidate(
             "accept": accept_b,
             "reason": reason_b,
             "temperature": role.temperature,
+            "reasoning_effort": role.reasoning_effort,
         },
         **guard_verdicts,
     }

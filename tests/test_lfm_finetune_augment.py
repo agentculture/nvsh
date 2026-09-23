@@ -1998,7 +1998,12 @@ def test_rereview_is_a_clean_slate_a_stored_rejection_can_be_accepted(tmp_path) 
     assert counts.rejected == 0
     record = json.loads((tmp_path / "accepted.jsonl").read_text(encoding="utf-8"))
     assert record["verdicts"] == {
-        "reviewer_b": {"accept": True, "reason": "yes", "temperature": 0.7}
+        "reviewer_b": {
+            "accept": True,
+            "reason": "yes",
+            "temperature": 0.7,
+            "reasoning_effort": None,
+        }
     }
     assert record["prior_verdicts"]["reviewer_a"] == {
         "accept": False,
@@ -2747,3 +2752,69 @@ def test_parse_verdict_still_rejects_a_hedge_that_qualifies_the_yes(text):
 )
 def test_parse_verdict_rejects_a_yes_that_is_really_a_rejection(text):
     assert aug.parse_verdict(text)[0] is False
+
+
+# ---------------------------------------------------------------------------
+# per-role reasoning effort (issue 46, d10: cortex's template defaults to
+# xhigh, which was never chosen)
+# ---------------------------------------------------------------------------
+
+
+def test_reasoning_effort_is_unset_by_default_and_overridable() -> None:
+    assert aug.load_role_config("REVIEWER_B", _role_env()).reasoning_effort is None
+    cfg = aug.load_role_config(
+        "REVIEWER_B", _role_env(NVSH_AUG_REVIEWER_B_REASONING_EFFORT="medium")
+    )
+    assert cfg.reasoning_effort == "medium"
+
+
+def test_reasoning_effort_rejects_an_unknown_level() -> None:
+    with pytest.raises(aug.ConfigError, match="NVSH_AUG_REVIEWER_B_REASONING_EFFORT"):
+        aug.load_role_config("REVIEWER_B", _role_env(NVSH_AUG_REVIEWER_B_REASONING_EFFORT="max"))
+
+
+def test_reasoning_effort_is_sent_with_disable_thinking_and_recorded(
+    tmp_path, monkeypatch, fake_server
+):
+    _server, url = fake_server
+    seen: dict[str, Any] = {}
+
+    def _reviewer_b(body, auth):
+        seen["kwargs"] = body.get("chat_template_kwargs")
+        return "yes"
+
+    _server.responders.update(
+        {
+            "gen-model": _always("rephrased"),
+            "cor-model": _always("rephrased"),
+            "rev-a-model": _always("yes"),
+            "rev-b-model": _reviewer_b,
+        }
+    )
+    _set_roles(monkeypatch, url, DEFAULT_MODELS, NVSH_AUG_REVIEWER_B_REASONING_EFFORT="low")
+    aug.run_pipeline(
+        seed_files=[_split_seed_file(tmp_path)],
+        roles=aug.load_all_roles(),
+        accepted_out=tmp_path / "accepted.jsonl",
+        rejected_out=tmp_path / "rejected.jsonl",
+        per_source=1,
+    )
+    assert seen["kwargs"] == {"reasoning_effort": "low"}
+    record = json.loads((tmp_path / "accepted.jsonl").read_text(encoding="utf-8").splitlines()[0])
+    assert record["reasoning_efforts"]["REVIEWER_B"] == "low"
+
+
+def test_rereview_records_the_reviewer_reasoning_effort(tmp_path) -> None:
+    candidates = _write_jsonl(tmp_path / "accepted.jsonl", [_stored_candidate()])
+    role = aug.RoleConfig(
+        role="REVIEWER_B", url="http://fake", model="cortex", reasoning_effort="medium"
+    )
+    aug.run_rereview(
+        candidate_files=[candidates],
+        role=role,
+        accepted_out=tmp_path / "acc.jsonl",
+        rejected_out=tmp_path / "rej.jsonl",
+        caller=lambda role, system, user: "yes",
+    )
+    record = json.loads((tmp_path / "acc.jsonl").read_text(encoding="utf-8"))
+    assert record["verdicts"]["reviewer_b"]["reasoning_effort"] == "medium"
