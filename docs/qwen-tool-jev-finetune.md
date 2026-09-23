@@ -427,13 +427,27 @@ re-tuned for 0.8B on validation only (c20).
 ### 11. Train Track B on spark2 *(not yet run)*
 
 ```bash
-$P --env qwen.env train-scorer
+TRAIN_MEMORY_MAX=24G TRAIN_MEMORY_FLOOR=<floor> NVSH_TRAIN_GPU_MEMORY_GB=<budget> \
+  $P --env qwen.env train-scorer
 ```
 
-Under the memory cap (`TRAIN_MEMORY_MAX`, 24G in the example). spark2 serves
-other models next to it; their containers must not restart. On GB10 that cap
-does not cover GPU allocations (P34); the GPU cap from f10 is required
-before this step *(pending)*.
+spark2 serves other models next to the trainer; their containers must not
+restart. Three limits apply, because on GB10 the systemd cap does not cover
+GPU allocations (P34):
+
+- `TRAIN_MEMORY_MAX`: the systemd RAM and swap cap (24G in the example).
+- `TRAIN_MEMORY_FLOOR` (default 8G): the watchdog stops the run once the
+  machine's available memory falls below it, checked every
+  `TRAIN_WATCHDOG_SECONDS` (default 5). The lead's probe on spark2 used a
+  26 GB floor with about 30 GB available.
+- `NVSH_TRAIN_GPU_MEMORY_GB`: `train.py` and `train_scorer.py` cap their own
+  GPU allocations with `torch.cuda.set_per_process_memory_fraction`. It must
+  reach the Python process as an environment variable; `pipeline.sh` does
+  not export it from the env file, and `pipeline-qwen.env.example` does not
+  list it or `TRAIN_MEMORY_FLOOR` yet.
+
+The floor and budget values for the real Track B run are not chosen yet.
+If the watchdog trips, `run_capped` returns 3 and `mem.log` records why.
 
 ### 12. Final measurement *(not yet run)*
 
@@ -450,7 +464,7 @@ Build llama.cpp (the spike used master
 `633733d0aeedd721868bf5f1b935fa3f39f9164e`, configured with
 `-DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=121`) and a separate venv for
 llm-compressor (`uv pip install llmcompressor --index-strategy
-unsafe-best-match`; see ledger P28). Then:
+unsafe-best-match`; see ledger P25). Then:
 
 ```bash
 LLAMA_CPP_CONVERT=<llama.cpp>/convert_hf_to_gguf.py \
@@ -459,6 +473,10 @@ LLAMA_CPP_IMATRIX=<llama.cpp build>/bin/llama-imatrix \
 LLM_COMPRESSOR=<awq venv>/bin/llmcompressor \
   $P --env qwen.env quantize a1
 ```
+
+This is the stage as committed today. Its AWQ and GGUF paths are being
+reworked to match the spike (ledger P35, f11, pending); the variables it
+needs will change, with `AWQ_PY` naming the AWQ venv's Python.
 
 Measure both builds with the same harness. If `heal_needed()` is true, log
 the trigger, then `$P --env qwen.env heal a1-heal a1`.
@@ -674,30 +692,50 @@ and the commit on `spec/qwen-tool-jev-issue-46`.
   systemd cap bounds CPU memory only, so it does not protect spark2's
   serving stack from a trainer's GPU allocations. *Found:* the lead's probe
   on spark2 (t20). The serving containers' restart counts were unchanged
-  across the probe. *Status:* blocking plan risk r13 (task t23). *Fix
-  (pending, review-fix task f10):* an available-memory floor watchdog in
-  `capped.sh` (`TRAIN_MEMORY_FLOOR`), plus
-  `torch.cuda.set_per_process_memory_fraction` driven by
-  `NVSH_TRAIN_GPU_MEMORY_GB` in `train.py` and `train_scorer.py` *(not yet
-  merged)*.
+  across the probe. *Status:* was blocking plan risk r13 (task t23), now
+  resolved. *Fix (review-fix task f10):* an available-memory floor watchdog
+  in `capped.sh`: `TRAIN_MEMORY_FLOOR` (default 8G), checked every
+  `TRAIN_WATCHDOG_SECONDS` (default 5). The command runs in its own process
+  group (`setsid`), so it can be stopped in both the systemd-scope mode and
+  `TRAIN_MEMORY_CAP=container`. Below the floor the watchdog logs a line,
+  sends SIGTERM, then SIGKILL after 10 s, and `run_capped` returns 3. On
+  top of that, `train.py` and `train_scorer.py` honour
+  `NVSH_TRAIN_GPU_MEMORY_GB` through
+  `torch.cuda.set_per_process_memory_fraction`. *Evidence:* on spark, a 1 GB
+  budget refused a 2 GiB allocation. On spark2 (MemAvailable 30 GB, floor
+  26 GB), an 8 GB CUDA hog was stopped after 5 s at 22,882 MB available,
+  with return code 3, no Python process left on the GPU, and the serving
+  containers' restart counts unchanged. *Commit:* `67bb9e7` (merge
+  `686e1c8`).
+
+### Found by reading code against the run log
+
+- **P35. `quantize.py` did not do what the t16 spike did.** It ran AWQ by
+  calling `$LLM_COMPRESSOR --model ... --calibration ... --scheme AWQ --bits
+  4 --out ...` as a command. The spike used llm-compressor's Python
+  `oneshot`, with `processor=` and linear-attention, vision, MTP and
+  `lm_head` left out (P26). The stage also did not copy the tokenizer and
+  preprocessor files vLLM needed, and it converted the GGUF to f16 where the
+  spike used bf16. So the stage's AWQ path had never run against the real
+  tool. *Found:* the documentation agent, reading `quantize.py` against the
+  spike's run log. *Status:* plan risk r14 (non-blocking, task t25). *Fix
+  (pending, review-fix task f11):* AWQ through a new `awq_oneshot.py` run by
+  the separate AWQ venv's Python (`AWQ_PY`), with `processor=`, the ignore
+  list, the tokenizer and preprocessor files copied and `gen_config.py`
+  applied; GGUF as bf16, then imatrix, then `Q4_K_M` *(not yet merged)*.
 
 ## Not verified yet
 
-- **`quantize.py`'s AWQ path.** It calls `$LLM_COMPRESSOR --model ...
-  --calibration ... --scheme AWQ --bits 4 --out ...` as a command. The t16
-  spike drove llm-compressor through its Python `oneshot` (with `processor=`,
-  and linear-attention, vision, MTP and `lm_head` left out). The stage's AWQ
-  invocation has not been run against the real tool, and it does not copy
-  the tokenizer and preprocessor files vLLM needed (P26). Its GGUF
-  conversion uses `--outtype f16`; the spike converted to bf16.
+- **`quantize.py`'s AWQ and GGUF paths** (ledger P35, plan risk r14): the
+  f11 fix is not merged yet.
 - **GGUF on AGX Orin**: the llama.cpp build has only run on spark.
 - **The GGUF's sampling settings**: d3 covers "the GGUF's sampling metadata",
   and no step writes it yet.
 - **Track A calibration** (P11, plan risk r12).
 - **The re-review's exact command and filter** (step 5).
-- **A GPU memory cap on GB10** (P34): the f10 fix is not merged or
-  measured yet. Until it is, `TRAIN_MEMORY_MAX` does not bound a trainer's
-  GPU allocations.
+- **Two unidentified test failures.** After the f10 merge, one full-suite
+  run had 2 failures whose names were not captured. The six runs after it
+  were green. The cause is unknown.
 - **Whether stock meets any bar**: the t13 live check was a pipeline check,
   not the baseline run.
 
@@ -798,7 +836,9 @@ done, 19 accepted, 0 errors (about 2.2 per minute).
 72 entries by Qwen3.5-4B from the operation table only (seed 46,
 temperature 0.7, thinking off): 39 operation (15 of 16 operations), 17
 escalate, 16 explain. sha256 `95c7cd3e...2107f`. Awaiting the operator's
-review; not read by the lead.
+review; not read by the lead. The operator is reviewing it now. One
+operation, `network_info`, has no drafted entry; the lead told the
+operator.
 
 ### 2026-09-23: spark2 set up for Track B (t20)
 
@@ -813,3 +853,17 @@ with swap off (P34, blocking plan risk r13). The serving containers'
 restart counts were unchanged across the probe. A GPU-side cap is being
 added (f10, pending). The earlier finding stands: `MemoryMax` alone lets a
 process spill into swap, so `MemorySwapMax=0` stays required (P32).
+
+### 2026-09-23 ~15:25: GPU-side memory cap merged (f10), quantize gap found
+
+f10 is merged (`686e1c8`) and plan risk r13 is resolved (P34). On spark2,
+with 30 GB available and a 26 GB floor, the watchdog stopped an 8 GB CUDA
+hog after 5 s at 22,882 MB available (return code 3), left no Python process
+on the GPU, and the serving containers did not restart.
+
+After the merge, one full test-suite run had 2 failures whose names were not
+captured; the six runs after it were green. The cause is unidentified.
+
+Reading `quantize.py` against the t16 spike log found that its AWQ and GGUF
+paths differ from what the spike ran (P35, plan risk r14). The fix, f11, is
+in progress.
