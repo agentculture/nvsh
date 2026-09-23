@@ -11,8 +11,8 @@ reviewed it. The folder holds:
 - ``data/validation.jsonl`` and ``data/test.jsonl``: the seeded split's other
   two sides, corpus entries only;
 - ``manifest.json``: one row per record: split, origin (corpus, supplement or
-  variation), source entry, source file and licence, and for a variation the
-  generator, corrector and reviewer models;
+  variation), source, source entry, source file and licence, and for a
+  variation the generator, corrector and reviewer models;
 - ``README.md``: the data set card, with every count computed here;
 - ``LICENSE``: nvsh's own Apache-2.0 licence file.
 
@@ -22,10 +22,18 @@ need NVIDIA's attribution (spec c40). ``held-out.json`` is refused by name,
 and so is a train record that repeats a validation or test entry.
 The script never uploads.
 
+Which model answered each of augment.py's four roles is a fact about one
+run, not a constant of this script: ``--teacher-models`` points at a JSON
+file (``{"<alias-or-model-id>": {"name": ..., "licence": ...}, ...}``, keyed
+by whatever an operator set as ``NVSH_AUG_<ROLE>_MODEL``) naming this run's
+teachers, and ``--apache-only`` refuses to build a bundle that names any
+teacher whose licence is not Apache-2.0.
+
     python scripts/lfm-finetune/dataset_bundle.py --splits work/splits \
         --train-augmented work/data/train-augmented.json \
         --accepted work/aug/nvsh-accepted.jsonl --rejected work/aug/nvsh-rejected.jsonl \
-        --licence LICENSE --out dataset-bundle
+        --licence LICENSE --teacher-models work/teacher-models.json --apache-only \
+        --out dataset-bundle
 """
 
 from __future__ import annotations
@@ -45,20 +53,37 @@ SUPPLEMENT_FILE = "scripts/lfm-finetune/train-supplement.json"
 CORPUS_LICENCE = "Apache-2.0"
 REPO_URL = "https://github.com/agentculture/nvsh"
 
-#: The gateway role names augment.py records, and the models behind them in
-#: this run (named by the operator), with each model's licence.
-ROLE_MODELS = {
-    "worker": ("Qwen 3.6 35B-A3B", "Apache-2.0"),
-    "cortex": ("Qwen 3.8 27B", "Apache-2.0"),
-    "senses": ("Gemma 4 26B-A4B", "Apache-2.0"),
-    "associate": ("Nemotron 3.5 Lightning", "OpenMDW-1.1"),
-}
+APACHE_LICENCE = "Apache-2.0"
+
+#: The four functions augment.py's roles fill. Which alias/model answered
+#: each one in a given run is not fixed here -- it comes from the run's own
+#: accepted records and its ``--teacher-models`` file (``load_role_models``).
 ROLES = (
     ("GENERATOR", "wrote the variation"),
     ("CORRECTOR", "copyedited it"),
     ("REVIEWER_A", "accepted it (reviewer A)"),
     ("REVIEWER_B", "accepted it (reviewer B)"),
 )
+
+
+def load_role_models(path: Path) -> dict[str, tuple[str, str]]:
+    """The alias/model-id -> (display name, licence) table for one run.
+
+    *path* is a JSON object keyed by whatever an operator set as
+    ``NVSH_AUG_<ROLE>_MODEL`` when running ``augment.py`` (often a gateway
+    alias, e.g. ``"associate"``), each mapping to ``{"name": ..., "licence":
+    ...}``. There is no built-in default: which model answers an alias
+    changes run to run, so every bundle names its own teachers.
+    """
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict) or not raw:
+        raise ValueError(f"{path}: expected a JSON object of alias -> {{name, licence}}")
+    table: dict[str, tuple[str, str]] = {}
+    for alias, info in raw.items():
+        if not isinstance(info, dict) or not info.get("name") or not info.get("licence"):
+            raise ValueError(f"{path}: {alias!r} needs a non-empty 'name' and 'licence'")
+        table[alias] = (str(info["name"]), str(info["licence"]))
+    return table
 
 
 def _entries(path: Path) -> list[dict[str, Any]]:
@@ -79,8 +104,10 @@ def _normal(text: str) -> str:
     return " ".join(re.sub(r"[^\w\s]", " ", text.lower()).split())
 
 
-def _model_name(role_value: str) -> str:
-    return ROLE_MODELS.get(role_value, (role_value, "unknown"))[0]
+def _teacher(role_models: dict[str, tuple[str, str]], alias: str) -> tuple[str, str]:
+    if alias not in role_models:
+        raise ValueError(f"{alias!r} is not in the run's --teacher-models file")
+    return role_models[alias]
 
 
 def _record(entry: dict[str, Any], split: str) -> dict[str, Any]:
@@ -106,9 +133,16 @@ def build(
     accepted: Path,
     rejected: Path,
     licence: Path,
+    role_models: dict[str, tuple[str, str]],
     out: Path,
+    apache_only: bool = False,
 ) -> dict[str, Any]:
-    """Write the data set folder to *out*; return the counts shown in the card."""
+    """Write the data set folder to *out*; return the counts shown in the card.
+
+    *role_models* is this run's alias -> (name, licence) table (see
+    ``load_role_models``). With *apache_only*, a teacher named by any
+    accepted variation whose licence is not Apache-2.0 refuses the build.
+    """
     train = _entries(train_augmented)
     sides = {"validation": _entries(splits / "val.json"), "test": _entries(splits / "test.json")}
     accepted_rows = {row["id"]: row for row in _jsonl(accepted)}
@@ -127,14 +161,21 @@ def build(
     manifest: list[dict[str, Any]] = []
     rows: dict[str, list[dict[str, Any]]] = {"train": [], "validation": [], "test": []}
     origins: collections.Counter[str] = collections.Counter()
+    #: role -> alias, first seen among the accepted variations; drives the
+    #: card's teacher table and its reviewer-B/corrector disclosure.
+    role_aliases: dict[str, str] = {}
     for entry in train:
         if entry.get("side", "train") != "train":
             raise ValueError(f"{entry['id']} in {train_augmented} is not a train-side entry")
         origin = _origin(entry)
+        source = entry.get("source")
+        if not source:
+            raise ValueError(f"{entry['id']}: every published record needs a 'source' field")
         row: dict[str, Any] = {
             "id": entry["id"],
             "split": "train",
             "origin": origin,
+            "source": source,
             "source_id": entry.get("source_id", entry["id"]),
             "source_file": SUPPLEMENT_FILE if origin == "supplement" else CORPUS_FILE,
             "licence": CORPUS_LICENCE,
@@ -146,7 +187,24 @@ def build(
                 raise ValueError(
                     f"variation {entry['id']} has no accepted record naming its models"
                 )
-            row["models"] = {role: _model_name(models[role]) for role, _ in ROLES}
+            teachers: dict[str, str] = {}
+            for role, _ in ROLES:
+                if role not in models:
+                    raise ValueError(
+                        f"variation {entry['id']}'s accepted record names no {role} teacher"
+                    )
+                alias = models[role]
+                name, teacher_licence = _teacher(role_models, alias)
+                if apache_only and teacher_licence != APACHE_LICENCE:
+                    raise ValueError(
+                        f"{entry['id']}: teacher {name!r} ({teacher_licence}) is not "
+                        f"{APACHE_LICENCE}; refused by --apache-only"
+                    )
+                teachers[role] = name
+                role_aliases.setdefault(role, alias)
+            row["teachers"] = teachers
+        else:
+            row["teachers"] = {}
         origins[origin] += 1
         manifest.append(row)
         rows["train"].append(_record(entry, "train"))
@@ -154,15 +212,20 @@ def build(
         for entry in entries:
             if "~v" in entry["id"]:
                 raise ValueError(f"{entry['id']}: variations never leave the train side")
+            source = entry.get("source")
+            if not source:
+                raise ValueError(f"{entry['id']}: every published record needs a 'source' field")
             manifest.append(
                 {
                     "id": entry["id"],
                     "split": split,
                     "origin": "corpus",
+                    "source": source,
                     "source_id": entry.get("source_id", entry["id"]),
                     "source_file": CORPUS_FILE,
                     "licence": CORPUS_LICENCE,
                     "transformed": False,
+                    "teachers": {},
                 }
             )
             rows[split].append(_record(entry, split))
@@ -194,7 +257,7 @@ def build(
         "rejected": rejected_count,
         "answers": _answer_counts(rows["train"]),
     }
-    (out / "README.md").write_text(card(counts), encoding="utf-8")
+    (out / "README.md").write_text(card(counts, role_models, role_aliases), encoding="utf-8")
     return counts
 
 
@@ -212,14 +275,33 @@ def _answer_counts(records: list[dict[str, Any]]) -> dict[str, int]:
     return dict(kinds)
 
 
-def card(counts: dict[str, Any]) -> str:
+def card(
+    counts: dict[str, Any],
+    role_models: dict[str, tuple[str, str]],
+    role_aliases: dict[str, str],
+) -> str:
     answers = counts["answers"]
     reviewed = counts["accepted"] + counts["rejected"]
     rate = f"{100 * counts['accepted'] / reviewed:.0f}%" if reviewed else "n/a"
-    teachers = "\n".join(
-        f"| {name} | {licence} | {role} |"
-        for (_, role), (name, licence) in zip(ROLES, ROLE_MODELS.values())
-    )
+    if role_aliases:
+        teachers = "\n".join(
+            f"| {role_models[role_aliases[role]][0]} | {role_models[role_aliases[role]][1]}"
+            f" | {desc} |"
+            for role, desc in ROLES
+            if role in role_aliases
+        )
+        corrector_alias = role_aliases.get("CORRECTOR")
+        reviewer_b_alias = role_aliases.get("REVIEWER_B")
+        disclosure = ""
+        if corrector_alias is not None and corrector_alias == reviewer_b_alias:
+            shared_name, _ = role_models[corrector_alias]
+            disclosure = (
+                f"\n**Reviewer B is also the corrector** in this run ({shared_name}): its"
+                " accept/reject verdict is not independent of the copyedit it made.\n"
+            )
+    else:
+        teachers = "| (none) | (none) | this run produced no synthetic variations |"
+        disclosure = ""
     train_parts = (
         f"{counts['corpus']} corpus entries, {counts['supplement']} supplement entries,"
         f" {counts['variation']} synthetic variations"
@@ -308,10 +390,11 @@ source's answer and side.
 | Model | Licence | Role |
 |---|---|---|
 {teachers}
-
+{disclosure}
 The teachers' licences do not carry over to their outputs. `manifest.json`
-maps every record to its split, origin, source entry, source file, licence,
-whether it was transformed, and for a variation the four models above.
+maps every record to its split, origin, source, source file, licence,
+whether it was transformed, and a `teachers` map naming the four models
+above for a variation (empty for a corpus or supplement record).
 
 ## Limits
 
@@ -340,16 +423,30 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--accepted", required=True, type=Path)
     parser.add_argument("--rejected", required=True, type=Path)
     parser.add_argument("--licence", required=True, type=Path, help="nvsh's LICENSE")
+    parser.add_argument(
+        "--teacher-models",
+        required=True,
+        type=Path,
+        help="JSON file: alias/model-id -> {name, licence} for this run's four teacher roles",
+    )
+    parser.add_argument(
+        "--apache-only",
+        action="store_true",
+        help="refuse to build a bundle that names any non-Apache-2.0 teacher",
+    )
     parser.add_argument("--out", required=True, type=Path)
     args = parser.parse_args(argv)
     try:
+        role_models = load_role_models(args.teacher_models)
         counts = build(
             splits=args.splits,
             train_augmented=args.train_augmented,
             accepted=args.accepted,
             rejected=args.rejected,
             licence=args.licence,
+            role_models=role_models,
             out=args.out,
+            apache_only=args.apache_only,
         )
     except ValueError as exc:
         parser.error(str(exc))
