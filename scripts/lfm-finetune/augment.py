@@ -1098,41 +1098,33 @@ def load_rereview_candidates(paths: list[Path]) -> list[dict[str, Any]]:
     """Load stored accepted+rejected records from *paths* (the ``--accepted-out``
     / ``--rejected-out`` of a prior run), in file order. Each record is
     returned exactly as stored -- validated only once a re-review is actually
-    attempted on it (see :func:`_require_stored_reviewer_a`)."""
+    attempted on it."""
     records: list[dict[str, Any]] = []
     for path in paths:
         records.extend(_load_jsonl(path))
     return records
 
 
-def _require_stored_reviewer_a(record: dict[str, Any]) -> tuple[bool, str]:
-    """The stored reviewer A verdict a re-review re-derives acceptance from.
-    Never re-asked -- only REVIEWER_B is called during a re-review.
+def _prior_verdicts(record: dict[str, Any]) -> dict[str, Any]:
+    """The verdicts a candidate carried before this re-review, kept on the
+    new record as ``prior_verdicts`` -- history only, never an input to the
+    decision (issue 46, deviation d8: each re-review is a clean slate).
 
     ``augment.py`` only ever writes ``verdicts`` onto a *rejected* record
     (see :func:`_process_variation`); a record stored as accepted carries no
-    ``verdicts`` at all, because being stored as accepted already means both
-    reviewers said yes and every deterministic guard passed. So a record
-    with no ``verdicts`` key is treated as an implicit reviewer A accept, and
-    this only raises when ``verdicts`` is present but missing reviewer A --
-    a genuinely malformed record, not an accepted one.
+    ``verdicts`` at all, which is recorded as ``{"stored_as": "accepted"}``.
     """
     verdicts = record.get("verdicts")
     if verdicts is None:
-        return True, ""
-    reviewer_a = verdicts.get("reviewer_a") if isinstance(verdicts, dict) else None
-    if not isinstance(reviewer_a, dict) or "accept" not in reviewer_a:
-        raise ValueError(
-            f"{record.get('id', '?')}: no stored reviewer_a verdict to re-review against"
-        )
-    return bool(reviewer_a["accept"]), str(reviewer_a.get("reason", ""))
+        return {"stored_as": "accepted"}
+    return dict(verdicts)
 
 
 def _stored_reviewer_b_accept(record: dict[str, Any]) -> bool | None:
     """The old reviewer B verdict, for the pilot's agreement report.
 
     A record with no ``verdicts`` at all was stored as accepted, which means
-    the old reviewer B also said yes (see :func:`_require_stored_reviewer_a`).
+    the old reviewer B also said yes (see :func:`_prior_verdicts`).
     ``None`` only when ``verdicts`` is present but carries no reviewer B
     entry -- agreement reporting is then best-effort, unlike the required
     reviewer A verdict above.
@@ -1186,38 +1178,31 @@ def _seed_from_stored_record(record: dict[str, Any]) -> Seed:
 def _process_rereview_candidate(
     record: dict[str, Any], role: RoleConfig, caller: RoleCaller
 ) -> dict[str, Any]:
-    """Re-review one stored candidate: call only REVIEWER_B on the record's
-    already-generated/corrected ``text``, then re-derive acceptance from the
-    stored reviewer A verdict plus this fresh reviewer B verdict.
-
-    A record whose stored reviewer A verdict is "no" can never be accepted,
-    so reviewer B is not asked at all: the record stays rejected with a
-    ``reviewer_b`` entry of ``accept: None`` saying it was not re-asked, its
-    stored reviewer B model is kept, and it is left out of the agreement
-    count (issue 46, t18: about one candidate in six, each a multi-minute
-    thinking call on a shared server). The deterministic guards still run."""
-    accept_a, reason_a = _require_stored_reviewer_a(record)
+    """Re-review one stored candidate as a clean slate (issue 46, deviation
+    d8): call only REVIEWER_B on the record's already-generated/corrected
+    ``text``, with a prompt built from the text and the expected answer
+    alone -- never a prior verdict -- and let that fresh verdict plus the
+    deterministic guards decide. Whatever was stored before (reviewer A,
+    the old reviewer B, a stored rejection) moves to ``prior_verdicts`` as
+    history and never enters the decision."""
     old_accept_b = _stored_reviewer_b_accept(record)
+    prior = _prior_verdicts(record)
 
     seed = _seed_from_stored_record(record)
-    models = dict(record.get("models", {}))
-    accept_b: bool | None
-    if accept_a:
-        system, user = reviewer_prompt(seed, record["text"])
-        accept_b, reason_b = _reviewer_verdict(role, system, user, caller)
-        models[role.role] = role.model
-    else:
-        accept_b, reason_b = None, "not re-asked: the stored reviewer A verdict already rejects it"
+    system, user = reviewer_prompt(seed, record["text"])
+    accept_b, reason_b = _reviewer_verdict(role, system, user, caller)
 
     guard_verdicts = _rereview_guard_verdicts(record["text"], seed)
-    accepted = bool(accept_a and accept_b) and not guard_verdicts
+    accepted = accept_b and not guard_verdicts
+    models = dict(record.get("models", {}))
+    models[role.role] = role.model
     new_record = dict(record)
     new_record["models"] = models
     new_record["verdicts"] = {
-        "reviewer_a": {"accept": accept_a, "reason": reason_a},
         "reviewer_b": {"accept": accept_b, "reason": reason_b},
         **guard_verdicts,
     }
+    new_record["prior_verdicts"] = prior
     return {
         "accepted": accepted,
         "record": new_record,
@@ -1304,7 +1289,7 @@ def run_rereview(
             done.add(record_id)
 
             old_accept_b = outcome["old_accept_b"]
-            if old_accept_b is not None and outcome["new_accept_b"] is not None:
+            if old_accept_b is not None:
                 counts.compared += 1
                 if old_accept_b == outcome["new_accept_b"]:
                     counts.agreed += 1
@@ -1314,6 +1299,74 @@ def run_rereview(
         for future in concurrent.futures.as_completed(futures):
             future.result()
 
+    return counts
+
+
+def rederive_clean_slate(
+    input_files: list[Path],
+    old_outputs: list[Path],
+    accepted_out: Path,
+    rejected_out: Path,
+    dry_run: bool = False,
+) -> RereviewCounts:
+    """Re-derive re-review outputs written under the old rule (stored
+    reviewer A AND fresh reviewer B) under the clean-slate rule (issue 46,
+    deviation d8) without calling any model: the fresh reviewer B verdict
+    and the re-run guards already on each old output record decide; the
+    candidate's stored verdicts, looked up by id in *input_files* (the
+    re-review's own input), become ``prior_verdicts``, and agreement is
+    counted against the stored reviewer B verdict as in a live re-review.
+
+    Everything is validated before anything is written: an existing output,
+    an id repeated in the input or across the old outputs, an old output id
+    missing from the input, or an old output with no fresh reviewer B
+    verdict is refused. *dry_run* returns the counts and writes nothing."""
+    for path in (accepted_out, rejected_out):
+        if path.exists():
+            raise ValueError(f"{path} exists; re-derive writes fresh files only")
+    originals: dict[Any, dict[str, Any]] = {}
+    for record in load_rereview_candidates(input_files):
+        record_id = record.get("id")
+        if record_id in originals:
+            raise ValueError(f"{record_id}: repeated in the re-review input")
+        originals[record_id] = record
+
+    counts = RereviewCounts()
+    decided: list[tuple[bool, dict[str, Any]]] = []
+    seen: set[Any] = set()
+    for path in old_outputs:
+        for old in _load_jsonl(path):
+            record_id = old.get("id")
+            if record_id in seen:
+                raise ValueError(f"{record_id}: repeated across the old outputs")
+            seen.add(record_id)
+            if record_id not in originals:
+                raise ValueError(f"{record_id}: not in the re-review input")
+            verdicts = old.get("verdicts") or {}
+            fresh_b = verdicts.get("reviewer_b")
+            if not isinstance(fresh_b, dict) or not isinstance(fresh_b.get("accept"), bool):
+                raise ValueError(f"{record_id}: no fresh reviewer_b verdict to re-derive from")
+            guards = {k: v for k, v in verdicts.items() if k not in ("reviewer_a", "reviewer_b")}
+            original = originals[record_id]
+            new_record = dict(old)
+            new_record["verdicts"] = {"reviewer_b": fresh_b, **guards}
+            new_record["prior_verdicts"] = _prior_verdicts(original)
+            accepted = fresh_b["accept"] and not guards
+            counts.processed += 1
+            if accepted:
+                counts.accepted += 1
+            else:
+                counts.rejected += 1
+            old_accept_b = _stored_reviewer_b_accept(original)
+            if old_accept_b is not None:
+                counts.compared += 1
+                if old_accept_b == fresh_b["accept"]:
+                    counts.agreed += 1
+            decided.append((accepted, new_record))
+
+    if not dry_run:
+        for accepted, new_record in decided:
+            _append_jsonl(accepted_out if accepted else rejected_out, new_record)
     return counts
 
 
@@ -1519,6 +1572,17 @@ def main(argv: list[str] | None = None) -> int:
             "reusing their generator/corrector text (decisions c38/c41)"
         ),
     )
+    parser.add_argument(
+        "--rederive-clean-slate",
+        nargs="+",
+        metavar="OLD_OUTPUT",
+        help=(
+            "with --rereview: rewrite re-review outputs written under the old rule "
+            "(stored reviewer A AND fresh reviewer B) under the clean-slate rule "
+            "(deviation d8) into --accepted-out/--rejected-out, calling no model; "
+            "seed_files are the re-review's own input"
+        ),
+    )
     parser.add_argument("--accepted-out", default="accepted.jsonl")
     parser.add_argument("--rejected-out", default="rejected.jsonl")
     parser.add_argument(
@@ -1559,6 +1623,22 @@ def main(argv: list[str] | None = None) -> int:
     seed_paths = [Path(p) for p in args.seed_files]
 
     if args.rereview:
+        # The offline re-derive (deviation d8) calls no model, so it runs
+        # before -- and never needs -- the reviewer B configuration.
+        if args.rederive_clean_slate:
+            try:
+                counts = rederive_clean_slate(
+                    input_files=seed_paths,
+                    old_outputs=[Path(path) for path in args.rederive_clean_slate],
+                    accepted_out=Path(args.accepted_out),
+                    rejected_out=Path(args.rejected_out),
+                    dry_run=args.dry_run,
+                )
+            except (OSError, ValueError) as exc:
+                print(f"error: {exc}", file=sys.stderr)
+                return 2
+            _print_rereview_summary(counts)
+            return 0
         try:
             reviewer_b = load_role_config("REVIEWER_B")
         except ConfigError as exc:
