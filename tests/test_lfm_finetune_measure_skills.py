@@ -112,6 +112,8 @@ class _FakeHandler(http.server.BaseHTTPRequestHandler):
     scripted: list[list[dict]] = []
     calls = 0
     requests: list[dict] = []
+    #: Optional message content per call, in order (default: empty).
+    contents: list[str] = []
 
     def do_POST(self) -> None:  # noqa: N802 - http.server's naming convention
         length = int(self.headers.get("Content-Length", 0))
@@ -120,8 +122,11 @@ class _FakeHandler(http.server.BaseHTTPRequestHandler):
         index = _FakeHandler.calls
         _FakeHandler.calls += 1
         tool_calls = _FakeHandler.scripted[index] if index < len(_FakeHandler.scripted) else []
+        content = _FakeHandler.contents[index] if index < len(_FakeHandler.contents) else ""
         payload = {
-            "choices": [{"message": {"role": "assistant", "content": "", "tool_calls": tool_calls}}]
+            "choices": [
+                {"message": {"role": "assistant", "content": content, "tool_calls": tool_calls}}
+            ]
         }
         data = json.dumps(payload).encode("utf-8")
         self.send_response(200)
@@ -918,3 +923,73 @@ def test_the_command_line_writes_the_home_directory_as_home(monkeypatch, tmp_pat
     monkeypatch.setattr(module.Path, "home", classmethod(lambda cls: tmp_path))
     line = module.redact_command_line(["--tools", f"{tmp_path}/skills/tools.json"])
     assert line == "measure_skills.py --tools $HOME/skills/tools.json"
+
+
+# ---------------------------------------------------------------------------
+# issue 46: thinking off on request, non-empty think blocks counted
+# ---------------------------------------------------------------------------
+
+
+def _skills_argv(tools_path, test_path, server, out_path, *extra):
+    return [
+        "--tools",
+        str(tools_path),
+        "--test",
+        str(test_path),
+        "--url",
+        _base_url(server),
+        "--model",
+        "fake-model",
+        "--out",
+        str(out_path),
+        *extra,
+    ]
+
+
+def test_enable_thinking_false_is_sent_as_chat_template_kwargs(mod, fake_server, tmp_path):
+    tools_path, test_path = _write_inputs(tmp_path)
+    out_path = tmp_path / "results.md"
+    argv = _skills_argv(tools_path, test_path, fake_server, out_path, "--enable-thinking", "false")
+    assert mod.main(argv) == 0
+    assert _FakeHandler.requests
+    for request in _FakeHandler.requests:
+        assert request["chat_template_kwargs"] == {"enable_thinking": False}
+    text = out_path.read_text(encoding="utf-8")
+    assert "chat_template_kwargs enable_thinking=false" in text
+    assert "| Non-empty think blocks (must be 0) | 0 |" in text
+
+
+def test_thinking_is_not_sent_unless_configured(mod, fake_server, tmp_path):
+    tools_path, test_path = _write_inputs(tmp_path)
+    assert mod.main(_skills_argv(tools_path, test_path, fake_server, tmp_path / "r.md")) == 0
+    for request in _FakeHandler.requests:
+        assert "chat_template_kwargs" not in request
+
+
+def test_nonempty_think_blocks_are_counted_and_reported(mod, fake_server, tmp_path):
+    tools_path, test_path = _write_inputs(tmp_path)
+    _FakeHandler.contents = ["<think>let me see</think>", "<think>\n\n</think>", "", ""]
+    out_path = tmp_path / "results.md"
+    try:
+        code = mod.main(_skills_argv(tools_path, test_path, fake_server, out_path))
+    finally:
+        _FakeHandler.contents = []
+    assert code == 0
+    assert "| Non-empty think blocks (must be 0) | 1 |" in out_path.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    [
+        ({"content": "<think>reasoning</think>answer"}, True),
+        ({"content": "<think>\n\n</think>\n\nanswer"}, False),
+        ({"content": "reasoning left open</think>answer"}, True),
+        ({"content": "</think>answer"}, False),
+        ({"content": "no tags at all"}, False),
+        ({"content": None, "reasoning_content": "thought"}, True),
+        ({"content": "", "reasoning": "  "}, False),
+        ("not a message", False),
+    ],
+)
+def test_nonempty_think(mod, message, expected):
+    assert mod.nonempty_think(message) is expected

@@ -46,6 +46,14 @@ container named ``nvsh-tier2-<uid>`` is already running, and it never stops
 one it did not start. Without ``--launch``, behaviour is unchanged: an
 endpoint from the environment, localhost only.
 
+``--enable-thinking false`` (issue 46) sends ``chat_template_kwargs:
+{"enable_thinking": false}`` with every request, the way a Qwen3.5 model is
+served with thinking off; without the flag no ``chat_template_kwargs`` are
+sent at all. Every reply is checked for a non-empty think block (a
+``<think>`` block with text in it, text before a closing ``</think>``, or a
+non-empty ``reasoning_content`` field) and the count is reported -- with
+thinking off it must be 0.
+
 Neither the endpoint URL nor the raw command line is ever written into the
 results file: only the fact that a local endpoint was used, and the command
 line with any ``--url`` value replaced by ``<local endpoint>``. Recorded
@@ -82,6 +90,7 @@ import argparse
 import json
 import math
 import os
+import re
 import statistics
 import subprocess  # nosec B404 - fixed argv lists, never a shell
 import sys
@@ -173,6 +182,57 @@ def require_localhost(base_url: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# think blocks (issue 46: thinking is off, so every one found is counted)
+# ---------------------------------------------------------------------------
+
+_THINK_OPEN = "<think>"
+_THINK_CLOSE = "</think>"
+_THINK_BLOCK_RE = re.compile(
+    re.escape(_THINK_OPEN) + r"(.*?)(?:" + re.escape(_THINK_CLOSE) + "|$)", re.DOTALL
+)
+#: Reply fields a server's reasoning parser moves a think block into.
+_REASONING_FIELDS = ("reasoning_content", "reasoning")
+
+
+def nonempty_think(message: object) -> bool:
+    """True when a chat *message* carries a think block with any text in it.
+
+    The tags themselves are matched, never a substring such as ``think``:
+    a ``<think>`` block with non-blank text, text before a closing tag whose
+    opening tag was in the prompt, or a non-blank reasoning field. The empty
+    ``<think></think>`` a template renders with thinking off does not count.
+    """
+    if not isinstance(message, dict):
+        return False
+    for key in _REASONING_FIELDS:
+        value = message.get(key)
+        if isinstance(value, str) and value.strip():
+            return True
+    content = message.get("content")
+    if not isinstance(content, str):
+        return False
+    if any(match.group(1).strip() for match in _THINK_BLOCK_RE.finditer(content)):
+        return True
+    before, closed, _after = content.partition(_THINK_CLOSE)
+    return bool(closed) and _THINK_OPEN not in before and bool(before.strip())
+
+
+def chat_template_kwargs(enable_thinking: bool | None) -> dict[str, object] | None:
+    """The ``chat_template_kwargs`` a request carries: none unless thinking is configured."""
+    if enable_thinking is None:
+        return None
+    return {"enable_thinking": bool(enable_thinking)}
+
+
+def parse_bool(text: str) -> bool:
+    """``--enable-thinking``'s value: ``true`` or ``false``."""
+    lowered = text.strip().lower()
+    if lowered not in ("true", "false"):
+        raise argparse.ArgumentTypeError(f"expected true or false, got {text!r}")
+    return lowered == "true"
+
+
+# ---------------------------------------------------------------------------
 # inputs: tools.json + test.jsonl (from jetson_skills.py build)
 # ---------------------------------------------------------------------------
 
@@ -213,6 +273,7 @@ def load_evals(path: Path) -> list[dict[str, Any]]:
 class CallResult:
     tool_names: tuple[str, ...]
     elapsed: float  # seconds
+    think: bool = False
 
 
 def call_endpoint(
@@ -221,10 +282,12 @@ def call_endpoint(
     tools: list[dict[str, Any]],
     text: str,
     timeout: float = DEFAULT_TIMEOUT,
+    template_kwargs: Mapping[str, object] | None = None,
 ) -> CallResult:
     """One ``POST {base_url}/chat/completions`` with *tools*, ``tool_choice: "auto"``,
-    ``temperature: 0``. stdlib ``urllib`` only. Raises ``RuntimeError`` on any
-    transport or protocol failure."""
+    ``temperature: 0`` and, when given, *template_kwargs* as ``chat_template_kwargs``.
+    stdlib ``urllib`` only. Raises ``RuntimeError`` on any transport or protocol
+    failure."""
     require_localhost(base_url)
     body = {
         "model": model,
@@ -233,6 +296,8 @@ def call_endpoint(
         "tool_choice": "auto",
         "temperature": 0,
     }
+    if template_kwargs is not None:
+        body["chat_template_kwargs"] = dict(template_kwargs)
     url = base_url.rstrip("/") + "/chat/completions"
     request = urllib.request.Request(
         url,
@@ -251,7 +316,20 @@ def call_endpoint(
         payload = json.loads(raw)
     except ValueError as exc:
         raise RuntimeError(f"{url}: reply is not valid JSON: {exc}") from exc
-    return CallResult(tool_names=tuple(_tool_names_from_payload(payload)), elapsed=elapsed)
+    return CallResult(
+        tool_names=tuple(_tool_names_from_payload(payload)),
+        elapsed=elapsed,
+        think=nonempty_think(_message_of(payload)),
+    )
+
+
+def _message_of(payload: object) -> object:
+    if not isinstance(payload, dict):
+        return None
+    choices = payload.get("choices")
+    if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+        return None
+    return choices[0].get("message")
 
 
 def _tool_names_from_payload(payload: object) -> list[str]:
@@ -298,6 +376,7 @@ class EvalResult:
     names_skill: bool
     outcome: str
     elapsed: float  # seconds
+    think: bool = False
 
 
 def run_measurement(
@@ -306,6 +385,7 @@ def run_measurement(
     tools: list[ToolRecord],
     evals: list[dict[str, Any]],
     timeout: float = DEFAULT_TIMEOUT,
+    template_kwargs: Mapping[str, object] | None = None,
 ) -> list[EvalResult]:
     """Calls the endpoint once per eval, in order, and scores each reply.
 
@@ -324,7 +404,14 @@ def run_measurement(
     for record in evals:
         expected_skill = record["expected_skill"]
         expected_tool_name = skill_to_tool_name[expected_skill]
-        call = call_endpoint(base_url, model, tool_schemas, record["text"], timeout=timeout)
+        call = call_endpoint(
+            base_url,
+            model,
+            tool_schemas,
+            record["text"],
+            timeout=timeout,
+            template_kwargs=template_kwargs,
+        )
         outcome = classify(call.tool_names, expected_tool_name)
         results.append(
             EvalResult(
@@ -335,6 +422,7 @@ def run_measurement(
                 names_skill=bool(record.get("names_skill", False)),
                 outcome=outcome,
                 elapsed=call.elapsed,
+                think=call.think,
             )
         )
     return results
@@ -380,6 +468,7 @@ class Aggregate:
     outcome_counts: dict[str, int]
     latency_median_ms: float
     latency_p95_ms: float
+    think_blocks: int = 0
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -390,6 +479,7 @@ class Aggregate:
             "outcome_counts": dict(self.outcome_counts),
             "latency_median_ms": self.latency_median_ms,
             "latency_p95_ms": self.latency_p95_ms,
+            "think_blocks": self.think_blocks,
         }
 
 
@@ -407,6 +497,7 @@ def aggregate(results: list[EvalResult]) -> Aggregate:
         outcome_counts=dict(Counter(r.outcome for r in results)),
         latency_median_ms=statistics.median(latencies_ms) if latencies_ms else 0.0,
         latency_p95_ms=_percentile(latencies_ms, 0.95),
+        think_blocks=sum(1 for r in results if r.think),
     )
 
 
@@ -482,6 +573,7 @@ def render_results(
     margin: str | None,
     manifest_provenance: list[dict[str, str]],
     aggregated: Aggregate,
+    enable_thinking: bool | None = None,
 ) -> str:
     lines: list[str] = [f"# Jetson skill-routing measurement -- {label}, {when}", ""]
 
@@ -503,6 +595,11 @@ def render_results(
             lines.append(f"- model revision: `{model_revision}` ({revision_status})")
         else:
             lines.append(f"- model revision: `{model_revision}`")
+    if enable_thinking is None:
+        lines.append("- thinking: not set (no chat_template_kwargs sent)")
+    else:
+        value = "true" if enable_thinking else "false"
+        lines.append(f"- thinking: chat_template_kwargs enable_thinking={value}")
     for prov in manifest_provenance:
         lines.append(f"- {prov['repo']}: <{prov['url']}> at commit `{prov['commit']}`")
     lines.append("")
@@ -525,6 +622,7 @@ def render_results(
     ]
     for outcome in OUTCOMES:
         lines.append(f"| {outcome} | {aggregated.outcome_counts.get(outcome, 0)} |")
+    lines.append(f"| Non-empty think blocks (must be 0) | {aggregated.think_blocks} |")
     lines += [
         "",
         "| Latency | ms |",
@@ -801,6 +899,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true", help="also print the aggregated result as JSON to stdout"
     )
     parser.add_argument(
+        "--enable-thinking",
+        type=parse_bool,
+        default=None,
+        metavar="{true,false}",
+        help=(
+            "send chat_template_kwargs enable_thinking=<value> with every request "
+            "(issue 46 serves Qwen3.5 with false); not sent when omitted"
+        ),
+    )
+    parser.add_argument(
         "--launch",
         action="store_true",
         help=(
@@ -881,7 +989,14 @@ def main(argv: list[str] | None = None, *, launch_seams: LaunchSeams | None = No
             base_url = args.url
 
         try:
-            results = run_measurement(base_url, args.model, tools, evals, timeout=args.timeout)
+            results = run_measurement(
+                base_url,
+                args.model,
+                tools,
+                evals,
+                timeout=args.timeout,
+                template_kwargs=chat_template_kwargs(args.enable_thinking),
+            )
         except (RuntimeError, ValueError) as exc:
             print(f"error: {exc}", file=sys.stderr)
             return EXIT_USER
@@ -906,11 +1021,18 @@ def main(argv: list[str] | None = None, *, launch_seams: LaunchSeams | None = No
         margin=args.margin,
         manifest_provenance=provenance,
         aggregated=aggregated,
+        enable_thinking=args.enable_thinking,
     )
     rendered = redact(rendered.encode("utf-8")).decode("utf-8")
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(rendered, encoding="utf-8")
     print(f"wrote {out_path}")
+    if aggregated.think_blocks:
+        print(
+            f"warning: {aggregated.think_blocks} replies carried a non-empty think block"
+            " (must be 0 with thinking off)",
+            file=sys.stderr,
+        )
 
     if args.json:
         payload = aggregated.as_dict()
