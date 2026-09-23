@@ -1962,24 +1962,59 @@ def test_rereview_calls_only_reviewer_b_and_reuses_stored_text(tmp_path) -> None
     assert not rejected_out.exists()
 
 
-def test_rereview_rederives_acceptance_from_stored_a_and_new_b(tmp_path) -> None:
-    # Stored A rejected it; a new B "yes" must still not accept it.
+def test_rereview_stored_a_rejection_stays_rejected_without_asking_reviewer_b(tmp_path) -> None:
+    # Stored A rejected it, so no reviewer B verdict could accept it: the
+    # re-review records the rejection without spending a reviewer B call
+    # (issue 46, t18: 199 of 1176 candidates, each a multi-minute thinking
+    # call on a shared server).
     candidates = _write_jsonl(
         tmp_path / "rejected.jsonl",
-        [_stored_candidate(reviewer_a_accept=False, reviewer_a_reason="wrong operation")],
+        [
+            _stored_candidate(
+                reviewer_a_accept=False,
+                reviewer_a_reason="wrong operation",
+                reviewer_b_accept=True,
+            )
+        ],
     )
+    calls = {"n": 0}
+
+    def fake_caller(role, system, user):
+        calls["n"] += 1
+        return "yes"
+
     counts = aug.run_rereview(
+        candidate_files=[candidates],
+        role=_fake_reviewer_b(),
+        accepted_out=tmp_path / "accepted.jsonl",
+        rejected_out=tmp_path / "rejected-out.jsonl",
+        caller=fake_caller,
+    )
+    assert calls["n"] == 0
+    assert counts.accepted == 0
+    assert counts.rejected == 1
+    assert counts.compared == 0  # no fresh B verdict, so nothing to compare
+    record = json.loads((tmp_path / "rejected-out.jsonl").read_text(encoding="utf-8"))
+    assert record["verdicts"]["reviewer_a"] == {"accept": False, "reason": "wrong operation"}
+    assert record["verdicts"]["reviewer_b"]["accept"] is None
+    assert "not re-asked" in record["verdicts"]["reviewer_b"]["reason"]
+    assert record["models"]["REVIEWER_B"] == "nemotron-3.5-lightning"  # never re-asked
+
+
+def test_rereview_stored_a_rejection_still_runs_the_deterministic_guards(tmp_path) -> None:
+    candidates = _write_jsonl(
+        tmp_path / "rejected.jsonl",
+        [_stored_candidate(reviewer_a_accept=False, text="run machine_status for me")],
+    )
+    aug.run_rereview(
         candidate_files=[candidates],
         role=_fake_reviewer_b(),
         accepted_out=tmp_path / "accepted.jsonl",
         rejected_out=tmp_path / "rejected-out.jsonl",
         caller=lambda role, system, user: "yes",
     )
-    assert counts.accepted == 0
-    assert counts.rejected == 1
     record = json.loads((tmp_path / "rejected-out.jsonl").read_text(encoding="utf-8"))
-    assert record["verdicts"]["reviewer_a"]["accept"] is False
-    assert record["verdicts"]["reviewer_b"]["accept"] is True
+    assert record["verdicts"]["identifier_check"]["accept"] is False
 
 
 def test_rereview_flips_a_previously_accepted_candidate_when_new_b_says_no(tmp_path) -> None:
