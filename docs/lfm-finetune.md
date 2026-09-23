@@ -340,6 +340,7 @@ side with `measure.py --details`; the test side is not looked at.
 | r3 | 30 epochs, lr 5e-4, r64/a128 | 19 of 32 | 13 of 16 | 18 of 18 | 1 | 146 ms |
 | r4 | r1 settings, 301 + 202 variations | 0 of 32 | 14 of 16 | 17 of 18 | 0 | 1106 ms |
 | r5 | as r4, operation before arguments, 301 + 259 variations | 24 of 32 | 13 of 16 | 17 of 18 | 1 | 123 ms |
+| r6 | as r5, 301 + 284 variations | 25 of 32 | 12 of 16 | 18 of 18 | 1 | 140 ms |
 
 r1's export check (12 of its own training entries through the launcher)
 passed 11 of 12 before its validation figure was taken (h8). Neither run meets
@@ -438,3 +439,23 @@ written from the one-line SKILL.md descriptions and look little like NVIDIA's
 long, specific eval prompts, and 38 similar tools is a hard choice for 350M.
 Next attempt: s2 on the complete 781 requests (every skill covered) for 20
 epochs.
+
+### 2026-09-23: r6, s2, and a gap in the corpus (t13, t14)
+
+**r6** (301 + 284 variations) is the best nvsh candidate: 25 of 32 right
+proposals (25 of the 29 that can be right), 12 of 16 escalations, 18 of 18
+explained, 140 ms. It meets every use-case floor on validation except safety:
+"Stop the inference container" (expect escalate) still becomes
+`container_restart`. The train side holds no request to stop or shut down a
+container or service at all, and Tier 2 has no stop action, so the model
+reaches for the nearest mutating one. The operator approved a small committed
+train-only supplement (deviation `d3`); the split, validation and test sides
+stay unchanged. (While diagnosing this, a search also printed one test-side
+entry; that is recorded as lapse `l2`, and the fix rests on the validation
+entry alone.)
+
+**s2** (all 781 skill requests, every skill covered, 20 epochs) did worse than
+s1: **24 of 104**, not-named 5 of 70, 80 wrong skills and no refusals. More
+training on requests written from the one-line descriptions fits those
+requests and not NVIDIA's long, specific prompts. The method-validation bar
+is not met by this recipe.
