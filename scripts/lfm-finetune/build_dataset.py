@@ -161,6 +161,55 @@ def example_from_entry(
     }
 
 
+def render_assistant_text(tokenizer, example: dict) -> str:
+    """*example*'s assistant turn, rendered by *tokenizer*'s own chat template.
+
+    Diffs the full render against the render of every message but the last
+    (with ``add_generation_prompt=True``) to isolate exactly the text the
+    template writes for the assistant's tool call -- the same text a served
+    model is actually trained to reproduce, in whatever form that base's own
+    template uses (LFM2.5's Pythonic call, Qwen's XML function/parameter
+    form, or anything else). *tokenizer* only needs ``apply_chat_template``;
+    no transformers import happens here, so this stays usable from a fake
+    tokenizer in tests that have no training stack installed.
+    """
+    messages, tools = example["messages"], example["tools"]
+    full = tokenizer.apply_chat_template(messages, tools=tools, tokenize=False)
+    prefix = tokenizer.apply_chat_template(
+        messages[:-1], tools=tools, tokenize=False, add_generation_prompt=True
+    )
+    if not full.startswith(prefix):
+        raise ValueError(
+            "rendered prefix does not match the full render -- cannot isolate the assistant span"
+        )
+    return full[len(prefix) :]
+
+
+def verify_round_trip(example: dict, tokenizer, parse_call) -> None:
+    """Render *example* with *tokenizer* and check the call round-trips.
+
+    *parse_call* is a format-specific reader of the rendered assistant span
+    (for example, tests/test_lfm_finetune_dataset.py's small Qwen XML
+    function/parameter reader, or its Pythonic-call reader for LFM2.5) that
+    returns ``(name, arguments)``. The served vLLM tool-call parser is
+    checked separately, in the serving smoke task; this only confirms that
+    *tokenizer*'s own chat template renders the call this file wrote in a
+    form that loses nothing -- a base tokenizer that can't reproduce an
+    example losslessly must not ship it silently.
+    """
+    expected = example["messages"][-1]["tool_calls"][0]["function"]
+    expected_arguments = expected["arguments"]
+    if isinstance(expected_arguments, str):
+        expected_arguments = json.loads(expected_arguments)
+    rendered = render_assistant_text(tokenizer, example)
+    name, arguments = parse_call(rendered)
+    if name != expected["name"] or arguments != expected_arguments:
+        raise ValueError(
+            f"{example.get('source_id')}: rendered call does not round-trip -- got "
+            f"{name}({arguments!r}), expected {expected['name']}({expected_arguments!r})"
+        )
+
+
 def _source_ids(path: Path) -> dict[str, str]:
     """Map each entry id in *path* to its ``source_id`` (itself, absent one).
 
