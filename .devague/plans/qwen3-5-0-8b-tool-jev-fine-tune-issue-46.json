@@ -1,0 +1,1096 @@
+{
+  "slug": "qwen3-5-0-8b-tool-jev-fine-tune-issue-46",
+  "title": "Qwen3.5-0.8B Tool-Jev fine-tune (issue 46)",
+  "frame_slug": "qwen3-5-0-8b-tool-jev-fine-tune-issue-46",
+  "schema_version": 5,
+  "status": "exported",
+  "created": "2026-09-23T08:50:51Z",
+  "updated": "2026-09-23T09:08:03Z",
+  "targets": [
+    {
+      "id": "c1",
+      "kind": "announcement",
+      "text": "nvsh has an Apache-2.0 Tool-Jev: Qwen3.5-0.8B fine-tuned on spark (generative structured tool caller, Track A) and spark2 (logit-scored candidate actions with measured calibration, Track B), both scored on one shared held-out suite against the stock baseline, with base-model and training-data provenance documented so the result can be shared publicly, including with NVIDIA (issue 46)",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h1",
+      "kind": "honesty",
+      "text": "Every figure in the final comparison comes from a pipeline.sh stage run on the clean test side exactly once per reported checkpoint, and the published model's licence and data provenance are checked by release_bundle.py/dataset_bundle.py before any upload",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c3",
+      "kind": "requirement",
+      "text": "The base is Qwen/Qwen3.5-0.8B (the post-trained repo, HF commit 2fc06364715b967f1860aea9cf38778875588b17, licence apache-2.0 with a LICENSE file; a -Base repo also exists at dc7cdfe2), pinned by BASE/BASE_REV in the pipeline env file and measured stock at that same commit before any training run",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h6",
+      "kind": "honesty",
+      "text": "Stock Qwen3.5-0.8B is measured at the pinned revision on validation and the clean test side before any tuned run is scored",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c5",
+      "kind": "requirement",
+      "text": "train.py's loss mask must be rebuilt for Qwen: it relies on apply_chat_template(..., return_assistant_tokens_mask=True) (train.py:68-74), and Qwen3.5's chat template has no {% generation %} markers, so the mask would be empty. Either patch generation markers into a local copy of the template or compute labels by span; either way a test asserts the mask is non-empty and covers only the assistant answer",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h7",
+      "kind": "honesty",
+      "text": "For one rendered example of each outcome (propose, explain, escalate), the loss mask is non-empty and covers exactly the assistant answer tokens (plus end-of-turn), nothing from system/user/tools",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c6",
+      "kind": "requirement",
+      "text": "Thinking is off in both training and serving: examples are rendered with `enable_thinking=False` (the template then emits an empty `<think></think>` block before the answer), and the served request uses the same setting. Nothing in scripts/lfm-finetune handles thinking for the trained model today (only `NVSH_AUG_*_DISABLE_THINKING` for the augmentation roles, pipeline.sh:55)",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h8",
+      "kind": "honesty",
+      "text": "Rendered training examples and served requests both use enable_thinking=False, and no tuned output contains a non-empty think block on validation",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c7",
+      "kind": "requirement",
+      "text": "The tool-call rendering is re-verified for Qwen before training: Qwen3.5 renders calls as XML (<tool_call><function=NAME><parameter=ARG>VALUE</parameter></function></tool_call>), not LFM2.5's Pythonic calls, so build_dataset.py's LFM workarounds (arguments as an object, operation before arguments; build_dataset.py:90-92,120-124; docs/lfm-finetune.md:143-145,369-373) are checked by rendering one example of each outcome with the real Qwen tokenizer",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h9",
+      "kind": "honesty",
+      "text": "One rendered example of each outcome round-trips: the chosen vLLM tool parser turns the gold assistant text back into the same tool name and arguments object",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c8",
+      "kind": "requirement",
+      "text": "Serving a Qwen checkpoint needs an explicit tool_call_parser (the vLLM engine default is the literal 'lfm2', runtime_docker.py:199; ~/lfm-train/measure-config.toml also sets lfm2) and a vLLM image that supports qwen3_5 (reported >=0.17) and its XML tool calls (qwen3_coder family; Qwen3.5-specific parser fixes are in flux upstream). The pinned measure image vllm/vllm-openai@sha256:8bd082c2\u2026 is checked for both before any stock measurement",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h10",
+      "kind": "honesty",
+      "text": "The measurement image is pinned by digest and its vLLM version supports qwen3_5 and the chosen tool parser, verified by a stock serve smoke test before measurement",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c9",
+      "kind": "boundary",
+      "text": "No nvsh runtime code change is needed to serve a Qwen checkpoint as Tier 2: LfmTier/LfmAgent/TierManager speak OpenAI-compatible chat/tool calls with nothing LFM2.5-specific (manager.py _build, agent/registry.py:295-304), so it runs under [tiers.lfm] by config alone",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h11",
+      "kind": "honesty",
+      "text": "No file under nvsh/ changes to serve the Qwen checkpoints; only config (and at most the pins.json image list)",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c11",
+      "kind": "requirement",
+      "text": "release_bundle.py is generalised so a Qwen bundle carries Apache-2.0 terms: today it hard-codes LICENSE_FIRST_LINE 'LFM Open License v1.0', REQUIRED_CARD_PHRASES (license_name: lfm1.0, the 10,000,000 threshold), Liquid AI NOTICE text and the model-card Licence section; the chat-template equality check (c33 of issue 39) and TEACHERS tuple carry over unchanged",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h12",
+      "kind": "honesty",
+      "text": "release_bundle.py refuses a Qwen bundle whose LICENSE is not Apache-2.0 and still refuses an LFM bundle without LFM terms; existing LFM tests keep passing",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c12",
+      "kind": "requirement",
+      "text": "Both tracks and the stock baseline share one dataset and one fixed split built by scripts/lfm-finetune/split.py (seeded, 70/15/15, stratified by operation/escalate/explain, refuses held-out.json, variations inherit their source's side; split.py:50-151,180-181), which is model-agnostic and reused as is",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h13",
+      "kind": "honesty",
+      "text": "The split files used by both tracks are byte-identical and produced by split.py with a recorded seed",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c13",
+      "kind": "requirement",
+      "text": "Any final (test-side) run of this work is made on a test side that is clean for Qwen: issue 39's test side was partly read during iteration (lapse l2) and four test entries leaked into r8's training by exact wording (lapse l5), so its numbers are an upper bound. The delivery record's remaining work already calls for a fresh or re-seeded test side, with merge_variations.py --exclude guarding leakage",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h14",
+      "kind": "honesty",
+      "text": "No test-side entry or near-duplicate appears in any training file of either track, and nobody reads test-side contents during iteration",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c14",
+      "kind": "requirement",
+      "text": "Training-data provenance is documented per record and per teacher so the dataset and model can be published: corpus entries carry id/kind/text/expect/source (no licence field; licence is stated at bundle level), variations record source_id/side/models, and dataset_bundle.py's manifest adds split/origin/source_file/licence/transformed plus a role->model map (dataset_bundle.py:50-55,127-168)",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h15",
+      "kind": "honesty",
+      "text": "Every published training record carries source, origin and teacher-model fields, and the dataset card lists each teacher with its licence",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c15",
+      "kind": "boundary",
+      "text": "NVIDIA's Jetson skills evals (NVIDIA-AI-IOT jetson-device-skills@20137897 and jetson-bsp-skills@fdfafef0; docs CC-BY-4.0, code Apache-2.0) stay test-only and out of any published bundle; any skills-tuned model that is published carries NVIDIA's CC-BY-4.0 attribution",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h16",
+      "kind": "honesty",
+      "text": "No training file of either track contains a Jetson skills eval or near-duplicate",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c16",
+      "kind": "requirement",
+      "text": "Measurement grows the metrics issue 46 asks for that issue 39's tooling lacks: logprobs-based confidence with ECE/Brier, abstention precision/recall, false-positive tool-invocation rate, tokens generated per decision and time to first decision. measure.py today reports right proposals, escalation TP/FN, wrong mutating/argument counts, container memory and warm/cold latency (measure.py:494-538,585-599,853-863) and has no logprob, calibration or token counts",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h17",
+      "kind": "honesty",
+      "text": "The shared harness reports every issue-46 metric for stock, Track A and Track B from the same predictions file format, with ECE (10 equal-width bins) and Brier computed from recorded probabilities",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c18",
+      "kind": "requirement",
+      "text": "The 2K vs 4K context comparison is run by configuration only: training --max-length (train.py:122) and serving [tiers.lfm] ctx (runtime_docker.py DEFAULT_CTX 4096, validated 256..1,048,576) are both already parameters; issue 39 ran at 4096",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h18",
+      "kind": "honesty",
+      "text": "2K and 4K runs differ only in --max-length / ctx, and the report states peak memory and latency for each",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c19",
+      "kind": "boundary",
+      "text": "Issue 39 stays open and this work does not close it: its delivery record says it stays open until a tuned model is measured on the held-out split through the committed bench; this work is tracked on issue 46",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h19",
+      "kind": "honesty",
+      "text": "The PR says 'part of #46' and does not close issue 39 or issue 46",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c20",
+      "kind": "requirement",
+      "text": "Hyperparameters are re-tuned for 0.8B on the validation side only (issue 39's 20 epochs / lr 5e-4 / LoRA r32 a64 / batch 8 were tuned for the 350M; 8 epochs beat 20 on skills), and the skills benchmark is scored once with its margin stated before the scored run, or on a validation slice carved first (lapse l4)",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h20",
+      "kind": "honesty",
+      "text": "Hyperparameter choices are justified from validation runs only, and the skills benchmark is scored at most once per recipe with the margin written before the run",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c22",
+      "kind": "boundary",
+      "text": "Both Sparks train independently in parallel; there is no distributed training across spark and spark2 (issue 46: 'do not require distributed training across the two machines')",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h21",
+      "kind": "honesty",
+      "text": "Each Spark trains its own track end to end with no cross-machine training traffic",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c24",
+      "kind": "requirement",
+      "text": "The quantized-inference and edge checks account for the hybrid architecture: unsloth/Qwen3.5-0.8B-GGUF (sha 6ab46149) offers Q8_0..IQ2 quants plus separate mmproj files for the vision tower, but correct Gated-DeltaNet support needs a recent llama.cpp build, and vLLM Qwen3.5 tool parsing is still being patched upstream; each serving stack's version is recorded with its result",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h22",
+      "kind": "honesty",
+      "text": "Every quantized or edge result names the serving stack and its exact version/commit",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c29",
+      "kind": "audience",
+      "text": "The nvsh maintainers deciding what small model backs Tier 1/Tier 2 next, and external readers (NVIDIA's Jetson AI Lab among them) who will download the published model, dataset and report",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h2",
+      "kind": "honesty",
+      "text": "The report and cards are readable by someone without access to spark or this session: no private endpoints, keys or home paths, redaction applied",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c30",
+      "kind": "after_state",
+      "text": "Two Apache-2.0 Qwen3.5-0.8B checkpoints (Track A generative tool caller from spark, Track B candidate scorer from spark2) exist with their recipes, scored by one shared harness on one clean test side against stock Qwen3.5-0.8B, with a comparison table (accuracy, abstention, calibration, latency, memory, 2K vs 4K, quantized) and a written recommendation for the next Tool-Jev iteration",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h3",
+      "kind": "honesty",
+      "text": "Both tracks' checkpoints are reproducible from the committed recipe plus the pinned base revision and the committed split seed",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c31",
+      "kind": "before_state",
+      "text": "The only tuned Tier 2 model is LFM2.5-350M (issue 39, r8: 28/32 proposals, 13/15 escalations, 1 wrong mutating proposal, not adopted), under the LFM Open License whose USD 10M revenue condition follows every downstream user; no candidate-scoring model, no calibration metric and no clean test side exist",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h4",
+      "kind": "honesty",
+      "text": "The issue-39 numbers quoted are the committed ones, and flagged as an upper bound because of lapse l5",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c32",
+      "kind": "why_it_matters",
+      "text": "A 0.8B Apache-2.0 decision model small enough for Orin-class devices and cheap K8s services could be shared freely (including with NVIDIA) and could stay resident; issue 46 asks whether a tiny model can give a calibrated tool decision with strong abstention, which issue 39's tooling cannot answer",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h5",
+      "kind": "honesty",
+      "text": "Size and memory claims about Orin-class or K8s serving are stated only from measurements taken in this work, never from the base model card",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c33",
+      "kind": "success_signal",
+      "text": "On the clean test side the best tuned variant gets >=80% right proposals and >= stock + 30 percentage points",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h23",
+      "kind": "honesty",
+      "text": "The percentages are computed over the whole clean test side's operation-expected entries, with the denominator shown next to each percentage",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c34",
+      "kind": "success_signal",
+      "text": "Escalation (abstain) recall >=80% and abstention precision >=80%; false-positive tool calls <=5% on explain/escalate-expected items; 0 wrong mutating proposals",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h24",
+      "kind": "honesty",
+      "text": "Abstain means the escalate outcome (per the c25 mapping); precision and recall are computed against escalate-expected entries, and false positives counted over explain- and escalate-expected entries",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c35",
+      "kind": "success_signal",
+      "text": "Track B's confidence is calibrated: ECE <=0.10 (10 equal-width bins) and Brier score lower than stock's",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h25",
+      "kind": "honesty",
+      "text": "Probabilities are the model's own normalised scores over the candidate set, recorded per decision before any threshold; the same computation runs on stock",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c36",
+      "kind": "success_signal",
+      "text": "At 2K context on spark the best variant's warm median decision latency is <=250 ms and its container memory is <=6 GB",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h26",
+      "kind": "honesty",
+      "text": "Latency and memory are measured while spark has no other training or measurement job running, with background load recorded as in issue 39's measure.py",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c44",
+      "kind": "requirement",
+      "text": "The best checkpoint(s) are exported as a Q4_K_M GGUF (text-only, no vision mmproj) served by nvsh's existing llama-server engine via [tiers.lfm] model_dir, and as an INT4 AWQ checkpoint served by the vllm engine; both are measured on the clean test side with the same harness, latency and memory as bf16",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h27",
+      "kind": "honesty",
+      "text": "Calibration and healing data come from the train side only; no validation or test entry is used for imatrix, AWQ calibration or healing",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c45",
+      "kind": "requirement",
+      "text": "Re-seeding the split handles the train-only variations: every stored variation (1,195 accepted, 525 rejected) is side=train, and merge_variations.py:61-65 raises when a variation's source is not in the train split. Before the freeze, variations whose source moved to validation or test are dropped (never promoted to those sides), sources newly on the train side are augmented by the same all-Apache pipeline, and the kept/dropped/new counts are recorded",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h29",
+      "kind": "honesty",
+      "text": "No validation or test entry of the new split has any variation in any training file, and no variation appears on the validation or test side",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c46",
+      "kind": "requirement",
+      "text": "The evaluation covers issue 46's cases the spec omitted: behaviour when the correct operation is not among the offered candidates (it should escalate), and the rate of invalid or unparseable outputs (malformed tool call, operation not in nvsh/ops/table.py, arguments failing the operation schema), reported for stock, Track A and Track B",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h30",
+      "kind": "honesty",
+      "text": "The removed-candidate slice is built from test entries by removing the gold operation only, without editing any entry's text",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c47",
+      "kind": "requirement",
+      "text": "Every dataset and model bundle passes a secrets and private-host scan (scripts/scan-secrets.py rules, plus nvsh/redact.py over every text field) before any upload, private or public; a bundle with a finding is not uploaded",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h31",
+      "kind": "honesty",
+      "text": "The scan runs on the exact folder that is uploaded, after the last change to it",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c48",
+      "kind": "boundary",
+      "text": "Uploads start private; making a model or dataset repo public is irreversible in practice, so each repo goes public only after the operator explicitly approves that repo by name (issue 39's t15 precedent: ask first)",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h32",
+      "kind": "honesty",
+      "text": "No repo from this work is public before the operator's recorded approval",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c49",
+      "kind": "requirement",
+      "text": "Training on spark2 is contained so it cannot take down the model-gear stack: the training process has a hard memory cap well under the roughly 30 GB spark2 has free, and a run that nears the cap is stopped rather than left to the kernel OOM killer",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h33",
+      "kind": "honesty",
+      "text": "No model-gear container on spark2 restarts or is OOM-killed while a training run is active",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c50",
+      "kind": "requirement",
+      "text": "The training environment is pinned and committed (Python, torch, transformers, peft, trl, unsloth versions plus a lock or requirements file) so h3's reproducibility is possible; today the venv on spark is untracked (transformers 5.5.0, peft 0.21.0, trl 0.24.0)",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h34",
+      "kind": "honesty",
+      "text": "spark and spark2 train from the same pinned versions",
+      "deferred": false,
+      "deferred_reason": ""
+    }
+  ],
+  "tasks": [
+    {
+      "id": "t1",
+      "summary": "Pin the training environment",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "scripts/lfm-finetune/requirements-train.txt exists and pins python, torch, transformers, peft, trl, unsloth (and llm-compressor/gguf tooling added later) with == exact versions",
+        "tests/test_lfm_finetune_requirements.py fails if any line is unpinned or a required package is missing"
+      ],
+      "deps": [],
+      "covers": [
+        "c50",
+        "h34"
+      ],
+      "instruction": "Take versions from the working venv on spark (transformers 5.5.0, peft 0.21.0, trl 0.24.0, torch 2.12.1+cu130, unsloth 2026.9.9); note the CUDA 13 torch index. Only this file and its test."
+    },
+    {
+      "id": "t2",
+      "summary": "Qwen-aware loss mask and thinking-off rendering in train.py",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "train.py computes labels by locating the assistant answer span in the rendered ids when the template has no generation markers; labels cover exactly the answer tokens plus the end-of-turn token",
+        "train.py renders with enable_thinking=False for bases whose template supports it, and the rendered text contains an empty think block before the answer",
+        "tests (fake tokenizer always; real Qwen3.5-0.8B tokenizer when cached, else skipped) assert a non-empty, answer-only mask for propose, explain and escalate; existing LFM tests still pass"
+      ],
+      "deps": [],
+      "covers": [
+        "c5",
+        "h7",
+        "c6",
+        "h8"
+      ],
+      "instruction": "Files: scripts/lfm-finetune/train.py and tests/test_lfm_finetune_train.py only. Keep return_assistant_tokens_mask when the template has generation markers (LFM path unchanged). Detect markers by template text, not by model name."
+    },
+    {
+      "id": "t3",
+      "summary": "Qwen tool-call rendering check in build_dataset.py",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "build_dataset.py renders one example per outcome with the base tokenizer and parses the assistant span back (Qwen XML function/parameter form) to the same tool name and arguments object; a mismatch fails the build",
+        "LFM-only workarounds (object arguments, operation before arguments) stay the default for LFM and are verified, not assumed, for Qwen; tests cover both"
+      ],
+      "deps": [],
+      "covers": [
+        "c7",
+        "h9"
+      ],
+      "instruction": "Files: scripts/lfm-finetune/build_dataset.py and tests/test_lfm_finetune_dataset.py only. The round-trip parser here is a small test-side XML reader; the served vLLM parser is checked in the serving smoke task."
+    },
+    {
+      "id": "t4",
+      "summary": "merge_variations.py filters variations to the current train split",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "a --filter-to-split mode drops (and counts) variations whose source_id is not in the given train split instead of raising; default behaviour unchanged",
+        "tests: variations of sources moved to val/test are dropped and counted, never written; kept/dropped counts are printed"
+      ],
+      "deps": [],
+      "covers": [
+        "c45",
+        "h29"
+      ],
+      "instruction": "Files: scripts/lfm-finetune/merge_variations.py and tests/test_lfm_finetune_merge_variations.py only."
+    },
+    {
+      "id": "t5",
+      "summary": "release_bundle.py supports Apache-2.0 bases",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "a --licence-kind apache|lfm option (default lfm) selects the LICENSE first-line check, card front matter (license: apache-2.0), NOTICE text naming the base publisher, and required phrases; the LFM path is byte-for-byte unchanged",
+        "tests: Apache bundle with a non-Apache LICENSE is refused; LFM bundle without LFM terms still refused; existing tests pass"
+      ],
+      "deps": [],
+      "covers": [
+        "c11",
+        "h12"
+      ],
+      "instruction": "Files: scripts/lfm-finetune/release_bundle.py and tests/test_lfm_finetune_release_bundle.py only. Keep the chat-template equality check and TEACHERS handling."
+    },
+    {
+      "id": "t6",
+      "summary": "dataset_bundle.py takes teacher models from the run, Apache-only mode",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "ROLE_MODELS comes from a run file/flag instead of a hard-coded dict; --apache-only refuses a bundle naming any non-Apache teacher",
+        "manifest.json has source, origin and per-role teacher fields on every record (test asserts 0 missing); card lists each teacher and licence and discloses that reviewer B is also the corrector when that is so"
+      ],
+      "deps": [],
+      "covers": [
+        "c14",
+        "h15"
+      ],
+      "instruction": "Files: scripts/lfm-finetune/dataset_bundle.py and tests/test_lfm_finetune_dataset_bundle.py only."
+    },
+    {
+      "id": "t7",
+      "summary": "Pre-upload scan for bundles",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "new scripts/lfm-finetune/scan_bundle.py scans every text file in a folder with scan-secrets rules plus nvsh.redact, writes scan.json with the folder's content hash and findings, exits non-zero on any finding",
+        "a verify mode refuses when the folder's current hash differs from scan.json's; tests cover a clean folder, a planted token and a modified-after-scan folder"
+      ],
+      "deps": [],
+      "covers": [
+        "c47",
+        "h31"
+      ],
+      "instruction": "New files only: scripts/lfm-finetune/scan_bundle.py, tests/test_lfm_finetune_scan_bundle.py. Import scan rules from scripts/scan-secrets.py by path rather than duplicating them if feasible."
+    },
+    {
+      "id": "t8",
+      "summary": "Shared metrics module for the harness",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "new scripts/lfm-finetune/metrics.py computes from a predictions JSONL: right proposals n/N and %, escalation recall and precision, false-positive tool calls over explain/escalate-expected items, wrong mutating, invalid outputs, ECE (10 equal-width bins), Brier, tokens generated, time to first decision",
+        "tests on hand-computed fixtures for every metric, including ECE/Brier and the abstain = escalate mapping; a documented mapping to issue 46's tool/abstain JSON is emitted for the report"
+      ],
+      "deps": [],
+      "covers": [
+        "c16",
+        "h17",
+        "c34",
+        "h24",
+        "c35",
+        "h25",
+        "c33",
+        "h23"
+      ],
+      "instruction": "New files only: scripts/lfm-finetune/metrics.py and its test. Define the predictions JSONL schema here (entry id, expected, outcome, operation, arguments, candidate distribution, tokens, ttfd_ms, latency_ms). Never switch on an operation name."
+    },
+    {
+      "id": "t9",
+      "summary": "Missing-candidate evaluation slice",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "new scripts/lfm-finetune/eval_slices.py builds, from a split file, a slice where each operation-expected entry's gold operation is removed from its candidate set (expected outcome: escalate), text unchanged",
+        "tests assert text is byte-identical and candidate sets differ by exactly the gold operation"
+      ],
+      "deps": [],
+      "covers": [
+        "c46",
+        "h30"
+      ],
+      "instruction": "New files only. Candidates come from nvsh/ops/table.py via the nvsh package, not a copy."
+    },
+    {
+      "id": "t10",
+      "summary": "Track B candidate scorer and its trainer",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "new scripts/lfm-finetune/scorer.py scores every candidate (each table operation plus explain and escalate) for one request from next-token logprobs over distinct label tokens and returns a normalised distribution; arguments for a chosen operation come from nvsh's deterministic grounding (decision c52)",
+        "new scripts/lfm-finetune/train_scorer.py trains a LoRA with cross-entropy restricted to the candidate label tokens, from the same split files; seeded and reproducible",
+        "tests with a fake model: distribution sums to 1, label tokens are distinct single tokens for the Qwen tokenizer (skip if absent), training loss decreases on a toy set"
+      ],
+      "deps": [],
+      "covers": [
+        "c30",
+        "h3",
+        "c35",
+        "h25"
+      ],
+      "instruction": "New files only: scorer.py, train_scorer.py and their tests. Look at nvsh/tiers/toolchat.py score_next_token and router.py calibrated_logit for the serving-side pattern; reuse, do not modify nvsh/."
+    },
+    {
+      "id": "t11",
+      "summary": "augment.py re-review mode (reviewer B only)",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "a --rereview mode reads stored accepted+rejected candidates, reuses their generator/corrector text, calls only REVIEWER_B, and re-derives acceptance from the stored reviewer A verdict plus the new B verdict; records the new model id in models.reviewer_b",
+        "a --limit/--sample N option supports the non-thinking pilot and prints agreement with the stored reviewer B verdicts; tests with a fake caller"
+      ],
+      "deps": [],
+      "covers": [
+        "c14"
+      ],
+      "instruction": "Files: scripts/lfm-finetune/augment.py and tests/test_lfm_finetune_augment.py only. Decisions c38 and c41 describe the run."
+    },
+    {
+      "id": "t12",
+      "summary": "Quantization and healing tooling",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "new scripts/lfm-finetune/quantize.py builds a train-side-only calibration set (refuses any val/test source_id), runs GGUF conversion + imatrix + Q4_K_M (text-only, no mmproj) and INT4 AWQ export, recording tool versions",
+        "a heal_needed(bf16, quant) function returns true when right proposals drop by more than 3 points or a new wrong mutating proposal appears (decisions c42, c43); tests cover it and the calibration-set refusal"
+      ],
+      "deps": [],
+      "covers": [
+        "c44",
+        "h27"
+      ],
+      "instruction": "New files only: quantize.py and its test. External tools (llama.cpp convert/quantize, llm-compressor) are invoked as subprocesses with paths from env; tests do not run them."
+    },
+    {
+      "id": "t13",
+      "summary": "measure.py writes the shared predictions file for Qwen serving",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "measure.py writes predictions JSONL in metrics.py's schema (tool-call outcome, logprob-derived candidate distribution where the engine returns logprobs, tokens generated, time to first decision) and scores it with metrics.py",
+        "requests carry chat_template_kwargs enable_thinking=false when configured; a non-empty think block in any output is counted and reported (must be 0)",
+        "the missing-candidate slice and ctx (2048/4096) are selectable; the run record names ctx, engine, image digest and tool_call_parser; existing measure tests pass"
+      ],
+      "deps": [
+        "t8",
+        "t9"
+      ],
+      "covers": [
+        "c16",
+        "h17",
+        "c6",
+        "h8",
+        "c18",
+        "h18"
+      ],
+      "instruction": "Files: scripts/lfm-finetune/measure.py, measure_skills.py and their tests only. Keep the --final refusal on the test side."
+    },
+    {
+      "id": "t14",
+      "summary": "pipeline.sh stages and Qwen env example",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "pipeline.sh gains stages rereview, filter-variations, train-scorer, scan, quantize, heal and a guarded upload that refuses without a verified scan.json and always creates repos private",
+        "training stages run under a hard memory cap from the env file (container --memory or systemd-run MemoryMax) and log free memory before and during the run; a new pipeline-qwen.env.example pins BASE=Qwen/Qwen3.5-0.8B and BASE_REV=2fc06364715b967f1860aea9cf38778875588b17, REPO names under jetson-ai-lab/qwen3.5-0.8b-nvsh-*",
+        "shellcheck-clean; a dry-run test lists every stage for both env examples"
+      ],
+      "deps": [
+        "t4",
+        "t7",
+        "t11",
+        "t12",
+        "t10"
+      ],
+      "covers": [
+        "c3",
+        "c49",
+        "h33",
+        "c48",
+        "h32"
+      ],
+      "instruction": "Files: scripts/lfm-finetune/pipeline.sh, pipeline.env.example (unchanged LFM defaults), new pipeline-qwen.env.example, and a small test. No secrets or hosts in the example; key names only."
+    },
+    {
+      "id": "t15",
+      "summary": "Run: Qwen model and serving spike on spark",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "Qwen3.5-0.8B at 2fc06364 is downloaded; the real-tokenizer tests of t2/t3 run (not skipped) and pass; unsloth loads it for text-only LoRA (or the fallback path is recorded)",
+        "a vLLM image supporting qwen3_5 is pinned by digest in the measure config with an explicit tool_call_parser; stock serves and one tool-call request per outcome parses; image digest and vLLM version recorded"
+      ],
+      "deps": [
+        "t2",
+        "t3",
+        "t1"
+      ],
+      "covers": [
+        "c8",
+        "h10"
+      ],
+      "instruction": "Operational task on spark. Resolve the frame parks about cached weights and the vision tower here where possible; file a deviation if the pinned image cannot serve qwen3_5."
+    },
+    {
+      "id": "t16",
+      "summary": "Run: quantization stack spike",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "a llama.cpp build that converts and runs a Qwen3.5-0.8B Q4_K_M GGUF with correct output on spark (and AGX Orin) is identified by commit; llm-compressor (or equivalent) AWQ on stock either works and serves in vLLM on GB10, or the failure is recorded and AWQ is marked not viable"
+      ],
+      "deps": [
+        "t12"
+      ],
+      "covers": [
+        "c24",
+        "h22"
+      ],
+      "instruction": "Stock model only; nothing trained yet. Record every tool version. This resolves the llama.cpp/AWQ parks or leaves them as documented risks."
+    },
+    {
+      "id": "t17",
+      "summary": "Run: sealed held-out entries",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "fresh held-out entries are drafted by an Apache-2.0 model that is not one of the pipeline's teachers, from the operation table only, and reviewed by the operator; the file's hash is recorded; the agent does not read their content"
+      ],
+      "deps": [],
+      "covers": [
+        "c13",
+        "h14"
+      ],
+      "instruction": "Needs the operator. Ask which drafting model to use (Qwen3.5-4B is cached on spark and is Apache-2.0 and not a teacher). Store where the operator decides (held-out.json policy allows it). Decision c51."
+    },
+    {
+      "id": "t18",
+      "summary": "Run: reviewer-B re-review with Qwen 3.8 27B",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "the pilot (~150 candidates, non-thinking) is run and its agreement with stored Nemotron verdicts and the threshold used are logged before the full run; the full re-review then covers every stored nvsh candidate",
+        "no accepted record names Nemotron as any role afterwards"
+      ],
+      "deps": [
+        "t11"
+      ],
+      "covers": [
+        "c14",
+        "h15"
+      ],
+      "instruction": "Decisions c38 and c41. Runs against the gateway before any training (c40)."
+    },
+    {
+      "id": "t19",
+      "summary": "Run: re-split, filter, augment new train sources, assemble and freeze",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "split.py runs with a new recorded seed; variations of sources that left the train side are dropped; new train sources are augmented through the all-Apache pipeline; old issue-39 test entries are excluded from training (--exclude)",
+        "leakage checks pass: no val/test/held-out entry or near-duplicate in training; jetson_skills scan clean; split file hashes recorded in the run log and copied to spark2 byte-identical"
+      ],
+      "deps": [
+        "t4",
+        "t6",
+        "t14",
+        "t17",
+        "t18"
+      ],
+      "covers": [
+        "c12",
+        "h13",
+        "c13",
+        "h14",
+        "c45",
+        "h29",
+        "c15",
+        "h16"
+      ],
+      "instruction": "Decisions c37, c40. After this task the data is frozen; any later change is a deviation."
+    },
+    {
+      "id": "t20",
+      "summary": "Run: set up spark2 for Track B",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "spark2 has a venv built from requirements-train.txt (versions identical to spark's), Qwen weights at the pinned revision, and the pipeline checkout; a short capped dry run shows the memory cap enforced and no model-gear container restarting"
+      ],
+      "deps": [
+        "t1",
+        "t14"
+      ],
+      "covers": [
+        "c49",
+        "h33",
+        "c22",
+        "h21",
+        "h34"
+      ],
+      "instruction": "Operational task over ssh spark2. Never stop or modify the model-gear containers."
+    },
+    {
+      "id": "t21",
+      "summary": "Run: stock baseline on validation and the clean test side",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "stock Qwen3.5-0.8B at 2fc06364 is measured with the shared harness on validation and, once, on the clean test side and held-out slice, at 2K and 4K, before any tuned run is scored; run ids recorded"
+      ],
+      "deps": [
+        "t13",
+        "t15",
+        "t19"
+      ],
+      "covers": [
+        "c3",
+        "h6"
+      ],
+      "instruction": "The stock test-side run is the only test-side run before t-final. Also score the 104 Jetson skills evals once for stock, with the margin for tuned runs written first (c20)."
+    },
+    {
+      "id": "t22",
+      "summary": "Run: Track A SFT on spark, tuned on validation",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "Track A LoRA runs are chosen on validation only (epochs, lr, rank re-tuned for 0.8B), each run logged; 2K and 4K variants differ only in max-length/ctx; the chosen checkpoint's recipe is committed in the env file"
+      ],
+      "deps": [
+        "t21",
+        "t2",
+        "t3"
+      ],
+      "covers": [
+        "c20",
+        "h20",
+        "c18",
+        "h18",
+        "c22",
+        "h21"
+      ],
+      "instruction": "Validation side only; never read test. Stop and file a lapse if the test side is read."
+    },
+    {
+      "id": "t23",
+      "summary": "Run: Track B scorer training on spark2, tuned on validation",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "Track B LoRA runs are chosen on validation (accuracy and ECE), under the memory cap, each run logged; model-gear restart counts unchanged across every run"
+      ],
+      "deps": [
+        "t21",
+        "t10",
+        "t20"
+      ],
+      "covers": [
+        "c20",
+        "h20",
+        "c22",
+        "h21",
+        "c49",
+        "h33"
+      ],
+      "instruction": "spark2 only; the gateway is not used during training."
+    },
+    {
+      "id": "t24",
+      "summary": "Run: final test-side measurement, once per checkpoint",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "stock, Track A and Track B (bf16) are each scored exactly once on the clean test side, held-out entries and the missing-candidate slice, at 2K on a quiet spark; every success bar is reported pass/fail with n/N",
+        "Jetson skills evals scored once per tuned checkpoint against the pre-written margin"
+      ],
+      "deps": [
+        "t22",
+        "t23"
+      ],
+      "covers": [
+        "h1",
+        "c33",
+        "h23",
+        "c34",
+        "h24",
+        "c35",
+        "h25",
+        "c36",
+        "h26",
+        "c46",
+        "h30"
+      ],
+      "instruction": "Unseal the held-out file only here. Any retry of a test-side run is a deviation."
+    },
+    {
+      "id": "t25",
+      "summary": "Run: quantize, measure and conditionally heal the best checkpoint(s)",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "Q4_K_M GGUF (llama-server) and INT4 AWQ (vllm, if t16 found it viable) of the best checkpoint(s) are measured with the same harness; heal runs only when heal_needed is true, with its trigger logged first; calibration data is train-side only",
+        "every quant row names serving stack + version; quant vs bf16 delta shown; bars c33-c36 and the 3-point margin reported"
+      ],
+      "deps": [
+        "t24",
+        "t16",
+        "t12"
+      ],
+      "covers": [
+        "c44",
+        "h27",
+        "c24",
+        "h22"
+      ],
+      "instruction": "Decisions c42, c43. A heal run changes weights, so its re-measurement is a new checkpoint's single test-side run."
+    },
+    {
+      "id": "t26",
+      "summary": "Run: edge and K8s-profile check",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "the best quantized build runs on AGX Orin (standing in for Orin Nano, stated as such per assumption c23) and under a CPU-only or small-GPU K8s-style resource limit; latency and memory measured there, stack versions recorded"
+      ],
+      "deps": [
+        "t25"
+      ],
+      "covers": [
+        "c32",
+        "h5"
+      ],
+      "instruction": "Read-only use of ssh orin beyond the model files; nothing installed system-wide."
+    },
+    {
+      "id": "t27",
+      "summary": "Run: build, scan and privately upload bundles",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "release bundles (bf16, GGUF, AWQ) and the dataset bundle build with the Apache licence checks, pass scan_bundle.py, and upload PRIVATE to jetson-ai-lab/qwen3.5-0.8b-nvsh-* after the operator is asked; fetched back byte-identical",
+        "no repo is made public in this task; public visibility waits for the operator's per-repo approval"
+      ],
+      "deps": [
+        "t25",
+        "t5",
+        "t6",
+        "t7"
+      ],
+      "covers": [
+        "c11",
+        "h12",
+        "c14",
+        "h15",
+        "c47",
+        "h31",
+        "c48",
+        "h32"
+      ],
+      "instruction": "Ask the operator before any upload (issue 39 t15 precedent). Use grant run --inject for the HF token; never print it."
+    },
+    {
+      "id": "t28",
+      "summary": "Report: comparison table, recommendation and guide",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "a dated docs/benchmarks page holds the comparison table (stock, A, B, quants; accuracy, abstention, calibration, latency, memory, 2K vs 4K, edge) with run ids and a recommendation for the next Tool-Jev iteration; issue-39 figures quoted from the committed page and marked upper bound (l5)",
+        "docs/lfm-finetune.md (or a sibling guide) documents the Qwen recipe from the run log; scan-secrets clean; no home paths or private hosts; markdownlint clean"
+      ],
+      "deps": [
+        "t26",
+        "t27"
+      ],
+      "covers": [
+        "c1",
+        "c29",
+        "h2",
+        "c30",
+        "h3",
+        "c31",
+        "h4",
+        "c32",
+        "h5",
+        "c15",
+        "h16"
+      ],
+      "instruction": "Every size/memory claim cites a run. Keep the skills-evals boundary (test-only, CC-BY attribution if a skills-tuned model is ever published)."
+    },
+    {
+      "id": "t29",
+      "summary": "PR hygiene: version bump, nvsh diff check, part of #46",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "git diff main -- nvsh/ shows no runtime change beyond pins.json (if any); version bumped with a CHANGELOG entry; PR body says 'part of #46' and closes neither #39 nor #46; CI green"
+      ],
+      "deps": [
+        "t28"
+      ],
+      "covers": [
+        "c9",
+        "h11",
+        "c19",
+        "h19"
+      ],
+      "instruction": "Use /version-bump and the cicd skill; then /validate-delivery and /summarize-delivery before /cicd per the standing flow."
+    }
+  ],
+  "risks": [
+    {
+      "id": "r1",
+      "text": "spark2 has about 30 GB free; Qwen's 248K vocabulary makes full-logit cross-entropy large (about 4 GB per 4K-token sequence in fp32), so Track B needs a small batch, chunked/fused loss or restricted-label loss to fit under the cap",
+      "kind": "unknown_nonblocking",
+      "task_id": "t23",
+      "resolved": false,
+      "resolution": ""
+    },
+    {
+      "id": "r2",
+      "text": "No non-teacher Apache-2.0 drafting model is served today (spark2's 'hand' is LFM2.5-1.2B, not Apache); Qwen3.5-4B is cached on spark but is the student's own family \u2014 the operator picks at t17",
+      "kind": "unknown_nonblocking",
+      "task_id": "t17",
+      "resolved": false,
+      "resolution": ""
+    },
+    {
+      "id": "r3",
+      "text": "vLLM's Qwen3.5 XML tool parsing is still being patched upstream; a parser bug would read as model error in Track A measurements \u2014 t15's per-outcome smoke test must pass before any measurement",
+      "kind": "unknown_nonblocking",
+      "task_id": "t15",
+      "resolved": false,
+      "resolution": ""
+    },
+    {
+      "id": "r4",
+      "text": "AWQ for the Gated-DeltaNet hybrid and INT4 kernels on GB10 may not work; then the INT4 deliverable is reported as not viable rather than forced (t16)",
+      "kind": "unknown_nonblocking",
+      "task_id": "t16",
+      "resolved": false,
+      "resolution": ""
+    },
+    {
+      "id": "r5",
+      "text": "The held-out drafting (t17) and every upload (t27) need the operator in the loop; waves stall there until they respond",
+      "kind": "follow_up",
+      "task_id": null,
+      "resolved": false,
+      "resolution": ""
+    }
+  ],
+  "obligations": []
+}
