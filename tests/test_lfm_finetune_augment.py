@@ -1620,3 +1620,33 @@ def test_a_skill_seed_without_a_body_keeps_the_description_prompt() -> None:
     )
     _, user = module.generator_prompt(seed, 3)
     assert "documentation" not in user and "D." in user
+
+
+def test_a_request_naming_any_skill_identifier_is_caught() -> None:
+    module = _module()
+    names = ("jetson-headless-mode", "jetson-memory-audit")
+    assert module.names_skill_identifier("I ran jetson-memory-audit first", names) == (
+        "jetson-memory-audit"
+    )
+    assert module.names_skill_identifier("try jetson_headless_mode", names) == (
+        "jetson-headless-mode"
+    )
+    assert module.names_skill_identifier("audit my Jetson memory", names) == ""
+    assert module.names_skill_identifier("jetson-memory-auditor", names) == ""
+
+
+def test_skill_seeds_know_every_skill_in_their_file(tmp_path) -> None:
+    import json
+
+    module = _module()
+    tools = tmp_path / "tools.json"
+    tools.write_text(
+        json.dumps(
+            [
+                {"skill": "b-skill", "repo": "device", "tool": {"function": {"description": "B"}}},
+                {"skill": "a-skill", "repo": "device", "tool": {"function": {"description": "A"}}},
+            ]
+        )
+    )
+    seeds = module.load_seeds(tools, side="train")
+    assert all(seed.skill_names == ("a-skill", "b-skill") for seed in seeds)

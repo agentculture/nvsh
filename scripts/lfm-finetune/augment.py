@@ -102,7 +102,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable
 
@@ -254,6 +254,10 @@ class Seed:
     #: For a skill seed from ``bodies.json``: an excerpt of the skill's
     #: SKILL.md, so requests can carry the specific details users give.
     context: str = ""
+    #: For a skill seed: every skill identifier in the seed file. A request
+    #: naming any of them ("I ran jetson-memory-audit") is rejected, since
+    #: users describe tasks rather than name the router's tools.
+    skill_names: tuple[str, ...] = ()
 
 
 def _refuse_if_eval(path: Path, records: list[Any]) -> None:
@@ -399,7 +403,8 @@ def load_seeds(path: Path, side: str | None = None) -> list[Seed]:
     _refuse_if_eval(path, records)
 
     if _looks_like_skill_records(records):
-        return [_seed_from_skill_record(r, side) for r in records]
+        names = tuple(sorted({str(r["skill"]) for r in records}))
+        return [replace(_seed_from_skill_record(r, side), skill_names=names) for r in records]
 
     resolved_side = _resolve_side(path, header, side)
     return [_seed_from_split_entry(r, resolved_side) for r in records]
@@ -489,7 +494,8 @@ GENERATOR_SYSTEM_SKILL = (
     "router which capability should handle a request. You are given the "
     "description of one capability. Write one natural user request that this "
     "capability -- and only this capability -- would answer. Do not use the "
-    "capability's identifier; describing the task in ordinary words is fine. "
+    "capability's identifier, or the identifier of any tool, skill or script; "
+    "describing the task in ordinary words is fine. "
     "Reply with only the request, nothing else."
 )
 
@@ -944,6 +950,17 @@ def names_internal_operation(text: str) -> str:
     return ""
 
 
+def names_skill_identifier(text: str, names: tuple[str, ...]) -> str:
+    """The first skill identifier in *names* that *text* names (hyphen or
+    underscore form), or "" if none."""
+    lowered = text.lower()
+    for name in names:
+        for form in {name.lower(), name.lower().replace("-", "_")}:
+            if re.search(rf"(?<![a-z0-9_-]){re.escape(form)}(?![a-z0-9_-])", lowered):
+                return name
+    return ""
+
+
 def _variation_number(variation_id: str) -> int:
     """The N in ``<source_id>~vN``; 0 when the id has no such suffix."""
     _, _, tail = variation_id.rpartition("~v")
@@ -989,7 +1006,9 @@ def _process_variation(
         "reviewer_b": {"accept": accept_b, "reason": reason_b},
     }
 
-    leaked = names_internal_operation(corrected_text)
+    leaked = names_internal_operation(corrected_text) or names_skill_identifier(
+        corrected_text, seed.skill_names
+    )
     if leaked:
         # Deterministic, whatever the reviewers said: a request that names an
         # internal operation teaches the model that users talk in identifiers.
