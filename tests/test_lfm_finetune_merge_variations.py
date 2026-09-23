@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
 
 import pytest
@@ -44,7 +45,7 @@ def _variation(text: str, **overrides) -> dict:
 
 def test_variations_are_appended_with_their_source_id() -> None:
     merged, counts = _module().merge(_split(), [_variation("How busy is the GPU?")])
-    assert counts == {"kept": 1, "duplicate": 0, "leaked": 0}
+    assert counts == {"kept": 1, "duplicate": 0, "leaked": 0, "off_split": 0}
     added = merged["entries"][-1]
     assert added["source_id"] == "g1"
     assert "models" not in added
@@ -55,7 +56,7 @@ def test_variations_are_appended_with_their_source_id() -> None:
 def test_a_repeat_of_the_source_or_an_earlier_variation_is_dropped() -> None:
     variations = [_variation("show gpu  LOAD"), _variation("GPU busy?"), _variation("gpu busy?")]
     _, counts = _module().merge(_split(), variations)
-    assert counts == {"kept": 1, "duplicate": 2, "leaked": 0}
+    assert counts == {"kept": 1, "duplicate": 2, "leaked": 0, "off_split": 0}
 
 
 def test_a_non_train_split_is_refused() -> None:
@@ -87,7 +88,7 @@ def test_a_variation_with_a_different_answer_is_refused() -> None:
 def test_a_repeat_differing_only_in_punctuation_is_dropped() -> None:
     variations = [_variation("GPU busy?"), _variation("gpu busy")]
     _, counts = _module().merge(_split(), variations)
-    assert counts == {"kept": 1, "duplicate": 1, "leaked": 0}
+    assert counts == {"kept": 1, "duplicate": 1, "leaked": 0, "off_split": 0}
 
 
 def _supplement(header: str = "Split 'train' of train-supplement.json.") -> dict:
@@ -142,7 +143,7 @@ def test_a_variation_repeating_a_validation_or_test_entry_is_dropped_as_leaked()
     exclude = module.excluded_texts([_side("Is the GPU busy right now?")])
     variations = [_variation("is the GPU busy, right now"), _variation("GPU busy?")]
     merged, counts = module.merge(_split(), variations, exclude)
-    assert counts == {"kept": 1, "duplicate": 0, "leaked": 1}
+    assert counts == {"kept": 1, "duplicate": 0, "leaked": 1, "off_split": 0}
     assert merged["entries"][-1]["text"] == "GPU busy?"
 
 
@@ -167,6 +168,69 @@ def test_the_committed_supplement_repeats_no_validation_or_test_entry() -> None:
     supplement = _json.loads((_SCRIPT.parent / "train-supplement.json").read_text())
     merged, count = module.add_supplement(_split(), supplement, exclude)
     assert count == len(merged["entries"]) - 1
+
+
+def test_filter_to_split_drops_and_counts_variations_whose_source_left_the_split() -> None:
+    module = _module()
+    split = _split()
+    variations = [
+        _variation("How busy is the GPU?"),  # source_id=g1, in the split
+        _variation("GPU is hot?", source_id="g9"),  # source_id=g9, not in the split
+    ]
+    merged, counts = module.merge(split, variations, filter_to_split=True)
+    # One kept (the valid variation)
+    assert counts["kept"] == 1
+    assert counts["off_split"] == 1
+    assert counts["duplicate"] == 0
+    assert counts["leaked"] == 0
+    # Merged has one more entry than the original split
+    assert len(merged["entries"]) == len(split["entries"]) + 1
+    # The dropped variation's text does not appear
+    merged_texts = {entry["text"] for entry in merged["entries"]}
+    assert "GPU is hot?" not in merged_texts
+
+
+def test_without_filter_an_off_split_variation_still_raises() -> None:
+    module = _module()
+    split = _split()
+    variations = [
+        _variation("How busy is the GPU?"),
+        _variation("GPU is hot?", source_id="g9"),
+    ]
+    with pytest.raises(ValueError, match="is not in the split"):
+        module.merge(split, variations, filter_to_split=False)
+
+
+def test_main_prints_off_split_count(tmp_path, capsys) -> None:
+    module = _module()
+    # Write split file
+    split_data = _split()
+    split_path = tmp_path / "split.json"
+    split_path.write_text(json.dumps(split_data), encoding="utf-8")
+    # Write accepted variations: one valid, one off-split
+    accepted_path = tmp_path / "accepted.jsonl"
+    accepted_path.write_text(
+        json.dumps(_variation("How busy is the GPU?")) + "\n",
+        encoding="utf-8",
+    )
+    accepted_path.write_text(
+        json.dumps(_variation("GPU is hot?", source_id="g9")) + "\n",
+        encoding="utf-8",
+    )
+    out_path = tmp_path / "out.json"
+    module.main(
+        [
+            "--split",
+            str(split_path),
+            "--accepted",
+            str(accepted_path),
+            "--out",
+            str(out_path),
+            "--filter-to-split",
+        ]
+    )
+    captured = capsys.readouterr()
+    assert "off_split=1" in captured.out
 
 
 def _load(name: str):
