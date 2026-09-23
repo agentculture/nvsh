@@ -99,39 +99,9 @@ aug_env() {
 
 base_snapshot() { echo "$HF_CACHE/hub/models--${BASE%%/*}--${BASE##*/}/snapshots/$BASE_REV"; }
 
-free_mem_line() {
-  # One free-memory line, unified-memory-friendly (Jetson/GB10 share system
-  # RAM with the GPU, so "free" here is the number that matters).
-  free -h | awk -v ts="$(date -u +%FT%TZ)" '/^Mem:/{print ts, "free="$4, "avail="$7}'
-}
 
-run_capped() {
-  # Run a heavy local stage (training or quantization) under a hard OS-level
-  # memory cap, logging free memory before the run and every 60s while it
-  # runs. *run_dir/mem.log* and *run_dir/train.log* are both under $1.
-  # systemd-run's --scope + MemoryMax is the cap; a stage already launched
-  # inside a container passes its own --memory instead and TRAIN_MEMORY_MAX
-  # is unused there, but it is still required so a bare host never trains
-  # uncapped.
-  local run_dir=$1; shift
-  : "${TRAIN_MEMORY_MAX:?}"
-  local mem_log="$run_dir/mem.log" out_log="$run_dir/train.log"
-  free_mem_line >> "$mem_log"
-  ( while sleep 60; do free_mem_line >> "$mem_log"; done ) &
-  local watcher=$!
-  local status
-  set +e
-  if command -v systemd-run >/dev/null 2>&1; then
-    systemd-run --user --scope -p "MemoryMax=$TRAIN_MEMORY_MAX" --quiet -- "$@" 2>&1 | tee "$out_log"
-  else
-    "$@" 2>&1 | tee "$out_log"
-  fi
-  status=${PIPESTATUS[0]}
-  set -e
-  kill "$watcher" 2>/dev/null || true
-  wait "$watcher" 2>/dev/null || true
-  return "$status"
-}
+# shellcheck source=scripts/lfm-finetune/capped.sh
+source "$(dirname "${BASH_SOURCE[0]}")/capped.sh"
 
 case "$STAGE" in
   split)

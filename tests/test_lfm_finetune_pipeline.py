@@ -48,8 +48,13 @@ def _run(env_file: Path, tmp_path: Path, *stage_args: str) -> subprocess.Complet
 def test_shellcheck_is_clean_on_pipeline_sh() -> None:
     if shutil.which("shellcheck") is None:
         pytest.skip("shellcheck not installed")
+    capped = _PIPELINE.parent / "capped.sh"
     result = subprocess.run(
-        ["shellcheck", str(_PIPELINE)], capture_output=True, text=True, timeout=30
+        ["shellcheck", "-x", str(_PIPELINE), str(capped)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        cwd=_REPO_ROOT,
     )
     assert result.returncode == 0, result.stdout + result.stderr
 
@@ -173,3 +178,46 @@ def test_neither_env_example_names_a_host_or_a_secret() -> None:
                 f"{env_file.name}: {line!r} looks like it names a token directly, "
                 "not the variable that holds one"
             )
+
+
+_CAPPED = _REPO_ROOT / "scripts" / "lfm-finetune" / "capped.sh"
+_HOG = "b = bytearray(600 * 1024 * 1024)\nfor i in range(0, len(b), 4096):\n    b[i] = 1\n"
+
+
+def _user_scope_works() -> bool:
+    if shutil.which("systemd-run") is None:
+        return False
+    probe = subprocess.run(
+        ["systemd-run", "--user", "--scope", "-q", "true"], capture_output=True, timeout=30
+    )
+    return probe.returncode == 0
+
+
+@pytest.mark.skipif(not _user_scope_works(), reason="needs a systemd user session")
+def test_run_capped_kills_a_process_over_the_cap_even_with_swap(tmp_path: Path) -> None:
+    """The cap is hard: RAM plus swap (c49). MemoryMax alone let 600M spill to swap."""
+    hog = tmp_path / "hog.py"
+    hog.write_text(_HOG, encoding="utf-8")
+    script = f'source "{_CAPPED}"; TRAIN_MEMORY_MAX=200M run_capped "{tmp_path}" python3 "{hog}"'
+    result = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=120)
+    assert result.returncode != 0
+    assert (tmp_path / "mem.log").read_text(encoding="utf-8").strip()
+
+
+@pytest.mark.skipif(not _user_scope_works(), reason="needs a systemd user session")
+def test_run_capped_lets_a_process_under_the_cap_finish(tmp_path: Path) -> None:
+    script = f'source "{_CAPPED}"; TRAIN_MEMORY_MAX=200M run_capped "{tmp_path}" true'
+    result = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=120)
+    assert result.returncode == 0
+
+
+def test_run_capped_refuses_to_run_uncapped_without_systemd_run(tmp_path: Path) -> None:
+    """No systemd-run and no declared container cap: refuse, never train uncapped."""
+    script = (
+        f'source "{_CAPPED}";'
+        ' command() { [ "$2" = systemd-run ] && return 1; builtin command "$@"; };'
+        f' TRAIN_MEMORY_MAX=200M run_capped "{tmp_path}" true'
+    )
+    result = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=60)
+    assert result.returncode != 0
+    assert "TRAIN_MEMORY_CAP=container" in result.stderr
