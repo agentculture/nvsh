@@ -53,6 +53,44 @@ def _token_ids_from_config(model_dir: Path) -> dict:
     return ids
 
 
+def _tokenizer_eos_id(model_dir: Path) -> int | None:
+    """The id of the tokenizer's own eos token (its chat end-of-turn), if it can be read.
+
+    Read from tokenizer_config.json's ``eos_token`` and tokenizer.json's
+    ``added_tokens`` -- no transformers needed. None when either is missing.
+    """
+    tok_config = model_dir / "tokenizer_config.json"
+    tok_json = model_dir / "tokenizer.json"
+    if not (tok_config.is_file() and tok_json.is_file()):
+        return None
+    eos = json.loads(tok_config.read_text(encoding="utf-8")).get("eos_token")
+    if isinstance(eos, dict):
+        eos = eos.get("content")
+    for token in json.loads(tok_json.read_text(encoding="utf-8")).get("added_tokens", []):
+        if token.get("content") == eos:
+            return token.get("id")
+    return None
+
+
+def _with_tokenizer_eos(ids: dict, model_dir: Path) -> dict:
+    """*ids* with the tokenizer's end-of-turn added to eos_token_id, first.
+
+    Qwen3.5's config.json names <|endoftext|> while its chat turn ends with
+    <|im_end|>; Qwen's own instruct generation configs list both, so a
+    consumer that trusts this file (HF generate, GGUF conversion) stops at
+    the end of the turn.
+    """
+    turn_end = _tokenizer_eos_id(model_dir)
+    if turn_end is None:
+        return ids
+    current = ids.get("eos_token_id")
+    listed = current if isinstance(current, list) else ([] if current is None else [current])
+    if turn_end in listed:
+        return ids
+    merged = [turn_end, *listed]
+    return {**ids, "eos_token_id": merged[0] if len(merged) == 1 else merged}
+
+
 def write(model_dir: Path, temperature: float = 0.0) -> dict:
     """Write or update *model_dir*'s generation_config.json for greedy decoding.
 
@@ -66,6 +104,7 @@ def write(model_dir: Path, temperature: float = 0.0) -> dict:
         payload = json.loads(gen_path.read_text(encoding="utf-8"))
     else:
         payload = _token_ids_from_config(model_dir)
+    payload = _with_tokenizer_eos(payload, model_dir)
     payload["temperature"] = temperature
     payload["do_sample"] = False
     gen_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")

@@ -226,3 +226,57 @@ def test_cli_stock_copy_refuses_without_force(tmp_path):
     assert module.main(["stock-copy", str(snapshot), str(out_dir)]) == 1
 
     assert module.main(["stock-copy", str(snapshot), str(out_dir), "--force"]) == 0
+
+
+def test_write_adds_the_tokenizers_end_of_turn_to_eos(tmp_path):
+    """Qwen3.5's config.json names <|endoftext|> but the chat turn ends with <|im_end|>.
+
+    Qwen's own instruct generation configs list both; a file naming only the
+    config's id lets a consumer that trusts it (HF generate, GGUF conversion)
+    run past the end of the turn.
+    """
+    module = _module()
+    _write_json(tmp_path / "config.json", {"text_config": {"eos_token_id": 248044}})
+    _write_json(tmp_path / "tokenizer_config.json", {"eos_token": "<|im_end|>"})
+    _write_json(
+        tmp_path / "tokenizer.json",
+        {
+            "added_tokens": [
+                {"id": 248044, "content": "<|endoftext|>"},
+                {"id": 248046, "content": "<|im_end|>"},
+            ]
+        },
+    )
+
+    module.write(tmp_path)
+
+    payload = json.loads((tmp_path / "generation_config.json").read_text(encoding="utf-8"))
+    assert payload["eos_token_id"] == [248046, 248044]
+
+
+def test_write_keeps_a_single_eos_when_the_tokenizer_agrees(tmp_path):
+    module = _module()
+    _write_json(tmp_path / "config.json", {"eos_token_id": 7})
+    _write_json(tmp_path / "tokenizer_config.json", {"eos_token": "</s>"})
+    _write_json(tmp_path / "tokenizer.json", {"added_tokens": [{"id": 7, "content": "</s>"}]})
+
+    module.write(tmp_path)
+
+    payload = json.loads((tmp_path / "generation_config.json").read_text(encoding="utf-8"))
+    assert payload["eos_token_id"] == 7
+
+
+def test_write_adds_the_end_of_turn_to_an_existing_file_too(tmp_path):
+    """A merged checkpoint may already carry a generation_config.json naming only <|endoftext|>."""
+    module = _module()
+    _write_json(tmp_path / "generation_config.json", {"eos_token_id": 248044, "top_k": 20})
+    _write_json(tmp_path / "tokenizer_config.json", {"eos_token": "<|im_end|>"})
+    _write_json(
+        tmp_path / "tokenizer.json", {"added_tokens": [{"id": 248046, "content": "<|im_end|>"}]}
+    )
+
+    module.write(tmp_path)
+
+    payload = json.loads((tmp_path / "generation_config.json").read_text(encoding="utf-8"))
+    assert payload["eos_token_id"] == [248046, 248044]
+    assert payload["top_k"] == 20
