@@ -25,6 +25,22 @@ are CC-BY-4.0 and are used as a test set only; nothing trained on them is
 published here. Training happens on development machines. **nvsh itself
 never trains and never uploads.**
 
+## Where the run stands (2026-09-23, about 18:50)
+
+- **Done:** the tooling is complete and live-checked. The sealed held-out
+  set is done: 69 entries, sha256 `5eb650f9...`.
+- **Running:** the reviewer-B re-review with thinking on, over 1,176
+  candidates. About 92% are accepted so far. One empty-reply error will be
+  retried by resuming.
+- **Next, data:** augment the 95 new train-side sources through the
+  all-Apache pipeline. Then filter and exclude (the new validation and test
+  sides, issue 39's old test side, the held-out texts), assemble, scan,
+  freeze with hashes, and copy to spark2.
+- **Then, models:** the stock baseline at 2K and 4K; Track A on spark and
+  Track B on spark2; one final run per checkpoint plus Track A's exact
+  calibration; quantization; the edge check on AGX Orin; a private upload
+  (with the operator's approval); the report; and a PR ("part of #46").
+
 ## What "successful" means
 
 The bars were fixed in the spec before any run
@@ -1128,6 +1144,36 @@ committed now (`3df700c`).
   were green. The cause is unknown.
 - **Whether stock meets any bar**: the t13 live check was a pipeline check,
   not the baseline run.
+
+## Ideas forward
+
+None of these has been done yet.
+
+1. **More data.** If data limits a result, generate more train-side data
+   through the same teachers and guards. The operator: "we can always
+   generate more data if needed".
+2. **LoRA on the linear-attention layers.** Compare adapters on the
+   Gated-DeltaNet projections with unsloth's default targets, on validation
+   (plan risk r9, ledger P6).
+3. **Latency.** bf16 decodes at about 10 ms per token, `Q4_K_M` at about
+   4.3 ms and AWQ at about 6 ms. The 250 ms bar may need a quantized build
+   (plan risk r10, ledger P8).
+4. **Measurement gaps.** `measure-skills` cannot measure the stock copy
+   until `measure_skills.py` can attach; it already has `--url`, which needs
+   wiring. The measure stages cannot name an AWQ build yet.
+5. **nvsh runtime follow-ups.** [Issue #50](https://github.com/agentculture/nvsh/issues/50)
+   (unparsed tool-call markup shown as an explanation). The managed launcher
+   also refuses a local model path and cannot pass extra vLLM arguments,
+   which is why d7 exists. Both are candidate follow-up issues.
+6. **The LFM2.5 side.** Check that LFM2.5's template ignores
+   `enable_thinking=false`. [`lfm-finetune.md`](lfm-finetune.md) still describes `measure-final` as
+   "stock and r1 back to back on the test side"; since d7 it measures one
+   model per call.
+7. **Track B serving.** Serve with vLLM `--max-logprobs` of at least 22, or
+   score in process (plan risk r8, ledger P20).
+8. **Reviewers.** Across two waves Codex found 15 real defects where the
+   qwen worker reviewer approved everything. Keep a strong second reviewer.
+   The lead's live checks on real data and tools found the rest.
 
 ## Run log (issue 46)
 
