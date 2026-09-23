@@ -1059,6 +1059,203 @@ def _process_variation(
     return {"accepted": accepted, "record": record}
 
 
+@dataclass
+class RereviewCounts:
+    """Counts for ``--rereview`` (t11, decisions c38/c41): only REVIEWER_B is
+    ever called; ``compared``/``agreed`` track how the fresh verdict lines up
+    with the stored one, which is what the non-thinking pilot (c41) reports."""
+
+    processed: int = 0
+    accepted: int = 0
+    rejected: int = 0
+    errors: int = 0
+    compared: int = 0
+    agreed: int = 0
+
+    def as_dict(self) -> dict[str, int]:
+        return {
+            "processed": self.processed,
+            "accepted": self.accepted,
+            "rejected": self.rejected,
+            "errors": self.errors,
+            "compared": self.compared,
+            "agreed": self.agreed,
+        }
+
+
+def _load_jsonl(path: Path) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    with open(path, encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            records.append(json.loads(line))
+    return records
+
+
+def load_rereview_candidates(paths: list[Path]) -> list[dict[str, Any]]:
+    """Load stored accepted+rejected records from *paths* (the ``--accepted-out``
+    / ``--rejected-out`` of a prior run), in file order. Each record is
+    returned exactly as stored -- validated only once a re-review is actually
+    attempted on it (see :func:`_require_stored_reviewer_a`)."""
+    records: list[dict[str, Any]] = []
+    for path in paths:
+        records.extend(_load_jsonl(path))
+    return records
+
+
+def _require_stored_reviewer_a(record: dict[str, Any]) -> tuple[bool, str]:
+    """The stored reviewer A verdict a re-review re-derives acceptance from.
+    Never re-asked -- only REVIEWER_B is called during a re-review."""
+    verdicts = record.get("verdicts")
+    reviewer_a = verdicts.get("reviewer_a") if isinstance(verdicts, dict) else None
+    if not isinstance(reviewer_a, dict) or "accept" not in reviewer_a:
+        raise ValueError(
+            f"{record.get('id', '?')}: no stored reviewer_a verdict to re-review against"
+        )
+    return bool(reviewer_a["accept"]), str(reviewer_a.get("reason", ""))
+
+
+def _stored_reviewer_b_accept(record: dict[str, Any]) -> bool | None:
+    """The old reviewer B verdict, for the pilot's agreement report -- ``None``
+    when the stored record has none (never an error: agreement reporting is
+    best-effort, unlike the required reviewer A verdict above)."""
+    verdicts = record.get("verdicts")
+    reviewer_b = verdicts.get("reviewer_b") if isinstance(verdicts, dict) else None
+    if not isinstance(reviewer_b, dict) or "accept" not in reviewer_b:
+        return None
+    return bool(reviewer_b["accept"])
+
+
+def _seed_from_stored_record(record: dict[str, Any]) -> Seed:
+    """Rebuild enough of a :class:`Seed` from a stored accepted/rejected
+    record to build :func:`reviewer_prompt` again. The generator and
+    corrector are never re-run -- the record's own ``text`` (already
+    generated and corrected) is reused as the request under review."""
+    expect = record["expect"]
+    seed_format = record.get("seed_format", "split")
+    corpus_fields = {key: record[key] for key in ("kind", "source", "class") if key in record}
+    needs_change_check = seed_format != "skills" and _needs_change_check(expect)
+    return Seed(
+        source_id=str(record.get("source_id", record.get("id", ""))),
+        seed_format=seed_format,
+        side=record.get("side"),
+        seed_text=record.get("text", ""),
+        expect=expect,
+        needs_change_check=needs_change_check,
+        corpus_fields=corpus_fields,
+    )
+
+
+def _process_rereview_candidate(
+    record: dict[str, Any], role: RoleConfig, caller: RoleCaller
+) -> dict[str, Any]:
+    """Re-review one stored candidate: call only REVIEWER_B on the record's
+    already-generated/corrected ``text``, then re-derive acceptance from the
+    stored reviewer A verdict plus this fresh reviewer B verdict."""
+    accept_a, reason_a = _require_stored_reviewer_a(record)
+    old_accept_b = _stored_reviewer_b_accept(record)
+
+    seed = _seed_from_stored_record(record)
+    system, user = reviewer_prompt(seed, record["text"])
+    accept_b, reason_b = _reviewer_verdict(role, system, user, caller)
+
+    accepted = accept_a and accept_b
+    models = dict(record.get("models", {}))
+    models[role.role] = role.model
+    new_record = dict(record)
+    new_record["models"] = models
+    new_record["verdicts"] = {
+        "reviewer_a": {"accept": accept_a, "reason": reason_a},
+        "reviewer_b": {"accept": accept_b, "reason": reason_b},
+    }
+    return {
+        "accepted": accepted,
+        "record": new_record,
+        "old_accept_b": old_accept_b,
+        "new_accept_b": accept_b,
+    }
+
+
+def run_rereview(
+    candidate_files: list[Path],
+    role: RoleConfig,
+    accepted_out: Path,
+    rejected_out: Path,
+    limit: int | None = None,
+    caller: RoleCaller = default_caller,
+    max_retries: int = DEFAULT_MAX_RETRIES,
+    backoff_base: float = DEFAULT_BACKOFF_BASE,
+    sleep_fn: Callable[[float], None] = time.sleep,
+    rand_fn: Callable[[], float] = random.random,
+) -> RereviewCounts:
+    """Re-review stored accepted+rejected candidates with REVIEWER_B only
+    (decisions c38/c41). Resumable like :func:`run_pipeline`: an id already
+    present in *accepted_out* or *rejected_out* is skipped. *limit* caps how
+    many candidates are attempted, which is what the non-thinking pilot
+    (about 150 candidates, c41) uses."""
+    candidates = load_rereview_candidates(candidate_files)
+    done = _existing_ids(accepted_out) | _existing_ids(rejected_out)
+    tasks = [record for record in candidates if record.get("id") not in done]
+    if limit is not None:
+        tasks = tasks[:limit]
+
+    retry_policy = RetryPolicy(
+        max_retries=max_retries, backoff_base=backoff_base, sleep_fn=sleep_fn, rand_fn=rand_fn
+    )
+    counts = RereviewCounts()
+
+    def caller_with_retry(role_config: RoleConfig, system: str, user: str) -> str:
+        return _call_with_retry(caller, role_config, system, user, retry_policy)
+
+    for record in tasks:
+        record_id = record.get("id", "?")
+        try:
+            outcome = _process_rereview_candidate(record, role, caller_with_retry)
+        except (
+            urllib.error.URLError,
+            TimeoutError,
+            OSError,
+            http.client.HTTPException,
+            KeyError,
+            ValueError,
+        ) as exc:
+            counts.errors += 1
+            print(f"error: {record_id}: {exc}", file=sys.stderr)
+            continue
+
+        counts.processed += 1
+        if outcome["accepted"]:
+            counts.accepted += 1
+            _append_jsonl(accepted_out, outcome["record"])
+        else:
+            counts.rejected += 1
+            _append_jsonl(rejected_out, outcome["record"])
+        done.add(record_id)
+
+        old_accept_b = outcome["old_accept_b"]
+        if old_accept_b is not None:
+            counts.compared += 1
+            if old_accept_b == outcome["new_accept_b"]:
+                counts.agreed += 1
+
+    return counts
+
+
+def _print_rereview_summary(counts: RereviewCounts, out: Any = None) -> None:
+    """One summary line: processed/accepted/rejected/errors, plus agreement
+    with the stored reviewer B verdicts (the pilot's own acceptance-rate
+    check, decision c41) as ``agreement=<agreed>/<compared>``."""
+    stream = out if out is not None else sys.stdout
+    print(
+        f"rereview: processed={counts.processed} accepted={counts.accepted} "
+        f"rejected={counts.rejected} errors={counts.errors} "
+        f"agreement={counts.agreed}/{counts.compared}",
+        file=stream,
+    )
+
+
 def _plan_tasks(
     seeds: list[Seed],
     per_source: int,
@@ -1229,7 +1426,25 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument("--per-source", type=int, default=3, help="variations to attempt per seed")
-    parser.add_argument("--limit", type=int, default=None, help="cap total variations (dry runs)")
+    parser.add_argument(
+        "--limit",
+        "--sample",
+        dest="limit",
+        type=int,
+        default=None,
+        help=(
+            "cap total variations attempted (dry runs), or candidates re-reviewed with "
+            "--rereview -- --sample is the same option, named for the non-thinking pilot (c41)"
+        ),
+    )
+    parser.add_argument(
+        "--rereview",
+        action="store_true",
+        help=(
+            "re-review stored accepted+rejected candidates (seed_files) with REVIEWER_B only, "
+            "reusing their generator/corrector text (decisions c38/c41)"
+        ),
+    )
     parser.add_argument("--accepted-out", default="accepted.jsonl")
     parser.add_argument("--rejected-out", default="rejected.jsonl")
     parser.add_argument(
@@ -1268,6 +1483,28 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     seed_paths = [Path(p) for p in args.seed_files]
+
+    if args.rereview:
+        try:
+            reviewer_b = load_role_config("REVIEWER_B")
+        except ConfigError as exc:
+            parser.error(str(exc))
+            return 2  # pragma: no cover - parser.error already exits
+        try:
+            counts = run_rereview(
+                candidate_files=seed_paths,
+                role=reviewer_b,
+                accepted_out=Path(args.accepted_out),
+                rejected_out=Path(args.rejected_out),
+                limit=args.limit,
+                max_retries=args.max_retries,
+                backoff_base=args.backoff_base,
+            )
+        except (ConfigError, ValueError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        _print_rereview_summary(counts)
+        return 0
 
     if args.dry_run:
         try:
