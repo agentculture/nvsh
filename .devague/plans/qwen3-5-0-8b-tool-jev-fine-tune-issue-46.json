@@ -5,7 +5,7 @@
   "schema_version": 5,
   "status": "exported",
   "created": "2026-09-23T08:50:51Z",
-  "updated": "2026-09-23T09:08:03Z",
+  "updated": "2026-09-23T11:53:40Z",
   "targets": [
     {
       "id": "c1",
@@ -1072,22 +1072,78 @@
       "text": "vLLM's Qwen3.5 XML tool parsing is still being patched upstream; a parser bug would read as model error in Track A measurements \u2014 t15's per-outcome smoke test must pass before any measurement",
       "kind": "unknown_nonblocking",
       "task_id": "t15",
-      "resolved": false,
-      "resolution": ""
+      "resolved": true,
+      "resolution": "t15 spike: qwen3_coder and qwen3_xml in the pinned vLLM round-trip all three outcomes exactly; qwen3_coder chosen"
     },
     {
       "id": "r4",
       "text": "AWQ for the Gated-DeltaNet hybrid and INT4 kernels on GB10 may not work; then the INT4 deliverable is reported as not viable rather than forced (t16)",
       "kind": "unknown_nonblocking",
       "task_id": "t16",
-      "resolved": false,
-      "resolution": ""
+      "resolved": true,
+      "resolution": "t16 spike 2026-09-23: AWQ W4A16 (llm-compressor 0.14.0) quantizes stock Qwen3.5-0.8B (GDN/vision/MTP left bf16, 1.1 GB) and serves on GB10 in the pinned vLLM with the Marlin kernel; Q4_K_M GGUF (llama.cpp 633733d) also works, 542 MB"
     },
     {
       "id": "r5",
       "text": "The held-out drafting (t17) and every upload (t27) need the operator in the loop; waves stall there until they respond",
       "kind": "follow_up",
       "task_id": null,
+      "resolved": false,
+      "resolution": ""
+    },
+    {
+      "id": "r6",
+      "text": "t2's answer span ends at tokenizer.eos_token_id (<|im_end|> for the plain Qwen3.5-0.8B tokenizer); unsloth's FastLanguageModel may change eos_token_id \u2014 t15 must check it on the unsloth-loaded tokenizer (a change makes answer_span fail loudly, not mis-mask)",
+      "kind": "unknown_nonblocking",
+      "task_id": "t15",
+      "resolved": true,
+      "resolution": "t15 spike 2026-09-23: unsloth FastLanguageModel keeps eos <|im_end|> (id 248046), same as the plain tokenizer"
+    },
+    {
+      "id": "r7",
+      "text": "Track B's arguments come from nvsh.ops.ground, which checks values against the LIVE machine's systemd services and docker containers (t10 tries the request's words); Track A's generated arguments are scored against gold. Argument metrics are only comparable if the harness grounds both tracks against one fixed, recorded machine snapshot \u2014 needs an operator decision before t21 scores anything",
+      "kind": "unknown_blocking",
+      "task_id": "t13",
+      "resolved": true,
+      "resolution": "Operator 2026-09-23: fixed recorded machine snapshot for both tracks (deviation recorded against t13)"
+    },
+    {
+      "id": "r8",
+      "text": "A served vLLM returns at most max-logprobs top candidates (default 20); Track B asks for 22 (18 labels + 4), so a label outside the top-k gets probability 0. Serve Track B with --max-logprobs >= 22 or score in-process; t13/t23 must record which",
+      "kind": "unknown_nonblocking",
+      "task_id": "t13",
+      "resolved": false,
+      "resolution": ""
+    },
+    {
+      "id": "r9",
+      "text": "unsloth's default LoRA targets on Qwen3.5-0.8B are the 6 full-attention layers' q/k/v/o plus every MLP (96 modules, 12.8M params, none on vision); the 18 Gated-DeltaNet linear-attention layers' own projections get no adapter. t22/t23 should compare default vs. adding the linear-attention projections on validation",
+      "kind": "unknown_nonblocking",
+      "task_id": "t22",
+      "resolved": false,
+      "resolution": ""
+    },
+    {
+      "id": "r10",
+      "text": "t15 spike: stock Qwen3.5-0.8B on the pinned vLLM image (0.26.1rc1.dev942, qwen3_coder parser, gpu util 0.08, ctx 4096) answers warm in about 450-490 ms for about 50 generated tokens (~10 ms/token), versus the c36 bar of 250 ms and LFM2.5-350M's 119 ms. Tuned answers may be shorter, but the hybrid Gated-DeltaNet decode path may simply be slower; t21 must measure it properly and t25's quantized builds may be needed to meet c36",
+      "kind": "unknown_nonblocking",
+      "task_id": "t21",
+      "resolved": false,
+      "resolution": ""
+    },
+    {
+      "id": "r11",
+      "text": "Qwen3.5-0.8B ships no generation_config.json and nvsh's Tier 2 chat request sets no temperature (only the router's one-token scoring does, toolchat.py:346), so vLLM samples at its default temperature 1.0 for stock and tuned Qwen alike; measurements would be noisy and unreproducible. Needs one serving-side fix applied equally to every Qwen checkpoint (a generation_config.json in the served model dir, or attach mode with --override-generation-config) \u2014 operator decision",
+      "kind": "unknown_blocking",
+      "task_id": "t21",
+      "resolved": true,
+      "resolution": "Operator 2026-09-23: ship generation_config.json (temperature 0) in every served Qwen model dir (deviation d3)"
+    },
+    {
+      "id": "r12",
+      "text": "t13 live check (stock Qwen on validation, attach mode, pinned vLLM, qwen3_coder): 0 of 66 predictions carried a Track A candidate distribution (45 were no_decision), so Track A's ECE/Brier would be empty. Either vLLM 0.26.1rc1 does not return tool-call tokens in logprobs.content or the token trace never resolves; Track B (scorer) is unaffected. Investigate before t24, or report Track A calibration as not measurable",
+      "kind": "unknown_nonblocking",
+      "task_id": "t22",
       "resolved": false,
       "resolution": ""
     }

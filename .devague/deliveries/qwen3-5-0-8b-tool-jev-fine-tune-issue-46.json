@@ -1,0 +1,71 @@
+{
+  "plan_slug": "qwen3-5-0-8b-tool-jev-fine-tune-issue-46",
+  "schema_version": 2,
+  "created": "2026-09-23T10:18:50Z",
+  "updated": "2026-09-23T11:53:40Z",
+  "deviations": [
+    {
+      "id": "d1",
+      "what": "The shared harness grounds BOTH tracks' arguments against one fixed, committed machine snapshot (spark's real systemd service and docker container lists plus every service/container name the validation, test and held-out sides reference), recorded with the results, instead of the live machine",
+      "task_ref": "t13",
+      "reason": "Operator decision 2026-09-23 on blocking risk r7: nvsh.ops.ground checks the live machine, so Track B argument metrics would otherwise depend on machine state and not be comparable with Track A's",
+      "affects": [
+        "t21",
+        "t22",
+        "t23",
+        "t24"
+      ],
+      "origin": "user",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 1
+    },
+    {
+      "id": "d2",
+      "what": "metrics.py reports abstention precision strictly: correct escalations divided by ALL escalations, including escalations on explain-expected entries; bench's compute_escalation figure (explain entries excluded) is reported alongside, and the c34 bar is judged on the strict figure",
+      "task_ref": "t8",
+      "reason": "Operator decision 2026-09-23: h24 was ambiguous; t8 followed bench's definition, which leaves explain entries out of the precision denominator",
+      "affects": [
+        "t13",
+        "t24"
+      ],
+      "origin": "user",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 2
+    },
+    {
+      "id": "d3",
+      "what": "Every served Qwen3.5-0.8B model directory (stock via an identical local copy of the pinned snapshot, every tuned merge, the AWQ build, and the GGUF's sampling metadata) carries a generation_config.json with temperature 0, so measurements and published models sample the same way; nvsh runtime code is unchanged",
+      "task_ref": "t21",
+      "reason": "Operator decision 2026-09-23 on blocking risk r11: Qwen ships no generation_config.json and nvsh's Tier 2 request sets no temperature, so vLLM would sample at 1.0",
+      "affects": [
+        "t22",
+        "t23",
+        "t24",
+        "t25",
+        "t27"
+      ],
+      "origin": "user",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 3
+    },
+    {
+      "id": "d4",
+      "what": "t19's re-split (new seed) runs before t18's full reviewer-B re-review, and the re-review covers only stored candidates whose source stays on the new train side; augment.py's --rereview mode gains --workers (4) so the thinking-mode re-review (~44 s per candidate, measured) takes hours, not a day",
+      "task_ref": "t18",
+      "reason": "Operator decision 2026-09-23 after the pilot (56/150 agreement non-thinking, so thinking ON per c41's pre-registered rule) and a 20-candidate thinking probe (878 s)",
+      "affects": [
+        "t19"
+      ],
+      "origin": "user",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 4
+    }
+  ],
+  "evidence": [],
+  "deltas": [],
+  "supersessions": []
+}

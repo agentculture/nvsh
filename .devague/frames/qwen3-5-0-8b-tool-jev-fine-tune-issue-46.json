@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-09-23T06:56:50Z",
-  "updated": "2026-09-23T08:47:40Z",
+  "updated": "2026-09-23T10:42:15Z",
   "claims": [
     {
       "id": "c1",
@@ -1312,6 +1312,18 @@
       "seeds": []
     }
   ],
-  "lapses": [],
+  "lapses": [
+    {
+      "id": "l1",
+      "code": "grader-unverified",
+      "what": "Lead merged t8 (metrics.py) and t10 (scorer.py) after probing each alone; the gate never fed scorer output into metrics, so their control-label conventions disagreed ('escalate' vs '(escalate)') and Track B calibration would have scored ECE=1 on correct escalations. Found by the between-wave Codex review, not by the merge gate",
+      "skipped_check": "cross-module check: scorer output through metrics.compute before merge",
+      "refs": [
+        "t10"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    }
+  ],
   "obligations": []
 }
