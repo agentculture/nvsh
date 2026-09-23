@@ -1126,3 +1126,31 @@ def test_measure_stages_refuse_an_extra_ctx(stage: str, tmp_path: Path) -> None:
     assert "MEASURE_CTX" in result.stderr
     assert not pipe.calls("measure.py")
     assert not [c for c in _docker_calls(tmp_path) if c[0] == "run"]
+
+
+def test_assemble_filters_to_the_split_and_checks_leakage(tmp_path: Path) -> None:
+    """Issue 46 t19: variations of sources that left the train side are dropped
+    (--filter-to-split), extra sides are excluded, and the merged set passes
+    leakage_check.py against every protected file before it is rendered."""
+    protected = tmp_path / "held-out.json"
+    site = tmp_path / "train-site-packages"
+    site.mkdir()
+    train_py = tmp_path / "train-python"
+    train_py.write_text(f'#!/usr/bin/env bash\necho "{site}"\n', encoding="utf-8")
+    train_py.chmod(0o755)
+    pipe = _Pipeline(tmp_path, f"TRAIN_PY={train_py}\nPROTECTED_EXTRA={protected}\n")
+    result = pipe.run("assemble")
+    assert result.returncode == 0, result.stderr
+    [(_, merge)] = pipe.calls("merge_variations.py")
+    assert "--filter-to-split" in merge
+    excluded = merge[merge.index("--exclude") + 1 :]
+    assert str(protected) in excluded
+    [(_, leak)] = pipe.calls("leakage_check.py")
+    assert _option(leak, "--train") == [str(pipe.work / "data" / "train-augmented.merged.json")]
+    assert _option(leak, "--out-filtered") == [str(pipe.work / "data" / "train-augmented.json")]
+    protected_args = leak[leak.index("--protected") + 1 :]
+    for side in ("val.json", "test.json"):
+        assert str(pipe.work / "splits" / side) in protected_args
+    assert str(protected) in protected_args
+    [(_, build)] = pipe.calls("build_dataset.py")
+    assert _option(build, "--split") == [str(pipe.work / "data" / "train-augmented.json")]

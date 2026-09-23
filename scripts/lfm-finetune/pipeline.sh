@@ -281,9 +281,20 @@ case "$STAGE" in
     touch "$WORK/aug/nvsh-accepted.jsonl"
     supplement=()
     [ -n "${SUPPLEMENT-$HERE/train-supplement.json}" ] && supplement=(--supplement "${SUPPLEMENT-$HERE/train-supplement.json}")
+    # PROTECTED_EXTRA (space-separated files): sides beyond val/test that must
+    # never reach training -- issue 46: the issue-39 test, the corpus held-out
+    # and the sealed held-out. Exact matches are excluded while merging, then
+    # leakage_check.py drops exact and near-duplicate matches of every
+    # protected side and prints ids only (t19, deviation d14).
+    read -r -a protected_extra <<<"${PROTECTED_EXTRA:-}"
+    protected=("$WORK/splits/val.json" "$WORK/splits/test.json" "${protected_extra[@]}")
+    mkdir -p "$WORK/data"
     py scripts/lfm-finetune/merge_variations.py --split "$WORK/splits/train.json" \
-      --accepted "$WORK/aug/nvsh-accepted.jsonl" --out "$WORK/data/train-augmented.json" \
-      --exclude "$WORK/splits/val.json" "$WORK/splits/test.json" "${supplement[@]}"
+      --accepted "$WORK/aug/nvsh-accepted.jsonl" --out "$WORK/data/train-augmented.merged.json" \
+      --filter-to-split --exclude "${protected[@]}" "${supplement[@]}"
+    py scripts/lfm-finetune/leakage_check.py --train "$WORK/data/train-augmented.merged.json" \
+      --out-filtered "$WORK/data/train-augmented.json" --protected "${protected[@]}" \
+      | tee "$WORK/data/leakage.json"
     # build_dataset.py's render check loads the base's tokenizer (transformers),
     # which only the training environment has.
     site=$(train_site_packages)
