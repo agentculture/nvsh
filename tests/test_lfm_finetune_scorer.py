@@ -185,6 +185,115 @@ def test_argmax_ties_break_by_candidate_order() -> None:
     assert scored.choice == module.candidates()[0]
 
 
+# -- calibration labels: metrics.py's convention (review finding #1) --
+
+
+_METRICS = _ROOT / "scripts" / "lfm-finetune" / "metrics.py"
+
+
+def _metrics():
+    spec = importlib.util.spec_from_file_location("lfm_metrics_for_scorer", _METRICS)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _prediction_line(scored, expected: dict, entry_id: str = "e1") -> dict:
+    """A predictions-file line written straight from a Scored result."""
+    operation = scored.choice if ops_table.get(scored.choice or "") is not None else None
+    return {
+        "id": entry_id,
+        "expected": expected,
+        "outcome": "propose" if operation else scored.choice,
+        "operation": operation,
+        "arguments": (scored.arguments or {}) if operation else None,
+        "candidates": scored.candidates,
+        "tokens": 0,
+        "ttfd_ms": 1.0,
+        "latency_ms": 1.0,
+    }
+
+
+def test_candidates_use_bench_labels_for_the_two_controls() -> None:
+    module = _module()
+    from nvsh.tiers import bench
+
+    fake = _FakeScorer(_favouring(module, "escalate"))
+    scored = module.score(fake, "p", "x", runner=world_runner(_WORLD))
+    assert set(scored.candidates) == (
+        set(ops_table.names()) | {bench.ESCALATE_LABEL, bench.EXPLAIN_LABEL}
+    )
+    assert scored.candidates[bench.ESCALATE_LABEL] == scored.distribution["escalate"]
+    assert "escalate" not in scored.candidates and "explain" not in scored.candidates
+
+
+def test_a_confident_correct_escalate_calibrates_perfectly_through_metrics() -> None:
+    module = _module()
+    metrics = _metrics()
+    labels = module.labels_for(("explain", "escalate"))
+    fake = _FakeScorer({labels["escalate"]: 0.0, labels["explain"]: float("-inf")})
+    scored = module.score(
+        fake, "p", "x", offered=("explain", "escalate"), runner=world_runner(_WORLD)
+    )
+    assert scored.choice == "escalate" and scored.confidence == 1.0
+    line = _prediction_line(scored, {"escalate": True})
+    result = metrics.compute([metrics.Prediction.from_dict(json.loads(json.dumps(line)))])
+    assert result["calibration"]["n"] == 1
+    assert result["calibration"]["ece"] == 0
+    assert result["calibration"]["brier"] == 0
+
+
+# -- incomplete served distributions (review finding #2) --
+
+
+def test_a_served_result_missing_labels_is_marked_incomplete_not_renormalised() -> None:
+    module = _module()
+    labels = module.labels_for(module.candidates())
+    first = module.candidates()[0]
+    # Only one label came back, with little raw mass; the rest fell below the cutoff.
+    fake = _FakeScorer({labels[first]: math.log(0.01), "the": math.log(0.9)})
+    scored = module.score(fake, "p", "x", runner=world_runner(_WORLD))
+    assert scored.candidates is None
+    assert scored.distribution == {}
+    assert scored.incomplete and "missing" in scored.incomplete
+    assert set(scored.missing) == set(module.candidates()) - {first}
+    assert scored.choice == first
+    assert scored.confidence == pytest.approx(0.01)  # the raw probability, not 1.0
+    assert scored.mass == pytest.approx(0.01)
+
+
+def test_an_incomplete_result_is_left_out_of_calibration_and_counted() -> None:
+    module = _module()
+    metrics = _metrics()
+    labels = module.labels_for(("explain", "escalate"))
+    fake = _FakeScorer({labels["escalate"]: math.log(0.01)})
+    scored = module.score(
+        fake, "p", "x", offered=("explain", "escalate"), runner=world_runner(_WORLD)
+    )
+    assert scored.missing == ("explain",)
+    line = _prediction_line(scored, {"escalate": True})
+    calibration = metrics.compute([metrics.Prediction.from_dict(line)])["calibration"]
+    assert calibration["n"] == 0
+    assert calibration["without_distribution"] == 1
+
+
+def test_a_result_with_every_label_is_complete() -> None:
+    module = _module()
+    scored = module.score(
+        _FakeScorer(_favouring(module, "explain")), "p", "x", runner=world_runner(_WORLD)
+    )
+    assert scored.incomplete is None
+    assert scored.missing == ()
+    assert scored.candidates is not None
+
+
+def test_a_scorer_with_no_label_mass_has_no_candidates() -> None:
+    module = _module()
+    scored = module.score(_FakeScorer({"the": -0.1}), "p", "x", runner=world_runner(_WORLD))
+    assert scored.candidates is None
+
+
 # -- arguments come from nvsh's deterministic grounding (decision c52) --
 
 
@@ -372,3 +481,6 @@ def test_the_in_process_scorer_returns_label_logprobs_that_normalise() -> None:
     assert all(value <= 0 for value in logprobs.values())
     distribution, _ = module.distribution(logprobs, labels)
     assert math.isclose(sum(distribution.values()), 1.0, rel_tol=1e-6)
+    scored = module.score(scorer, "anything", "x", runner=world_runner(_WORLD))
+    assert scored.incomplete is None and scored.missing == ()
+    assert math.isclose(sum(scored.candidates.values()), 1.0, rel_tol=1e-6)

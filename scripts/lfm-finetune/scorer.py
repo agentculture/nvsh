@@ -9,6 +9,20 @@ metrics score), its argmax (the choice) and, when the choice is an
 operation, arguments from nvsh's own deterministic grounding (decision c52):
 the scorer never generates an argument value.
 
+The distribution is also offered as ``Scored.candidates``, keyed the way
+``metrics.py``'s predictions file keys it: operation names, and
+``nvsh.tiers.bench``'s ``"(explain)"`` / ``"(escalate)"`` for the two
+controls, so a predictions line written from it calibrates against the
+entry's expected label.
+
+A served model returns only its top next-token log-probabilities, and a
+label below that cutoff is simply absent. Such a result is never
+renormalised over the labels that did come back (that turns a label holding
+1% of the raw mass into a certainty): it is marked incomplete, with the
+missing candidates named and no distribution, so metrics leaves it out of
+calibration and counts it. The in-process scorer reads every label's
+logit, so its distributions are always complete.
+
 The serving-side pattern is nvsh's own: ``ToolChat.score_next_token`` reads
 one token's log-probabilities and ``yes_no_probability`` sums a word's
 token variants and renormalises over the words asked about
@@ -34,7 +48,7 @@ import math
 import re
 import string
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Mapping, Protocol, Sequence
 
@@ -43,10 +57,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # runnable from an
 from nvsh.ops import ground as ops_ground  # noqa: E402
 from nvsh.ops import table as ops_table  # noqa: E402
 from nvsh.ops._model import Operation  # noqa: E402
+from nvsh.tiers import bench as tier_bench  # noqa: E402
 from nvsh.tiers import lfm  # noqa: E402
 
 #: The two candidates that are not operations: answer in words, or hand the request up.
 CONTROLS = (lfm.EXPLAIN_TOOL, lfm.ESCALATE_TOOL)
+
+#: Each control's label in a predictions file's ``candidates`` (metrics.py's convention).
+CALIBRATION_LABELS = {
+    lfm.EXPLAIN_TOOL: tier_bench.EXPLAIN_LABEL,
+    lfm.ESCALATE_TOOL: tier_bench.ESCALATE_LABEL,
+}
 
 #: Label alphabet, in candidate order. Each is one token in the Qwen3.5 and
 #: LFM2.5 vocabularies (checked by :func:`label_token_ids`, never assumed).
@@ -76,11 +97,18 @@ class Scored:
     """One request's scores.
 
     ``distribution`` maps every offered candidate to its probability (sums
-    to 1), or is empty when the model put no mass on any label. ``choice``
-    is its argmax (``None`` when empty). ``mass`` is how much of the raw
-    next-token distribution the labels held. For an operation choice,
-    ``arguments`` are the grounded values, or ``None`` with ``grounding``
-    saying why they could not be grounded.
+    to 1), or is empty when the model put no mass on any label or the
+    result is incomplete. ``choice`` is the most likely candidate (``None``
+    when no label had mass) and ``confidence`` its share of the label mass.
+    ``mass`` is how much of the raw next-token distribution the labels
+    held. For an operation choice, ``arguments`` are the grounded values, or
+    ``None`` with ``grounding`` saying why they could not be grounded.
+
+    ``incomplete`` says why there is no distribution although some label
+    had mass: ``missing`` offered candidates whose label the scorer did not
+    return at all. The choice is then the most likely label that did come
+    back, and ``confidence`` its raw next-token probability -- a lower bound
+    on its share, never a renormalised one.
     """
 
     distribution: dict[str, float]
@@ -89,6 +117,15 @@ class Scored:
     mass: float
     arguments: dict[str, str] | None = None
     grounding: str | None = None
+    incomplete: str | None = None
+    missing: tuple[str, ...] = ()
+
+    @property
+    def candidates(self) -> dict[str, float] | None:
+        """The distribution under metrics.py's labels, or ``None`` when there is none."""
+        if not self.distribution or self.incomplete is not None:
+            return None
+        return {calibration_label(name): p for name, p in self.distribution.items()}
 
 
 # -- candidates and labels --
@@ -114,6 +151,11 @@ def labels_for(offered: Sequence[str]) -> dict[str, str]:
             raise ValueError(f"{name!r} is not a candidate")
         labels[name] = LABEL_ALPHABET[full.index(name)]
     return labels
+
+
+def calibration_label(name: str) -> str:
+    """*name*'s label in a predictions file: bench's label for a control, else the name."""
+    return CALIBRATION_LABELS.get(name, name)
 
 
 def label_token_ids(tokenizer, labels: Mapping[str, str]) -> dict[str, int]:
@@ -198,6 +240,20 @@ def distribution(
     if mass <= 0:
         return ({}, 0.0)
     return ({name: value / mass for name, value in masses.items()}, mass)
+
+
+def missing_labels(logprobs: Mapping[str, float], labels: Mapping[str, str]) -> tuple[str, ...]:
+    """Candidates in *labels* whose label (in any token variant) *logprobs* does not carry.
+
+    A label reported with a valid log-probability is present even when that
+    probability is zero; junk values count as absent, as in :func:`distribution`.
+    """
+    seen = {
+        token.strip()
+        for token, logprob in logprobs.items()
+        if isinstance(token, str) and _valid_logprob(logprob)
+    }
+    return tuple(name for name, label in labels.items() if label not in seen)
 
 
 # -- arguments, from nvsh's grounding --
@@ -299,18 +355,33 @@ def score(
         logprobs = scorer.score_next_token(prompt, top=len(labels) + TOP_MARGIN)
     except Exception:  # noqa: BLE001 -- a scorer that fails makes no choice
         logprobs = {}
-    probabilities, mass = distribution(logprobs if isinstance(logprobs, dict) else {}, labels)
+    if not isinstance(logprobs, dict):
+        logprobs = {}
+    probabilities, mass = distribution(logprobs, labels)
     if not probabilities:
         return Scored(distribution={}, choice=None, confidence=0.0, mass=0.0)
     choice = max(labels, key=lambda name: probabilities[name])  # first maximum wins
-    scored = Scored(probabilities, choice, probabilities[choice], mass)
+    missing = missing_labels(logprobs, labels)
+    if missing:
+        # Renormalising what came back would fabricate certainty (review finding #2).
+        scored = Scored(
+            {},
+            choice,
+            probabilities[choice] * mass,  # the raw next-token probability
+            mass,
+            incomplete=f"{len(missing)} of {len(labels)} candidate labels missing from the"
+            " scorer's top log-probabilities",
+            missing=missing,
+        )
+    else:
+        scored = Scored(probabilities, choice, probabilities[choice], mass)
     operation = ops_table.get(choice)
     if operation is None:
         return scored
     grounded = ground_arguments(operation, request_text, runner)
     if isinstance(grounded, str):
-        return Scored(probabilities, choice, probabilities[choice], mass, None, grounded)
-    return Scored(probabilities, choice, probabilities[choice], mass, grounded, None)
+        return replace(scored, grounding=grounded)
+    return replace(scored, arguments=grounded)
 
 
 class TransformersScorer:
