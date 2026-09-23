@@ -126,7 +126,7 @@ case "$STAGE" in
       py scripts/lfm-finetune/measure_skills.py --tools "$WORK/skills/tools.json" \
         --test "$WORK/skills/test.jsonl" --manifest "$WORK/skills/manifest.json" \
         --model "$model" --model-revision "$rev" --label "$label" --launch --config "$NVSH_CONFIG" \
-        --out "$WORK/measure/skills-$label.md" "${extra[@]}"
+        --timeout "${SKILLS_TIMEOUT:-180}" --out "$WORK/measure/skills-$label.md" "${extra[@]}"
     done
     ;;
   status)
