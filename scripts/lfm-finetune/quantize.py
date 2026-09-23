@@ -218,9 +218,32 @@ def build_calibration_set(
 
 
 def write_calibration_file(texts: Sequence[str], out_path: Path) -> Path:
-    """Write one calibration text per line, for llama.cpp ``imatrix`` and AWQ's calibration."""
-    content = "\n".join(texts)
+    """Write one calibration text per line, plain text, for llama.cpp's ``imatrix`` step.
+
+    ``imatrix`` reads plain text as one undifferentiated mass, not discrete records, so an
+    embedded newline inside a text is replaced with a space here: that keeps this file at
+    one line per entry without inventing a record it does not have (a blank line would
+    otherwise look like an empty record). This is NOT the file AWQ calibrates from --
+    :func:`write_calibration_jsonl` preserves record boundaries for that (Codex finding #7).
+    """
+    content = "\n".join(text.replace("\n", " ") for text in texts)
     out_path.write_text(content + ("\n" if texts else ""), encoding="utf-8")
+    return out_path
+
+
+def write_calibration_jsonl(texts: Sequence[str], out_path: Path) -> Path:
+    """Write one JSON-encoded string per line, for AWQ's ``--calibration-file`` (finding #7).
+
+    Unlike :func:`write_calibration_file`'s plain text (for llama.cpp's ``imatrix``, which
+    does not care about record identity), AWQ calibrates on discrete samples: a record
+    containing an embedded newline must still read back as exactly one sample, not split
+    into two. JSON-encoding each text keeps its embedded newlines as the escape sequence
+    ``\\n`` inside the string rather than a physical line break, so the physical line count
+    always equals the record count. ``awq_oneshot.py``'s ``read_calibration_texts`` reads
+    this same format back with :func:`json.loads` per line.
+    """
+    lines = [json.dumps(text) for text in texts]
+    out_path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
     return out_path
 
 
@@ -531,7 +554,11 @@ def main(argv: list[str] | None = None) -> int:
         parser.error(str(exc))
 
     args.work_dir.mkdir(parents=True, exist_ok=True)
-    calibration_file = write_calibration_file(texts, args.work_dir / "calibration.txt")
+    # Two files, two readers: imatrix reads plain text (record identity doesn't matter
+    # there); AWQ reads JSONL so an embedded newline never splits one record into two
+    # samples (Codex finding #7).
+    calibration_txt = write_calibration_file(texts, args.work_dir / "calibration.txt")
+    calibration_jsonl = write_calibration_jsonl(texts, args.work_dir / "calibration.jsonl")
 
     run = default_run
     gguf_bf16 = args.work_dir / "model-bf16.gguf"
@@ -545,9 +572,9 @@ def main(argv: list[str] | None = None) -> int:
         # ordered that way, never assumed of a specific converter version.
         _sibling("gen_config").write(args.model_dir)
         convert_gguf(run, tools, args.model_dir, gguf_bf16)
-        compute_imatrix(run, tools, gguf_bf16, calibration_file, imatrix_file)
+        compute_imatrix(run, tools, gguf_bf16, calibration_txt, imatrix_file)
         quantize_q4_k_m(run, tools, gguf_bf16, imatrix_file, q4_k_m)
-        export_awq(run, awq_py, args.model_dir, calibration_file, awq_dir, len(texts))
+        export_awq(run, awq_py, args.model_dir, calibration_jsonl, awq_dir, len(texts))
         awq_result = finish_awq_export(args.model_dir, awq_dir)
     except QuantizeError as exc:
         parser.error(str(exc))

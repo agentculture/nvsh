@@ -32,18 +32,53 @@ def _module():
 # ---------------------------------------------------------------------------
 
 
-def test_read_calibration_texts_returns_one_text_per_nonblank_line(tmp_path) -> None:
+def test_read_calibration_texts_returns_one_text_per_nonblank_jsonl_line(tmp_path) -> None:
     module = _module()
-    path = tmp_path / "calib.txt"
-    path.write_text("first\n\nsecond\n", encoding="utf-8")
+    path = tmp_path / "calib.jsonl"
+    path.write_text('"first"\n\n"second"\n', encoding="utf-8")
     assert module.read_calibration_texts(path) == ["first", "second"]
 
 
 def test_read_calibration_texts_handles_an_empty_file(tmp_path) -> None:
     module = _module()
-    path = tmp_path / "calib.txt"
+    path = tmp_path / "calib.jsonl"
     path.write_text("", encoding="utf-8")
     assert module.read_calibration_texts(path) == []
+
+
+def test_read_calibration_texts_keeps_an_embedded_newline_as_one_record(tmp_path) -> None:
+    """Codex finding #7: a JSON-encoded string's embedded newline is data, not a line break."""
+    module = _module()
+    path = tmp_path / "calib.jsonl"
+    path.write_text('"request\\nerror details"\n"second request"\n', encoding="utf-8")
+    assert module.read_calibration_texts(path) == ["request\nerror details", "second request"]
+
+
+def _quantize_module():
+    """quantize.py, loaded the same way ``_module()`` loads awq_oneshot.py (they are siblings)."""
+    spec = importlib.util.spec_from_file_location(
+        "lfm_quantize_for_awq_oneshot_test", _SCRIPT.parent / "quantize.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_calibration_round_trips_a_record_with_an_embedded_newline(tmp_path) -> None:
+    """Codex finding #7: quantize.py writes JSONL, awq_oneshot.py reads it back -- a record
+
+    containing a newline must round-trip as exactly one AWQ sample, and the sample count
+    must equal the record count (a naive plain-text join would split it into two and lose
+    the original count).
+    """
+    quantize = _quantize_module()
+    awq = _module()
+    texts = ["request\nerror details", "second request"]
+    path = quantize.write_calibration_jsonl(texts, tmp_path / "calibration.jsonl")
+    read_back = awq.read_calibration_texts(path)
+    assert read_back == texts
+    assert len(read_back) == len(texts)
 
 
 class _FakeTokenizer:
@@ -261,8 +296,8 @@ def test_main_sanitizes_the_generation_config_between_oneshot_and_save(
     monkeypatch.setitem(sys.modules, "datasets", fake_datasets)
 
     module = _module()
-    calib_file = tmp_path / "calib.txt"
-    calib_file.write_text("hello there\n", encoding="utf-8")
+    calib_file = tmp_path / "calib.jsonl"
+    calib_file.write_text('"hello there"\n', encoding="utf-8")
     out_dir = tmp_path / "awq-out"
 
     rc = module.main(

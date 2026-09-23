@@ -986,6 +986,12 @@ class RecordingChat(toolchat.ToolChat):
 
 #: Where a printed tool call starts (``ToolChat``'s two raw shapes).
 _TOOL_MARKERS = ("<tool_call>", "<|tool_call_start|>")
+#: Tool-call markup left in a reply's text: the tool-call wrapper tag (open or
+#: close, either raw shape) or Qwen's XML function / parameter tags.
+_TOOL_MARKUP = re.compile(
+    r"</?tool_call>|<\|tool_call_(?:start|end)\|>"
+    r"|<(?:function|parameter)=|</(?:function|parameter)>"
+)
 _IDENTIFIER_CHAR = re.compile(r"[A-Za-z0-9_]")
 _CONTROLS = (tier_lfm.PROPOSE_TOOL, tier_lfm.EXPLAIN_TOOL, tier_lfm.ESCALATE_TOOL)
 
@@ -1006,11 +1012,16 @@ def _find_name(text: str, name: str, start: int) -> int:
     return -1
 
 
-def _consistent(label: str, text: str) -> bool:
-    """*text* can still become *label*, or already is it (followed by a non-name character)."""
-    if label.startswith(text):
-        return True
-    return text.startswith(label) and not _is_identifier(text[len(label) : len(label) + 1])
+UNOBSERVED = "an alternative token's continuation was not observed"
+
+
+def _ended_label(text: str, labels: Sequence[str]) -> str | None:
+    """The label *text* spells in full and then ends (a non-name character follows), if any."""
+    for label in labels:
+        if text.startswith(label) and len(text) > len(label):
+            if not _is_identifier(text[len(label)]):
+                return label
+    return None
 
 
 def _walk(
@@ -1022,30 +1033,34 @@ def _walk(
 ) -> dict[str, float] | str:
     """Mass per label for the generated *name* at character *start*, or why there is none.
 
-    Along the generated tokens that spell *name*, every alternative token
-    the engine returned is placed on the one label it can still become, at
-    the probability of the path up to it times its own; what is left of the
-    path at the end is *name*'s. An alternative that could become several
-    labels cannot be split from this trace, so the result is refused rather
-    than guessed. Alternatives that become no label are dropped.
+    Along the generated tokens that spell *name* and the token that ends it,
+    each alternative token the engine returned is placed on a label only
+    when the alternative itself spells that label and the character after
+    it: then the label's probability is exact, the path up to the
+    alternative times its own. An alternative that could still become a
+    label, or spells one with nothing after it, needs a continuation the
+    engine never scored (``gpu`` is not ``gpu_stats``, even when no other
+    label starts that way), so the result is refused rather than guessed.
+    Alternatives that become no label are dropped. The generated name's own
+    mass is the path through the token that ends it.
     """
     index = bisect.bisect_right(offsets, start) - 1
     lead = tokens[index].token[: start - offsets[index]]
     masses = dict.fromkeys(labels, 0.0)
     path, done = 1.0, ""
-    while len(done) < len(name):
+    while len(done) <= len(name):
         if index >= len(tokens):
             return "the generated name runs past the recorded tokens"
         token = tokens[index]
         for alternative, logprob in token.top.items():
             if alternative == token.token or not alternative.startswith(lead):
                 continue
-            piece = alternative[len(lead) :]
-            hits = [label for label in labels if piece and _consistent(label, done + piece)]
-            if not piece or len(hits) > 1:
-                return "an alternative token is ambiguous between candidates"
-            if hits:
-                masses[hits[0]] += path * math.exp(logprob)
+            text = done + alternative[len(lead) :]
+            ended = _ended_label(text, labels)
+            if ended is not None:
+                masses[ended] += path * math.exp(logprob)
+            elif any(label.startswith(text) for label in labels):
+                return UNOBSERVED
         path *= math.exp(token.logprob)
         done += token.token[len(lead) :]
         lead = ""
@@ -1123,6 +1138,8 @@ THINK_BLOCKS = "think_blocks"
 TOKENS_UNREPORTED = "tokens_unreported"
 NOT_REACHED = "not_reached"
 NO_DISTRIBUTION = "no distribution: "
+#: ``invalid_reason`` for plain text that is really a tool call nothing parsed.
+UNPARSED_TOOL_CALL = "unparsed_tool_call"
 
 
 def _did(row: Mapping[str, object]) -> str:
@@ -1130,6 +1147,20 @@ def _did(row: Mapping[str, object]) -> str:
     if not row.get("handled_by"):
         return "escalate"
     return "explain" if row.get("operation") is None else "propose"
+
+
+def _unparsed_tool_call(select: SelectRecord | None) -> bool:
+    """The tier explained, but in tool-call markup its chat client could not parse.
+
+    Both the explanation and the raw text of the reply it came from are read
+    (the explanation is redacted and cut short, so markup can fall out of it).
+    """
+    if select is None or not isinstance(select.result, Explanation):
+        return False
+    texts = [select.result.text]
+    if select.replies and not select.replies[-1].reply.tool_calls:
+        texts.append(select.replies[-1].reply.text)
+    return any(_TOOL_MARKUP.search(text) for text in texts)
 
 
 def _decided(
@@ -1142,7 +1173,11 @@ def _decided(
     not use is still the model's tool call, an ``escalate`` call is an
     abstention, and anything else (no usable output, out of rounds, a tier
     that failed or was unavailable) is an invalid output, not an abstention.
+    An explanation written in tool-call markup is a tool call that went
+    unparsed, so it is an invalid output too, never explain credit.
     """
+    if _unparsed_tool_call(select):
+        return "invalid", None, None, UNPARSED_TOOL_CALL
     did = _did(row) if row is not None else "escalate"
     if did == "propose":
         return "propose", str(row["operation"]), dict(row.get("args") or {}), None  # type: ignore

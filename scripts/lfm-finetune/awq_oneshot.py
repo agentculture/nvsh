@@ -15,9 +15,18 @@ by ``importlib`` with none of them installed -- which is exactly what
 environment has neither.
 
     <awq venv python> scripts/lfm-finetune/awq_oneshot.py \\
-        --model-dir <merged checkpoint> --calibration-file <one text per line> \\
+        --model-dir <merged checkpoint> \\
+        --calibration-file <JSONL: one JSON-encoded text per line> \\
         --out-dir <awq output dir> --num-calibration-samples 128 \\
         --max-seq-length 512
+
+The calibration file is JSONL, not plain text: each line is one JSON-encoded
+string, so a record with an embedded newline still reads back as exactly one
+sample instead of being split into two by a naive plain-text join (Codex
+finding #7). ``quantize.py``'s ``write_calibration_jsonl`` writes this file;
+its separate plain-text ``calibration.txt`` (embedded newlines collapsed to
+spaces) is for llama.cpp's ``imatrix`` step only, which reads text as one
+undifferentiated mass rather than discrete records.
 
 Live lead check on commit 47d3af3: a stock-copy source dir already carries
 our greedy-decoding ``generation_config.json`` (deviation d3: ``temperature``
@@ -36,6 +45,7 @@ order is therefore quantize -> sanitize -> save).
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
 #: The proven recipe's targets and exclusions (spike t16): every Linear layer
@@ -54,8 +64,14 @@ _TOKEN_ID_KEYS = ("eos_token_id", "bos_token_id", "pad_token_id")
 
 
 def read_calibration_texts(path: Path) -> list[str]:
-    """One calibration text per non-empty line of *path*, in file order."""
-    return [line for line in path.read_text(encoding="utf-8").splitlines() if line]
+    """One calibration text per non-blank JSONL line of *path*, in file order.
+
+    Each line is a single JSON-encoded string (written by ``quantize.py``'s
+    ``write_calibration_jsonl``): this preserves record boundaries even when a
+    text contains an embedded newline, since the escape stays inside the
+    string instead of becoming a physical line break (Codex finding #7).
+    """
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
 
 
 def render_calibration_text(tokenizer, text: str) -> str:

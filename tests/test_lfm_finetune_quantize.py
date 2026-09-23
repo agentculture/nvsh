@@ -142,6 +142,45 @@ def test_write_calibration_file_handles_no_texts(tmp_path) -> None:
     assert out.read_text(encoding="utf-8") == ""
 
 
+def test_write_calibration_file_replaces_embedded_newlines_with_spaces(tmp_path) -> None:
+    """Codex finding #7: this plain-text file is only for llama.cpp's imatrix step, which
+
+    reads raw text mass, not discrete records -- collapsing an embedded newline to a
+    space there is acceptable, unlike the AWQ JSONL file (below) where it is not.
+    """
+    module = _module()
+    out = module.write_calibration_file(["a\nb", "c"], tmp_path / "calib.txt")
+    assert out.read_text(encoding="utf-8") == "a b\nc\n"
+
+
+# ---------------------------------------------------------------------------
+# JSONL calibration file: for AWQ, one JSON string per line (Codex finding #7)
+# ---------------------------------------------------------------------------
+
+
+def test_write_calibration_jsonl_writes_one_json_string_per_line(tmp_path) -> None:
+    module = _module()
+    out = module.write_calibration_jsonl(["a", "b"], tmp_path / "calib.jsonl")
+    lines = out.read_text(encoding="utf-8").splitlines()
+    assert [json.loads(line) for line in lines] == ["a", "b"]
+
+
+def test_write_calibration_jsonl_handles_no_texts(tmp_path) -> None:
+    module = _module()
+    out = module.write_calibration_jsonl([], tmp_path / "calib.jsonl")
+    assert out.read_text(encoding="utf-8") == ""
+
+
+def test_write_calibration_jsonl_preserves_a_record_with_an_embedded_newline(tmp_path) -> None:
+    """Codex finding #7: an embedded newline must not split one record into two samples."""
+    module = _module()
+    texts = ["request\nerror details", "second request"]
+    out = module.write_calibration_jsonl(texts, tmp_path / "calib.jsonl")
+    lines = out.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == len(texts)
+    assert [json.loads(line) for line in lines] == texts
+
+
 # ---------------------------------------------------------------------------
 # Tool paths from env (c44: never hard-coded)
 # ---------------------------------------------------------------------------
