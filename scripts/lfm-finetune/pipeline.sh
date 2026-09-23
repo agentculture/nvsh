@@ -27,9 +27,18 @@
 #                         a generation_config.json into <run>/merged (deviation d3)
 #   train-scorer          train the acceptance-margin scorer on split.py's own
 #                         train/val sides (train_scorer.py, a training stage)
-#   measure-val <name>    validation run with per-entry details (iterate on this)
-#   measure-final <name>  stock and <name> back to back on the test side (a final run)
-#   measure-skills <name> stock and <name> on the 104 skill evals (margin required)
+#   measure-val <name> [args]    validation run with per-entry details (iterate on
+#                         this); <name> "stock" measures the stock copy
+#   measure-final <name> [args]  stock and <name> back to back on the test side (a
+#                         final run)
+#   measure-skills <name> --margin "<margin>"   stock and <name> on the 104 skill
+#                         evals; the margin reaches only <name>'s run
+#                         The measure stages serve stock from WORK/stock (stock-copy
+#                         first; its greedy generation_config.json is checked), pass
+#                         --enable-thinking ENABLE_THINKING (default false) and, to
+#                         measure.py, --ground-snapshot GROUND_SNAPSHOT (required; see
+#                         `measure.py snapshot`); measure-val and measure-final hand
+#                         any further [args] to measure.py (e.g. --ctx 2048).
 #   scan <name>           scan a trained run's merged checkpoint for secrets/binaries
 #                         (scan_bundle.py scan; writes scan.json next to it)
 #   quantize <name>       Q4_K_M GGUF + INT4 AWQ export of a merged checkpoint
@@ -114,6 +123,34 @@ aug_env() {
 
 base_snapshot() { echo "$HF_CACHE/hub/models--${BASE%%/*}--${BASE##*/}/snapshots/$BASE_REV"; }
 
+stock_dir() {
+  # The stock copy every measure stage serves stock from, never BASE itself:
+  # BASE's snapshot has no generation_config.json pinning greedy decoding
+  # (deviation d3), so serving it would sample.
+  local out="$WORK/stock"
+  [ -d "$out" ] || die "no $out; run stock-copy first (stock is measured from the stock copy)"
+  py scripts/lfm-finetune/gen_config.py check "$out" >&2 \
+    || die "gen_config.py check failed for $out: no greedy generation_config.json;" \
+      "run stock-copy again (deviation d3)"
+  echo "$out"
+}
+
+ground_snapshot() {
+  [ -n "${GROUND_SNAPSHOT:-}" ] \
+    || die "GROUND_SNAPSHOT is not set; write one with 'measure.py snapshot' and name it in the env file"
+  [ -f "$GROUND_SNAPSHOT" ] \
+    || die "GROUND_SNAPSHOT=$GROUND_SNAPSHOT does not exist; write it with 'measure.py snapshot'"
+  echo "$GROUND_SNAPSHOT"
+}
+
+train_site_packages() {
+  # TRAIN_PY's site-packages, for a repo-env step that also needs the training
+  # stack (transformers): on PYTHONPATH it adds that stack while the repo's own
+  # uv environment -- and so the nvsh package -- stays the interpreter's.
+  "$TRAIN_PY" -c 'import sysconfig; print(sysconfig.get_path("purelib"))' 2>/dev/null \
+    || die "TRAIN_PY=$TRAIN_PY does not run; it is needed for assemble's render check"
+}
+
 
 # shellcheck source=scripts/lfm-finetune/capped.sh
 source "$(dirname "${BASH_SOURCE[0]}")/capped.sh"
@@ -165,7 +202,11 @@ case "$STAGE" in
     py scripts/lfm-finetune/merge_variations.py --split "$WORK/splits/train.json" \
       --accepted "$WORK/aug/nvsh-accepted.jsonl" --out "$WORK/data/train-augmented.json" \
       --exclude "$WORK/splits/val.json" "$WORK/splits/test.json" "${supplement[@]}"
-    py scripts/lfm-finetune/build_dataset.py --split "$WORK/data/train-augmented.json" \
+    # build_dataset.py's render check loads the base's tokenizer (transformers),
+    # which only the training environment has.
+    site=$(train_site_packages)
+    PYTHONPATH="$site${PYTHONPATH:+:$PYTHONPATH}" \
+      py scripts/lfm-finetune/build_dataset.py --split "$WORK/data/train-augmented.json" \
       --out "$WORK/data/nvsh-train.jsonl" --base "$BASE" --revision "$BASE_REV"
     skills_set=${SKILLS_SET:-skills}
     if [ -s "$WORK/aug/$skills_set-accepted.jsonl" ]; then
@@ -194,25 +235,37 @@ case "$STAGE" in
       ${TRAIN_SCORER_ARGS:-}
     ;;
   measure-val)
-    name=${1:?measure-val <name>}; rev=$(cat "$WORK/runs/$name/revision")
-    py scripts/lfm-finetune/measure.py --split "$WORK/splits/val.json" --model "$REPO" \
+    name=${1:?measure-val <name> [measure.py args]}; shift
+    snapshot=$(ground_snapshot)
+    if [ "$name" = stock ]; then
+      model=$(stock_dir); rev=$BASE_REV
+    else
+      model=$REPO; rev=$(cat "$WORK/runs/$name/revision")
+    fi
+    py scripts/lfm-finetune/measure.py --split "$WORK/splits/val.json" --model "$model" \
       --revision "$rev" --label "$name-val" --config "$NVSH_CONFIG" \
-      --out "$WORK/measure/$name-val.md" --details "$WORK/measure/$name-val.jsonl" --force
+      --ground-snapshot "$snapshot" --enable-thinking "${ENABLE_THINKING:-false}" \
+      --out "$WORK/measure/$name-val.md" --details "$WORK/measure/$name-val.jsonl" --force "$@"
     ;;
   measure-final)
-    name=${1:?measure-final <name>}; rev=$(cat "$WORK/runs/$name/revision")
+    name=${1:?measure-final <name> [measure.py args]}; shift
+    snapshot=$(ground_snapshot); stock=$(stock_dir); rev=$(cat "$WORK/runs/$name/revision")
     py scripts/lfm-finetune/measure.py --split "$WORK/splits/test.json" --final \
-      --model "$BASE" --revision "$BASE_REV" --model "$REPO" --revision "$rev" \
-      --label "final-$name" --config "$NVSH_CONFIG"
+      --model "$stock" --revision "$BASE_REV" --model "$REPO" --revision "$rev" \
+      --label "final-$name" --config "$NVSH_CONFIG" \
+      --ground-snapshot "$snapshot" --enable-thinking "${ENABLE_THINKING:-false}" "$@"
     ;;
   measure-skills)
+    # measure_skills.py grounds nothing, so it takes no --ground-snapshot.
     name=${1:?measure-skills <name> --margin "<margin>"}; shift
+    stock=$(stock_dir)
     for label in stock "$name"; do
-      model=$BASE; rev=$BASE_REV; extra=()
+      model=$stock; rev=$BASE_REV; extra=()
       if [ "$label" != stock ]; then model=$REPO; rev=$(cat "$WORK/runs/$name/revision"); extra=(--tuned "$@"); fi
       py scripts/lfm-finetune/measure_skills.py --tools "$WORK/skills/tools.json" \
         --test "$WORK/skills/test.jsonl" --manifest "$WORK/skills/manifest.json" \
         --model "$model" --model-revision "$rev" --label "$label" --launch --config "$NVSH_CONFIG" \
+        --enable-thinking "${ENABLE_THINKING:-false}" \
         --timeout "${SKILLS_TIMEOUT:-180}" --out "$WORK/measure/skills-$label.md" "${extra[@]}"
     done
     ;;

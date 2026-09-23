@@ -14,6 +14,7 @@ import importlib.util
 import os
 import shutil
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -366,3 +367,333 @@ def test_both_env_examples_name_the_memory_floor_and_gpu_budget() -> None:
     for example in (_LFM_ENV, _QWEN_ENV):
         text = example.read_text(encoding="utf-8")
         assert "TRAIN_MEMORY_FLOOR=" in text and "NVSH_TRAIN_GPU_MEMORY_GB=" in text
+
+
+# ---------------------------------------------------------------------------
+# Review fixes (issue 46, Codex findings #1, #2 and #5)
+# ---------------------------------------------------------------------------
+
+
+def _alive(pid: int) -> bool:
+    """*pid* exists and is not a zombie waiting to be reaped."""
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+    except OSError:
+        return False
+    return stat.rsplit(")", 1)[1].split()[0] != "Z"
+
+
+def _start_capped_sleep(tmp_path: Path, prefix: str) -> tuple[subprocess.Popen, int]:
+    """run_capped with a 60 s sleep in the background; returns (shell, sleep pid)."""
+    pid_file = tmp_path / "sleep.pid"
+    script = (
+        f'source "{_CAPPED}";{prefix} TRAIN_MEMORY_MAX=200M TRAIN_MEMORY_FLOOR=1K'
+        f' TRAIN_WATCHDOG_SECONDS=1 run_capped "{tmp_path}/run"'
+        f" bash -c 'echo $$ > \"{pid_file}\"; exec sleep 60'"
+    )
+    shell = subprocess.Popen(
+        ["bash", "-c", script], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+    )
+    deadline = time.monotonic() + 15
+    while time.monotonic() < deadline:
+        text = pid_file.read_text(encoding="utf-8").strip() if pid_file.exists() else ""
+        if text:
+            return shell, int(text)
+        time.sleep(0.1)
+    shell.kill()
+    raise AssertionError("the capped command never started")
+
+
+def _assert_sigterm_stops_the_command(tmp_path: Path, prefix: str) -> None:
+    shell, sleep_pid = _start_capped_sleep(tmp_path, prefix)
+    try:
+        time.sleep(0.5)  # let `wait` start, so the signal lands mid-run
+        shell.terminate()
+        deadline = time.monotonic() + 15
+        while _alive(sleep_pid) and time.monotonic() < deadline:
+            time.sleep(0.1)
+        assert not _alive(sleep_pid), "the capped command survived SIGTERM to run_capped"
+        assert shell.wait(timeout=15) != 0
+    finally:
+        if _alive(sleep_pid):
+            os.kill(sleep_pid, 9)
+        if shell.poll() is None:
+            shell.kill()
+
+
+def test_sigterm_to_run_capped_stops_a_container_capped_command(tmp_path: Path) -> None:
+    """Finding #1: the command runs in its own session, so stopping the caller
+    must stop it explicitly -- training never outlives a stopped pipeline."""
+    _assert_sigterm_stops_the_command(tmp_path, _HIDE_SYSTEMD_RUN + " TRAIN_MEMORY_CAP=container")
+
+
+@pytest.mark.skipif(not _user_scope_works(), reason="needs a systemd user session")
+def test_sigterm_to_run_capped_stops_a_scope_capped_command(tmp_path: Path) -> None:
+    _assert_sigterm_stops_the_command(tmp_path, "")
+
+
+def test_run_capped_restores_the_callers_traps(tmp_path: Path) -> None:
+    script = (
+        f'source "{_CAPPED}";{_HIDE_SYSTEMD_RUN} TRAIN_MEMORY_CAP=container;'
+        " trap 'echo caller-term' TERM; trap 'echo caller-exit' EXIT;"
+        f' TRAIN_MEMORY_MAX=200M TRAIN_MEMORY_FLOOR=1K run_capped "{tmp_path}" true;'
+        " trap -p TERM INT HUP"
+    )
+    result = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=60)
+    assert result.returncode == 0, result.stderr
+    assert "trap -- 'echo caller-term' SIGTERM" in result.stdout
+    assert "SIGINT" not in result.stdout and "SIGHUP" not in result.stdout
+    assert result.stdout.rstrip().endswith("caller-exit")
+
+
+def test_run_capped_still_returns_the_commands_status(tmp_path: Path) -> None:
+    script = (
+        f'source "{_CAPPED}";{_HIDE_SYSTEMD_RUN} TRAIN_MEMORY_CAP=container;'
+        f' TRAIN_MEMORY_MAX=200M TRAIN_MEMORY_FLOOR=1K run_capped "{tmp_path}"'
+        " bash -c 'echo out; exit 7'"
+    )
+    result = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=60)
+    assert result.returncode == 7, result.stderr
+    assert "out" in result.stdout
+    assert (tmp_path / "train.log").read_text(encoding="utf-8").strip() == "out"
+
+
+_FAKE_UV = """#!/usr/bin/env bash
+# Records every `uv run --frozen python ...` call; runs gen_config.py for real.
+printf '%s\\t%s\\n' "PYTHONPATH=${PYTHONPATH:-}" "$*" >> "$UV_LOG"
+case "$*" in
+  *gen_config.py*) shift 3; exec "$REAL_PY" "$@" ;;
+esac
+exit 0
+"""
+
+
+class _Pipeline:
+    """pipeline.sh against the Qwen example env, with `uv` replaced by a recorder."""
+
+    def __init__(self, tmp_path: Path, extra_env: str = "") -> None:
+        self.tmp = tmp_path
+        self.work = tmp_path / "qwen-work"
+        self.snapshot = tmp_path / "ground.json"
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        uv = bin_dir / "uv"
+        uv.write_text(_FAKE_UV, encoding="utf-8")
+        uv.chmod(0o755)
+        self.log = tmp_path / "uv.log"
+        self.env_file = tmp_path / "test.env"
+        self.env_file.write_text(
+            _QWEN_ENV.read_text(encoding="utf-8")
+            + f"\nGROUND_SNAPSHOT={self.snapshot}\n"
+            + extra_env,
+            encoding="utf-8",
+        )
+        self.env = {
+            **{k: v for k, v in os.environ.items() if k != "PYTHONPATH"},
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "UV_LOG": str(self.log),
+            "REAL_PY": sys.executable,
+        }
+
+    def run(self, *stage_args: str) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            ["bash", str(_PIPELINE), "--env", str(self.env_file), *stage_args],
+            cwd=self.tmp,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            env=self.env,
+        )
+
+    def calls(self, script: str) -> list[tuple[str, list[str]]]:
+        """(PYTHONPATH, argv) of every recorded call to *script*."""
+        if not self.log.exists():
+            return []
+        found = []
+        for line in self.log.read_text(encoding="utf-8").splitlines():
+            pythonpath, args = line.split("\t", 1)
+            argv = args.split(" ")
+            if any(arg.endswith(script) for arg in argv):
+                found.append((pythonpath.removeprefix("PYTHONPATH="), argv))
+        return found
+
+    def ready(self, *, stock: bool = True, snapshot: bool = True, run: str = "a1") -> None:
+        if snapshot:
+            self.snapshot.write_text("{}", encoding="utf-8")
+        if stock:
+            (self.work / "stock").mkdir(parents=True)
+            (self.work / "stock" / "config.json").write_text("{}", encoding="utf-8")
+            gen_config = _REPO_ROOT / "scripts" / "lfm-finetune" / "gen_config.py"
+            subprocess.run(
+                [sys.executable, str(gen_config), "write", str(self.work / "stock")],
+                check=True,
+                capture_output=True,
+            )
+        if run:
+            (self.work / "runs" / run).mkdir(parents=True)
+            (self.work / "runs" / run / "revision").write_text("abc123\n", encoding="utf-8")
+
+
+def _option(argv: list[str], name: str) -> list[str]:
+    return [argv[i + 1] for i, arg in enumerate(argv[:-1]) if arg == name]
+
+
+_QWEN_BASE_REV = "2fc06364715b967f1860aea9cf38778875588b17"
+
+
+def test_measure_final_measures_stock_from_the_stock_copy(tmp_path: Path) -> None:
+    """Finding #2a: the stock server gets the greedy generation_config.json."""
+    pipe = _Pipeline(tmp_path)
+    pipe.ready()
+    result = pipe.run("measure-final", "a1")
+    assert result.returncode == 0, result.stderr
+    [(_, argv)] = pipe.calls("measure.py")
+    assert _option(argv, "--model") == [
+        str(pipe.work / "stock"),
+        "jetson-ai-lab/qwen3.5-0.8b-nvsh-tool-jev",
+    ]
+    assert _option(argv, "--revision") == [_QWEN_BASE_REV, "abc123"]
+    assert "Qwen/Qwen3.5-0.8B" not in argv
+
+
+@pytest.mark.parametrize("stage", ["measure-val", "measure-final", "measure-skills"])
+def test_a_measure_stage_refuses_without_the_stock_copy(stage: str, tmp_path: Path) -> None:
+    pipe = _Pipeline(tmp_path)
+    pipe.ready(stock=False)
+    name = "stock" if stage == "measure-val" else "a1"
+    result = pipe.run(stage, name)
+    assert result.returncode == 1
+    assert "stock-copy" in result.stderr
+    assert not pipe.calls("measure.py") and not pipe.calls("measure_skills.py")
+
+
+@pytest.mark.parametrize("stage", ["measure-val", "measure-final", "measure-skills"])
+def test_a_measure_stage_refuses_a_stock_copy_without_greedy_decoding(
+    stage: str, tmp_path: Path
+) -> None:
+    pipe = _Pipeline(tmp_path)
+    pipe.ready()
+    (pipe.work / "stock" / "generation_config.json").unlink()
+    name = "stock" if stage == "measure-val" else "a1"
+    result = pipe.run(stage, name)
+    assert result.returncode == 1
+    assert "generation_config.json" in result.stderr
+    assert not pipe.calls("measure.py") and not pipe.calls("measure_skills.py")
+
+
+def test_measure_val_measures_stock_from_the_stock_copy(tmp_path: Path) -> None:
+    pipe = _Pipeline(tmp_path)
+    pipe.ready()
+    result = pipe.run("measure-val", "stock")
+    assert result.returncode == 0, result.stderr
+    [(_, argv)] = pipe.calls("measure.py")
+    assert _option(argv, "--model") == [str(pipe.work / "stock")]
+    assert _option(argv, "--revision") == [_QWEN_BASE_REV]
+
+
+def test_measure_val_of_a_tuned_run_needs_no_stock_copy(tmp_path: Path) -> None:
+    pipe = _Pipeline(tmp_path)
+    pipe.ready(stock=False)
+    result = pipe.run("measure-val", "a1")
+    assert result.returncode == 0, result.stderr
+    [(_, argv)] = pipe.calls("measure.py")
+    assert _option(argv, "--model") == ["jetson-ai-lab/qwen3.5-0.8b-nvsh-tool-jev"]
+    assert _option(argv, "--revision") == ["abc123"]
+
+
+@pytest.mark.parametrize(
+    ("stage", "name"), [("measure-val", "a1"), ("measure-val", "stock"), ("measure-final", "a1")]
+)
+def test_measure_stages_pass_the_snapshot_thinking_and_extra_args(
+    stage: str, name: str, tmp_path: Path
+) -> None:
+    """Finding #2b/#2c: fixed grounding, thinking off, and the operator's own flags."""
+    pipe = _Pipeline(tmp_path)
+    pipe.ready()
+    result = pipe.run(stage, name, "--ctx", "2048", "--slice", "missing-candidate")
+    assert result.returncode == 0, result.stderr
+    [(_, argv)] = pipe.calls("measure.py")
+    assert _option(argv, "--ground-snapshot") == [str(pipe.snapshot)]
+    assert _option(argv, "--enable-thinking") == ["false"]
+    assert _option(argv, "--ctx") == ["2048"]
+    assert _option(argv, "--slice") == ["missing-candidate"]
+
+
+def test_enable_thinking_comes_from_the_env_file(tmp_path: Path) -> None:
+    pipe = _Pipeline(tmp_path, "ENABLE_THINKING=true\n")
+    pipe.ready()
+    result = pipe.run("measure-val", "a1")
+    assert result.returncode == 0, result.stderr
+    [(_, argv)] = pipe.calls("measure.py")
+    assert _option(argv, "--enable-thinking") == ["true"]
+
+
+@pytest.mark.parametrize("stage", ["measure-val", "measure-final"])
+def test_a_measure_stage_refuses_a_missing_ground_snapshot(stage: str, tmp_path: Path) -> None:
+    pipe = _Pipeline(tmp_path)
+    pipe.ready(snapshot=False)
+    result = pipe.run(stage, "a1")
+    assert result.returncode == 1
+    assert "GROUND_SNAPSHOT" in result.stderr
+    assert not pipe.calls("measure.py")
+
+
+def test_a_measure_stage_refuses_an_unset_ground_snapshot(tmp_path: Path) -> None:
+    pipe = _Pipeline(tmp_path, "GROUND_SNAPSHOT=\n")
+    pipe.ready()
+    result = pipe.run("measure-val", "a1")
+    assert result.returncode == 1
+    assert "GROUND_SNAPSHOT" in result.stderr
+
+
+def test_measure_skills_measures_stock_from_the_stock_copy_with_thinking_off(
+    tmp_path: Path,
+) -> None:
+    """measure_skills.py has no --ground-snapshot (it grounds nothing); it gets
+    the stock copy and --enable-thinking, and the margin reaches only the tuned run."""
+    pipe = _Pipeline(tmp_path)
+    pipe.ready()
+    result = pipe.run("measure-skills", "a1", "--margin", "+15")
+    assert result.returncode == 0, result.stderr
+    (_, stock), (_, tuned) = pipe.calls("measure_skills.py")
+    assert _option(stock, "--model") == [str(pipe.work / "stock")]
+    assert _option(stock, "--model-revision") == [_QWEN_BASE_REV]
+    assert _option(tuned, "--model") == ["jetson-ai-lab/qwen3.5-0.8b-nvsh-tool-jev"]
+    for argv in (stock, tuned):
+        assert _option(argv, "--enable-thinking") == ["false"]
+        assert "--ground-snapshot" not in argv
+    assert "--margin" not in stock
+    assert _option(tuned, "--margin") == ["+15"]
+
+
+def test_assemble_renders_with_the_training_environment_on_the_path(tmp_path: Path) -> None:
+    """Finding #5: build_dataset.py's render check needs transformers, which only
+    the training environment has; nvsh stays importable from the repo's own env."""
+    site = tmp_path / "train-site-packages"
+    site.mkdir()
+    train_py = tmp_path / "train-python"
+    train_py.write_text(f'#!/usr/bin/env bash\necho "{site}"\n', encoding="utf-8")
+    train_py.chmod(0o755)
+    pipe = _Pipeline(tmp_path, f"TRAIN_PY={train_py}\n")
+    result = pipe.run("assemble")
+    assert result.returncode == 0, result.stderr
+    [(pythonpath, argv)] = pipe.calls("build_dataset.py")
+    assert pythonpath == str(site)
+    assert argv[:3] == ["run", "--frozen", "python"]
+    [(merge_path, _)] = pipe.calls("merge_variations.py")
+    assert merge_path == ""
+
+
+def test_assemble_refuses_a_training_python_that_does_not_run(tmp_path: Path) -> None:
+    pipe = _Pipeline(tmp_path, f"TRAIN_PY={tmp_path / 'no-such-python'}\n")
+    result = pipe.run("assemble")
+    assert result.returncode == 1
+    assert "TRAIN_PY" in result.stderr
+    assert not pipe.calls("build_dataset.py")
+
+
+def test_both_env_examples_name_the_ground_snapshot_and_thinking() -> None:
+    for example in (_LFM_ENV, _QWEN_ENV):
+        text = example.read_text(encoding="utf-8")
+        assert "\nGROUND_SNAPSHOT=" in text
+        assert "\nENABLE_THINKING=false" in text
