@@ -1188,18 +1188,29 @@ def _process_rereview_candidate(
 ) -> dict[str, Any]:
     """Re-review one stored candidate: call only REVIEWER_B on the record's
     already-generated/corrected ``text``, then re-derive acceptance from the
-    stored reviewer A verdict plus this fresh reviewer B verdict."""
+    stored reviewer A verdict plus this fresh reviewer B verdict.
+
+    A record whose stored reviewer A verdict is "no" can never be accepted,
+    so reviewer B is not asked at all: the record stays rejected with a
+    ``reviewer_b`` entry of ``accept: None`` saying it was not re-asked, its
+    stored reviewer B model is kept, and it is left out of the agreement
+    count (issue 46, t18: about one candidate in six, each a multi-minute
+    thinking call on a shared server). The deterministic guards still run."""
     accept_a, reason_a = _require_stored_reviewer_a(record)
     old_accept_b = _stored_reviewer_b_accept(record)
 
     seed = _seed_from_stored_record(record)
-    system, user = reviewer_prompt(seed, record["text"])
-    accept_b, reason_b = _reviewer_verdict(role, system, user, caller)
+    models = dict(record.get("models", {}))
+    accept_b: bool | None
+    if accept_a:
+        system, user = reviewer_prompt(seed, record["text"])
+        accept_b, reason_b = _reviewer_verdict(role, system, user, caller)
+        models[role.role] = role.model
+    else:
+        accept_b, reason_b = None, "not re-asked: the stored reviewer A verdict already rejects it"
 
     guard_verdicts = _rereview_guard_verdicts(record["text"], seed)
-    accepted = accept_a and accept_b and not guard_verdicts
-    models = dict(record.get("models", {}))
-    models[role.role] = role.model
+    accepted = bool(accept_a and accept_b) and not guard_verdicts
     new_record = dict(record)
     new_record["models"] = models
     new_record["verdicts"] = {
@@ -1293,7 +1304,7 @@ def run_rereview(
             done.add(record_id)
 
             old_accept_b = outcome["old_accept_b"]
-            if old_accept_b is not None:
+            if old_accept_b is not None and outcome["new_accept_b"] is not None:
                 counts.compared += 1
                 if old_accept_b == outcome["new_accept_b"]:
                     counts.agreed += 1
