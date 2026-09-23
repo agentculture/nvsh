@@ -2826,6 +2826,7 @@ def test_rereview_records_the_reviewer_reasoning_effort(tmp_path) -> None:
         ("Could you please escalate this issue to a senior agent?", "escalate this"),
         ("Escalate this to a human agent: it needs investigation.", "Escalate this"),
         ("Hand this off to someone who can dig into the logs", "Hand this off"),
+        ("Can you pass this for a human operator to look at?", "for a human operator"),
         ("Temperatures keep escalating on the GPU, how hot is it?", ""),
         ("Is a human in the loop needed to approve a restart?", ""),
     ],
@@ -2908,3 +2909,29 @@ def test_parse_verdict_keeps_likely_inside_an_escalation_reason() -> None:
         "the assistant's fixed set of checks, so it should be passed on."
     )
     assert aug.parse_verdict(reply)[0] is True
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # Codex's third review of d10.
+        "Yes, my final answer is __no__.",
+        "Yes, on second thought, no, the device is different.",
+        "Yes (probably).",
+        "Yes, it is probably equivalent.",
+    ],
+)
+def test_parse_verdict_rejects_codex_round_three(text):
+    assert aug.parse_verdict(text)[0] is False
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Escalate to root so I can install the driver.",
+        "The Jetson hangs during the UEFI handoff to the kernel; investigate the boot logs.",
+        "A senior engineer changed the network configuration and now DNS fails; investigate.",
+    ],
+)
+def test_asks_for_handoff_ignores_codex_round_three(text) -> None:
+    assert aug.asks_for_handoff(text) == ""

@@ -888,7 +888,7 @@ _HEDGE_WORDS = (
 #: reviewer's own reasoning -- "requires investigation and likely changes
 #: beyond the fixed set" justified 7 of 977 stored escalate accepts.
 _YES_CERTAINTY_RE = re.compile(
-    r"""^[\s*_`"',.:;\-\u2013\u2014]*(probably|likely|perhaps|possibly|maybe)\b""",
+    r"""^\W*(?:\w+\W+){0,3}?(probably|likely|perhaps|possibly|maybe)\b""",
     re.IGNORECASE,
 )
 #: A "no" that reads as a verdict: at the start of a line or sentence, or
@@ -900,8 +900,12 @@ _YES_CERTAINTY_RE = re.compile(
 #: reject only loses a candidate, a false accept trains on a bad one
 #: (issue 46, d10: loosening this let real rejections through).
 _NO_RE = re.compile(
-    r"""(?:(?:^\s*|[\n.?!:;/]\s*)[*_`"']*no(?![a-z])|\bno[*_`"'.!\s]*$)""", re.IGNORECASE
+    r"""(?:(?:^\s*|[\n.?!:;/]\s*)[*_`"']*no(?![a-z])"""
+    r"""|,\s*[*_`"']*no[*_`"']*\s*[,.;:!?\-\u2013\u2014]"""
+    r"""|(?<![a-z])no[*_`"'.!\s]*$)""",
+    re.IGNORECASE,
 )
+
 #: "Yes, not ..." negates the yes it follows ("Yes, not equivalent: ...").
 _YES_NOT_RE = re.compile(r"""^[\s*_`"',.:;\-\u2013\u2014]*not\b""", re.IGNORECASE)
 _HEDGE_RE = re.compile(r"\b(" + "|".join(_HEDGE_WORDS) + r")\b", re.IGNORECASE)
@@ -1046,9 +1050,11 @@ def copies_answer_template(text: str) -> str:
 #: through (issue 46, d10 reviewer probe). Words only -- "escalating
 #: temperatures" is not a hand-off request.
 _HANDOFF_RE = re.compile(
-    r"\b(escalate (?:this|it|that|the (?:issue|problem|request|ticket))|escalate to|"
-    r"hand[- ]?off|hand (?:it|this|that) (?:off|over)|"
-    r"(?:human|senior|more capable) (?:agent|assistant|operator|engineer))\b",
+    r"\b(escalate (?:this|it|that|the (?:issue|problem|request|ticket))|"
+    r"escalate to (?:a|an|the) (?:human|senior|support|more capable|person|expert)|"
+    r"hand (?:it|this|that) (?:off|over)|hand-?off to (?:a|an|someone|another)|"
+    r"(?:to|for) (?:a|an|the) (?:human|senior|more capable) "
+    r"(?:agent|assistant|operator|engineer))\b",
     re.IGNORECASE,
 )
 
