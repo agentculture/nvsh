@@ -1307,22 +1307,39 @@ def rederive_clean_slate(
     old_outputs: list[Path],
     accepted_out: Path,
     rejected_out: Path,
+    dry_run: bool = False,
 ) -> RereviewCounts:
     """Re-derive re-review outputs written under the old rule (stored
     reviewer A AND fresh reviewer B) under the clean-slate rule (issue 46,
     deviation d8) without calling any model: the fresh reviewer B verdict
     and the re-run guards already on each old output record decide; the
     candidate's stored verdicts, looked up by id in *input_files* (the
-    re-review's own input), become ``prior_verdicts``. Refuses to overwrite
-    an output and refuses an old output id missing from the input."""
+    re-review's own input), become ``prior_verdicts``, and agreement is
+    counted against the stored reviewer B verdict as in a live re-review.
+
+    Everything is validated before anything is written: an existing output,
+    an id repeated in the input or across the old outputs, an old output id
+    missing from the input, or an old output with no fresh reviewer B
+    verdict is refused. *dry_run* returns the counts and writes nothing."""
     for path in (accepted_out, rejected_out):
         if path.exists():
             raise ValueError(f"{path} exists; re-derive writes fresh files only")
-    originals = {record.get("id"): record for record in load_rereview_candidates(input_files)}
+    originals: dict[Any, dict[str, Any]] = {}
+    for record in load_rereview_candidates(input_files):
+        record_id = record.get("id")
+        if record_id in originals:
+            raise ValueError(f"{record_id}: repeated in the re-review input")
+        originals[record_id] = record
+
     counts = RereviewCounts()
+    decided: list[tuple[bool, dict[str, Any]]] = []
+    seen: set[Any] = set()
     for path in old_outputs:
         for old in _load_jsonl(path):
             record_id = old.get("id")
+            if record_id in seen:
+                raise ValueError(f"{record_id}: repeated across the old outputs")
+            seen.add(record_id)
             if record_id not in originals:
                 raise ValueError(f"{record_id}: not in the re-review input")
             verdicts = old.get("verdicts") or {}
@@ -1330,16 +1347,26 @@ def rederive_clean_slate(
             if not isinstance(fresh_b, dict) or not isinstance(fresh_b.get("accept"), bool):
                 raise ValueError(f"{record_id}: no fresh reviewer_b verdict to re-derive from")
             guards = {k: v for k, v in verdicts.items() if k not in ("reviewer_a", "reviewer_b")}
+            original = originals[record_id]
             new_record = dict(old)
             new_record["verdicts"] = {"reviewer_b": fresh_b, **guards}
-            new_record["prior_verdicts"] = _prior_verdicts(originals[record_id])
+            new_record["prior_verdicts"] = _prior_verdicts(original)
+            accepted = fresh_b["accept"] and not guards
             counts.processed += 1
-            if fresh_b["accept"] and not guards:
+            if accepted:
                 counts.accepted += 1
-                _append_jsonl(accepted_out, new_record)
             else:
                 counts.rejected += 1
-                _append_jsonl(rejected_out, new_record)
+            old_accept_b = _stored_reviewer_b_accept(original)
+            if old_accept_b is not None:
+                counts.compared += 1
+                if old_accept_b == fresh_b["accept"]:
+                    counts.agreed += 1
+            decided.append((accepted, new_record))
+
+    if not dry_run:
+        for accepted, new_record in decided:
+            _append_jsonl(accepted_out if accepted else rejected_out, new_record)
     return counts
 
 
@@ -1596,11 +1623,8 @@ def main(argv: list[str] | None = None) -> int:
     seed_paths = [Path(p) for p in args.seed_files]
 
     if args.rereview:
-        try:
-            reviewer_b = load_role_config("REVIEWER_B")
-        except ConfigError as exc:
-            parser.error(str(exc))
-            return 2  # pragma: no cover - parser.error already exits
+        # The offline re-derive (deviation d8) calls no model, so it runs
+        # before -- and never needs -- the reviewer B configuration.
         if args.rederive_clean_slate:
             try:
                 counts = rederive_clean_slate(
@@ -1608,12 +1632,18 @@ def main(argv: list[str] | None = None) -> int:
                     old_outputs=[Path(path) for path in args.rederive_clean_slate],
                     accepted_out=Path(args.accepted_out),
                     rejected_out=Path(args.rejected_out),
+                    dry_run=args.dry_run,
                 )
             except (OSError, ValueError) as exc:
                 print(f"error: {exc}", file=sys.stderr)
                 return 2
             _print_rereview_summary(counts)
             return 0
+        try:
+            reviewer_b = load_role_config("REVIEWER_B")
+        except ConfigError as exc:
+            parser.error(str(exc))
+            return 2  # pragma: no cover - parser.error already exits
         if args.dry_run:
             # Codex review finding #7: dry-run must be handled before any
             # dispatch to the reviewer -- report the count, the limit and

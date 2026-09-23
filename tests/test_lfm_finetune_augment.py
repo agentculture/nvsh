@@ -2556,3 +2556,57 @@ def test_main_rederive_clean_slate_cli(tmp_path, monkeypatch, capsys) -> None:
     assert rc == 0
     assert "accepted=1" in capsys.readouterr().out
     assert not (tmp_path / "rej.jsonl").exists()
+
+
+def test_rederive_clean_slate_refuses_duplicate_ids(tmp_path) -> None:
+    # Codex review of d8: overlapping old outputs, or duplicated input ids,
+    # must be refused rather than written twice or given the wrong history.
+    stored = [_stored_candidate(record_id="a~v1", source_id="a")]
+    inputs = _write_jsonl(tmp_path / "input.jsonl", stored)
+    old = _write_jsonl(tmp_path / "old.jsonl", [_old_rule_output(stored[0], True)])
+    with pytest.raises(ValueError, match="a~v1"):
+        aug.rederive_clean_slate([inputs], [old, old], tmp_path / "a.jsonl", tmp_path / "r.jsonl")
+    assert not (tmp_path / "a.jsonl").exists()
+    with pytest.raises(ValueError, match="a~v1"):
+        aug.rederive_clean_slate(
+            [inputs, inputs], [old], tmp_path / "a2.jsonl", tmp_path / "r2.jsonl"
+        )
+
+
+def test_rederive_clean_slate_counts_agreement_with_the_old_reviewer_b(tmp_path) -> None:
+    stored = [
+        _stored_candidate(record_id="a~v1", source_id="a", no_verdicts=True),
+        _stored_candidate(record_id="b~v1", source_id="b", reviewer_b_accept=True),
+    ]
+    inputs = _write_jsonl(tmp_path / "input.jsonl", stored)
+    old = _write_jsonl(
+        tmp_path / "old.jsonl",
+        [_old_rule_output(stored[0], True), _old_rule_output(stored[1], False)],
+    )
+    counts = aug.rederive_clean_slate([inputs], [old], tmp_path / "a.jsonl", tmp_path / "r.jsonl")
+    assert (counts.agreed, counts.compared) == (1, 2)
+
+
+def test_main_rederive_clean_slate_needs_no_reviewer_config_and_honours_dry_run(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    for name in ("NVSH_AUG_REVIEWER_B_URL", "NVSH_AUG_REVIEWER_B_MODEL", "NVSH_AUG_REVIEWER_B_KEY"):
+        monkeypatch.delenv(name, raising=False)
+    stored = [_stored_candidate(record_id="a~v1", source_id="a", reviewer_a_accept=False)]
+    inputs = _write_jsonl(tmp_path / "input.jsonl", stored)
+    old = _write_jsonl(tmp_path / "old.jsonl", [_old_rule_output(stored[0], True)])
+    argv = [
+        str(inputs),
+        "--rereview",
+        "--rederive-clean-slate",
+        str(old),
+        "--accepted-out",
+        str(tmp_path / "acc.jsonl"),
+        "--rejected-out",
+        str(tmp_path / "rej.jsonl"),
+    ]
+    assert aug.main(argv + ["--dry-run"]) == 0
+    assert "accepted=1" in capsys.readouterr().out
+    assert not (tmp_path / "acc.jsonl").exists()
+    assert aug.main(argv) == 0
+    assert (tmp_path / "acc.jsonl").exists()
