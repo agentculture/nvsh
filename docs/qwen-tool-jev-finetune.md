@@ -510,9 +510,13 @@ $P --env qwen.env measure-val stock
 For 4K, set `MEASURE_CTX=4096` and pass `--ctx 4096`
 *(the 4K run is not yet recorded)*.
 
-**Check the server is really up** (P49): until task h3 lands, `measure.py`
-against a stopped server exits 0 and writes a plausible-looking results page
-in which every line is a tier error *(fix pending)*.
+**A dead server fails the run** (P49). Before the first entry, `measure.py`
+checks `GET <base_url>/models` and requires the served model name. Any tier
+error, or a scorer call error on Track B's served path, fails the run with
+exit 2 and no results page (the predictions and metrics are still written,
+for debugging). `--allow-tier-errors N` accepts up to N and prints the count
+at the top of the page. A scorer's normal "incomplete" top-k result is not an
+error.
 
 ### 10. Train Track A on spark *(not yet run)*
 
@@ -569,7 +573,11 @@ $P --env qwen.env measure-final a1
 
 One call per model (deviation d7), each against its own helper-served
 model, on the test side, the held-out set and the missing-candidate slice.
-Each is measured once; any retry is a deviation. By default
+Each is measured once; any retry is a deviation. `measure-final` always
+passes `--predictions "$WORK/final/<name>"`, so each final run keeps its
+predictions file (`final-<name>-1-<model>.predictions.jsonl`) and metrics
+there. The file holds ids, expected blocks and outcomes, never request text;
+`--details` stays refused on the final side. By default
 `measure-final`'s results page still goes to `docs/benchmarks/` (a known gap
 from h2).
 
@@ -579,7 +587,8 @@ per checkpoint on the final side:
 ```bash
 PYTHONPATH=<training site-packages> uv run --frozen python \
   scripts/lfm-finetune/track_a_calibration.py --model "$WORK/runs/a1/merged" \
-  --split "$WORK/splits/test.json" --predictions <in.jsonl> --out <out.jsonl> --final
+  --split "$WORK/splits/test.json" \
+  --predictions "$WORK/final/a1/<final predictions>.jsonl" --out <out.jsonl> --final
 ```
 
 Run it from the repository root, like `assemble`'s render check: the
@@ -588,10 +597,8 @@ from the repository environment. The lead's live check ran it this way.
 
 It fills each prediction line's `candidates` with the exact teacher-forced
 distribution and writes a sidecar `<out>.provenance.json`. `metrics.py` then
-scores the filled file. *Pending (P50, task h3):* the final run's
-predictions file is its input, and `measure.py` still refuses
-`--predictions` with `--final`; `measure-final` will pass `--predictions`
-once h3 lands. Until then this step cannot run on the final side.
+scores the filled file. Its input is the predictions file `measure-final`
+kept in `$WORK/final/<name>` (P50).
 
 ### 13. Quantize and heal *(not yet run)*
 
@@ -1062,17 +1069,29 @@ committed now (`3df700c`).
   stopped attach server exited 0 and wrote a results page ("Right proposals
   0 of 32") in which all 66 lines were invalid with a tier error. A results
   page alone cannot tell a dead server from a bad model. *Found:* the lead's
-  live check of h2. *Fix (pending, task h3):* a preflight `GET /models`
-  that must list the served name, and any tier error fails the run with exit
-  2 and no results page unless `--allow-tier-errors N` is passed.
+  live check of h2. *Fix (h3):* `measure.py` and `measure_skills.py`
+  first send `GET <base_url>/models` (localhost, 5 s timeout) and require the
+  served model name among the ids, on both the generative path and Track B's
+  `--scorer served` path. Any tier error (generative) or scorer call error (a
+  raised exception; a normal "incomplete" top-k result is not one) fails the
+  run with exit 2 and no results page. Predictions and metrics are still
+  written for debugging. `--allow-tier-errors N` lets up to N through and
+  prints the count at the top of the page. `measure_skills.py` now records a
+  failed call as a `call_error` outcome and continues instead of aborting.
+  *Evidence:* the lead's live check against the stopped server: exit 2,
+  "cannot reach `http://127.0.0.1:18060/v1/models` to confirm the server
+  is up", and no results page. *Commits:* `c171844`, `149ff10` (merge
+  `d3e0c22`).
 - **P50. The final run could not feed d6's calibration step.**
   `measure.py` refused `--predictions` on `--final` and `--acceptance` runs,
   but `track_a_calibration.py` needs the final run's predictions file.
   *Found:* the documentation agent, writing step 12 against `measure.py`.
-  *Fix (pending, added to task h3):* `--predictions` is allowed with
-  `--final` and `--acceptance`. The file holds ids, expected blocks and
-  outcomes, never request text, and a test asserts it has no text field.
-  `measure-final` will pass `--predictions` after h3 lands.
+  *Fix (h3):* `--predictions` is allowed with `--final` and `--acceptance`.
+  The file holds ids, expected blocks and outcomes, never request text, and
+  a test asserts it has no `text` key; `--details` stays refused there.
+  `pipeline.sh`'s `measure-final` always passes `--predictions
+  "$WORK/final/<name>"`, where `track_a_calibration.py` reads it.
+  *Commits:* merge `d3e0c22`, then `9d7e724`.
 
 ### Found by the linters
 
@@ -1092,8 +1111,8 @@ committed now (`3df700c`).
 - **The GGUF's sampling settings**: d3 covers "the GGUF's sampling metadata",
   and no step writes it yet.
 - **Track A calibration on the final side** (d6): the tool is verified on
-  stock with the old validation split. On the final side it waits for P50's
-  fix (h3) and for `measure-final` to pass `--predictions`.
+  stock with issue 39's old validation split; it has not yet run on a final
+  run's predictions.
 - **The re-review's exact command and filter** (step 5).
 - **nvsh's runtime and unparsed Qwen tool calls** (P45): `LfmTier` still
   treats a failed parse as an explanation. Out of scope here (c9); tracked
@@ -1101,7 +1120,6 @@ committed now (`3df700c`).
 - **Gaps left by h2**: the measure stages cannot name an AWQ build yet;
   `measure-final`'s results page still goes to `docs/benchmarks/` by
   default; `--limit-mm-per-prompt` on LFM2.5 is untested.
-- **The dead-server guard** (P49, h3) is not merged yet.
 - **Thinking off for LFM2.5**: the LFM env example now also sends
   `enable_thinking` false. Whether LFM2.5's chat template ignores it has
   not been checked.
@@ -1329,3 +1347,14 @@ counts exactly (45 no decision, 12 explain, 6 escalate, 3 propose).
 
 Pointing `measure.py` at a stopped server exited 0 and wrote a results page
 with every line a tier error (P49). The guard is task h3 *(pending)*.
+
+### 2026-09-23 ~18:40: h3 merged (P49, P50 fixed)
+
+h3 (merge `d3e0c22`, then `9d7e724`): `measure.py` and `measure_skills.py`
+check the served model is listed before the first entry, and a tier or
+scorer call error fails the run with exit 2 and no results page. Against the
+stopped server, `measure.py` now exits 2 ("cannot reach
+`http://127.0.0.1:18060/v1/models` to confirm the server is up") and writes no
+page. `--predictions` is allowed on final and acceptance runs, and
+`measure-final` keeps each final run's predictions in `$WORK/final/<name>`
+for the d6 calibration step.
