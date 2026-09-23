@@ -279,3 +279,59 @@ def test_real_lfm_still_uses_the_assistant_mask() -> None:
     kept = [token for token in row["labels"] if token != module.IGNORE_INDEX]
     assert kept
     assert "<think>" not in tokenizer.decode(row["input_ids"])
+
+
+def test_the_gpu_memory_fraction_is_the_budget_over_the_device_total() -> None:
+    module = _module()
+    assert module.gpu_memory_fraction("8", 128 * 2**30) == 0.0625
+    assert module.gpu_memory_fraction(" 12.5 ", 100 * 2**30) == 0.125
+
+
+@pytest.mark.parametrize("value", ["0", "-4", "lots", "", "nan", "inf", "129"])
+def test_a_gpu_memory_budget_that_is_not_a_positive_fit_is_refused(value: str) -> None:
+    module = _module()
+    with pytest.raises(ValueError, match="NVSH_TRAIN_GPU_MEMORY_GB"):
+        module.gpu_memory_fraction(value, 128 * 2**30)
+
+
+class _FakeCuda:
+    def __init__(self, total: int | None) -> None:
+        self.total = total
+        self.fractions: list[float] = []
+
+    def is_available(self) -> bool:
+        return self.total is not None
+
+    def get_device_properties(self, device: int):
+        return type("Props", (), {"total_memory": self.total})()
+
+    def set_per_process_memory_fraction(self, fraction: float, device: int = 0) -> None:
+        self.fractions.append(fraction)
+
+
+class _FakeTorch:
+    def __init__(self, total: int | None) -> None:
+        self.cuda = _FakeCuda(total)
+
+
+def test_the_gpu_memory_cap_is_set_from_the_environment(capsys) -> None:
+    module = _module()
+    torch = _FakeTorch(128 * 2**30)
+    assert module.cap_gpu_memory(torch, {"NVSH_TRAIN_GPU_MEMORY_GB": "8"}) == 0.0625
+    assert torch.cuda.fractions == [0.0625]
+    assert "0.0625" in capsys.readouterr().err
+
+
+def test_no_gpu_memory_budget_leaves_torch_alone() -> None:
+    module = _module()
+    torch = _FakeTorch(128 * 2**30)
+    assert module.cap_gpu_memory(torch, {}) is None
+    assert torch.cuda.fractions == []
+
+
+def test_a_gpu_memory_budget_over_the_device_is_refused_before_any_cap() -> None:
+    module = _module()
+    torch = _FakeTorch(128 * 2**30)
+    with pytest.raises(ValueError, match="exceeds"):
+        module.cap_gpu_memory(torch, {"NVSH_TRAIN_GPU_MEMORY_GB": "200"})
+    assert torch.cuda.fractions == []

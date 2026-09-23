@@ -28,6 +28,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
+import os
 import re
 import sys
 import time
@@ -36,6 +38,9 @@ from pathlib import Path
 #: The base model and commit the stock measurement names (t11).
 DEFAULT_BASE = "LiquidAI/LFM2.5-350M"
 DEFAULT_REVISION = "9e6c6ccf47cd318696e137d381a7ded8fe4df09f"
+
+#: The environment variable that caps the trainer's GPU memory, in GiB.
+GPU_MEMORY_ENV = "NVSH_TRAIN_GPU_MEMORY_GB"
 
 #: The label value the loss ignores.
 IGNORE_INDEX = -100
@@ -169,6 +174,46 @@ def tokenize_example(tokenizer, example: dict, max_length: int) -> dict:
     }
 
 
+def gpu_memory_fraction(gb: str, total_bytes: int) -> float:
+    """The share of a device of *total_bytes* that a budget of *gb* GiB is.
+
+    capped.sh's MemoryMax does not see CUDA allocations, and on unified memory
+    (GB10, Jetson) they come out of the same pool the serving stack uses, so
+    the trainer caps itself (issue 46, c49). Refuses a budget that is not a
+    positive number or is larger than the device.
+    """
+    try:
+        value = float(gb)
+    except ValueError:
+        value = math.nan
+    if not math.isfinite(value) or value <= 0:
+        raise ValueError(f"{GPU_MEMORY_ENV}={gb!r} is not a positive number of GiB")
+    budget = value * 2**30
+    if budget > total_bytes:
+        raise ValueError(
+            f"{GPU_MEMORY_ENV}={gb!r} exceeds the device's {total_bytes / 2**30:.1f} GiB"
+        )
+    return budget / total_bytes
+
+
+def cap_gpu_memory(torch, environ=os.environ) -> float | None:
+    """Apply $NVSH_TRAIN_GPU_MEMORY_GB to CUDA device 0 before a model loads.
+
+    Returns the fraction set, or None when the variable is unset or there is
+    no CUDA device. Raises ValueError for a budget gpu_memory_fraction refuses.
+    """
+    gb = environ.get(GPU_MEMORY_ENV)
+    if gb is None:
+        return None
+    if not torch.cuda.is_available():
+        print(f"{GPU_MEMORY_ENV} set but no CUDA device; no GPU cap applied", file=sys.stderr)
+        return None
+    fraction = gpu_memory_fraction(gb, torch.cuda.get_device_properties(0).total_memory)
+    torch.cuda.set_per_process_memory_fraction(fraction, 0)
+    print(f"{GPU_MEMORY_ENV}={gb.strip()}: GPU memory fraction {fraction:.4f}", file=sys.stderr)
+    return fraction
+
+
 def merge_adapter(base: str, revision: str, adapter: Path, out: Path) -> None:  # pragma: no cover
     """Merge a saved LoRA adapter into a fresh copy of the base and save it to *out*.
 
@@ -230,6 +275,11 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - needs a GP
 
     # isort: on
 
+    try:
+        cap_gpu_memory(torch)
+    except ValueError as exc:
+        print(f"train.py: {exc}", file=sys.stderr)
+        return 2
     model, tokenizer = FastLanguageModel.from_pretrained(
         args.base, revision=args.revision, max_seq_length=args.max_length, load_in_4bit=False
     )
