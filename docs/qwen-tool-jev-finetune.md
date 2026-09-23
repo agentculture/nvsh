@@ -420,7 +420,10 @@ $P --env qwen.env measure-val a1
 ```
 
 `train` runs `train.py` under the memory cap, merges, writes the
-`generation_config.json` and stages the result in `HF_CACHE` as `REPO`.
+`generation_config.json` and stages the result in `HF_CACHE` as `REPO`. The
+merge saves a generation config without the greedy temperature, because
+transformers refuses to save temperature 0 with sampling off; the
+`gen_config.py write` step right after it puts the temperature back (P37).
 `TRAIN_ARGS` in the env file still holds issue 39's 350M settings and must be
 re-tuned for 0.8B on validation only (c20).
 
@@ -742,10 +745,40 @@ and the commit on `spec/qwen-tool-jev-issue-46`.
   and a test checks that a child sees values set only in the env file.
   *Commit:* `6d805d5`.
 
+### Found in live runs after the tooling merged
+
+- **P37. transformers refuses to save the d3 generation config.** The
+  served file pins `temperature` 0.0 with `do_sample` false (d3), and
+  transformers will not save a model whose generation config says that:
+  "`temperature`: `do_sample` is not set to `True`. However, `temperature` is
+  set to `0.0` ... Fix these issues to save the configuration." vLLM needs
+  the temperature key; transformers' save rejects it. *Found:* the lead's
+  live run of f11's `awq_oneshot.py` on the stock copy. *Evidence:* with
+  transformers 5.17.0 (AWQ venv), quantization ran, `save_pretrained`
+  failed, and the output was 22 MB with no weights. With 5.5.0 (training
+  venv), `GenerationConfig.save_pretrained` raises `ValueError`. The t16
+  spike only worked because it loaded the raw Hugging Face snapshot, which
+  has no `generation_config.json`. *Fix for the training merge:* `train.py`'s
+  `save_valid_generation_config()` clears a greedy temperature (temperature
+  0 with `do_sample` false becomes temperature `None`) right before
+  `merged.save_pretrained`; `pipeline.sh`'s `gen_config.py write` then
+  restores the serving file. Verified end to end by the lead with
+  transformers 5.5 on the stock copy: loaded temperature 0.0, saved with
+  `model.safetensors` written, `gen_config.py write` and `check` passed,
+  final file `{do_sample: false, eos_token_id: [248046, 248044],
+  temperature: 0.0}`. *Commit:* `51d91b1`. *Fix for AWQ (pending, f11):*
+  `awq_oneshot.py` resets the generation config before saving, and
+  `finish_awq_export` writes the served file afterwards *(awaiting the
+  lead's live re-check)*.
+- **P38. Null token ids in the served generation config.** `gen_config.py`
+  copied `bos_token_id` and `pad_token_id` from Qwen's `config.json`, where
+  they are null, so the served file carried them as null. *Found:* the lead,
+  alongside P37. *Fix:* null ids are no longer copied. *Commit:* `51d91b1`.
+
 ## Not verified yet
 
 - **`quantize.py`'s AWQ and GGUF paths** (ledger P35, plan risk r14): the
-  f11 fix is not merged yet.
+  f11 fix is not merged yet, and its AWQ save must also handle P37.
 - **GGUF on AGX Orin**: the llama.cpp build has only run on spark.
 - **The GGUF's sampling settings**: d3 covers "the GGUF's sampling metadata",
   and no step writes it yet.
@@ -892,3 +925,15 @@ The documentation agent found that `pipeline.sh` did not export the f10
 settings, so a GPU budget set in the env file would not have reached the
 trainer. Fixed in `6d805d5`: the caps are exported, both env examples name
 them, and `pipeline.sh status` prints them as a child process sees them.
+
+### 2026-09-23 ~15:50: the d3 generation config breaks saving (P37, P38)
+
+The lead's live run of f11's `awq_oneshot.py` on the stock copy failed to
+save: transformers refuses a generation config with temperature 0.0 and
+`do_sample` false, which is exactly the d3 file. Reproduced with
+transformers 5.17.0 (AWQ venv; 22 MB output, no weights) and 5.5.0
+(training venv). The training merge is fixed in `51d91b1`
+(`save_valid_generation_config()`, then `gen_config.py write` restores the
+served file) and verified end to end on the stock copy. The same commit stops
+`gen_config.py` writing null `bos_token_id` and `pad_token_id`. The AWQ side
+went back to f11 *(pending)*.
