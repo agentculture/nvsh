@@ -130,6 +130,22 @@ decision.
 - **d4,** re-split before the re-review, re-review only the train side, with
   4 workers (see [Data and split](#data-and-split)).
 - **d5,** this guide.
+- **d6, exact Track A calibration.** Generation log-probabilities cannot
+  give Track A a candidate distribution (P42). Instead, each candidate's
+  tool-call prefix (every operation, plus explain and escalate) is
+  teacher-forced under the Track A checkpoint with the training-identical
+  prompt, in process, and the scores are normalised over the candidates.
+  This runs once per checkpoint on the final side. It is being built as
+  task h1 (`track_a_calibration.py`) *(pending)*.
+- **d7, one serving setup for every measurement.** Every model (the stock
+  copy, Track A, Track B and the AWQ build) is measured in attach mode
+  against one committed helper that starts the pinned vLLM with identical
+  flags: the pinned image digest, `qwen3_coder`, automatic tool choice,
+  `--max-logprobs`, `--limit-mm-per-prompt` with image and video 0, and each
+  model directory's own `generation_config.json`. Each `measure.py` call
+  measures one model. Proposed by the lead and approved by the operator. It
+  is being built as task h2 (`serve_for_measure.sh` and the pipeline's
+  measure stages) *(pending)*.
 
 ### Quantization plan
 
@@ -448,6 +464,10 @@ measurement.
 
 ### 9. Stock baseline *(not yet run as a final baseline)*
 
+*This step changes when task h2 lands (deviation d7): every model will be
+served by one committed helper and measured one model per call. Until
+then, the route below is the one in use.*
+
 Measure stock on validation, then once on the test side, the held-out set
 and the missing-candidate slice, at 2K and 4K, before any tuned run is
 scored. Stock is always the stock copy in `$WORK/stock`, with its
@@ -525,7 +545,11 @@ $P --env qwen.env measure-final a1
 ```
 
 Once per checkpoint, on the test side, the held-out set and the
-missing-candidate slice. Any retry is a deviation.
+missing-candidate slice. Any retry is a deviation. Under deviation d7, stock
+and each tuned checkpoint are measured by separate calls, each against its
+own helper-served model; the stage's exact form waits for task h2
+*(pending)*. Track A's calibration is scored separately, once per
+checkpoint, by the d6 tool (task h1, *pending*).
 
 ### 13. Quantize and heal *(not yet run)*
 
@@ -933,8 +957,10 @@ full test suite is green.
   `_stats`, and `>` is its own token). So most real Qwen lines will get no
   Track A distribution, and Track A's ECE and Brier are probably not
   measurable from generation log-probabilities. Calibration figures will
-  likely come from the scorer track. *Status:* an open decision for the
-  operator (it touches h17).
+  likely come from the scorer track. *Status:* decided by the operator as
+  deviation d6: Track A calibration is scored exactly, in process, by
+  teacher-forcing each candidate (h17 kept). The tool, task h1, is
+  *pending*.
 - **P43 (medium). An empty GPU budget aborted training.** The env examples
   ship `NVSH_TRAIN_GPU_MEMORY_GB=` empty (meant as "no per-process cap"),
   and the trainers parsed it with `float('')` and stopped. *Found:* Codex
@@ -955,7 +981,8 @@ full test suite is green.
   `invalid` with `invalid_reason` `unparsed_tool_call`. *Commit:*
   `e4cb18e` (merge `9f446d7`). nvsh's own runtime (`LfmTier`) still treats
   such output as an explanation; this work does not change runtime code
-  (c9). The operator has been asked whether to file an issue for it.
+  (c9). Filed, with the operator's approval, as
+  [nvsh issue #50](https://github.com/agentculture/nvsh/issues/50).
 - **P46 (medium). AWQ calibration split records on newlines.** The
   calibration file held one record per line, so a record containing a
   newline became several samples and later records were dropped. *Found:*
@@ -972,7 +999,9 @@ committed now (`3df700c`).
   `$WORK/stock` is measured in attach mode. `measure-skills` always uses the
   managed launcher and cannot measure the stock copy until
   `measure_skills.py` gains an attach option. *Found:* the lead, while
-  merging g1. *Status:* open risk.
+  merging g1. *Status:* plan risk r15, resolved by deviation d7: every model
+  is served by one helper and measured in attach mode, one model per call.
+  The helper, task h2, is *pending*.
 
 ### Found by the linters
 
@@ -991,16 +1020,17 @@ committed now (`3df700c`).
 - **GGUF on AGX Orin**: the llama.cpp build has only run on spark.
 - **The GGUF's sampling settings**: d3 covers "the GGUF's sampling metadata",
   and no step writes it yet.
-- **Track A calibration** (P11, P42, plan risk r12): probably not
-  measurable from generation log-probabilities, because Qwen splits label
-  names into several tokens. How to report it is an open decision for the
-  operator (h17).
+- **Track A calibration** (P11, P42, plan risk r12): not measurable from
+  generation log-probabilities, because Qwen splits label names into several
+  tokens. Deviation d6 scores it in process instead; its tool (h1) is not
+  merged yet.
 - **The re-review's exact command and filter** (step 5).
 - **nvsh's runtime and unparsed Qwen tool calls** (P45): `LfmTier` still
-  treats a failed parse as an explanation. Out of scope here (c9); the
-  operator has been asked whether to file an issue.
-- **Stock on the skills evals** (P48): `measure_skills.py` cannot measure
-  the stock copy until it gains an attach option.
+  treats a failed parse as an explanation. Out of scope here (c9); tracked
+  as [nvsh issue #50](https://github.com/agentculture/nvsh/issues/50).
+- **The d7 measurement helper** (P48): until h2 is merged, stock is
+  measured through a hand-started vLLM (step 9), and `measure_skills.py`
+  cannot measure the stock copy.
 - **Thinking off for LFM2.5**: the LFM env example now also sends
   `enable_thinking` false. Whether LFM2.5's chat template ignores it has
   not been checked.
@@ -1202,3 +1232,14 @@ the operator. The pipeline's measure stages now enforce the stock copy, the
 grounding snapshot and thinking off. Because the managed launcher refuses an
 absolute model path, stock is measured in attach mode, and the skills evals
 cannot measure the stock copy yet (P48, open).
+
+### 2026-09-23 ~17:05: operator decisions d6 and d7, issue #50
+
+The operator approved two deviations. d6: Track A calibration is scored
+exactly, in process, by teacher-forcing each candidate's tool-call prefix
+and normalising over the candidates (task h1, pending); this settles P42's
+open question. d7, proposed by the lead: every model is measured in attach
+mode against one committed pinned-vLLM helper with identical flags, one
+model per `measure.py` call (task h2, pending); this resolves plan risk r15
+(P48). The runtime side of P45 is filed as
+[nvsh issue #50](https://github.com/agentculture/nvsh/issues/50).
