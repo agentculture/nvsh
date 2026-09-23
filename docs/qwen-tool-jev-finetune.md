@@ -410,6 +410,10 @@ python scripts/lfm-finetune/measure.py --split "$WORK/splits/val.json" \
   --ground-snapshot <snapshot.json> --ctx 2048 --predictions "$WORK/measure/stock-val"
 ```
 
+Run `measure.py` directly like this: the pipeline's `measure-val` and
+`measure-final` stages do not yet apply the stock copy, the snapshot or the
+thinking switch (P41, fix in progress).
+
 The t13 live check ran stock on validation in attach mode, against a vLLM
 started by hand from the pinned image. The route is the one step 13 shows
 for the AWQ build.
@@ -446,7 +450,8 @@ NVSH_TRAIN_GPU_MEMORY_GB=<gb>   # per-process GPU budget; empty = no per-process
   available memory falls below it. The lead's probe on spark2 used a 26 GB
   floor with about 30 GB available.
 - `NVSH_TRAIN_GPU_MEMORY_GB`: `train.py` and `train_scorer.py` cap their own
-  GPU allocations with `torch.cuda.set_per_process_memory_fraction`.
+  GPU allocations with `torch.cuda.set_per_process_memory_fraction`. Until
+  g3 lands, an empty value aborts the trainer (P43), so set a number.
 
 `pipeline.sh` exports all of these to its child processes (P36). Confirm
 what a child process will see before training, then train:
@@ -828,6 +833,51 @@ and the commit on `spec/qwen-tool-jev-issue-46`.
   they are null, so the served file carried them as null. *Found:* the lead,
   alongside P37. *Fix:* null ids are no longer copied. *Commit:* `51d91b1`.
 
+### Found by the wave-2 review
+
+The wave-2 review covered t13, t14, f8 to f11 and the lead's own fixes. The
+qwen worker reviewer approved every file it read, as it did in wave 1.
+Codex found seven correctness problems. All seven are *fix in progress*,
+in review-fix tasks g1 to g4.
+
+- **P40 (high). Stopping the pipeline leaves training running.**
+  `run_capped` starts the command in its own process group (`setsid`, from
+  f10), so a SIGTERM to `pipeline.sh` does not reach it, and there was no
+  cleanup trap. *Found:* Codex wave-2 review. *Fix:* in progress (g1).
+- **P41 (high). The pipeline's measure stages skipped the approved
+  measurement setup.** They served stock from `$BASE` (no temperature-0
+  generation config) instead of `$WORK/stock`, passed no
+  `--ground-snapshot` (d1), did not switch thinking off, and dropped extra
+  arguments. *Found:* Codex wave-2 review. *Fix:* in progress (g1). Until
+  it lands, run `measure.py` directly as in step 9.
+- **P42 (high). Track A's candidate tracing invented probabilities.** It
+  credited a first-token alternative's probability to a whole label whose
+  continuation was never observed (for example `gpu` counted as
+  `gpu_stats`), fabricating ECE and Brier inputs. *Found:* Codex wave-2
+  review. *Fix:* in progress (g2).
+- **P43 (medium). An empty GPU budget aborted training.** The env examples
+  ship `NVSH_TRAIN_GPU_MEMORY_GB=` empty (meant as "no per-process cap"),
+  and the trainers parsed it with `float('')` and stopped. *Found:* Codex
+  wave-2 review. *Fix:* in progress (g3).
+- **P44 (medium). `assemble` needed transformers where it was not
+  installed.** The render check that f4 turned on by default imports
+  transformers, which the repository environment used by `pipeline.sh`'s
+  `py()` does not have. *Found:* Codex wave-2 review. *Fix:* in progress
+  (g1).
+- **P45 (medium). Unparsed tool calls scored as explanations.** Qwen XML
+  that the vLLM parser failed on reached `measure.py` as plain text, an
+  explanation, and would score as explain instead of invalid. *Found:*
+  Codex wave-2 review. *Fix:* in progress (g2). nvsh's own runtime
+  (`LfmTier`) treats such output the same way; this work does not change
+  runtime code (c9), so that needs a follow-up issue.
+- **P46 (medium). AWQ calibration split records on newlines.** The
+  calibration file held one record per line, so a record containing a
+  newline became several samples and later records were dropped. *Found:*
+  Codex wave-2 review. *Fix:* in progress (g4).
+
+The committed plan record lacked deviation d5 when Codex looked; it is
+committed now (`3df700c`).
+
 ## Not verified yet
 
 - **The GGUF half of f11 on a live run**: the lead's live re-check covered
@@ -840,6 +890,10 @@ and the commit on `spec/qwen-tool-jev-issue-46`.
   and no step writes it yet.
 - **Track A calibration** (P11, plan risk r12).
 - **The re-review's exact command and filter** (step 5).
+- **The wave-2 fixes** (P40 to P46, g1 to g4) are not merged yet.
+- **nvsh's runtime and unparsed Qwen tool calls** (P45): `LfmTier` would
+  also treat a failed parse as an explanation. Out of scope here (c9); a
+  follow-up issue is needed.
 - **Two unidentified test failures.** After the f10 merge, one full-suite
   run had 2 failures whose names were not captured. The six runs after it
   were green. The cause is unknown.
@@ -1004,3 +1058,15 @@ first run failed at save (P37); after the fix, 1.1 GB with weights, served
 by the pinned vLLM with `--limit-mm-per-prompt` and no override flag,
 Marlin kernel, temperature 0 taken from the file, three byte-identical
 runs, tool calls parsed (P35).
+
+### 2026-09-23 ~16:15: wave-2 review, and the held-out draft
+
+The between-wave review of wave 2: the qwen worker reviewer returned OK on
+every file; Codex found seven correctness problems, recorded as P40 to P46
+and sent to review-fix tasks g1 to g4 *(in progress)*. Deviation d5 is now
+in the committed plan record (`3df700c`).
+
+The operator edited the held-out draft. The original is kept as a separate
+v1 file (sha256 `95c7cd3e...2107f`). The latest save does not parse as JSON
+(line 505, column 5); the operator is fixing it. The held-out set is not
+sealed yet.
