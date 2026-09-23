@@ -85,8 +85,11 @@ case "$STAGE" in
     ;;
   assemble)
     touch "$WORK/aug/nvsh-accepted.jsonl"
+    supplement=()
+    [ -n "${SUPPLEMENT-$HERE/train-supplement.json}" ] && supplement=(--supplement "${SUPPLEMENT-$HERE/train-supplement.json}")
     py scripts/lfm-finetune/merge_variations.py --split "$WORK/splits/train.json" \
-      --accepted "$WORK/aug/nvsh-accepted.jsonl" --out "$WORK/data/train-augmented.json"
+      --accepted "$WORK/aug/nvsh-accepted.jsonl" --out "$WORK/data/train-augmented.json" \
+      "${supplement[@]}"
     py scripts/lfm-finetune/build_dataset.py --split "$WORK/data/train-augmented.json" \
       --out "$WORK/data/nvsh-train.jsonl"
     if [ -s "$WORK/aug/skills-accepted.jsonl" ]; then

@@ -66,13 +66,40 @@ def merge(split: dict, variations: list[dict]) -> tuple[dict, dict[str, int]]:
     return merged, counts
 
 
+def add_supplement(split: dict, supplement: dict) -> tuple[dict, int]:
+    """*split* with a train-only supplement's entries appended as their own sources.
+
+    The supplement (deviation d3) must name the train side in its header, and
+    none of its ids may collide with an entry already in the split.
+    """
+    if not _TRAIN_HEADER.search(str(supplement.get("header", ""))):
+        raise ValueError("the supplement's header does not name the train side")
+    taken = {entry["id"] for entry in split["entries"]}
+    added = []
+    for entry in supplement["entries"]:
+        if entry["id"] in taken:
+            raise ValueError(f"supplement id {entry['id']!r} collides with the split")
+        added.append({**entry, "source_id": entry["id"], "side": "train"})
+    merged = {**split, "entries": [*split["entries"], *added]}
+    merged["header"] = f"{split['header']} Plus {len(added)} train-only supplement entries."
+    return merged, len(added)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--split", required=True, type=Path, help="train.json from split.py")
     parser.add_argument("--accepted", required=True, type=Path, nargs="+")
     parser.add_argument("--out", required=True, type=Path)
+    parser.add_argument("--supplement", type=Path, nargs="*", default=[])
     args = parser.parse_args(argv)
     split = json.loads(args.split.read_text(encoding="utf-8"))
+    supplemented = 0
+    for path in args.supplement:
+        try:
+            split, count = add_supplement(split, json.loads(path.read_text(encoding="utf-8")))
+        except ValueError as exc:
+            parser.error(str(exc))
+        supplemented += count
     variations = [
         json.loads(line)
         for path in args.accepted
@@ -84,7 +111,10 @@ def main(argv: list[str] | None = None) -> int:
     except ValueError as exc:
         parser.error(str(exc))
     args.out.write_text(json.dumps(merged, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-    print(f"sources={len(split['entries'])} kept={counts['kept']} duplicate={counts['duplicate']}")
+    print(
+        f"sources={len(split['entries'])} supplement={supplemented}"
+        f" kept={counts['kept']} duplicate={counts['duplicate']}"
+    )
     return 0
 
 

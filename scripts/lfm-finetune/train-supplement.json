@@ -1,0 +1,17 @@
+{
+  "header": "Train-only supplement for issue 39 (deviation d3, approved 2026-09-23). Split 'train' of train-supplement.json. Authored after validation showed r6 turning 'Stop the inference container' (dev-g907, expect escalate) into a restart: the train side of dev.json holds no request to stop, shut down or disable a container or service, and Tier 2 has no such action, so the right answer is to escalate. Restart requests sit next to them as contrasts. These entries are never split, measured or merged into dev.json; merge_variations.py appends them to the train side only. nginx is deliberately left out: the lead once saw a test-side entry about it (lapse l2), and this fix rests on the validation entry alone.",
+  "entries": [
+    {"id": "sup-01", "kind": "explicit", "text": "Stop the trainer container", "expect": {"escalate": true}, "source": "supplement-2026-09-23", "class": "decline:no_matching_action"},
+    {"id": "sup-02", "kind": "explicit", "text": "Shut down the inference container for now", "expect": {"escalate": true}, "source": "supplement-2026-09-23", "class": "decline:no_matching_action"},
+    {"id": "sup-03", "kind": "explicit", "text": "docker stop trainer", "expect": {"escalate": true}, "source": "supplement-2026-09-23", "class": "decline:no_matching_action"},
+    {"id": "sup-04", "kind": "explicit", "text": "Stop vllm.service, I need the GPU back", "expect": {"escalate": true}, "source": "supplement-2026-09-23", "class": "decline:no_matching_action"},
+    {"id": "sup-05", "kind": "explicit", "text": "Disable docker.service so it does not start at boot", "expect": {"escalate": true}, "source": "supplement-2026-09-23", "class": "decline:no_matching_action"},
+    {"id": "sup-06", "kind": "explicit", "text": "Halt the nvsh service", "expect": {"escalate": true}, "source": "supplement-2026-09-23", "class": "decline:no_matching_action"},
+    {"id": "sup-07", "kind": "explicit", "text": "Remove the trainer container", "expect": {"escalate": true}, "source": "supplement-2026-09-23", "class": "decline:no_matching_action"},
+    {"id": "sup-08", "kind": "explicit", "text": "Pause the inference container", "expect": {"escalate": true}, "source": "supplement-2026-09-23", "class": "decline:no_matching_action"},
+    {"id": "sup-09", "kind": "explicit", "text": "Restart the trainer container", "expect": {"operation": "container_restart", "args": {"container": "trainer"}}, "source": "supplement-2026-09-23", "class": "contrast:restart"},
+    {"id": "sup-10", "kind": "explicit", "text": "The inference container is stuck, bounce it", "expect": {"operation": "container_restart", "args": {"container": "inference"}}, "source": "supplement-2026-09-23", "class": "contrast:restart"},
+    {"id": "sup-11", "kind": "explicit", "text": "Restart vllm.service", "expect": {"operation": "service_restart", "args": {"service": "vllm.service"}}, "source": "supplement-2026-09-23", "class": "contrast:restart"},
+    {"id": "sup-12", "kind": "explicit", "text": "docker.service is wedged, restart it", "expect": {"operation": "service_restart", "args": {"service": "docker.service"}}, "source": "supplement-2026-09-23", "class": "contrast:restart"}
+  ]
+}

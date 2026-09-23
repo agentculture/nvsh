@@ -81,3 +81,44 @@ def test_a_repeat_differing_only_in_punctuation_is_dropped() -> None:
     variations = [_variation("GPU busy?"), _variation("gpu busy")]
     _, counts = _module().merge(_split(), variations)
     assert counts == {"kept": 1, "duplicate": 1}
+
+
+def _supplement(header: str = "Split 'train' of train-supplement.json.") -> dict:
+    entry = {
+        "id": "sup-01",
+        "kind": "explicit",
+        "text": "Stop the trainer",
+        "expect": {"escalate": True},
+    }
+    return {"header": header, "entries": [entry]}
+
+
+def test_a_supplement_is_appended_as_its_own_train_sources() -> None:
+    merged, count = _module().add_supplement(_split(), _supplement())
+    assert count == 1
+    added = merged["entries"][-1]
+    assert added["source_id"] == "sup-01" and added["side"] == "train"
+    assert "Split 'train' of " in merged["header"]
+
+
+def test_a_supplement_not_marked_train_is_refused() -> None:
+    with pytest.raises(ValueError, match="train side"):
+        _module().add_supplement(_split(), _supplement("A supplement."))
+
+
+def test_a_supplement_id_colliding_with_the_split_is_refused() -> None:
+    supplement = _supplement()
+    supplement["entries"][0]["id"] = "g1"
+    with pytest.raises(ValueError, match="collides"):
+        _module().add_supplement(_split(), supplement)
+
+
+def test_the_committed_supplement_loads_and_is_train_only() -> None:
+    import json as _json
+
+    from nvsh.tiers.bench import load_corpus
+
+    path = _SCRIPT.parent / "train-supplement.json"
+    assert load_corpus(path).problems == ()
+    merged, count = _module().add_supplement(_split(), _json.loads(path.read_text()))
+    assert count == len(merged["entries"]) - 1
