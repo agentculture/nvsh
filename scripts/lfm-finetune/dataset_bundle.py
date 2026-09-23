@@ -18,7 +18,8 @@ reviewed it. The folder holds:
 
 Only nvsh's own data goes in. The Jetson skills requests (derived from
 NVIDIA's CC-BY-4.0 / Apache-2.0 skills) are left out; publishing them would
-need NVIDIA's attribution (spec c40). ``held-out.json`` is refused by name.
+need NVIDIA's attribution (spec c40). ``held-out.json`` is refused by name,
+and so is a train record that repeats a validation or test entry.
 The script never uploads.
 
     python scripts/lfm-finetune/dataset_bundle.py --splits work/splits \
@@ -32,6 +33,7 @@ from __future__ import annotations
 import argparse
 import collections
 import json
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -72,6 +74,11 @@ def _jsonl(path: Path) -> list[dict[str, Any]]:
     ]
 
 
+def _normal(text: str) -> str:
+    """Case, spacing and punctuation folded, as merge_variations.py compares texts."""
+    return " ".join(re.sub(r"[^\w\s]", " ", text.lower()).split())
+
+
 def _model_name(role_value: str) -> str:
     return ROLE_MODELS.get(role_value, (role_value, "unknown"))[0]
 
@@ -108,6 +115,14 @@ def build(
     rejected_count = len(_jsonl(rejected))
     if not licence.read_text(encoding="utf-8").lstrip().startswith("Apache License"):
         raise ValueError(f"{licence} is not the Apache License")
+
+    held_apart = {_normal(e["text"]) for entries in sides.values() for e in entries}
+    leaked = sum(1 for entry in train if _normal(entry["text"]) in held_apart)
+    if leaked:
+        raise ValueError(
+            f"{leaked} train record(s) repeat a validation or test entry; re-run"
+            " merge_variations.py with --exclude before building the data set"
+        )
 
     manifest: list[dict[str, Any]] = []
     rows: dict[str, list[dict[str, Any]]] = {"train": [], "validation": [], "test": []}

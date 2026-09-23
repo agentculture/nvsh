@@ -85,7 +85,9 @@ def _inputs(tmp_path: Path, *, variation_models=True, test_extra=()) -> dict:
 def test_the_bundle_holds_three_splits_a_manifest_and_a_card(tmp_path) -> None:
     counts = _module().build(**_inputs(tmp_path))
     out = tmp_path / "bundle"
-    assert counts["train"] == 3 and counts["validation"] == 1 and counts["test"] == 1
+    assert counts["train"] == 3
+    assert counts["validation"] == 1
+    assert counts["test"] == 1
     assert (counts["corpus"], counts["supplement"], counts["variation"]) == (1, 1, 1)
     manifest = {row["id"]: row for row in json.loads((out / "manifest.json").read_text())}
     assert manifest["dev-a~v1"]["origin"] == "variation"
@@ -94,25 +96,29 @@ def test_the_bundle_holds_three_splits_a_manifest_and_a_card(tmp_path) -> None:
     assert manifest["sup-01"]["source_file"].endswith("train-supplement.json")
     assert manifest["dev-t1"]["split"] == "test"
     card = (out / "README.md").read_text()
-    assert "license: apache-2.0" in card and "never trained on" in card
+    assert "license: apache-2.0" in card
+    assert "never trained on" in card
     assert (
         "Of 2 reviewed rewrites, 1\n  were accepted (50%)" in card
         or "Of 2 reviewed rewrites, 1" in card
     )
-    assert "Nemotron 3.5 Lightning" in card and "CC-BY-4.0" in card
+    assert "Nemotron 3.5 Lightning" in card
+    assert "CC-BY-4.0" in card
     lines = (out / "data" / "train.jsonl").read_text().splitlines()
     assert json.loads(lines[2])["source_id"] == "dev-a"
 
 
 def test_a_variation_without_its_models_is_refused(tmp_path) -> None:
+    module, inputs = _module(), _inputs(tmp_path, variation_models=False)
     with pytest.raises(ValueError, match="no accepted record"):
-        _module().build(**_inputs(tmp_path, variation_models=False))
+        module.build(**inputs)
 
 
 def test_a_variation_outside_the_train_side_is_refused(tmp_path) -> None:
     extra = (_entry("dev-t1~v1", {"escalate": True}),)
+    module, inputs = _module(), _inputs(tmp_path, test_extra=extra)
     with pytest.raises(ValueError, match="never leave the train side"):
-        _module().build(**_inputs(tmp_path, test_extra=extra))
+        module.build(**inputs)
 
 
 def test_the_held_out_split_is_refused(tmp_path) -> None:
@@ -120,12 +126,24 @@ def test_the_held_out_split_is_refused(tmp_path) -> None:
     held = tmp_path / "held-out.json"
     held.write_text(json.dumps({"entries": []}))
     inputs["train_augmented"] = held
+    module = _module()
     with pytest.raises(ValueError, match="held-out"):
-        _module().build(**inputs)
+        module.build(**inputs)
 
 
 def test_a_non_apache_licence_is_refused(tmp_path) -> None:
     inputs = _inputs(tmp_path)
     inputs["licence"].write_text("MIT License\n")
+    module = _module()
     with pytest.raises(ValueError, match="Apache"):
-        _module().build(**inputs)
+        module.build(**inputs)
+
+
+def test_a_train_record_repeating_a_test_entry_is_refused(tmp_path) -> None:
+    inputs = _inputs(tmp_path)
+    train = json.loads(inputs["train_augmented"].read_text())
+    train["entries"][0]["text"] = "TEXT dev-t1."
+    inputs["train_augmented"].write_text(json.dumps(train))
+    module = _module()
+    with pytest.raises(ValueError, match="repeat a validation or test entry"):
+        module.build(**inputs)

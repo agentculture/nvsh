@@ -93,6 +93,7 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
+import http.client
 import json
 import os
 import random
@@ -669,7 +670,14 @@ def _post_chat_completion(
     effective_timeout = role.timeout if timeout is None else timeout
     with urllib.request.urlopen(request, timeout=effective_timeout) as response:
         body = json.loads(response.read().decode("utf-8"))
-    return _extract_content(body["choices"][0]["message"])
+    # An empty or malformed `choices` (a gateway returning a truncated/error
+    # body with a 200 status) is treated the same as an empty reply from a
+    # role -- an error the caller counts, never an IndexError/KeyError that
+    # crashes the run (finding 2).
+    choices = body.get("choices")
+    if not choices or "message" not in choices[0]:
+        raise ValueError(f"malformed reply from {role.model!r}: no choices in response")
+    return _extract_content(choices[0]["message"])
 
 
 #: The call signature every role invocation uses; tests may inject a fake
@@ -720,6 +728,14 @@ def _is_transient(exc: BaseException) -> tuple[bool, float | None]:
         # HTTPError is a URLError subclass and is handled above; anything
         # else here is a connection-level failure (refused, DNS, reset...).
         return True, None
+    if isinstance(exc, (OSError, http.client.HTTPException)):
+        # On Python 3.12, urllib only wraps errors raised by h.request() into
+        # URLError -- a connection dropped while reading the response (in
+        # h.getresponse()/response.read()) surfaces raw as one of these:
+        # ConnectionResetError, http.client.RemoteDisconnected (itself a
+        # ConnectionResetError, i.e. an OSError) or http.client.IncompleteRead
+        # (an HTTPException). There is no status code or Retry-After here.
+        return True, None
     return False, None
 
 
@@ -730,11 +746,13 @@ def _compute_backoff(
     rand_fn: Callable[[], float] = random.random,
 ) -> float:
     """Wait time before retry number *attempt* (1-based). A server-supplied
-    ``Retry-After`` is honoured exactly, bypassing backoff/jitter entirely.
+    ``Retry-After`` is honoured, bypassing backoff/jitter, but still capped at
+    :data:`MAX_BACKOFF_WAIT` -- a misbehaving/hostile gateway must never be
+    able to stall a run for longer than that regardless of what it asks for.
     Otherwise: full jitter over an exponential curve, capped at
     :data:`MAX_BACKOFF_WAIT` before the jitter is applied."""
     if retry_after is not None:
-        return max(0.0, retry_after)
+        return max(0.0, min(retry_after, MAX_BACKOFF_WAIT))
     raw = backoff_base * (2 ** (attempt - 1))
     capped = min(raw, MAX_BACKOFF_WAIT)
     return capped * rand_fn()
@@ -764,7 +782,7 @@ def _call_with_retry(
     while True:
         try:
             return caller(role, system, user)
-        except (urllib.error.URLError, TimeoutError) as exc:
+        except (urllib.error.URLError, TimeoutError, OSError, http.client.HTTPException) as exc:
             transient, retry_after = _is_transient(exc)
             if not transient or attempt >= policy.max_retries:
                 raise
@@ -1145,7 +1163,14 @@ def run_pipeline(
 
         try:
             outcome = _process_variation(seed, variation_id, roles, local_counts, caller_with_retry)
-        except (urllib.error.URLError, TimeoutError, KeyError, ValueError) as exc:
+        except (
+            urllib.error.URLError,
+            TimeoutError,
+            OSError,
+            http.client.HTTPException,
+            KeyError,
+            ValueError,
+        ) as exc:
             with lock:
                 counts.generated += local_counts.generated
                 counts.corrected += local_counts.corrected

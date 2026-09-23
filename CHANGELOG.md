@@ -15,7 +15,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
-- The tuned 350M (r8) beats stock on the test side (28 of 32 right proposals against 0, 13 of 15 escalations against 0, 17 of 17 explained, 119 ms) but made one wrong mutating proposal, so it is not adopted; `docs/tier2.md` still describes stock behaviour.
+- The tuned 350M (r8) beats stock on the test side (28 of 32 right proposals against 0, 13 of 15 escalations against 0, 17 of 17 explained, 119 ms) but made one wrong mutating proposal, so it is not adopted; `docs/tier2.md` still describes stock behaviour. Four test entries had reached its training by exact wording. Without them it scores at least 27 of 31, 12 of 14 and 15 of 15, and the pipeline now drops such records (`merge_variations.py --exclude`).
 - The same recipe meets the method-validation bar on NVIDIA's 104 Jetson skill evals (s3: 52 of 104 against stock's 35; not-named 33 of 70 against 12), so the method works and nvsh's data is short (third recipe scored on those evals; see the run log).
 - dev-g284..g286 relabelled from escalate to explain; dev.json is now 431 entries.
 

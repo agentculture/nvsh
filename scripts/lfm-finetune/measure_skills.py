@@ -102,7 +102,13 @@ from nvsh import config as nvsh_config  # noqa: E402
 from nvsh.platform._model import Platform  # noqa: E402
 from nvsh.redact import redact  # noqa: E402
 from nvsh.tiers.runtime import Runtime, RuntimeUnavailable  # noqa: E402
-from nvsh.tiers.runtime_docker import build_runtime, container_name  # noqa: E402
+from nvsh.tiers.runtime_docker import (  # noqa: E402
+    DEFAULT_ENGINE,
+    HF_CACHE_NAME,
+    build_runtime,
+    container_name,
+    engine_template,
+)
 
 #: Environment variables the endpoint is read from; ``--url`` / ``--model``
 #: override them. No config file is read.
@@ -125,6 +131,18 @@ EXIT_ENV = 2
 LOCAL_ENDPOINT_LABEL = "<local endpoint>"
 
 STOCK_LABEL = "stock"
+
+#: ``[tiers.lfm] mode`` nvsh's own Tier 2 launcher defaults to when unset.
+MANAGED = "managed"
+
+#: ``--model-revision`` verification outcomes, recorded in the results file.
+#: Mirrors measure.py's ``verify_revision``: ``stage_cache.py`` rewrites the
+#: cache's ``refs/main`` every time the pipeline's train stage runs, so
+#: measuring an older run after a newer one was staged would otherwise make
+#: vLLM (offline) serve the newer weights while the report names the older
+#: revision.
+REVISION_VERIFIED = "revision verified from the cache"
+REVISION_UNVERIFIED = "operator-supplied, not verified"
 
 OUTCOME_CORRECT = "correct"
 OUTCOME_NO_CALL = "no_call"
@@ -458,6 +476,7 @@ def render_results(
     label: str,
     model: str,
     model_revision: str | None,
+    revision_status: str = "",
     command_line: str,
     when: str,
     margin: str | None,
@@ -480,7 +499,10 @@ def render_results(
         f"- model: `{model}`",
     ]
     if model_revision:
-        lines.append(f"- model revision: `{model_revision}`")
+        if revision_status:
+            lines.append(f"- model revision: `{model_revision}` ({revision_status})")
+        else:
+            lines.append(f"- model revision: `{model_revision}`")
     for prov in manifest_provenance:
         lines.append(f"- {prov['repo']}: <{prov['url']}> at commit `{prov['commit']}`")
     lines.append("")
@@ -597,19 +619,108 @@ def memory_floor_mb(cfg: object) -> int:
     return int(tiers.get("memory_floor_mb", 1024))  # type: ignore[arg-type]
 
 
-def launch_runtime(model: str, config_path: Path | None, seams: LaunchSeams) -> Runtime:
-    """Build (never starts) the Tier 2 runtime ``--launch`` will call ``ensure()`` on."""
+class RevisionMismatch(Exception):
+    """``--model-revision`` does not match what ``--launch`` will actually serve."""
+
+
+def hf_cache_dir(settings: Mapping[str, object]) -> Path:
+    """The host HF cache the managed launcher mounts as ``HF_HOME``.
+
+    Mirrors measure.py's ``hf_cache_dir``: ``[tiers.lfm] hf_cache_dir``, or
+    the launcher's own default (``runtime_docker._with_cache_dir``: the tier
+    cache's ``hf`` directory).
+    """
+    configured = settings.get("hf_cache_dir")
+    if configured is not None:
+        return Path(str(configured))
+    from nvsh.tiers.fetch import default_cache_dir
+
+    return default_cache_dir() / HF_CACHE_NAME
+
+
+def cached_revision(cache: Path, repo_id: str) -> tuple[Path, str | None]:
+    """``(refs/main path, commit)`` for *repo_id* in *cache*; commit ``None`` if absent.
+
+    Mirrors measure.py's ``cached_revision``. The launcher sets ``HF_HOME``
+    to the mount of *cache*, so the hub cache is ``<cache>/hub``; ``<cache>``
+    itself is tried too, for a cache laid out as a bare hub directory.
+    """
+    folder = "models--" + repo_id.replace("/", "--")
+    candidates = [cache / "hub" / folder / "refs" / "main", cache / folder / "refs" / "main"]
+    for ref in candidates:
+        try:
+            return ref, ref.read_text(encoding="utf-8").strip()
+        except OSError:
+            continue
+    return candidates[0], None
+
+
+def verify_launch_revision(lfm_settings: Mapping[str, object], model: str, revision: str) -> str:
+    """How *revision* is known to be what ``--launch`` will actually serve.
+
+    Mirrors measure.py's ``verify_revision``. ``stage_cache.py`` rewrites the
+    cache's ``refs/main`` every time the pipeline's train stage runs, so an
+    engine that downloads *model* by repo id serves whatever the host cache's
+    ``refs/main`` currently resolves to -- that ref must equal *revision* or
+    the launch is refused (:class:`RevisionMismatch`). An engine handed a
+    mounted model file, or a ``[tiers.lfm] mode`` other than managed, gives
+    nothing on this host to check: the revision is recorded as
+    operator-supplied instead.
+    """
+    if str(lfm_settings.get("mode") or MANAGED) != MANAGED:
+        return f"{REVISION_UNVERIFIED}: attached endpoint"
+    try:
+        template = engine_template(str(lfm_settings.get("engine") or DEFAULT_ENGINE))
+    except RuntimeUnavailable as exc:
+        raise RevisionMismatch(f"cannot verify --model-revision for {model}: {exc}") from exc
+    if template.needs_model_mount or not template.downloads_model:
+        return REVISION_UNVERIFIED
+    ref, found = cached_revision(hf_cache_dir(lfm_settings), model)
+    if found is None:
+        raise RevisionMismatch(
+            f"cannot verify --model-revision {revision} for {model}: {ref} does not exist "
+            "(fetch the pinned revision into [tiers.lfm] hf_cache_dir first, so refs/main "
+            "names it; the engine serves whatever refs/main resolves to)"
+        )
+    if found != revision:
+        raise RevisionMismatch(
+            f"{model}: the cache's refs/main is {found}, not --model-revision {revision}; "
+            f"the engine would serve {found} (re-fetch {model} at {revision} into the cache, "
+            "or pass the revision it holds)"
+        )
+    return REVISION_VERIFIED
+
+
+def launch_runtime(
+    model: str,
+    config_path: Path | None,
+    seams: LaunchSeams,
+    *,
+    model_revision: str | None = None,
+) -> tuple[Runtime, str]:
+    """Build (never starts) the Tier 2 runtime ``--launch`` will call ``ensure()`` on.
+
+    Returns ``(runtime, revision_status)``. When *model_revision* is given,
+    it is checked against the host HF cache's ``refs/main`` for *model*
+    before the runtime is built at all; a mismatch or a missing ref raises
+    :class:`RevisionMismatch` rather than starting the launcher.
+    """
     from nvsh.tiers.memfloor import check_floor
 
     cfg = seams.load_config(config_path)
     lfm_settings = build_lfm_settings(cfg, model)
     floor_mb = memory_floor_mb(cfg)
 
+    revision_status = ""
+    if model_revision:
+        revision_status = verify_launch_revision(lfm_settings, model, model_revision)
+
     def floor_check():
         return check_floor(floor_mb)
 
     platform = seams.detect_platform()
-    return seams.build_runtime(lfm_settings, platform, floor_check=floor_check)
+    runtime = seams.build_runtime(lfm_settings, platform, floor_check=floor_check)
+    return runtime, revision_status
 
 
 # ---------------------------------------------------------------------------
@@ -734,6 +845,7 @@ def main(argv: list[str] | None = None, *, launch_seams: LaunchSeams | None = No
         evals = evals[: args.limit]
 
     runtime: Runtime | None = None
+    revision_status = ""
     if args.launch:
         problem = guard_container_not_running(launch_seams)
         if problem is not None:
@@ -741,7 +853,12 @@ def main(argv: list[str] | None = None, *, launch_seams: LaunchSeams | None = No
             return EXIT_ENV
         config_path = Path(args.config) if args.config else None
         try:
-            runtime = launch_runtime(args.model, config_path, launch_seams)
+            runtime, revision_status = launch_runtime(
+                args.model, config_path, launch_seams, model_revision=args.model_revision
+            )
+        except RevisionMismatch as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return EXIT_ENV
         except (OSError, ValueError) as exc:
             print(f"error: cannot load nvsh config: {exc}", file=sys.stderr)
             return EXIT_USER
@@ -783,6 +900,7 @@ def main(argv: list[str] | None = None, *, launch_seams: LaunchSeams | None = No
         label=args.label,
         model=args.model,
         model_revision=args.model_revision,
+        revision_status=revision_status,
         command_line=command_line,
         when=when,
         margin=args.margin,

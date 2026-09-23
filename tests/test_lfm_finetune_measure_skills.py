@@ -134,7 +134,7 @@ class _FakeHandler(http.server.BaseHTTPRequestHandler):
         pass
 
 
-@pytest.fixture()
+@pytest.fixture
 def fake_server():
     _FakeHandler.calls = 0
     _FakeHandler.requests = []
@@ -234,8 +234,9 @@ def test_run_measurement_refuses_unknown_expected_skill(mod, fake_server, tmp_pa
     tools_path, _test_path = _write_inputs(tmp_path)
     tools = mod.load_tools(tools_path)
     bad_eval = [_eval("ev-bad", "device", "no-such-skill", False)]
+    base_url = _base_url(fake_server)
     with pytest.raises(ValueError):
-        mod.run_measurement(_base_url(fake_server), "fake-model", tools, bad_eval)
+        mod.run_measurement(base_url, "fake-model", tools, bad_eval)
 
 
 # ---------------------------------------------------------------------------
@@ -279,23 +280,22 @@ def test_main_stock_run_writes_results_file(mod, fake_server, tmp_path, capsys):
 
 def test_main_tuned_run_without_margin_is_refused(mod, fake_server, tmp_path):
     tools_path, test_path = _write_inputs(tmp_path)
+    argv = [
+        "--tools",
+        str(tools_path),
+        "--test",
+        str(test_path),
+        "--url",
+        _base_url(fake_server),
+        "--model",
+        "fake-model",
+        "--label",
+        "tuned",
+        "--out",
+        str(tmp_path / "results.md"),
+    ]
     with pytest.raises(SystemExit) as excinfo:
-        mod.main(
-            [
-                "--tools",
-                str(tools_path),
-                "--test",
-                str(test_path),
-                "--url",
-                _base_url(fake_server),
-                "--model",
-                "fake-model",
-                "--label",
-                "tuned",
-                "--out",
-                str(tmp_path / "results.md"),
-            ]
-        )
+        mod.main(argv)
     assert excinfo.value.code != 0
     # no request should have been sent before the refusal
     assert _FakeHandler.calls == 0
@@ -305,22 +305,21 @@ def test_main_tuned_flag_without_margin_is_refused_even_with_stock_label(
     mod, fake_server, tmp_path
 ):
     tools_path, test_path = _write_inputs(tmp_path)
+    argv = [
+        "--tools",
+        str(tools_path),
+        "--test",
+        str(test_path),
+        "--url",
+        _base_url(fake_server),
+        "--model",
+        "fake-model",
+        "--tuned",
+        "--out",
+        str(tmp_path / "results.md"),
+    ]
     with pytest.raises(SystemExit):
-        mod.main(
-            [
-                "--tools",
-                str(tools_path),
-                "--test",
-                str(test_path),
-                "--url",
-                _base_url(fake_server),
-                "--model",
-                "fake-model",
-                "--tuned",
-                "--out",
-                str(tmp_path / "results.md"),
-            ]
-        )
+        mod.main(argv)
     assert _FakeHandler.calls == 0
 
 
@@ -760,6 +759,158 @@ def test_launch_ignores_url_localhost_check_but_still_uses_local_runtime(
         launch_seams=harness.seams,
     )
     assert exit_code == 0
+
+
+# ---------------------------------------------------------------------------
+# finding 3: --model-revision is verified against the --launch cache
+# ---------------------------------------------------------------------------
+
+
+def _hf_cache(tmp_path: Path, model: str, commit: str, *, hub: bool = True) -> Path:
+    """A host HF cache whose ``refs/main`` resolves *model* to *commit*."""
+    cache = tmp_path / "hf-cache"
+    base = cache / "hub" if hub else cache
+    ref = base / f"models--{model.replace('/', '--')}" / "refs" / "main"
+    ref.parent.mkdir(parents=True, exist_ok=True)
+    ref.write_text(commit, encoding="utf-8")
+    return cache
+
+
+def test_launch_revision_mismatch_refuses_before_starting_runtime(mod, tmp_path):
+    tools_path, test_path = _write_inputs(tmp_path)
+    cache = _hf_cache(tmp_path, "fake-model", "cachedrev")
+    harness = _LaunchHarness(mod, base_url="http://127.0.0.1:9/v1")
+    harness.lfm_config["hf_cache_dir"] = str(cache)
+    out_path = tmp_path / "results.md"
+    exit_code = mod.main(
+        [
+            "--tools",
+            str(tools_path),
+            "--test",
+            str(test_path),
+            "--model",
+            "fake-model",
+            "--model-revision",
+            "wantedrev",
+            "--launch",
+            "--out",
+            str(out_path),
+        ],
+        launch_seams=harness.seams,
+    )
+    assert exit_code == 2
+    assert harness.runtime is None
+    assert not out_path.exists()
+
+
+def test_launch_revision_missing_from_cache_refuses(mod, tmp_path, capsys):
+    tools_path, test_path = _write_inputs(tmp_path)
+    cache = tmp_path / "hf-cache"
+    cache.mkdir()
+    harness = _LaunchHarness(mod, base_url="http://127.0.0.1:9/v1")
+    harness.lfm_config["hf_cache_dir"] = str(cache)
+    out_path = tmp_path / "results.md"
+    exit_code = mod.main(
+        [
+            "--tools",
+            str(tools_path),
+            "--test",
+            str(test_path),
+            "--model",
+            "fake-model",
+            "--model-revision",
+            "wantedrev",
+            "--launch",
+            "--out",
+            str(out_path),
+        ],
+        launch_seams=harness.seams,
+    )
+    assert exit_code == 2
+    err = capsys.readouterr().err
+    assert "refs/main" in err
+    assert harness.runtime is None
+    assert not out_path.exists()
+
+
+def test_launch_revision_verified_is_recorded(mod, fake_server, tmp_path):
+    tools_path, test_path = _write_inputs(tmp_path)
+    cache = _hf_cache(tmp_path, "fake-model", "wantedrev")
+    harness = _LaunchHarness(mod, base_url=_base_url(fake_server))
+    harness.lfm_config["hf_cache_dir"] = str(cache)
+    out_path = tmp_path / "results.md"
+    exit_code = mod.main(
+        [
+            "--tools",
+            str(tools_path),
+            "--test",
+            str(test_path),
+            "--model",
+            "fake-model",
+            "--model-revision",
+            "wantedrev",
+            "--launch",
+            "--out",
+            str(out_path),
+        ],
+        launch_seams=harness.seams,
+    )
+    assert exit_code == 0
+    text = out_path.read_text(encoding="utf-8")
+    assert "`wantedrev` (revision verified from the cache)" in text
+
+
+def test_launch_revision_unverified_for_attached_endpoint(mod, fake_server, tmp_path):
+    """A cache mismatch never blocks an attach-mode run: nothing on this host
+    is downloaded, so there is nothing to check the revision against."""
+    tools_path, test_path = _write_inputs(tmp_path)
+    harness = _LaunchHarness(mod, base_url=_base_url(fake_server))
+    harness.lfm_config["mode"] = "attach"
+    out_path = tmp_path / "results.md"
+    exit_code = mod.main(
+        [
+            "--tools",
+            str(tools_path),
+            "--test",
+            str(test_path),
+            "--model",
+            "fake-model",
+            "--model-revision",
+            "wantedrev",
+            "--launch",
+            "--out",
+            str(out_path),
+        ],
+        launch_seams=harness.seams,
+    )
+    assert exit_code == 0
+    text = out_path.read_text(encoding="utf-8")
+    assert "`wantedrev` (operator-supplied, not verified: attached endpoint)" in text
+
+
+def test_launch_without_model_revision_skips_verification(mod, fake_server, tmp_path):
+    """No --model-revision means nothing to verify (and no cache is read)."""
+    tools_path, test_path = _write_inputs(tmp_path)
+    harness = _LaunchHarness(mod, base_url=_base_url(fake_server))
+    # no hf_cache_dir configured at all; would blow up if verification ran
+    out_path = tmp_path / "results.md"
+    exit_code = mod.main(
+        [
+            "--tools",
+            str(tools_path),
+            "--test",
+            str(test_path),
+            "--model",
+            "fake-model",
+            "--launch",
+            "--out",
+            str(out_path),
+        ],
+        launch_seams=harness.seams,
+    )
+    assert exit_code == 0
+    text = out_path.read_text(encoding="utf-8")
+    assert "model revision" not in text
 
 
 def test_the_command_line_writes_the_home_directory_as_home(monkeypatch, tmp_path) -> None:

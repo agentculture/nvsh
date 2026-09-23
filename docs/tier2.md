@@ -102,5 +102,6 @@ The follow-up is a fine-tune of the 350M that teaches the control tools:
 [`lfm-finetune.md`](lfm-finetune.md). Its first result (issue 39, run r8) is
 28 of 32 right proposals and 13 of 15 escalations on the test side, against 0
 for stock, at a 119 ms median. It is **not adopted**, because it made one wrong
-mutating proposal and the bar allows none. Cold start was 185 to 254 s including
+mutating proposal and the bar allows none. Four test entries had leaked into
+its training, so those figures are an upper bound; see the guide. Cold start was 185 to 254 s including
 the first model download; start-up from a warm cache was not timed.

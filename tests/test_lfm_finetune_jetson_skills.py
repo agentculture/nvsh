@@ -34,7 +34,7 @@ def mod():
     return _module()
 
 
-@pytest.fixture()
+@pytest.fixture
 def result(mod):
     return mod.build_from_checkout(
         _FIXTURES / "device",
@@ -427,7 +427,8 @@ def test_scan_flags_a_light_paraphrase_of_an_eval() -> None:
     hit = module._find_contamination(
         "e1", "text", eval_text, [training], [module.normalize_text(training)], 0.8
     )
-    assert hit is not None and hit.reason.startswith("paraphrase")
+    assert hit is not None
+    assert hit.reason.startswith("paraphrase")
 
 
 def test_scan_leaves_a_different_request_about_the_same_device_clean() -> None:
@@ -523,4 +524,5 @@ def test_a_body_paragraph_matching_an_eval_is_left_out(mod, result, tmp_path):
 def test_write_outputs_also_writes_bodies(mod, result, tmp_path):
     mod.write_outputs(result, tmp_path)
     bodies = json.loads((tmp_path / "bodies.json").read_text())
-    assert len(bodies) == 4 and all("body" in b and "tool" in b for b in bodies)
+    assert len(bodies) == 4
+    assert all("body" in b and "tool" in b for b in bodies)

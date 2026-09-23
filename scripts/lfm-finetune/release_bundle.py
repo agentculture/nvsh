@@ -169,8 +169,9 @@ launcher on a DGX Spark ({results_name}):
 Requests were rewritten into variations by a local pipeline
 (`scripts/lfm-finetune/augment.py`). A variation was kept only when both
 reviewers accepted it and deterministic guards found no operation identifier
-or copied answer wording in it. The test side of the seeded split was never
-used for training or for choosing a run.
+or copied answer wording in it. A training record that repeats a
+validation or test entry is dropped (`merge_variations.py --exclude`), and the
+test side is never used to choose a run.
 
 | Model | Licence | Role |
 |---|---|---|

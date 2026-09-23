@@ -93,18 +93,21 @@ def test_an_example_matches_the_measurement_request(tmp_path) -> None:
 
 def test_a_non_train_variation_is_refused(tmp_path) -> None:
     acc, tools, test = _write(tmp_path, [_variation("Make the fan quieter", side="test")])
+    module = _module()
     with pytest.raises(ValueError, match="not train"):
-        _module().build(acc, tools, test)
+        module.build(acc, tools, test)
 
 
 def test_a_variation_that_paraphrases_an_eval_fails_the_build(tmp_path) -> None:
     text = "What Jetson is this? Tell me its SKU, how much memory it has, and what is using it."
     acc, tools, test = _write(tmp_path, [_variation(text, skill="jetson-diagnostic")])
+    module = _module()
     with pytest.raises(ValueError, match="contamination"):
-        _module().build(acc, tools, test)
+        module.build(acc, tools, test)
 
 
 def test_an_unknown_skill_is_refused(tmp_path) -> None:
     acc, tools, test = _write(tmp_path, [_variation("Flash it", skill="jetson-nope")])
+    module = _module()
     with pytest.raises(ValueError, match="unknown skill"):
-        _module().build(acc, tools, test)
+        module.build(acc, tools, test)

@@ -33,8 +33,9 @@ def test_labels_train_only_on_the_assistant_turn() -> None:
 
 
 def test_an_empty_mask_is_refused() -> None:
+    module = _module()
     with pytest.raises(ValueError, match="assistant mask is empty"):
-        _module().labels_from_mask([5, 6], [0, 0])
+        module.labels_from_mask([5, 6], [0, 0])
 
 
 def test_tokenize_example_masks_the_prompt() -> None:
@@ -46,19 +47,22 @@ def test_tokenize_example_masks_the_prompt() -> None:
 
 def test_an_example_over_max_length_is_refused_not_cut() -> None:
     example = {"messages": [{"role": "user"}, {"role": "assistant"}], "source_id": "s"}
+    module = _module()
     with pytest.raises(ValueError, match="over 4"):
-        _module().tokenize_example(_Tokenizer(), example, max_length=4)
+        module.tokenize_example(_Tokenizer(), example, max_length=4)
 
 
 def test_read_examples_refuses_a_line_not_ending_in_the_assistant(tmp_path) -> None:
     path = tmp_path / "train.jsonl"
     path.write_text(json.dumps({"messages": [{"role": "user", "content": "x"}]}) + "\n")
+    module = _module()
     with pytest.raises(ValueError, match="not the assistant"):
-        _module().read_examples(path)
+        module.read_examples(path)
 
 
 def test_read_examples_refuses_an_empty_file(tmp_path) -> None:
     path = tmp_path / "train.jsonl"
     path.write_text("\n")
+    module = _module()
     with pytest.raises(ValueError, match="no examples"):
-        _module().read_examples(path)
+        module.read_examples(path)

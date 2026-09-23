@@ -61,5 +61,6 @@ def test_a_template_inside_tokenizer_config_is_read(tmp_path) -> None:
 
 
 def test_a_repo_id_must_be_owner_slash_name(tmp_path) -> None:
+    module = _module()
     with pytest.raises(ValueError, match="owner/name"):
-        _module().repo_dir(tmp_path, "just-a-name")
+        module.repo_dir(tmp_path, "just-a-name")

@@ -108,8 +108,9 @@ def test_a_kind_absent_from_the_corpus_is_reported_not_a_crash():
 
 def test_fractions_must_sum_to_one():
     module = _module()
+    entries = _fixture_entries()
     with pytest.raises(ValueError, match="sum to 1.0"):
-        module.stratified_split(_fixture_entries(), fractions=(0.5, 0.5, 0.5))
+        module.stratified_split(entries, fractions=(0.5, 0.5, 0.5))
 
 
 def test_the_held_out_split_is_refused(tmp_path):
@@ -214,7 +215,8 @@ def test_a_kind_too_small_for_every_side_is_named() -> None:
     entries += [{"id": f"x{i}", "expect": {"explain": True}} for i in range(2)]
     sides, _ = split.stratified_split(entries)
     gaps = split.absent_from_sides(sides)
-    assert gaps and all(kind == "explain" for kind, _ in gaps)
+    assert gaps
+    assert all(kind == "explain" for kind, _ in gaps)
 
 
 def test_fractions_outside_zero_to_one_are_refused() -> None:

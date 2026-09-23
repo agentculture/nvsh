@@ -867,7 +867,8 @@ def test_an_escalated_explain_entry_is_not_a_false_escalation() -> None:
         entry=entry, outcome=bench_mod.TierOutcome(escalated_to="agent"), latency_ms=1.0
     )
     result = bench_mod.compute_escalation([item])
-    assert result["fp"] == 0 and result["tp"] == 0
+    assert result["fp"] == 0
+    assert result["tp"] == 0
 
 
 def test_a_pick_against_an_explain_entry_is_never_a_correct_calibration_sample() -> None:

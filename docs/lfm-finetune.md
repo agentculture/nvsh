@@ -46,6 +46,15 @@ the chosen run r8 back to back:
 | Warm median | 290 ms | 119 ms | met |
 | Wrong mutating proposals | 0 | **1** | **not met** |
 
+**Correction (lapse `l5`, found in review of PR 47):** the test side was
+not fully unseen. Four test entries reached r8's training by exact wording:
+one hand-written supplement entry and three generated variations. They were
+two explain asks, one escalation and one restart proposal. Scored without
+them, r8 still gets at least 27 of 31 proposals right, at least 12 of 14
+escalations and 15 of 15 explain asks. The conclusions below stand; the exact
+figures above are an upper bound. The pipeline now drops any training record
+that repeats a validation or test entry (`merge_variations.py --exclude`).
+
 **The use-case bar is not met, by one proposal.** The recipe turns a model
 that proposes almost nothing into one that proposes correctly 88% of the
 time, at under half stock's latency. It still made one wrong change. Every
@@ -673,3 +682,35 @@ is the best of three looks. The margin was fixed before s1 and did not move.
 The s3 model stays local. It is not pushed: pushing it would also need
 NVIDIA's CC-BY-4.0 attribution, and the operator approved pushing only the
 nvsh model.
+
+### 2026-09-23: test entries in r8's training (lapse l5)
+
+A `/code-review` of PR 47 found supplement entry `sup-07` ("Remove the
+trainer container") word for word on the test side. A normalised text check
+(ids and answer kinds printed, never test text) then found three accepted
+variations that exactly repeat test entries and one that repeats a
+validation entry. All four were in r8's training input:
+
+| Record | Side it repeats | Answer |
+|---|---|---|
+| `sup-07` | test | escalate |
+| `dev-w002~v2` | test | explain |
+| `dev-w016~v2` | test | explain |
+| `dev-g171~v3` | test | propose `service_restart` |
+| `dev-g065~v3` | validation | propose `container_list` |
+
+A rewrite of a train request can land on a test request's exact wording,
+and nothing compared them. The supplement's header claimed test material was
+avoided, but only nginx had been checked. Final run 2 is therefore
+contaminated upward on at most four of its 64 entries. Removing them, as if
+r8 had got each right only because it saw it, leaves at least 27 of 31 right
+proposals, 12 of 14 escalations and 15 of 15 explained. Both floors still
+clear, and the one wrong mutating proposal still fails the bar. No new final
+run was made.
+
+Fixes: `sup-07` is removed from the supplement. `merge_variations.py
+--exclude val.json test.json` (wired into `pipeline.sh assemble`) drops a
+variation that repeats a validation or test entry, counted as `leaked`, and
+refuses such a supplement entry. `dataset_bundle.py` refuses to build a data
+set with one. A test checks the committed supplement against the seed-39
+split.

@@ -76,8 +76,19 @@ def engine_spec() -> EngineSpec:
 
 
 def verdict(entry: dict, picked) -> bool:
+    """Right pick, or a decline where the corpus expects a should-decline.
+
+    Tier 1 (Needle3) has no explain capability -- only Tier 2 can inspect,
+    propose, explain or escalate -- so an ``explain`` expectation is a
+    should-decline for Tier 1 scoring, exactly like ``escalate``
+    (``nvsh/tiers/bench.py``'s ``_expects_decline``,
+    ``scripts/needle-finetune/build_dataset.py``'s dataset builder). A
+    proposal on either kind of should-decline entry is a wrong answer, never
+    a crash: this is why ``expect["operation"]`` below only runs once both
+    should-decline kinds have already returned.
+    """
     expect = entry["expect"]
-    if expect.get("escalate"):
+    if expect.get("escalate") or expect.get("explain"):
         return not isinstance(picked, TierDecision)
     return isinstance(picked, TierDecision) and picked.operation == expect["operation"]
 

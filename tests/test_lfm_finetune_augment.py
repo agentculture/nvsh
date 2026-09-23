@@ -7,6 +7,7 @@ network, no real model calls.
 
 from __future__ import annotations
 
+import http.client
 import importlib.util
 import json
 import sys
@@ -35,6 +36,13 @@ aug = _module()
 
 Responder = Callable[[dict[str, Any], str | None], str]
 
+#: Sentinel a responder returns to simulate a connection dropped mid-response
+#: -- the socket is closed with no status line written at all, which is what
+#: a killed gateway/proxy looks like on the wire. The client sees
+#: ``http.client.RemoteDisconnected`` (a ``ConnectionResetError``), which
+#: escapes urllib's own error wrapping on Python 3.12 (finding 2).
+_DROP_CONNECTION = object()
+
 
 class _FakeHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802 - stdlib signature
@@ -48,6 +56,9 @@ class _FakeHandler(BaseHTTPRequestHandler):
             self.end_headers()
             return
         result = responder(body, self.headers.get("Authorization"))
+        if result is _DROP_CONNECTION:
+            self.close_connection = True
+            return
         if isinstance(result, tuple):
             # (status, extra_headers) -- simulates a transient/non-transient
             # HTTP error, optionally carrying a Retry-After header.
@@ -57,8 +68,12 @@ class _FakeHandler(BaseHTTPRequestHandler):
                 self.send_header(header_name, header_value)
             self.end_headers()
             return
-        content = result
-        payload = json.dumps({"choices": [{"message": {"content": content}}]}).encode("utf-8")
+        if isinstance(result, dict):
+            # A raw response body override -- used to simulate a malformed
+            # or empty-choices reply straight off the wire.
+            payload = json.dumps(result).encode("utf-8")
+        else:
+            payload = json.dumps({"choices": [{"message": {"content": result}}]}).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(payload)))
@@ -151,6 +166,28 @@ def _flaky(
 
     _responder.calls = calls  # type: ignore[attr-defined]
     return _responder
+
+
+def _flaky_drop(fail_count: int, success: str = "ok") -> Responder:
+    """Like :func:`_flaky`, but the failures are a dropped connection
+    (:data:`_DROP_CONNECTION`) rather than an HTTP error status."""
+    calls = {"n": 0}
+
+    def _responder(body: dict[str, Any], auth: str | None):
+        calls["n"] += 1
+        if calls["n"] <= fail_count:
+            return _DROP_CONNECTION
+        return success
+
+    _responder.calls = calls  # type: ignore[attr-defined]
+    return _responder
+
+
+def _malformed_reply(body: dict[str, Any]) -> Responder:
+    """A responder that always returns *body* as the raw JSON response,
+    bypassing the normal ``{"choices": [{"message": ...}]}`` wrapping --
+    used to simulate a reply with no (or a malformed) choices entry."""
+    return lambda _body, _auth: body
 
 
 def _split_seed_file(
@@ -369,7 +406,8 @@ def test_empty_reviewer_reply_is_an_error_retried_on_resume(tmp_path, monkeypatc
         per_source=1,
     )
     # Not a judgement: nothing is written, so the next resume tries it again.
-    assert counts.errors == 1 and counts.rejected_by_a == 0
+    assert counts.errors == 1
+    assert counts.rejected_by_a == 0
     assert not rejected.exists() or rejected.read_text(encoding="utf-8") == ""
     assert not accepted.exists() or accepted.read_text(encoding="utf-8") == ""
 
@@ -1219,6 +1257,186 @@ def test_retry_after_header_is_honoured_over_computed_backoff(tmp_path, monkeypa
     assert sleeps == [5.0]  # Retry-After honoured exactly, not backoff*jitter
 
 
+def test_retry_after_header_larger_than_cap_is_capped(tmp_path, monkeypatch, fake_server):
+    # A server sending an hour-long Retry-After must never be honoured
+    # verbatim -- MAX_BACKOFF_WAIT is a hard ceiling regardless of source
+    # (finding 5).
+    _server, url = fake_server
+    seed_file = _split_seed_file(tmp_path)
+    _set_roles(monkeypatch, url, DEFAULT_MODELS)
+    flaky_generator = _flaky(1, status=503, headers={"Retry-After": "3600"}, success="rephrased")
+    _server.responders.update(
+        {
+            "gen-model": flaky_generator,
+            "cor-model": _always("rephrased"),
+            "rev-a-model": _always("yes"),
+            "rev-b-model": _always("yes"),
+        }
+    )
+    sleeps: list[float] = []
+    roles = aug.load_all_roles()
+    counts = aug.run_pipeline(
+        seed_files=[seed_file],
+        roles=roles,
+        accepted_out=tmp_path / "accepted.jsonl",
+        rejected_out=tmp_path / "rejected.jsonl",
+        per_source=1,
+        workers=1,
+        sleep_fn=sleeps.append,
+        rand_fn=lambda: 0.99,
+    )
+    assert counts.accepted == 1
+    assert sleeps == [aug.MAX_BACKOFF_WAIT]
+
+
+def test_compute_backoff_caps_retry_after_at_max_backoff_wait():
+    huge_retry_after = aug.MAX_BACKOFF_WAIT * 10
+    capped = aug._compute_backoff(1, 2.0, retry_after=huge_retry_after, rand_fn=lambda: 0.9)
+    assert capped == aug.MAX_BACKOFF_WAIT
+
+
+# ---------------------------------------------------------------------------
+# dropped connections and malformed replies (finding 2): these escape
+# urllib's own URLError/TimeoutError wrapping on Python 3.12 and must be
+# retried like any other transient failure, never crash the run.
+# ---------------------------------------------------------------------------
+
+
+def test_is_transient_dropped_connection_and_malformed_read_errors():
+    for exc in (
+        ConnectionResetError("connection reset"),
+        http.client.RemoteDisconnected("Remote end closed connection without response"),
+        http.client.IncompleteRead(b""),
+        OSError("transport failure"),
+    ):
+        transient, retry_after = aug._is_transient(exc)
+        assert transient is True, exc
+        assert retry_after is None
+
+
+def test_dropped_connection_is_retried_and_recovers(tmp_path, monkeypatch, fake_server):
+    _server, url = fake_server
+    seed_file = _split_seed_file(tmp_path)
+    _set_roles(monkeypatch, url, DEFAULT_MODELS)
+    flaky_generator = _flaky_drop(2, success="rephrased")
+    _server.responders.update(
+        {
+            "gen-model": flaky_generator,
+            "cor-model": _always("rephrased"),
+            "rev-a-model": _always("yes"),
+            "rev-b-model": _always("yes"),
+        }
+    )
+    sleeps: list[float] = []
+    roles = aug.load_all_roles()
+    counts = aug.run_pipeline(
+        seed_files=[seed_file],
+        roles=roles,
+        accepted_out=tmp_path / "accepted.jsonl",
+        rejected_out=tmp_path / "rejected.jsonl",
+        per_source=1,
+        workers=1,
+        sleep_fn=sleeps.append,
+        rand_fn=lambda: 0.0,
+    )
+    assert counts.errors == 0
+    assert counts.accepted == 1
+    assert counts.retries == 2
+    assert flaky_generator.calls["n"] == 3  # 2 dropped connections + 1 success
+
+
+def test_dropped_connection_exhaustion_counts_as_error_and_stays_retryable(
+    tmp_path, monkeypatch, fake_server
+):
+    _server, url = fake_server
+    seed_file = _split_seed_file(tmp_path)
+    _set_roles(monkeypatch, url, DEFAULT_MODELS)
+    always_drop = _flaky_drop(10_000)  # never succeeds within this run
+    _server.responders.update(
+        {
+            "gen-model": always_drop,
+            "cor-model": _always("rephrased"),
+            "rev-a-model": _always("yes"),
+            "rev-b-model": _always("yes"),
+        }
+    )
+    accepted = tmp_path / "accepted.jsonl"
+    rejected = tmp_path / "rejected.jsonl"
+    roles = aug.load_all_roles()
+    counts = aug.run_pipeline(
+        seed_files=[seed_file],
+        roles=roles,
+        accepted_out=accepted,
+        rejected_out=rejected,
+        per_source=1,
+        workers=1,
+        max_retries=2,
+        sleep_fn=lambda _seconds: None,
+        rand_fn=lambda: 0.0,
+    )
+    assert counts.errors == 1  # counted as an error, never a crashed run
+    assert counts.retries == 2
+    assert not accepted.exists()
+    assert not rejected.exists()  # never written -- stays retryable on resume
+
+
+def test_empty_choices_reply_counts_as_error_not_crash(tmp_path, monkeypatch, fake_server):
+    _server, url = fake_server
+    seed_file = _split_seed_file(tmp_path)
+    _set_roles(monkeypatch, url, DEFAULT_MODELS)
+    _server.responders.update(
+        {
+            "gen-model": _malformed_reply({"choices": []}),
+            "cor-model": _always("rephrased"),
+            "rev-a-model": _always("yes"),
+            "rev-b-model": _always("yes"),
+        }
+    )
+    accepted = tmp_path / "accepted.jsonl"
+    rejected = tmp_path / "rejected.jsonl"
+    roles = aug.load_all_roles()
+    counts = aug.run_pipeline(
+        seed_files=[seed_file],
+        roles=roles,
+        accepted_out=accepted,
+        rejected_out=rejected,
+        per_source=1,
+        workers=1,
+        sleep_fn=lambda _seconds: None,
+    )
+    assert counts.errors == 1
+    assert counts.accepted == 0
+    assert not accepted.exists()
+
+
+def test_malformed_choices_shape_counts_as_error_not_crash(tmp_path, monkeypatch, fake_server):
+    # A choices entry with no "message" key at all -- a different flavour of
+    # malformed shape than an empty list, still never a crash.
+    _server, url = fake_server
+    seed_file = _split_seed_file(tmp_path)
+    _set_roles(monkeypatch, url, DEFAULT_MODELS)
+    _server.responders.update(
+        {
+            "gen-model": _malformed_reply({"choices": [{}]}),
+            "cor-model": _always("rephrased"),
+            "rev-a-model": _always("yes"),
+            "rev-b-model": _always("yes"),
+        }
+    )
+    roles = aug.load_all_roles()
+    counts = aug.run_pipeline(
+        seed_files=[seed_file],
+        roles=roles,
+        accepted_out=tmp_path / "accepted.jsonl",
+        rejected_out=tmp_path / "rejected.jsonl",
+        per_source=1,
+        workers=1,
+        sleep_fn=lambda _seconds: None,
+    )
+    assert counts.errors == 1
+    assert counts.accepted == 0
+
+
 # ---------------------------------------------------------------------------
 # per-role timeout (NVSH_AUG_<ROLE>_TIMEOUT, default 120s, replaces the old
 # fixed 60s)
@@ -1497,7 +1715,9 @@ def test_a_skill_seed_reviewer_sees_the_capability_description() -> None:
 def test_the_expected_answer_is_described_in_words_not_json() -> None:
     module = _module()
     words = module._answer_in_words({"operation": "power_set", "args": {"mode": "max_performance"}})
-    assert "power mode" in words and "mode max performance" in words and "{" not in words
+    assert "power mode" in words
+    assert "mode max performance" in words
+    assert "{" not in words
     assert "power_set" not in words
     assert "more capable assistant" in module._answer_in_words({"escalate": True})
     assert "It pins clocks." in module._answer_in_words(
@@ -1517,7 +1737,8 @@ def test_each_variation_number_asks_for_a_different_phrasing_style() -> None:
     )
     styles = {module.generator_prompt(seed, n)[1] for n in range(len(module.PHRASING_STYLES))}
     assert len(styles) == len(module.PHRASING_STYLES)
-    assert module._variation_number("g1~v12") == 12 and module._variation_number("g1") == 0
+    assert module._variation_number("g1~v12") == 12
+    assert module._variation_number("g1") == 0
 
 
 @pytest.mark.parametrize(
@@ -1578,7 +1799,8 @@ def test_the_generator_never_sees_the_expected_answer() -> None:
     )
     _system, user = module.generator_prompt(seed, 1)
     assert "Restart the trainer container" in user
-    assert "take this action" not in user and "container =" not in user
+    assert "take this action" not in user
+    assert "container =" not in user
 
 
 @pytest.mark.parametrize(
@@ -1619,7 +1841,8 @@ def test_a_skill_seed_without_a_body_keeps_the_description_prompt() -> None:
         {"skill": "s", "repo": "device", "tool": {"function": {"description": "D."}}}, "train"
     )
     _, user = module.generator_prompt(seed, 3)
-    assert "documentation" not in user and "D." in user
+    assert "documentation" not in user
+    assert "D." in user
 
 
 def test_a_request_naming_any_skill_identifier_is_caught() -> None:

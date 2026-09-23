@@ -88,14 +88,16 @@ def test_an_explain_entry_is_answered_by_explain_with_its_answer_text(tmp_path):
 
 def test_an_explain_entry_without_an_answer_is_refused(tmp_path):
     corpus = _write_corpus(tmp_path, [_entry("exp01", {"explain": True})])
+    module = _module()
     with pytest.raises(ValueError, match="answer"):
-        _module().build(corpus)
+        module.build(corpus)
 
 
 def test_an_explain_entry_with_a_blank_answer_is_refused(tmp_path):
     corpus = _write_corpus(tmp_path, [_entry("exp01", {"explain": True, "answer": "   "})])
+    module = _module()
     with pytest.raises(ValueError, match="answer"):
-        _module().build(corpus)
+        module.build(corpus)
 
 
 def test_answer_for_keeps_propose_and_escalate_unchanged():
@@ -210,8 +212,9 @@ def test_the_held_out_split_is_refused_even_as_a_split_file(tmp_path):
         [_entry("op01", {"operation": "thermal_stats", "args": {}})],
         name="held-out.json",
     )
+    module = _module()
     with pytest.raises(ValueError, match="held-out"):
-        _module().build(held_out)
+        module.build(held_out)
 
 
 def test_cli_split_never_reads_dev_json_whole(tmp_path, monkeypatch):
@@ -240,17 +243,18 @@ def test_cli_refuses_split_named_held_out(tmp_path):
         name="held-out.json",
     )
     out = tmp_path / "train.jsonl"
+    module = _module()
     with pytest.raises(SystemExit):
-        _module().main(["--split", str(held_out), "--out", str(out)])
+        module.main(["--split", str(held_out), "--out", str(out)])
 
 
 def test_cli_refuses_split_with_explicit_corpus(tmp_path):
     split = _write_split(tmp_path, [_entry("op01", {"operation": "thermal_stats", "args": {}})])
     out = tmp_path / "train.jsonl"
+    module = _module()
+    corpus_arg = str(dev_corpus_path())
     with pytest.raises(SystemExit):
-        _module().main(
-            ["--split", str(split), "--corpus", str(dev_corpus_path()), "--out", str(out)]
-        )
+        module.main(["--split", str(split), "--corpus", corpus_arg, "--out", str(out)])
 
 
 def test_cli_refuses_a_val_split_file(tmp_path):
@@ -262,8 +266,9 @@ def test_cli_refuses_a_val_split_file(tmp_path):
         header="Split 'val' of fixture.json (seed=39).",
     )
     out = tmp_path / "train.jsonl"
+    module = _module()
     with pytest.raises(SystemExit):
-        _module().main(["--split", str(split), "--out", str(out)])
+        module.main(["--split", str(split), "--out", str(out)])
 
 
 def test_cli_refuses_a_test_split_file(tmp_path):
@@ -275,8 +280,9 @@ def test_cli_refuses_a_test_split_file(tmp_path):
         header="Split 'test' of fixture.json (seed=39).",
     )
     out = tmp_path / "train.jsonl"
+    module = _module()
     with pytest.raises(SystemExit):
-        _module().main(["--split", str(split), "--out", str(out)])
+        module.main(["--split", str(split), "--out", str(out)])
 
 
 def test_build_refuses_a_val_split_file_directly(tmp_path):
@@ -286,8 +292,9 @@ def test_build_refuses_a_val_split_file_directly(tmp_path):
         name="val.json",
         header="Split 'val' of fixture.json (seed=39).",
     )
+    module = _module()
     with pytest.raises(ValueError, match="'val'"):
-        _module().build(split, is_split=True)
+        module.build(split, is_split=True)
 
 
 def test_build_refuses_a_test_split_file_directly(tmp_path):
@@ -297,8 +304,9 @@ def test_build_refuses_a_test_split_file_directly(tmp_path):
         name="test.json",
         header="Split 'test' of fixture.json (seed=39).",
     )
+    module = _module()
     with pytest.raises(ValueError, match="'test'"):
-        _module().build(split, is_split=True)
+        module.build(split, is_split=True)
 
 
 def test_cli_refuses_a_split_file_renamed_from_test_whose_header_names_no_side(tmp_path):
@@ -312,8 +320,9 @@ def test_cli_refuses_a_split_file_renamed_from_test_whose_header_names_no_side(t
         header="Fixture corpus for build_dataset tests.",
     )
     out = tmp_path / "train.jsonl"
+    module = _module()
     with pytest.raises(SystemExit):
-        _module().main(["--split", str(split), "--out", str(out)])
+        module.main(["--split", str(split), "--out", str(out)])
 
 
 def test_build_refuses_a_split_file_whose_header_names_no_side_directly(tmp_path):
@@ -323,8 +332,9 @@ def test_build_refuses_a_split_file_whose_header_names_no_side_directly(tmp_path
         name="renamed.json",
         header="Fixture corpus for build_dataset tests.",
     )
+    module = _module()
     with pytest.raises(ValueError, match="names no side"):
-        _module().build(split, is_split=True)
+        module.build(split, is_split=True)
 
 
 def test_a_split_file_names_the_train_side_and_is_accepted(tmp_path):
@@ -336,7 +346,8 @@ def test_a_split_file_names_the_train_side_and_is_accepted(tmp_path):
 
 def test_a_held_out_split_renamed_is_still_refused_by_header(tmp_path):
     """The held-out corpus's own header is refused even under another filename."""
-    held_out_header = _module()._header(held_out_corpus_path())
+    module = _module()
+    held_out_header = module._header(held_out_corpus_path())
     split = _write_split(
         tmp_path,
         [_entry("op01", {"operation": "thermal_stats", "args": {}})],
@@ -344,7 +355,7 @@ def test_a_held_out_split_renamed_is_still_refused_by_header(tmp_path):
         header=held_out_header,
     )
     with pytest.raises(ValueError, match="held-out"):
-        _module().build(split, is_split=True)
+        module.build(split, is_split=True)
 
 
 def test_an_explicit_long_prompt_is_clamped_like_runtime(tmp_path):

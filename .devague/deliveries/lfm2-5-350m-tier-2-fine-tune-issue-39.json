@@ -2,7 +2,7 @@
   "plan_slug": "lfm2-5-350m-tier-2-fine-tune-issue-39",
   "schema_version": 2,
   "created": "2026-09-22T19:41:18Z",
-  "updated": "2026-09-23T06:05:05Z",
+  "updated": "2026-09-23T06:24:26Z",
   "deviations": [
     {
       "id": "d1",
@@ -372,6 +372,44 @@
       "status": "proposed",
       "superseded": false,
       "seq": 20
+    },
+    {
+      "id": "e18",
+      "obligation_ref": "o1",
+      "test_ref": "docs/benchmarks/2026-09-23-lfm-final-r8.md plus a normalised text check of r8's training input against the test side (ids and answer kinds only)",
+      "behavior_text": "4 of 64 test entries were in r8's training (sup-07 escalate, 2 explain, 1 service_restart proposal); worst-case clean bound 27/31 proposals, 12/14 escalations; 1 wrong mutating proposal remains, so the bar is still not met",
+      "contract_text": "c26 use-case bar",
+      "evidence_type": "integration",
+      "strength": "fidelity",
+      "strength_basis": "final run 2 contaminated upward (lapse l5); bound computed by removing the leaked entries, no re-run",
+      "outcome": "fail",
+      "run": {
+        "timestamp": "2026-09-23T06:24:25Z",
+        "commit": "f084d5967f4e1668af92d6d89d4bc1e53485ceae"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 21
+    },
+    {
+      "id": "e19",
+      "obligation_ref": "o2",
+      "test_ref": "same as e2, with the leakage check",
+      "behavior_text": "2 of the 17 test explain asks were in r8's training; without them r8 explains 15/15 against stock's (unadjusted) 15/17",
+      "contract_text": "c27 explain kept",
+      "evidence_type": "integration",
+      "strength": "fidelity",
+      "strength_basis": "contaminated upward (lapse l5); still at least stock's rate on the clean entries",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-23T06:24:25Z",
+        "commit": "f084d5967f4e1668af92d6d89d4bc1e53485ceae"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 22
     }
   ],
   "deltas": [

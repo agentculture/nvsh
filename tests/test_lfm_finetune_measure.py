@@ -240,7 +240,8 @@ def test_refuses_held_out_without_acceptance(measure, tmp_path, capsys):
     code = measure.main(_argv(split, tmp_path / "r.md"), seams=harness.seams)
     assert code == 1
     assert "--acceptance" in capsys.readouterr().err
-    assert harness.specs == [] and not (tmp_path / "r.md").exists()
+    assert harness.specs == []
+    assert not (tmp_path / "r.md").exists()
 
 
 def test_held_out_runs_with_acceptance(measure, tmp_path):
@@ -311,8 +312,10 @@ def test_refuses_when_own_container_running_and_never_stops_it(measure, tmp_path
     out = tmp_path / "r.md"
     assert measure.main(_argv(split, out), seams=harness.seams) == 2
     err = capsys.readouterr().err
-    assert OWN in err and "already running" in err
-    assert harness.specs == [] and not out.exists()
+    assert OWN in err
+    assert "already running" in err
+    assert harness.specs == []
+    assert not out.exists()
     assert ["docker", "ps", "--filter", f"name=^{OWN}$", "--format", "{{.Names}}"] in docker.calls
     for argv in docker.calls:
         assert not ({"stop", "rm", "kill"} & set(argv)), argv
@@ -417,7 +420,8 @@ def test_runs_differ_only_in_the_model(measure, tmp_path):
     harness = Harness(measure, tmp_path, FakeDocker())
     assert measure.main(_argv(split, tmp_path / "r.md"), seams=harness.seams) == 0
     stock, tuned = harness.specs
-    assert stock.lfm_settings["model"] == STOCK and tuned.lfm_settings["model"] == TUNED
+    assert stock.lfm_settings["model"] == STOCK
+    assert tuned.lfm_settings["model"] == TUNED
     assert {k: v for k, v in stock.lfm_settings.items() if k != "model"} == {
         k: v for k, v in tuned.lfm_settings.items() if k != "model"
     }
@@ -489,7 +493,8 @@ def test_uses_bench_with_tier2_and_its_scoring_helpers(measure, tmp_path, monkey
         (None, harness.tiers[0], "val"),
         (None, harness.tiers[1], "val"),
     ]
-    assert calls["_is_correct"] and calls["compute_escalation"]
+    assert calls["_is_correct"]
+    assert calls["compute_escalation"]
     assert calls["compute_false_mutating"]
 
 
@@ -527,14 +532,17 @@ def test_default_factory_builds_lfm_tier_like_the_daemon(measure, tmp_path):
         memory_floor_mb=1024,
     )
     tier, runtime = measure.build_lfm_tier(spec)
-    assert isinstance(tier, LfmTier) and isinstance(runtime, DockerRuntime)
+    assert isinstance(tier, LfmTier)
+    assert isinstance(runtime, DockerRuntime)
     assert tier._model == TUNED
-    assert "nvsh-tier2-" in runtime.status() and "not started" in runtime.status()
+    assert "nvsh-tier2-" in runtime.status()
+    assert "not started" in runtime.status()
 
 
 def test_script_names_no_endpoint_or_key():
     text = _SCRIPT.read_text(encoding="utf-8")
-    assert "http://" not in text and "https://" not in text
+    assert "http://" not in text
+    assert "https://" not in text
     assert "api_key" not in text.lower()
 
 
@@ -546,7 +554,8 @@ def test_scoring_helpers_on_explain_rows(measure):
     result = {"items": [{"id": "e", "handled_by": "lfm", "operation": None, "args": {}}]}
     (item,) = measure.items_from_result(result, [loaded])
     assert tier_bench._is_correct(item)
-    assert item.outcome.escalated_to is None and item.outcome.explanation == ""
+    assert item.outcome.escalated_to is None
+    assert item.outcome.explanation == ""
 
 
 # ---------------------------------------------------------------------------
@@ -599,9 +608,10 @@ def test_undetermined_side_is_refused(measure, tmp_path):
 
 
 def test_plain_dev_corpus_is_allowed(measure):
-    measure.check_split_allowed(tier_bench.dev_corpus_path(), acceptance=False, final=False)
+    dev_path = tier_bench.dev_corpus_path()
+    measure.check_split_allowed(dev_path, acceptance=False, final=False)
     with pytest.raises(measure.MeasureError):
-        measure.check_split_allowed(tier_bench.dev_corpus_path(), acceptance=False, final=True)
+        measure.check_split_allowed(dev_path, acceptance=False, final=True)
 
 
 def test_train_split_of_dev_is_allowed(measure, tmp_path):
@@ -625,8 +635,11 @@ def test_revision_mismatch_refuses_before_any_run(measure, tmp_path, capsys):
     out = tmp_path / "r.md"
     assert measure.main(_argv(split, out), seams=harness.seams) == 2
     err = capsys.readouterr().err
-    assert TUNED in err and "someothercommit" in err and "rev1" in err
-    assert harness.specs == [] and not out.exists()
+    assert TUNED in err
+    assert "someothercommit" in err
+    assert "rev1" in err
+    assert harness.specs == []
+    assert not out.exists()
 
 
 def test_revision_missing_from_cache_refuses(measure, tmp_path, capsys):
@@ -729,7 +742,8 @@ def test_details_are_refused_on_test_and_held_out_runs(measure, tmp_path, flag):
     harness = Harness(measure, tmp_path, FakeDocker())
     argv = _argv(split, tmp_path / "r.md", flag, "--details", str(tmp_path / "d.jsonl"))
     assert measure.main(argv, seams=harness.seams) == 1
-    assert harness.specs == [] and not (tmp_path / "d.jsonl").exists()
+    assert harness.specs == []
+    assert not (tmp_path / "d.jsonl").exists()
 
 
 def test_reports_write_the_home_directory_as_home(measure, monkeypatch, tmp_path) -> None:
