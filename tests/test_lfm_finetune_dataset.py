@@ -229,7 +229,10 @@ def test_arguments_as_string_is_valid_json_of_the_object_form():
 
 def test_main_writes_one_json_object_per_line(tmp_path):
     out = tmp_path / "train.jsonl"
-    _module().main(["--out", str(out)])
+    # --no-verify-render: this checks the written shape, not the round-trip
+    # guard (tested separately below), and the default venv has no
+    # training stack to verify against (rule 4).
+    _module().main(["--out", str(out), "--no-verify-render"])
     lines = out.read_text(encoding="utf-8").splitlines()
     assert all("messages" in json.loads(line) for line in lines)
 
@@ -297,7 +300,7 @@ def test_cli_split_never_reads_dev_json_whole(tmp_path, monkeypatch):
         return real_open(path, *args, **kwargs)
 
     monkeypatch.setattr("builtins.open", _guarded_open)
-    _module().main(["--split", str(split), "--out", str(out)])
+    _module().main(["--split", str(split), "--out", str(out), "--no-verify-render"])
     lines = out.read_text(encoding="utf-8").splitlines()
     assert len(lines) == 1
     assert json.loads(lines[0])["source_id"] == "op01"
@@ -473,7 +476,7 @@ def test_a_written_proposal_names_the_operation_before_its_arguments(tmp_path):
     # stored. Sorted keys put "arguments" before "operation", which taught
     # r4 to write the arguments and then stop without choosing an operation.
     out = tmp_path / "train.jsonl"
-    _module().main(["--corpus", str(dev_corpus_path()), "--out", str(out)])
+    _module().main(["--corpus", str(dev_corpus_path()), "--out", str(out), "--no-verify-render"])
     for line in out.read_text(encoding="utf-8").splitlines():
         call = json.loads(line)["messages"][-1]["tool_calls"][0]["function"]
         if call["name"] == lfm.PROPOSE_TOOL:
@@ -616,3 +619,143 @@ def test_qwen_tokenizer_operation_before_arguments_default_order_round_trips():
     call = example["messages"][-1]["tool_calls"][0]["function"]
     assert list(call["arguments"]) == ["operation", "arguments"]
     module.verify_round_trip(example, tokenizer, _parse_qwen_call)
+
+
+# ---------------------------------------------------------------------------
+# Codex review finding #6: verify_round_trip must guard build() itself, not
+# only be callable by tests.
+# ---------------------------------------------------------------------------
+
+
+class _MismatchingPythonicTokenizer:
+    """Renders a fixed, wrong Pythonic call for every example's assistant
+    turn -- a round-trip mismatch build()'s own verification must catch."""
+
+    def apply_chat_template(
+        self, messages, tools=None, tokenize=False, add_generation_prompt=False
+    ):
+        trailing_assistant = messages and messages[-1]["role"] == "assistant"
+        leading = messages[:-1] if trailing_assistant and not add_generation_prompt else messages
+        rendered = "".join(f"<{m['role']}>{m.get('content', '')}" for m in leading)
+        if add_generation_prompt:
+            return rendered + "<assistant>"
+        if trailing_assistant:
+            rendered += "<assistant><|tool_call_start|>[not_the_right_tool()]<|tool_call_end|>"
+        return rendered
+
+
+def test_build_fails_when_the_tokenizer_render_mismatches():
+    """Reproduces finding #6: before this fix, verify_round_trip was never
+    called from build() at all, so this mismatch shipped silently."""
+    module = _module()
+    with pytest.raises(ValueError, match="round-trip"):
+        module.build(
+            dev_corpus_path(),
+            verify_render=True,
+            tokenizer=_MismatchingPythonicTokenizer(),
+        )
+
+
+def test_build_does_not_verify_by_default():
+    """build()'s own default stays verification-off, so plain library calls
+    (most of this file's other tests) never need a tokenizer -- the CLI
+    turns verification on by default instead (tested below)."""
+    module = _module()
+    examples = module.build(dev_corpus_path())
+    assert len(examples) == len(load_corpus(dev_corpus_path()).entries)
+
+
+def test_build_verifies_against_the_default_base_with_a_real_tokenizer():
+    """The passing counterpart: build()'s own default base (LFM2.5, matching
+    train.py's DEFAULT_BASE/DEFAULT_REVISION) round-trips a normal build."""
+    module = _module()
+    assert module.DEFAULT_BASE == _LFM_BASE
+    assert module.DEFAULT_REVISION == _LFM_REVISION
+    tokenizer = _cached_tokenizer(_LFM_BASE, _LFM_REVISION)
+    examples = module.build(dev_corpus_path(), verify_render=True, tokenizer=tokenizer)
+    assert len(examples) == len(load_corpus(dev_corpus_path()).entries)
+
+
+def test_qwen_build_with_string_arguments_fails_the_round_trip_guard():
+    """Finding #6's own trigger: build with --arguments-as string for Qwen
+    must fail, not just the standalone apply_chat_template call that
+    test_qwen_tokenizer_refuses_string_arguments_like_lfm already shows."""
+    module = _module()
+    tokenizer = _cached_tokenizer(_QWEN_BASE, _QWEN_REVISION)
+    with pytest.raises(Exception):
+        module.build(
+            dev_corpus_path(),
+            module.ARGUMENTS_AS_STRING,
+            verify_render=True,
+            base=_QWEN_BASE,
+            revision=_QWEN_REVISION,
+            tokenizer=tokenizer,
+        )
+
+
+def test_parse_rendered_call_detects_qwen_form():
+    module = _module()
+    rendered = '<tool_call><function=escalate><parameter=reason>\n"x"\n</parameter></function>'
+    name, arguments = module.parse_rendered_call(rendered)
+    assert name == "escalate"
+    assert arguments == {"reason": "x"}
+
+
+def test_parse_rendered_call_detects_pythonic_form():
+    module = _module()
+    rendered = "<|tool_call_start|>[escalate(reason='x')]<|tool_call_end|>"
+    name, arguments = module.parse_rendered_call(rendered)
+    assert name == "escalate"
+    assert arguments == {"reason": "x"}
+
+
+def test_parse_rendered_call_refuses_an_unrecognized_form():
+    module = _module()
+    with pytest.raises(ValueError, match="unrecognized"):
+        module.parse_rendered_call("<assistant>escalate|{}")
+
+
+def test_cli_verifies_render_by_default(tmp_path, monkeypatch):
+    """The CLI wires verify_render=True into build() unless told not to."""
+    module = _module()
+    captured = {}
+
+    def _fake_build(source, arguments_as=module.ARGUMENTS_AS_OBJECT, is_split=False, **kwargs):
+        captured.update(kwargs)
+        return []
+
+    monkeypatch.setattr(module, "build", _fake_build)
+    out = tmp_path / "train.jsonl"
+    module.main(["--out", str(out)])
+    assert captured["verify_render"] is True
+    assert captured["base"] == module.DEFAULT_BASE
+    assert captured["revision"] == module.DEFAULT_REVISION
+
+
+def test_cli_no_verify_render_flag_turns_verification_off(tmp_path, monkeypatch):
+    module = _module()
+    captured = {}
+
+    def _fake_build(source, arguments_as=module.ARGUMENTS_AS_OBJECT, is_split=False, **kwargs):
+        captured.update(kwargs)
+        return []
+
+    monkeypatch.setattr(module, "build", _fake_build)
+    out = tmp_path / "train.jsonl"
+    module.main(["--out", str(out), "--no-verify-render"])
+    assert captured["verify_render"] is False
+
+
+def test_cli_base_and_revision_flags_pass_through(tmp_path, monkeypatch):
+    module = _module()
+    captured = {}
+
+    def _fake_build(source, arguments_as=module.ARGUMENTS_AS_OBJECT, is_split=False, **kwargs):
+        captured.update(kwargs)
+        return []
+
+    monkeypatch.setattr(module, "build", _fake_build)
+    out = tmp_path / "train.jsonl"
+    module.main(["--out", str(out), "--base", _QWEN_BASE, "--revision", _QWEN_REVISION])
+    assert captured["base"] == _QWEN_BASE
+    assert captured["revision"] == _QWEN_REVISION

@@ -27,11 +27,22 @@ examples need real Tier 2 records; they are not invented here.
 ``--split`` are mutually exclusive); each output example carries the split
 entry's ``source_id`` so later steps can group by source. The held-out split
 is refused either way.
+
+Before writing output, ``build()`` renders one example per outcome (propose,
+escalate, explain -- whichever are present) with the base tokenizer's own
+chat template and checks it round-trips back to the same tool call
+(``verify_round_trip``, ``--base``/``--revision``, default the LFM2.5 base
+``train.py`` itself trains): a base whose template cannot reproduce a
+record this file wrote must never ship it silently (Codex review finding
+#6, issue 46). This needs the training stack's tokenizer cached locally
+(``local_files_only`` -- this script is offline-first, never a silent
+network fetch); pass ``--no-verify-render`` in an environment without it.
 """
 
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import re
 import sys
@@ -90,6 +101,69 @@ ESCALATE_REASON = "this needs the full agent"
 ARGUMENTS_AS_OBJECT = "object"
 ARGUMENTS_AS_STRING = "string"
 ARGUMENTS_AS_CHOICES = (ARGUMENTS_AS_OBJECT, ARGUMENTS_AS_STRING)
+
+#: The base ``verify_round_trip`` checks a real build against by default --
+#: kept in sync with ``train.py``'s own ``DEFAULT_BASE``/``DEFAULT_REVISION``
+#: (this file's own primary consumer is Tier 2/LFM2.5; pass ``--base``/
+#: ``--revision`` to check against another base, such as Qwen3.5, instead).
+DEFAULT_BASE = "LiquidAI/LFM2.5-350M"
+DEFAULT_REVISION = "9e6c6ccf47cd318696e137d381a7ded8fe4df09f"
+
+#: Qwen3.5's XML function/parameter tool-call form:
+#: ``<tool_call><function=NAME><parameter=ARG>VALUE</parameter>...``.
+_QWEN_FUNCTION_RE = re.compile(r"<function=(?P<name>[^>]+)>(?P<body>.*?)</function>", re.DOTALL)
+_QWEN_PARAMETER_RE = re.compile(
+    r"<parameter=(?P<name>[^>]+)>\n(?P<value>.*?)\n</parameter>", re.DOTALL
+)
+
+#: LFM2.5's Pythonic call form: ``<|tool_call_start|>[name(kw=val, ...)]<|tool_call_end|>``.
+_PYTHONIC_CALL_RE = re.compile(r"<\|tool_call_start\|>(?P<body>.*?)<\|tool_call_end\|>", re.DOTALL)
+
+
+def _parse_qwen_call(rendered: str) -> tuple[str, dict]:
+    """Read Qwen3.5's XML function/parameter tool-call form back to (name, arguments)."""
+    match = _QWEN_FUNCTION_RE.search(rendered)
+    if not match:
+        raise ValueError(f"no <function=...> block in rendered text: {rendered!r}")
+    arguments: dict = {}
+    for param in _QWEN_PARAMETER_RE.finditer(match.group("body")):
+        raw = param.group("value")
+        try:
+            arguments[param.group("name")] = json.loads(raw)
+        except json.JSONDecodeError:
+            arguments[param.group("name")] = raw
+    return match.group("name"), arguments
+
+
+def _parse_pythonic_call(rendered: str) -> tuple[str, dict]:
+    """Read LFM2.5's Pythonic tool-call form back to (name, arguments).
+
+    The body between the markers is a valid Python call expression, so
+    ``ast`` reads it directly rather than hand-rolling a second parser.
+    """
+    match = _PYTHONIC_CALL_RE.search(rendered)
+    if not match:
+        raise ValueError(f"no tool-call markers in rendered text: {rendered!r}")
+    expr = ast.parse(match.group("body"), mode="eval").body
+    (call,) = expr.elts
+    arguments = {kw.arg: ast.literal_eval(kw.value) for kw in call.keywords}
+    return call.func.id, arguments
+
+
+def parse_rendered_call(rendered: str) -> tuple[str, dict]:
+    """Parse *rendered*'s tool call, picked by what the text itself looks like.
+
+    Chosen by the rendered form -- Qwen's XML function/parameter tags or
+    LFM's Pythonic call markers -- never by which base model produced it
+    (rule: never switch on a model/operation name), so a base this file has
+    never heard of that happens to render one of these two known shapes is
+    still verified correctly.
+    """
+    if _PYTHONIC_CALL_RE.search(rendered):
+        return _parse_pythonic_call(rendered)
+    if _QWEN_FUNCTION_RE.search(rendered):
+        return _parse_qwen_call(rendered)
+    raise ValueError(f"unrecognized tool-call form in rendered text: {rendered!r}")
 
 
 def _call(name: str, arguments: dict, arguments_as: str) -> dict:
@@ -210,6 +284,42 @@ def verify_round_trip(example: dict, tokenizer, parse_call) -> None:
         )
 
 
+def _one_example_per_outcome(examples: list[dict]) -> list[dict]:
+    """One example per distinct tool name in *examples* (first one seen)."""
+    seen: dict[str, dict] = {}
+    for example in examples:
+        name = example["messages"][-1]["tool_calls"][0]["function"]["name"]
+        seen.setdefault(name, example)
+    return list(seen.values())
+
+
+def verify_build(
+    examples: list[dict],
+    base: str = DEFAULT_BASE,
+    revision: str = DEFAULT_REVISION,
+    tokenizer=None,
+) -> None:
+    """Guard *examples* before they are written (Codex review finding #6).
+
+    One example per outcome present (propose, escalate, explain) must
+    round-trip through *base*'s own chat template -- ``verify_round_trip``
+    used to be called only by tests, so a base that could not actually
+    reproduce a record this file wrote shipped silently. *tokenizer* lets a
+    caller that already has one loaded (a test's fake tokenizer, or a
+    caller with the training stack already imported) skip the load;
+    otherwise *base* at *revision* is loaded from the local Hugging Face
+    cache only (``local_files_only=True`` -- this is a dev-machine,
+    offline-first pipeline, so a missing cache is a clear error here, never
+    a silent network fetch).
+    """
+    if tokenizer is None:
+        from transformers import AutoTokenizer
+
+        tokenizer = AutoTokenizer.from_pretrained(base, revision=revision, local_files_only=True)
+    for example in _one_example_per_outcome(examples):
+        verify_round_trip(example, tokenizer, parse_rendered_call)
+
+
 def _source_ids(path: Path) -> dict[str, str]:
     """Map each entry id in *path* to its ``source_id`` (itself, absent one).
 
@@ -242,9 +352,26 @@ def _header(source: Path) -> str:
 
 
 def build(
-    source: Path, arguments_as: str = ARGUMENTS_AS_OBJECT, is_split: bool = False
+    source: Path,
+    arguments_as: str = ARGUMENTS_AS_OBJECT,
+    is_split: bool = False,
+    verify_render: bool = False,
+    base: str = DEFAULT_BASE,
+    revision: str = DEFAULT_REVISION,
+    tokenizer=None,
 ) -> list[dict]:
     """Every example *source* yields. Refuses the held-out split.
+
+    *verify_render* wires ``verify_build`` (finding #6) into the build
+    itself: when true, one example per outcome is checked to round-trip
+    through *base*'s (at *revision*) own chat template before this
+    function returns, and a mismatch raises instead of shipping silently.
+    It defaults to false here so plain library calls -- including this
+    module's own tests, most of which run with no training stack
+    installed -- never need a tokenizer; the CLI turns it on by default
+    instead (``--no-verify-render`` to opt back out). *tokenizer* lets a
+    caller supply an already-loaded (or fake) tokenizer instead of loading
+    *base* from the local cache.
 
     *source* is either a plain corpus (``--corpus``) or a train/val/test
     split file written by ``split.py`` (``--split``): both share the same
@@ -283,10 +410,13 @@ def build(
     loaded = load_corpus(source)
     platform = world_platform(load_world(source))
     source_ids = _source_ids(source)
-    return [
+    examples = [
         example_from_entry(entry, platform, arguments_as, source_ids.get(entry.id))
         for entry in loaded.entries
     ]
+    if verify_render:
+        verify_build(examples, base, revision, tokenizer)
+    return examples
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -308,6 +438,25 @@ def main(argv: list[str] | None = None) -> int:
             "format Tier 2 itself replays -- see docs/lfm-finetune.md)"
         ),
     )
+    parser.add_argument(
+        "--base",
+        default=DEFAULT_BASE,
+        help=f"base whose chat template verify_round_trip checks against (default {DEFAULT_BASE})",
+    )
+    parser.add_argument(
+        "--revision",
+        default=DEFAULT_REVISION,
+        help="commit of --base to check against (default matches train.py's own pin)",
+    )
+    parser.add_argument(
+        "--no-verify-render",
+        action="store_true",
+        help=(
+            "skip the per-outcome round-trip check (finding #6); only for an "
+            "environment without --base's tokenizer cached locally -- the "
+            "check is on by default"
+        ),
+    )
     args = parser.parse_args(argv)
     if args.split and args.corpus:
         parser.error("--split and --corpus are mutually exclusive")
@@ -319,8 +468,15 @@ def main(argv: list[str] | None = None) -> int:
     if out.resolve() == source.resolve():
         parser.error("--out must not be the corpus file")
     try:
-        examples = build(source, args.arguments_as, is_split=bool(args.split))
-    except ValueError as exc:
+        examples = build(
+            source,
+            args.arguments_as,
+            is_split=bool(args.split),
+            verify_render=not args.no_verify_render,
+            base=args.base,
+            revision=args.revision,
+        )
+    except (ValueError, OSError) as exc:
         parser.error(str(exc))
     with open(out, "w", encoding="utf-8") as handle:
         for example in examples:
