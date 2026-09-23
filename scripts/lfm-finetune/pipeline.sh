@@ -317,7 +317,7 @@ case "$STAGE" in
     py scripts/lfm-finetune/measure.py --split "$WORK/splits/test.json" --final \
       --model "$name" --revision "$rev" --label "final-$name" --config "$measure_config" \
       --ground-snapshot "$snapshot" --enable-thinking "${ENABLE_THINKING:-false}" \
-      --max-logprobs "$MEASURE_MAX_LOGPROBS" "$@"
+      --max-logprobs "$MEASURE_MAX_LOGPROBS" --predictions "$WORK/final/$name" "$@"
     ;;
   measure-skills)
     # measure_skills.py grounds nothing, so it takes no --ground-snapshot, and it

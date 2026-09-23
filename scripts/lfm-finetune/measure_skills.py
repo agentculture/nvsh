@@ -130,6 +130,12 @@ DEFAULT_URL = "http://127.0.0.1:8000/v1"
 _HOST_ACCEPT: frozenset[str] = frozenset({"127.0.0.1", "localhost", "::1"})
 
 DEFAULT_TIMEOUT = 30.0
+#: ``GET <base_url>/models`` timeout: short, since it only checks the server is up.
+PREFLIGHT_TIMEOUT = 5.0
+#: Issue 46 finding: a stopped/missing server exits 0 with a plausible-looking
+#: results page (every eval a call error). Shared with measure.py's own
+#: predictions-file vocabulary, kept as a literal string here.
+CALL_ERROR = "call_error"
 
 EXIT_OK = 0
 EXIT_USER = 1
@@ -157,7 +163,16 @@ OUTCOME_CORRECT = "correct"
 OUTCOME_NO_CALL = "no_call"
 OUTCOME_WRONG_SKILL = "wrong_skill"
 OUTCOME_SEVERAL_CALLS = "several_calls"
-OUTCOMES = (OUTCOME_CORRECT, OUTCOME_WRONG_SKILL, OUTCOME_NO_CALL, OUTCOME_SEVERAL_CALLS)
+#: The endpoint call itself failed (transport error, non-200, unparseable reply) --
+#: not a scored routing decision, and never counted as correct.
+OUTCOME_CALL_ERROR = CALL_ERROR
+OUTCOMES = (
+    OUTCOME_CORRECT,
+    OUTCOME_WRONG_SKILL,
+    OUTCOME_NO_CALL,
+    OUTCOME_SEVERAL_CALLS,
+    OUTCOME_CALL_ERROR,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -179,6 +194,45 @@ def require_localhost(base_url: str) -> None:
         raise ValueError("URL must not contain credentials (userinfo)")
     if parsed.hostname not in _HOST_ACCEPT:
         raise ValueError(f"host must be 127.0.0.1, ::1 or localhost (got {parsed.hostname!r})")
+
+
+def preflight_models(base_url: str, model: str, timeout: float = PREFLIGHT_TIMEOUT) -> None:
+    """Raise ``RuntimeError`` unless *base_url* is up and serving *model*.
+
+    ``GET {base_url}/models`` (localhost only, per :func:`require_localhost`,
+    short timeout, stdlib ``urllib``) must answer HTTP 200 with *model* among
+    the returned ids' ``data``. Called before the first eval of a served run
+    (an attached endpoint, or ``--launch`` once the runtime reports ready):
+    a stopped or crashed server otherwise answers nothing, or the wrong
+    model, and every eval becomes a call error while the run still exits 0
+    with a plausible-looking results page.
+    """
+    require_localhost(base_url)
+    url = base_url.rstrip("/") + "/models"
+    request = urllib.request.Request(url, method="GET")
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:  # nosec B310
+            status = response.status
+            raw = response.read()
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        raise RuntimeError(f"cannot reach {url} to confirm the server is up: {exc}") from exc
+    if status != 200:
+        raise RuntimeError(f"{url} answered HTTP {status}, not 200")
+    try:
+        payload = json.loads(raw)
+    except ValueError as exc:
+        raise RuntimeError(f"{url} did not answer valid JSON: {exc}") from exc
+    data = payload.get("data") if isinstance(payload, dict) else None
+    ids = (
+        {item.get("id") for item in data if isinstance(item, dict)}
+        if isinstance(data, list)
+        else set()
+    )
+    if model not in ids:
+        raise RuntimeError(
+            f"{url} does not list {model!r} among its served models "
+            f"({sorted(i for i in ids if i)}); point --model at what the server is serving"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -377,6 +431,9 @@ class EvalResult:
     outcome: str
     elapsed: float  # seconds
     think: bool = False
+    #: Why the call failed, when ``outcome`` is :data:`OUTCOME_CALL_ERROR`; kept for
+    #: debugging, never written to the results page (it may carry endpoint detail).
+    error: str | None = None
 
 
 def run_measurement(
@@ -390,7 +447,12 @@ def run_measurement(
     """Calls the endpoint once per eval, in order, and scores each reply.
 
     Raises ``ValueError`` up front if any eval names an ``expected_skill``
-    absent from *tools* -- a data-integrity problem, not a model failure.
+    absent from *tools* -- a data-integrity problem, not a model failure. A
+    single eval whose call fails (transport error, non-200, unparseable
+    reply) does not abort the run: it is recorded as
+    :data:`OUTCOME_CALL_ERROR` (issue 46's tier-error finding: a crashed or
+    unreachable server otherwise silently truncates the run instead of
+    being counted), and the remaining evals are still measured.
     """
     skill_to_tool_name = {t.skill: t.name for t in tools}
     for record in evals:
@@ -404,14 +466,29 @@ def run_measurement(
     for record in evals:
         expected_skill = record["expected_skill"]
         expected_tool_name = skill_to_tool_name[expected_skill]
-        call = call_endpoint(
-            base_url,
-            model,
-            tool_schemas,
-            record["text"],
-            timeout=timeout,
-            template_kwargs=template_kwargs,
-        )
+        try:
+            call = call_endpoint(
+                base_url,
+                model,
+                tool_schemas,
+                record["text"],
+                timeout=timeout,
+                template_kwargs=template_kwargs,
+            )
+        except RuntimeError as exc:
+            results.append(
+                EvalResult(
+                    id=str(record.get("id", "")),
+                    repo=str(record.get("repo", "")),
+                    skill=str(record.get("skill", "")),
+                    expected_skill=expected_skill,
+                    names_skill=bool(record.get("names_skill", False)),
+                    outcome=OUTCOME_CALL_ERROR,
+                    elapsed=0.0,
+                    error=str(exc),
+                )
+            )
+            continue
         outcome = classify(call.tool_names, expected_tool_name)
         results.append(
             EvalResult(
@@ -574,8 +651,18 @@ def render_results(
     manifest_provenance: list[dict[str, str]],
     aggregated: Aggregate,
     enable_thinking: bool | None = None,
+    call_errors_allowed: int = 0,
 ) -> str:
     lines: list[str] = [f"# Jetson skill-routing measurement -- {label}, {when}", ""]
+
+    call_errors = aggregated.outcome_counts.get(OUTCOME_CALL_ERROR, 0)
+    if call_errors:
+        lines += [
+            f"**{call_errors} call-error eval(s) permitted by "
+            f"`--allow-tier-errors {call_errors_allowed}`** -- the endpoint was unreachable "
+            "or answered unusably for at least one eval; this run is not a clean measurement.",
+            "",
+        ]
 
     # The margin comes first, ahead of any number, so a tuned run's claim is
     # on record before the results below can be read.
@@ -923,6 +1010,15 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="nvsh config.toml to read [tiers.lfm] from with --launch (default: XDG path)",
     )
+    parser.add_argument(
+        "--allow-tier-errors",
+        type=int,
+        default=0,
+        metavar="N",
+        help="permit up to N call-error evals (the endpoint was unreachable or unusable) before"
+        " refusing to write the results page; default 0. The count is shown in the results"
+        " page when it is above 0",
+    )
     return parser
 
 
@@ -989,6 +1085,12 @@ def main(argv: list[str] | None = None, *, launch_seams: LaunchSeams | None = No
             base_url = args.url
 
         try:
+            preflight_models(base_url, args.model)
+        except RuntimeError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return EXIT_ENV
+
+        try:
             results = run_measurement(
                 base_url,
                 args.model,
@@ -1003,6 +1105,23 @@ def main(argv: list[str] | None = None, *, launch_seams: LaunchSeams | None = No
     finally:
         if runtime is not None:
             runtime.stop()
+
+    # Issue 46 finding: an unreachable/crashed endpoint mid-run turns every
+    # remaining eval into a call error, not a real routing decision; refuse to
+    # write the results page unless the operator explicitly permitted this many.
+    call_errors = sum(1 for r in results if r.outcome == OUTCOME_CALL_ERROR)
+    if call_errors > args.allow_tier_errors:
+        print(
+            f"error: {call_errors} call-error eval(s) (endpoint unreachable or unusable),"
+            f" above --allow-tier-errors {args.allow_tier_errors}; not writing a results page",
+            file=sys.stderr,
+        )
+        print(
+            "hint: fix or restart the endpoint and re-run, or pass --allow-tier-errors N to"
+            " permit up to N",
+            file=sys.stderr,
+        )
+        return EXIT_ENV
 
     aggregated = aggregate(results)
     when = date.today().isoformat()
@@ -1022,6 +1141,7 @@ def main(argv: list[str] | None = None, *, launch_seams: LaunchSeams | None = No
         manifest_provenance=provenance,
         aggregated=aggregated,
         enable_thinking=args.enable_thinking,
+        call_errors_allowed=args.allow_tier_errors,
     )
     rendered = redact(rendered.encode("utf-8")).decode("utf-8")
     out_path.parent.mkdir(parents=True, exist_ok=True)
