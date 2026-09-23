@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-09-22T17:34:36Z",
-  "updated": "2026-09-22T19:21:23Z",
+  "updated": "2026-09-23T01:28:09Z",
   "claims": [
     {
       "id": "c1",
@@ -1157,6 +1157,18 @@
       "skipped_check": "second-opinion review of wave 1 by the qwen worker",
       "refs": [
         "wave 1 (t1 t2 t3 t8)"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l2",
+      "code": "provenance-missing",
+      "what": "While diagnosing r6's validation failure (\"Stop the inference container\" proposed as container_restart), the lead grepped all three splits for stop/kill wording and so read one test-side entry, dev-g236 'Stop nginx' (expect escalate). The test side is meant to stay unseen until final runs (c31, h21). Any fix is justified by the validation entry dev-g907 alone, and the delivery summary must say the test side was seen once before the final run.",
+      "skipped_check": "restricting diagnosis to the train and val sides",
+      "refs": [
+        "t14 r6",
+        "c31"
       ],
       "origin": "llm",
       "status": "proposed"
