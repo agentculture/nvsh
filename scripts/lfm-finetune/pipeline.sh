@@ -34,8 +34,11 @@
 #                         (scan_bundle.py scan; writes scan.json next to it)
 #   quantize <name>       Q4_K_M GGUF + INT4 AWQ export of a merged checkpoint
 #                         (quantize.py, a training stage: needs LLAMA_CPP_CONVERT,
-#                         LLAMA_CPP_QUANTIZE, LLAMA_CPP_IMATRIX, LLM_COMPRESSOR); writes
-#                         a generation_config.json into the AWQ export dir (deviation d3)
+#                         LLAMA_CPP_QUANTIZE, LLAMA_CPP_IMATRIX, and AWQ_PY -- the
+#                         separate llm-compressor venv's python, which runs
+#                         awq_oneshot.py; LLAMA_CPP_DIR optional, for the commit
+#                         record); writes a generation_config.json into the AWQ
+#                         export dir (deviation d3)
 #   heal <name> <base-run> [nvsh|skills]   a healing fine-tune that continues
 #                         training from <base-run>'s own merged checkpoint instead
 #                         of BASE (decisions c42/c43; a training stage). Whether
