@@ -132,3 +132,26 @@ def test_finding_dicts_have_required_keys(tmp_path):
     required_keys = {"path", "line", "kind", "detail"}
     for finding in payload["findings"]:
         assert required_keys.issubset(set(finding.keys())), finding
+
+
+def test_a_private_host_in_free_text_is_a_finding(tmp_path):
+    """Model and dataset cards are prose: a private address there must be caught too."""
+    module = _module()
+    _write_file(tmp_path, "README.md", "Served at http://192.168.1.138:8000/v1 during the run.\n")
+    _write_file(tmp_path, "notes.txt", "gateway on 10.0.0.5 and 100.93.248.8, box spark2.local\n")
+    findings = module.scan_folder(tmp_path, _load_scan_secrets())
+    hosts = {f["detail"] for f in findings if f["kind"] == "private_host"}
+    assert hosts == {"192.168.1.138", "10.0.0.5", "100.93.248.8", "spark2.local"}
+    assert module.main(["scan", str(tmp_path)]) == 1
+
+
+def test_localhost_public_hosts_and_versions_are_not_private_hosts(tmp_path):
+    module = _module()
+    _write_file(
+        tmp_path,
+        "README.md",
+        "Try http://localhost:8000 or 127.0.0.1; see https://huggingface.co/Qwen and"
+        " https://github.com/agentculture/nvsh; transformers 5.5.0, torch 2.12.1, 8.8.8.8.\n",
+    )
+    findings = module.scan_folder(tmp_path, _load_scan_secrets())
+    assert [f for f in findings if f["kind"] == "private_host"] == []

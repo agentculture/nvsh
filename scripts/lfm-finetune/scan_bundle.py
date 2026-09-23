@@ -13,7 +13,9 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import ipaddress
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -69,6 +71,37 @@ def folder_hash(folder: Path) -> str:
     return digest.hexdigest()
 
 
+#: An IPv4 address or a host name on a private-only suffix, found anywhere in prose.
+_IPV4_RE = re.compile(r"(?<![\w.])(\d{1,3}(?:\.\d{1,3}){3})(?![\w.])")
+_PRIVATE_NAME_RE = re.compile(
+    r"(?<![\w.-])([a-z0-9-]+(?:\.[a-z0-9-]+)*\.(?:local|lan|internal|home))\b", re.I
+)
+#: Tailscale and carrier-grade NAT (100.64.0.0/10) are private in practice, not in ipaddress.
+_CGNAT = ipaddress.ip_network("100.64.0.0/10")
+
+
+def private_hosts(text: str) -> list[tuple[int, str]]:
+    """``(line, host)`` for every private address or private-suffix host name in *text*.
+
+    Model and dataset cards are prose, where scan-secrets' JSON endpoint check
+    never looks. Loopback and unspecified addresses are allowed, as there.
+    """
+    found: list[tuple[int, str]] = []
+    for number, line in enumerate(text.splitlines(), start=1):
+        for match in _IPV4_RE.finditer(line):
+            try:
+                address = ipaddress.ip_address(match.group(1))
+            except ValueError:
+                continue
+            if address.is_loopback or address.is_unspecified:
+                continue
+            if address.is_private or address in _CGNAT:
+                found.append((number, match.group(1)))
+        for match in _PRIVATE_NAME_RE.finditer(line):
+            found.append((number, match.group(1)))
+    return found
+
+
 def scan_folder(folder: Path, scan_secrets: object) -> list[dict]:
     """Return one finding dict per credential / endpoint / redact issue.
 
@@ -112,6 +145,9 @@ def scan_folder(folder: Path, scan_secrets: object) -> list[dict]:
                     "detail": finding.detail,
                 }
             )
+
+        for line, host in private_hosts(text):
+            findings.append({"path": rel, "line": line, "kind": "private_host", "detail": host})
 
         # redact_report: returns (redacted_bytes, list_of_rule_names_that_fired)
         file_bytes = path.read_bytes()
