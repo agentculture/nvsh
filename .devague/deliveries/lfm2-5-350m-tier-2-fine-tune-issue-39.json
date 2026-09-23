@@ -2,7 +2,7 @@
   "plan_slug": "lfm2-5-350m-tier-2-fine-tune-issue-39",
   "schema_version": 2,
   "created": "2026-09-22T19:41:18Z",
-  "updated": "2026-09-23T06:24:26Z",
+  "updated": "2026-09-23T06:35:14Z",
   "deviations": [
     {
       "id": "d1",
@@ -65,7 +65,7 @@
         "commit": "70182afc0210b246e8a3ef13a57e73483b1fd481"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 4
     },
@@ -84,7 +84,7 @@
         "commit": "70182afc0210b246e8a3ef13a57e73483b1fd481"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 5
     },
@@ -103,7 +103,7 @@
         "commit": "c4fd84c9e76fbe90a1dec1989c26113e023b4a3f"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 6
     },
@@ -122,7 +122,7 @@
         "commit": "c4fd84c9e76fbe90a1dec1989c26113e023b4a3f"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 7
     },
@@ -141,7 +141,7 @@
         "commit": "c4fd84c9e76fbe90a1dec1989c26113e023b4a3f"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 8
     },
@@ -160,7 +160,7 @@
         "commit": "c4fd84c9e76fbe90a1dec1989c26113e023b4a3f"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 9
     },
@@ -179,7 +179,7 @@
         "commit": "c4fd84c9e76fbe90a1dec1989c26113e023b4a3f"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 10
     },
@@ -217,7 +217,7 @@
         "commit": "c4fd84c9e76fbe90a1dec1989c26113e023b4a3f"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 12
     },
@@ -236,7 +236,7 @@
         "commit": "c4fd84c9e76fbe90a1dec1989c26113e023b4a3f"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 13
     },
@@ -255,7 +255,7 @@
         "commit": "c4fd84c9e76fbe90a1dec1989c26113e023b4a3f"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 14
     },
@@ -293,7 +293,7 @@
         "commit": "c4fd84c9e76fbe90a1dec1989c26113e023b4a3f"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 16
     },
@@ -312,7 +312,7 @@
         "commit": "4acc25cb54af289a1f8c8ff1d6792859e05037b5"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 17
     },
@@ -331,7 +331,7 @@
         "commit": "4acc25cb54af289a1f8c8ff1d6792859e05037b5"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 18
     },
@@ -350,7 +350,7 @@
         "commit": "85b2f154673faf2e8c73df9e3da7410f763e9bec"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 19
     },
@@ -369,7 +369,7 @@
         "commit": "85b2f154673faf2e8c73df9e3da7410f763e9bec"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 20
     },
@@ -388,7 +388,7 @@
         "commit": "f084d5967f4e1668af92d6d89d4bc1e53485ceae"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 21
     },
@@ -407,7 +407,7 @@
         "commit": "f084d5967f4e1668af92d6d89d4bc1e53485ceae"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 22
     }

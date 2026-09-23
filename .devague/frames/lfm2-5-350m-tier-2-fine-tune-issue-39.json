@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-09-22T17:34:36Z",
-  "updated": "2026-09-23T06:20:36Z",
+  "updated": "2026-09-23T06:35:13Z",
   "claims": [
     {
       "id": "c1",
@@ -1159,7 +1159,7 @@
         "wave 1 (t1 t2 t3 t8)"
       ],
       "origin": "llm",
-      "status": "proposed"
+      "status": "approved"
     },
     {
       "id": "l2",
@@ -1171,7 +1171,7 @@
         "c31"
       ],
       "origin": "llm",
-      "status": "proposed"
+      "status": "approved"
     },
     {
       "id": "l3",
@@ -1182,7 +1182,7 @@
         "o8"
       ],
       "origin": "llm",
-      "status": "proposed"
+      "status": "approved"
     },
     {
       "id": "l4",
@@ -1193,7 +1193,7 @@
         "c37"
       ],
       "origin": "llm",
-      "status": "proposed"
+      "status": "approved"
     },
     {
       "id": "l5",
@@ -1204,7 +1204,7 @@
         "t16"
       ],
       "origin": "llm",
-      "status": "proposed"
+      "status": "approved"
     }
   ],
   "obligations": [
