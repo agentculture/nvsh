@@ -2,7 +2,7 @@
 
 ## Run
 
-- command: `measure_skills.py --tools /home/spark/lfm-train/work/skills/tools.json --test /home/spark/lfm-train/work/skills/test.jsonl --manifest /home/spark/lfm-train/work/skills/manifest.json --model LiquidAI/LFM2.5-350M --model-revision 9e6c6ccf47cd318696e137d381a7ded8fe4df09f --label stock --launch --config /home/spark/lfm-train/measure-config.toml --timeout 180 --out /home/spark/lfm-train/work/measure/skills-stock.md`
+- command: `measure_skills.py --tools $HOME/lfm-train/work/skills/tools.json --test $HOME/lfm-train/work/skills/test.jsonl --manifest $HOME/lfm-train/work/skills/manifest.json --model LiquidAI/LFM2.5-350M --model-revision 9e6c6ccf47cd318696e137d381a7ded8fe4df09f --label stock --launch --config $HOME/lfm-train/measure-config.toml --timeout 180 --out $HOME/lfm-train/work/measure/skills-stock.md`
 - date: 2026-09-23
 - endpoint: `<local endpoint>` (a local endpoint was used; never recorded)
 - model: `LiquidAI/LFM2.5-350M`

@@ -1005,6 +1005,16 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+def home_relative(text: str) -> str:
+    """*text* with the user's home directory written as ``$HOME``.
+
+    Reports are committed; a hard-coded ``/home/<user>/`` path is not
+    portable and fails the repo's portability check.
+    """
+    home = str(Path.home())
+    return text.replace(home + "/", "$HOME/") if home not in ("", "/") else text
+
+
 def _count_finals(directory: Path, exclude: Path) -> int:
     if not directory.is_dir():
         return 0
@@ -1107,8 +1117,8 @@ def run(argv: Sequence[str], seams: Seams) -> int:
     prov = Provenance(
         date=date,
         label=args.label,
-        command=shlex.join([_SCRIPT_NAME, *argv]),
-        split_path=str(split_path),
+        command=home_relative(shlex.join([_SCRIPT_NAME, *argv])),
+        split_path=home_relative(str(split_path)),
         split_count=len(loaded.entries),
         source_count=len({sources.get(entry.id, entry.id) for entry in loaded.entries}),
         problems=loaded.problems,

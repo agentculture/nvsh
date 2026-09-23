@@ -1,7 +1,7 @@
 # Tier 2 measurement, 2026-09-22: stock-val
 
-- Command: `scripts/lfm-finetune/measure.py --split /home/spark/lfm-train/splits/val.json --model LiquidAI/LFM2.5-350M --revision 9e6c6ccf47cd318696e137d381a7ded8fe4df09f --label stock-val --config /home/spark/lfm-train/measure-config.toml`
-- Split: `/home/spark/lfm-train/splits/val.json` (66 entries, 66 sources)
+- Command: `scripts/lfm-finetune/measure.py --split $HOME/lfm-train/splits/val.json --model LiquidAI/LFM2.5-350M --revision 9e6c6ccf47cd318696e137d381a7ded8fe4df09f --label stock-val --config $HOME/lfm-train/measure-config.toml`
+- Split: `$HOME/lfm-train/splits/val.json` (66 entries, 66 sources)
 - Seed: 39 (from the split header)
 - nvsh: 0.17.0, commit `ec9aa833d0e04a4a24a5aafcc7dc79136644a790`
 - Models (repo id @ revision): `LiquidAI/LFM2.5-350M` @ `9e6c6ccf47cd318696e137d381a7ded8fe4df09f` (revision verified from the cache)

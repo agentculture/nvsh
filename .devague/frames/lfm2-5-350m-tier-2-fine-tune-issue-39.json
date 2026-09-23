@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-09-22T17:34:36Z",
-  "updated": "2026-09-23T06:05:05Z",
+  "updated": "2026-09-23T06:20:36Z",
   "claims": [
     {
       "id": "c1",
@@ -1191,6 +1191,17 @@
       "skipped_check": "a validation side for the skills task (e.g. holding out a slice of skills or evals) before iterating",
       "refs": [
         "c37"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l5",
+      "code": "provenance-missing",
+      "what": "train/test leakage: supplement entry sup-07 ('Remove the trainer container') is identical to a test-side entry, and 3 accepted variations are identical to test entries (1 to a validation entry); r8 was trained on them, so final run 2 is contaminated (upward bias, at most ~4 of 64 test entries). No step compared training text with val/test; the supplement header claimed test material was avoided after checking only nginx. Found by /code-review on PR 47",
+      "skipped_check": "an exact/normalised text check of every training record (supplement and variations) against the val and test sides before training",
+      "refs": [
+        "t16"
       ],
       "origin": "llm",
       "status": "proposed"

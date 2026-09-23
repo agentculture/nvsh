@@ -730,3 +730,9 @@ def test_details_are_refused_on_test_and_held_out_runs(measure, tmp_path, flag):
     argv = _argv(split, tmp_path / "r.md", flag, "--details", str(tmp_path / "d.jsonl"))
     assert measure.main(argv, seams=harness.seams) == 1
     assert harness.specs == [] and not (tmp_path / "d.jsonl").exists()
+
+
+def test_reports_write_the_home_directory_as_home(measure, monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(measure.Path, "home", classmethod(lambda cls: tmp_path))
+    line = measure.home_relative(f"measure.py --split {tmp_path}/work/val.json")
+    assert line == "measure.py --split $HOME/work/val.json"

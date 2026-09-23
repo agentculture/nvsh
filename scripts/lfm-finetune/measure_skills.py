@@ -446,7 +446,11 @@ def redact_command_line(argv: list[str]) -> str:
             redacted.append(f"--url={LOCAL_ENDPOINT_LABEL}")
             continue
         redacted.append(token)
-    return " ".join(["measure_skills.py", *redacted])
+    line = " ".join(["measure_skills.py", *redacted])
+    # Reports are committed: write the home directory as $HOME, never
+    # /home/<user>/, which is not portable.
+    home = str(Path.home())
+    return line.replace(home + "/", "$HOME/") if home not in ("", "/") else line
 
 
 def render_results(

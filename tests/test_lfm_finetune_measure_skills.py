@@ -760,3 +760,10 @@ def test_launch_ignores_url_localhost_check_but_still_uses_local_runtime(
         launch_seams=harness.seams,
     )
     assert exit_code == 0
+
+
+def test_the_command_line_writes_the_home_directory_as_home(monkeypatch, tmp_path) -> None:
+    module = _module()
+    monkeypatch.setattr(module.Path, "home", classmethod(lambda cls: tmp_path))
+    line = module.redact_command_line(["--tools", f"{tmp_path}/skills/tools.json"])
+    assert line == "measure_skills.py --tools $HOME/skills/tools.json"
