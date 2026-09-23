@@ -261,10 +261,13 @@ def preflight_models(
         raise MeasureError(EXIT_ENV, str(exc)) from exc
 
 
-def _served_ctx(lfm_settings: Mapping[str, object]) -> int | None:
-    """The context the run is labelled with, which the served model must match."""
+def _served_ctx(lfm_settings: Mapping[str, object]) -> int:
+    """The context the run is labelled with, which the served model must match:
+    the same effective value :func:`serving_record` reports, the runtime's
+    ``DEFAULT_CTX`` when neither the config nor ``--ctx`` sets one (Codex review
+    of lapse l3: a missing ctx must not skip the check)."""
     ctx = lfm_settings.get("ctx")
-    return ctx if isinstance(ctx, int) and not isinstance(ctx, bool) else None
+    return ctx if isinstance(ctx, int) and not isinstance(ctx, bool) and ctx else DEFAULT_CTX
 
 
 @dataclass(frozen=True)

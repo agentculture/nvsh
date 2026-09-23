@@ -1913,3 +1913,9 @@ def test_preflight_refuses_when_the_served_context_cannot_be_read(measure, model
 def test_preflight_without_ctx_is_unchanged(measure, models_server):
     _ModelsHandler.max_model_len = None
     measure.preflight_models(_models_url(models_server), "good-model")  # does not raise
+
+
+def test_served_ctx_defaults_to_what_the_report_shows(measure) -> None:
+    # Codex review of lapse l3: no ctx in the config must still be checked.
+    assert measure._served_ctx({}) == measure.DEFAULT_CTX
+    assert measure._served_ctx({"ctx": 2048}) == 2048
