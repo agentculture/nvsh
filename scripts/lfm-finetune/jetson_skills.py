@@ -672,6 +672,76 @@ def write_outputs(result: BuildResult, out_dir: Path) -> None:
         json.dumps(result.manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
     (out_dir / "README.md").write_text(result.readme, encoding="utf-8")
+    bodies, dropped = build_bodies(result.skills, result.evals)
+    (out_dir / "bodies.json").write_text(
+        json.dumps(bodies, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    print(f"bodies.json: {len(bodies)} skills, {dropped} paragraph(s) matching an eval left out")
+
+
+# ---------------------------------------------------------------------------
+# bodies (seeds for longer, more specific training requests)
+# ---------------------------------------------------------------------------
+
+#: How much of a SKILL.md body a generator is shown.
+BODY_EXCERPT_CHARS = 2500
+
+
+def body_paragraphs(skill_md_text: str) -> list[str]:
+    """A SKILL.md's prose after the frontmatter, one string per paragraph.
+
+    Fenced code blocks are dropped: they are commands and scripts, not the
+    situations a user describes.
+    """
+    lines = skill_md_text.splitlines()
+    if lines and lines[0].strip() == "---":
+        end = next((i for i in range(1, len(lines)) if lines[i].strip() == "---"), 0)
+        lines = lines[end + 1 :]
+    paragraphs: list[str] = []
+    current: list[str] = []
+    in_fence = False
+    for line in lines:
+        if line.lstrip().startswith("```"):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        if line.strip():
+            current.append(line.strip())
+        elif current:
+            paragraphs.append(" ".join(current))
+            current = []
+    if current:
+        paragraphs.append(" ".join(current))
+    return paragraphs
+
+
+def build_bodies(
+    skills: Iterable[Skill],
+    evals: list[EvalRecord],
+    limit: int = BODY_EXCERPT_CHARS,
+) -> tuple[list[dict[str, Any]], int]:
+    """``tools.json`` records with a ``body`` excerpt of each SKILL.md.
+
+    Any paragraph that the contamination scan matches against an eval prompt,
+    question or ground truth is left out, so a generator shown the body cannot
+    copy an eval into training data. Returns the records and how many
+    paragraphs were dropped that way.
+    """
+    records: list[dict[str, Any]] = []
+    dropped = 0
+    for skill in skills:
+        kept: list[str] = []
+        for paragraph in body_paragraphs(skill.skill_md.read_text(encoding="utf-8")):
+            if scan_contamination(evals, [paragraph]):
+                dropped += 1
+                continue
+            kept.append(paragraph)
+        body = "\n\n".join(kept)[:limit]
+        records.append(
+            {"skill": skill.name, "repo": skill.repo, "tool": build_tool(skill), "body": body}
+        )
+    return records, dropped
 
 
 # ---------------------------------------------------------------------------

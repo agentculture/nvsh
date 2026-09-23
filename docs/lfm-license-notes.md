@@ -60,3 +60,25 @@ card duties listed in the previous section. Two things stay true:
   control), this reading must be redone before the next upload.
 
 Nothing in nvsh uploads by itself; publishing is an operator action.
+
+## The upload folder for a tuned LFM2.5 (issue 39)
+
+`scripts/lfm-finetune/release_bundle.py` builds the folder that is uploaded,
+and refuses to build one that misses a duty above:
+
+- `LICENSE` is the base model's own licence file, copied byte for byte, and
+  must begin with "LFM Open License v1.0";
+- `NOTICE` states that the model is a modified LFM2.5, names the base
+  revision, says what was changed, and keeps Liquid AI's notices;
+- `README.md` (the model card) names the licence and the base model in its
+  front matter, says the model was modified, states the USD 10,000,000
+  threshold as a duty of every user, and lists the teacher models that
+  generated and reviewed the synthetic training requests;
+- the chat template must be byte-identical to the base model's.
+
+The script never uploads. The operator pushes the folder to a **private**
+repository with `grant run --inject HF_TOKEN=HF_TOKEN -- hf upload ...`, so
+the token lives only in that one process. A model trained on the Jetson
+skills data would also need NVIDIA's CC-BY-4.0 attribution (repositories and
+commits from the skills `manifest.json`); the nvsh-triage model is not
+trained on that data.

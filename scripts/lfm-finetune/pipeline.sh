@@ -7,8 +7,9 @@
 #   split                 seeded train/val/test split of nvsh/tiers/corpus/dev.json
 #   skills                NVIDIA's Jetson skills at pinned commits: tools + 104 test evals
 #   augment-nvsh          variations of every train entry (augment.py, resumable)
-#   augment-skills        skill requests written from each SKILL.md description
-#   assemble              training sets: nvsh-train.jsonl, skills-train.jsonl
+#   augment-skills        skill requests written from each SKILL.md (SKILLS_SEED:
+#                         tools.json for the description, bodies.json for the body)
+#   assemble              training sets: nvsh-train.jsonl, $SKILLS_SET-train.jsonl
 #   train <name> [nvsh|skills]   train, merge, stage into HF_CACHE as REPO
 #   measure-val <name>    validation run with per-entry details (iterate on this)
 #   measure-final <name>  stock and <name> back to back on the test side (a final run)
@@ -78,10 +79,10 @@ case "$STAGE" in
     ;;
   augment-skills)
     aug_env
-    py scripts/lfm-finetune/augment.py "$WORK/skills/tools.json" --side train \
+    py scripts/lfm-finetune/augment.py "${SKILLS_SEED:-$WORK/skills/tools.json}" --side train \
       --per-source "$PER_SOURCE_SKILLS" --workers "$WORKERS" \
-      --accepted-out "$WORK/aug/skills-accepted.jsonl" \
-      --rejected-out "$WORK/aug/skills-rejected.jsonl"
+      --accepted-out "$WORK/aug/${SKILLS_SET:-skills}-accepted.jsonl" \
+      --rejected-out "$WORK/aug/${SKILLS_SET:-skills}-rejected.jsonl"
     ;;
   assemble)
     touch "$WORK/aug/nvsh-accepted.jsonl"
@@ -92,10 +93,11 @@ case "$STAGE" in
       "${supplement[@]}"
     py scripts/lfm-finetune/build_dataset.py --split "$WORK/data/train-augmented.json" \
       --out "$WORK/data/nvsh-train.jsonl"
-    if [ -s "$WORK/aug/skills-accepted.jsonl" ]; then
-      py scripts/lfm-finetune/skills_dataset.py --accepted "$WORK/aug/skills-accepted.jsonl" \
+    skills_set=${SKILLS_SET:-skills}
+    if [ -s "$WORK/aug/$skills_set-accepted.jsonl" ]; then
+      py scripts/lfm-finetune/skills_dataset.py --accepted "$WORK/aug/$skills_set-accepted.jsonl" \
         --tools "$WORK/skills/tools.json" --test "$WORK/skills/test.jsonl" \
-        --out "$WORK/data/skills-train.jsonl"
+        --out "$WORK/data/$skills_set-train.jsonl"
     fi
     ;;
   train)

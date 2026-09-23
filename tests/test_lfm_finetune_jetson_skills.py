@@ -478,3 +478,49 @@ def test_an_existing_checkout_at_another_commit_is_refused(tmp_path) -> None:
     (repo / "f").write_text("changed")
     with pytest.raises(ValueError, match="local changes"):
         module.verify_checkout(repo, head)
+
+
+# ---------------------------------------------------------------------------
+# bodies (s3 seeds)
+# ---------------------------------------------------------------------------
+
+
+def test_body_paragraphs_skip_frontmatter_and_code(mod):
+    text = (
+        "---\nname: x\ndescription: d\n---\n\n# Title\n\nFirst line\ncontinues.\n\n"
+        "```bash\nrm -rf /\n```\n\nLast."
+    )
+    assert mod.body_paragraphs(text) == ["# Title", "First line continues.", "Last."]
+
+
+def test_bodies_carry_the_tool_and_a_capped_excerpt(mod, result):
+    bodies, _ = mod.build_bodies(result.skills, result.evals, limit=40)
+    assert [b["skill"] for b in bodies] == [s.name for s in result.skills]
+    assert all(b["tool"] == mod.build_tool(s) for b, s in zip(bodies, result.skills))
+    assert all(len(b["body"]) <= 40 for b in bodies)
+    full, _ = mod.build_bodies(result.skills, result.evals)
+    assert any("unified, agent-friendly view" in b["body"] for b in full)
+
+
+def test_a_body_paragraph_matching_an_eval_is_left_out(mod, result, tmp_path):
+    skill = result.skills[0]
+    eval_text = next(e.text for e in result.evals if e.skill == skill.name)
+    copy = tmp_path / "SKILL.md"
+    copy.write_text(skill.skill_md.read_text() + f"\n\nExample: {eval_text}\n\nKeep this one.\n")
+    moved = type(skill)(
+        repo=skill.repo,
+        name=skill.name,
+        skill_md=copy,
+        evals_json=skill.evals_json,
+        frontmatter=skill.frontmatter,
+    )
+    bodies, dropped = mod.build_bodies([moved], result.evals)
+    assert dropped == 1
+    assert eval_text not in bodies[0]["body"]
+    assert "Keep this one." in bodies[0]["body"]
+
+
+def test_write_outputs_also_writes_bodies(mod, result, tmp_path):
+    mod.write_outputs(result, tmp_path)
+    bodies = json.loads((tmp_path / "bodies.json").read_text())
+    assert len(bodies) == 4 and all("body" in b and "tool" in b for b in bodies)

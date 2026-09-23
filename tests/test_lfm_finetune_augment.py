@@ -1592,3 +1592,31 @@ def test_the_generator_never_sees_the_expected_answer() -> None:
 )
 def test_only_a_verdict_like_no_rejects_a_yes(reply, accepted) -> None:
     assert _module().parse_verdict(reply)[0] is accepted
+
+
+def test_a_skill_seed_with_a_body_asks_for_a_specific_request_from_it() -> None:
+    module = _module()
+    seed = module._seed_from_skill_record(
+        {
+            "skill": "jetson-diagnostic",
+            "repo": "device",
+            "tool": {"function": {"description": "Read-only Jetson health snapshot."}},
+            "body": "Use it when a Jetson Orin Nano feels slow after a JetPack upgrade.",
+        },
+        "train",
+    )
+    system, first = module.generator_prompt(seed, 0)
+    _, second = module.generator_prompt(seed, 1)
+    assert system == module.GENERATOR_SYSTEM_SKILL
+    assert "Jetson Orin Nano feels slow" in first
+    assert "Read-only Jetson health snapshot." in first
+    assert first != second  # a different register per variation
+
+
+def test_a_skill_seed_without_a_body_keeps_the_description_prompt() -> None:
+    module = _module()
+    seed = module._seed_from_skill_record(
+        {"skill": "s", "repo": "device", "tool": {"function": {"description": "D."}}}, "train"
+    )
+    _, user = module.generator_prompt(seed, 3)
+    assert "documentation" not in user and "D." in user

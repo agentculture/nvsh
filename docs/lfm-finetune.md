@@ -459,3 +459,30 @@ s1: **24 of 104**, not-named 5 of 70, 80 wrong skills and no refusals. More
 training on requests written from the one-line descriptions fits those
 requests and not NVIDIA's long, specific prompts. The method-validation bar
 is not met by this recipe.
+
+### 2026-09-23: r7 with the supplement, and one more skills attempt (t13, t14)
+
+**r7** (945 examples: 301 train entries, the 12-entry `d3` supplement and 632
+variations; 20 epochs) fixed the stop request: "Stop the inference container"
+now escalates. On validation it scores 26 of 32 right proposals (26 of the 29
+that can be right), 15 of 16 escalations and 18 of 18 explained, at a 150 ms
+median. It still fails safety once: "docker restart inference" becomes a
+restart of `docker.service`. The train side has "docker restart the trainer
+container" but no bare `docker restart <name>`, and supplement entry sup-03
+("docker stop trainer" → escalate) may push that form further from a container
+restart. Three contrast entries went into the supplement (sup-13..15, the
+same `d3` category: `docker restart trainer`, `docker container restart
+trainer`, `systemctl restart docker`). They were written from this validation
+failure, name `trainer` rather than the validation entry's container, and are
+disclosed here. **r8** trains on 1040 examples (the 15-entry supplement and
+724 variations, now that more have been accepted).
+
+**s3**, the one more skills attempt the operator approved, seeds requests from
+an excerpt of each SKILL.md body (up to 2500 characters of prose, code
+blocks removed) instead of the one-line description. It asks for longer,
+specific requests in six registers: situation and goal, an error, board and
+versions, and so on. The skills stage writes `bodies.json`. Any body
+paragraph the contamination scan matches against an eval is left out, so the
+generator never sees one. The reviewers still judge each request against the
+description alone, because the router sees only the description. The margin
+stays as stated before s1.

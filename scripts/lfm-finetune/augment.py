@@ -251,6 +251,9 @@ class Seed:
     #: still loads via ``nvsh.tiers.bench.load_corpus``. Empty for a skill
     #: seed, which is not a corpus entry at all.
     corpus_fields: dict[str, Any] = field(default_factory=dict)
+    #: For a skill seed from ``bodies.json``: an excerpt of the skill's
+    #: SKILL.md, so requests can carry the specific details users give.
+    context: str = ""
 
 
 def _refuse_if_eval(path: Path, records: list[Any]) -> None:
@@ -360,6 +363,7 @@ def _seed_from_skill_record(record: dict[str, Any], side: str | None) -> Seed:
         seed_text=description,
         expect={"skill": skill_name},
         needs_change_check=False,
+        context=str(record.get("body", "")),
     )
 
 
@@ -457,6 +461,18 @@ PHRASING_STYLES = (
 )
 
 
+#: Registers for a skill request written from a SKILL.md body: longer and
+#: more specific than one written from the one-line description.
+DETAILED_STYLES = (
+    "as two or three sentences describing the user's situation and goal",
+    "as a question from someone who has just hit a problem, with the error they see",
+    "as a task request naming the board and software versions involved",
+    "as a short paragraph from an engineer explaining what they need and why",
+    "as one direct sentence with one concrete detail",
+    "as a request from someone new to Jetson who describes what they want in plain words",
+)
+
+
 # ---------------------------------------------------------------------------
 # prompts
 # ---------------------------------------------------------------------------
@@ -550,6 +566,18 @@ def generator_prompt(seed: Seed, variation: int = 0) -> tuple[str, str]:
     of a request is asked for in a different register from the (N+1)th.
     """
     if seed.seed_format == "skills":
+        if seed.context:
+            style = DETAILED_STYLES[variation % len(DETAILED_STYLES)]
+            user = (
+                f"Capability description: {seed.seed_text}\n\n"
+                f"Capability documentation (excerpt):\n{seed.context}\n\n"
+                "Write one user request this capability answers, written "
+                f"{style}. Include the specific details a real user would give"
+                " (their board or device, versions, what they tried, what they"
+                " see), drawn from situations the documentation covers. Do not"
+                " copy sentences from the documentation."
+            )
+            return GENERATOR_SYSTEM_SKILL, user
         user = (
             f"Capability description: {seed.seed_text}\n\n"
             "Write one user request this capability answers."
