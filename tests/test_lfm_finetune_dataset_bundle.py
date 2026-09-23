@@ -235,6 +235,136 @@ def test_load_role_models_rejects_a_malformed_entry(tmp_path) -> None:
         _module().load_role_models(path)
 
 
+def _two_variation_inputs(
+    tmp_path: Path,
+    *,
+    second_models: dict,
+    role_models_table: dict,
+    apache_only: bool = False,
+) -> dict:
+    """Two accepted variations of different sources, so a role can see two
+
+    distinct teacher aliases (Codex finding #8: the card must aggregate
+    every distinct teacher per role, not just the first one seen).
+    """
+    splits = tmp_path / "splits"
+    splits.mkdir()
+    (splits / "val.json").write_text(
+        json.dumps({"entries": [_entry("dev-v1", {"escalate": True})]})
+    )
+    (splits / "test.json").write_text(
+        json.dumps({"entries": [_entry("dev-t1", {"explain": True, "answer": "a"})]})
+    )
+    train = tmp_path / "train-augmented.json"
+    train.write_text(
+        json.dumps(
+            {
+                "entries": [
+                    _entry("dev-a", {"operation": "gpu_stats", "args": {}}, side="train"),
+                    _entry("dev-b", {"operation": "gpu_stats", "args": {}}, side="train"),
+                    _entry(
+                        "dev-a~v1",
+                        {"operation": "gpu_stats", "args": {}},
+                        side="train",
+                        source_id="dev-a",
+                    ),
+                    _entry(
+                        "dev-b~v1",
+                        {"operation": "gpu_stats", "args": {}},
+                        side="train",
+                        source_id="dev-b",
+                    ),
+                ]
+            }
+        )
+    )
+    accepted = tmp_path / "accepted.jsonl"
+    accepted.write_text(
+        json.dumps({"id": "dev-a~v1", "models": _MODELS})
+        + "\n"
+        + json.dumps({"id": "dev-b~v1", "models": second_models})
+        + "\n"
+    )
+    rejected = tmp_path / "rejected.jsonl"
+    rejected.write_text("")
+    licence = tmp_path / "LICENSE"
+    licence.write_text("                                 Apache License\n")
+    return dict(
+        splits=splits,
+        train_augmented=train,
+        accepted=accepted,
+        rejected=rejected,
+        licence=licence,
+        role_models=_module().load_role_models(_role_models_file(tmp_path, role_models_table)),
+        out=tmp_path / "bundle",
+        apache_only=apache_only,
+    )
+
+
+def test_the_card_lists_every_distinct_teacher_used_per_role(tmp_path) -> None:
+    # dev-a~v1 uses "senses" (Gemma) as REVIEWER_A; dev-b~v1 uses a second,
+    # distinct REVIEWER_A teacher ("oracle"/Mixtral). Both must appear in
+    # the card's teacher table, not just the first one seen.
+    table = dict(_ROLE_MODELS)
+    table["oracle"] = {"name": "Mixtral 8x22B", "licence": "Apache-2.0"}
+    second_models = dict(_MODELS)
+    second_models["REVIEWER_A"] = "oracle"
+    inputs = _two_variation_inputs(tmp_path, second_models=second_models, role_models_table=table)
+    counts = _module().build(**inputs)
+    assert counts["variation"] == 2
+    card = (tmp_path / "bundle" / "README.md").read_text()
+    assert "Gemma 4 26B-A4B" in card
+    assert "Mixtral 8x22B" in card
+
+
+def test_apache_only_checks_every_used_teacher_not_just_the_first(tmp_path) -> None:
+    # dev-a~v1's REVIEWER_A ("senses") is Apache-2.0; dev-b~v1's REVIEWER_A
+    # ("oracle") is not. --apache-only must still refuse the build even
+    # though the first variation's teacher was fine.
+    table = dict(_ROLE_MODELS)
+    table["oracle"] = {"name": "Nemotron 3.5 Lightning", "licence": "OpenMDW-1.1"}
+    second_models = dict(_MODELS)
+    second_models["REVIEWER_A"] = "oracle"
+    inputs = _two_variation_inputs(
+        tmp_path, second_models=second_models, role_models_table=table, apache_only=True
+    )
+    with pytest.raises(ValueError, match="Apache"):
+        _module().build(**inputs)
+
+
+def test_the_shared_corrector_reviewer_b_disclosure_compares_resolved_names(tmp_path) -> None:
+    # A single variation's CORRECTOR ("cortex") and REVIEWER_B ("cortex-2")
+    # are two DIFFERENT aliases that resolve to the SAME model. The
+    # disclosure must fire on resolved identity, not alias equality --
+    # comparing the alias strings themselves would miss it.
+    table = dict(_ROLE_MODELS)
+    table["cortex-2"] = {"name": "Qwen 3.8 27B", "licence": "Apache-2.0"}
+    models = dict(_MODELS)
+    models["REVIEWER_B"] = "cortex-2"
+    inputs = _inputs(tmp_path, role_models=table, models=models)
+    counts = _module().build(**inputs)
+    assert counts["variation"] == 1
+    card = (tmp_path / "bundle" / "README.md").read_text()
+    assert "reviewer b is also the corrector" in card.lower()
+
+
+def test_no_shared_corrector_reviewer_b_disclosure_when_resolved_names_differ(tmp_path) -> None:
+    # dev-a~v1 uses "cortex" for both CORRECTOR and REVIEWER_B (same
+    # alias); dev-b~v1 uses distinct, differently-resolved teachers for
+    # those roles. The disclosure is about dev-a~v1 only and must still
+    # mention the shared model exactly once.
+    second_models = dict(_MODELS)
+    second_models["REVIEWER_B"] = "senses"
+    inputs = _two_variation_inputs(
+        tmp_path, second_models=second_models, role_models_table=_ROLE_MODELS
+    )
+    counts = _module().build(**inputs)
+    assert counts["variation"] == 2
+    card = (tmp_path / "bundle" / "README.md").read_text()
+    disclosures = card.lower().count("reviewer b is also the corrector")
+    assert disclosures == 1
+
+
 def test_main_wires_the_teacher_models_flag_and_apache_only(tmp_path, capsys) -> None:
     inputs = _inputs(tmp_path)
     role_models_path = _role_models_file(tmp_path)

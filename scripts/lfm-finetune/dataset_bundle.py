@@ -161,9 +161,14 @@ def build(
     manifest: list[dict[str, Any]] = []
     rows: dict[str, list[dict[str, Any]]] = {"train": [], "validation": [], "test": []}
     origins: collections.Counter[str] = collections.Counter()
-    #: role -> alias, first seen among the accepted variations; drives the
-    #: card's teacher table and its reviewer-B/corrector disclosure.
-    role_aliases: dict[str, str] = {}
+    #: role -> {resolved model name -> licence}, aggregated across every
+    #: accepted variation (not just the first one seen); drives the card's
+    #: teacher table.
+    role_teachers: dict[str, dict[str, str]] = collections.defaultdict(dict)
+    #: resolved corrector/reviewer-B names shared by at least one variation;
+    #: drives the card's "reviewer B is also the corrector" disclosure. Two
+    #: different aliases that resolve to the same model still count.
+    shared_corrector_reviewer_names: dict[str, None] = {}
     for entry in train:
         if entry.get("side", "train") != "train":
             raise ValueError(f"{entry['id']} in {train_augmented} is not a train-side entry")
@@ -201,7 +206,9 @@ def build(
                         f"{APACHE_LICENCE}; refused by --apache-only"
                     )
                 teachers[role] = name
-                role_aliases.setdefault(role, alias)
+                role_teachers[role][name] = teacher_licence
+            if teachers.get("CORRECTOR") == teachers.get("REVIEWER_B"):
+                shared_corrector_reviewer_names.setdefault(teachers["CORRECTOR"], None)
             row["teachers"] = teachers
         else:
             row["teachers"] = {}
@@ -257,7 +264,9 @@ def build(
         "rejected": rejected_count,
         "answers": _answer_counts(rows["train"]),
     }
-    (out / "README.md").write_text(card(counts, role_models, role_aliases), encoding="utf-8")
+    (out / "README.md").write_text(
+        card(counts, role_teachers, list(shared_corrector_reviewer_names)), encoding="utf-8"
+    )
     return counts
 
 
@@ -277,26 +286,30 @@ def _answer_counts(records: list[dict[str, Any]]) -> dict[str, int]:
 
 def card(
     counts: dict[str, Any],
-    role_models: dict[str, tuple[str, str]],
-    role_aliases: dict[str, str],
+    role_teachers: dict[str, dict[str, str]],
+    shared_corrector_reviewer_names: list[str],
 ) -> str:
+    """*role_teachers* is role -> {resolved model name -> licence}, aggregated
+
+    across every accepted variation (see ``build``), and
+    *shared_corrector_reviewer_names* lists every resolved model name that
+    played both the corrector and reviewer-B roles in at least one
+    variation -- by resolved identity, not by which alias named it.
+    """
     answers = counts["answers"]
     reviewed = counts["accepted"] + counts["rejected"]
     rate = f"{100 * counts['accepted'] / reviewed:.0f}%" if reviewed else "n/a"
-    if role_aliases:
+    if role_teachers:
         teachers = "\n".join(
-            f"| {role_models[role_aliases[role]][0]} | {role_models[role_aliases[role]][1]}"
-            f" | {desc} |"
+            f"| {name} | {licence} | {desc} |"
             for role, desc in ROLES
-            if role in role_aliases
+            for name, licence in role_teachers.get(role, {}).items()
         )
-        corrector_alias = role_aliases.get("CORRECTOR")
-        reviewer_b_alias = role_aliases.get("REVIEWER_B")
         disclosure = ""
-        if corrector_alias is not None and corrector_alias == reviewer_b_alias:
-            shared_name, _ = role_models[corrector_alias]
+        if shared_corrector_reviewer_names:
+            names = ", ".join(shared_corrector_reviewer_names)
             disclosure = (
-                f"\n**Reviewer B is also the corrector** in this run ({shared_name}): its"
+                f"\n**Reviewer B is also the corrector** in this run ({names}): its"
                 " accept/reject verdict is not independent of the copyedit it made.\n"
             )
     else:
