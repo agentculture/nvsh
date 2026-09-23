@@ -214,6 +214,23 @@ def cap_gpu_memory(torch, environ=os.environ) -> float | None:
     return fraction
 
 
+def save_valid_generation_config(model) -> None:
+    """Clear a greedy temperature so transformers will save the model.
+
+    The served generation_config.json says temperature 0 with do_sample False
+    (deviation d3: vLLM reads temperature, and Qwen ships no file of its own),
+    and transformers 5.5 and 5.17 both refuse to save that combination. A heal
+    run merges from a checkpoint that carries the file, so clear the
+    temperature before the save; pipeline.sh runs gen_config.py write on the
+    merged dir afterwards, which puts it back for serving.
+    """
+    config = getattr(model, "generation_config", None)
+    if config is None:
+        return
+    if getattr(config, "do_sample", None) is False and getattr(config, "temperature", None) == 0:
+        config.temperature = None
+
+
 def merge_adapter(base: str, revision: str, adapter: Path, out: Path) -> None:  # pragma: no cover
     """Merge a saved LoRA adapter into a fresh copy of the base and save it to *out*.
 
@@ -230,6 +247,7 @@ def merge_adapter(base: str, revision: str, adapter: Path, out: Path) -> None:  
     model = AutoModelForCausalLM.from_pretrained(base, revision=revision, dtype=torch.bfloat16)
     merged = PeftModel.from_pretrained(model, str(adapter)).merge_and_unload()
     out.mkdir(parents=True, exist_ok=True)
+    save_valid_generation_config(merged)
     merged.save_pretrained(str(out))
     AutoTokenizer.from_pretrained(base, revision=revision).save_pretrained(str(out))
 

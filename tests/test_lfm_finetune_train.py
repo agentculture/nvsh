@@ -335,3 +335,34 @@ def test_a_gpu_memory_budget_over_the_device_is_refused_before_any_cap() -> None
     with pytest.raises(ValueError, match="exceeds"):
         module.cap_gpu_memory(torch, {"NVSH_TRAIN_GPU_MEMORY_GB": "200"})
     assert torch.cuda.fractions == []
+
+
+class _GenConfig:
+    def __init__(self, temperature, do_sample):
+        self.temperature = temperature
+        self.do_sample = do_sample
+
+
+class _Model:
+    def __init__(self, generation_config):
+        self.generation_config = generation_config
+
+
+def test_a_greedy_generation_config_is_made_save_valid() -> None:
+    """transformers 5.5 and 5.17 refuse to save temperature 0 with do_sample False
+    (the deviation-d3 file); gen_config.py rewrites the served file after the save."""
+    module = _module()
+    model = _Model(_GenConfig(0.0, False))
+    module.save_valid_generation_config(model)
+    assert model.generation_config.temperature is None
+    assert model.generation_config.do_sample is False
+
+
+def test_a_sampling_or_missing_generation_config_is_left_alone() -> None:
+    module = _module()
+    sampling = _Model(_GenConfig(0.7, True))
+    module.save_valid_generation_config(sampling)
+    assert sampling.generation_config.temperature == 0.7
+    bare = _Model(None)
+    module.save_valid_generation_config(bare)
+    assert bare.generation_config is None

@@ -280,3 +280,18 @@ def test_write_adds_the_end_of_turn_to_an_existing_file_too(tmp_path):
     payload = json.loads((tmp_path / "generation_config.json").read_text(encoding="utf-8"))
     assert payload["eos_token_id"] == [248046, 248044]
     assert payload["top_k"] == 20
+
+
+def test_null_token_ids_in_config_json_are_left_out(tmp_path):
+    """Qwen3.5's config.json holds bos_token_id: null; a null id says nothing true."""
+    module = _module()
+    _write_json(
+        tmp_path / "config.json",
+        {"text_config": {"eos_token_id": 248044, "bos_token_id": None, "pad_token_id": None}},
+    )
+
+    module.write(tmp_path)
+
+    payload = json.loads((tmp_path / "generation_config.json").read_text(encoding="utf-8"))
+    assert "bos_token_id" not in payload and "pad_token_id" not in payload
+    assert payload["eos_token_id"] == 248044

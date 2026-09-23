@@ -46,9 +46,9 @@ def _token_ids_from_config(model_dir: Path) -> dict:
     text_config = config.get("text_config") if isinstance(config, dict) else None
     ids = {}
     for key in _TOKEN_ID_KEYS:
-        if isinstance(config, dict) and key in config:
+        if isinstance(config, dict) and config.get(key) is not None:
             ids[key] = config[key]
-        elif isinstance(text_config, dict) and key in text_config:
+        elif isinstance(text_config, dict) and text_config.get(key) is not None:
             ids[key] = text_config[key]
     return ids
 
