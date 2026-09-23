@@ -1736,3 +1736,140 @@ def test_allow_tier_errors_rejects_a_negative_value(measure, tmp_path, capsys):
     argv = _argv(split, tmp_path / "r.md", "--allow-tier-errors", "-1", models=(STOCK,))
     assert measure.main(argv, seams=harness.seams) == 1
     assert "--allow-tier-errors" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
+# Issue 46 (lead follow-up): Track A's preflight/tier-error rules apply to
+# Track B's served scorer (score_one) too -- a dead or wrong server there
+# must fail the same way, never a plausible-looking "no label mass" run.
+# ---------------------------------------------------------------------------
+
+
+class _ScorerHandler(http.server.BaseHTTPRequestHandler):
+    model_ids: list[str] = [STOCK]
+    completions_status = 200
+    #: One {token: logprob} dict per POST /completions call, in order.
+    logprobs_by_call: list[dict[str, float]] = []
+    calls = 0
+
+    def do_GET(self) -> None:  # noqa: N802 - http.server's naming convention
+        if self.path.rstrip("/") != "/models":
+            self.send_response(404)
+            self.end_headers()
+            return
+        data = json.dumps(
+            {"data": [{"id": model_id} for model_id in _ScorerHandler.model_ids]}
+        ).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def do_POST(self) -> None:  # noqa: N802 - http.server's naming convention
+        length = int(self.headers.get("Content-Length", 0))
+        self.rfile.read(length)
+        index = _ScorerHandler.calls
+        _ScorerHandler.calls += 1
+        if _ScorerHandler.completions_status != 200:
+            self.send_response(_ScorerHandler.completions_status)
+            self.end_headers()
+            return
+        logprobs = (
+            _ScorerHandler.logprobs_by_call[index]
+            if index < len(_ScorerHandler.logprobs_by_call)
+            else {}
+        )
+        payload = {"choices": [{"logprobs": {"top_logprobs": [logprobs]}}]}
+        data = json.dumps(payload).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def log_message(self, *_args) -> None:
+        pass
+
+
+@pytest.fixture
+def scorer_server():
+    _ScorerHandler.model_ids = [STOCK]
+    _ScorerHandler.completions_status = 200
+    _ScorerHandler.logprobs_by_call = []
+    _ScorerHandler.calls = 0
+    server = http.server.HTTPServer(("127.0.0.1", 0), _ScorerHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield server
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+
+def _served_scorer_harness(measure, tmp_path, server) -> tuple[Harness, list]:
+    """A real ToolChat-backed ScorerHandle talking to *server* (issue 46 preflight/tier-error)."""
+    from nvsh.tiers import toolchat
+
+    harness = Harness(measure, tmp_path, FakeDocker(), lfm={"engine": "vllm", "mode": "attach"})
+    url = f"http://127.0.0.1:{server.server_address[1]}"
+    built: list = []
+
+    def build_scorer(spec):
+        built.append(spec)
+        chat = toolchat.ToolChat(url, spec.model, stream=False)
+        return measure.ScorerHandle(
+            scorer=chat,
+            render=lambda messages: json.dumps(messages),
+            close=lambda: None,
+            base_url=url,
+        )
+
+    harness.seams.build_scorer = build_scorer
+    # Restore the real preflight for these tests -- the default Harness fake
+    # always passes, but this is exactly what is under test here.
+    harness.seams.preflight = measure.preflight_models
+    return harness, built
+
+
+def test_served_scorer_preflight_refuses_the_wrong_model_name(measure, tmp_path, scorer_server):
+    _ScorerHandler.model_ids = ["a-different-model"]
+    split = _small_split(tmp_path)
+    harness, built = _served_scorer_harness(measure, tmp_path, scorer_server)
+    argv = _argv(
+        split, tmp_path / "r.md", "--scorer", "served", "--max-logprobs", "24", models=(STOCK,)
+    )
+    assert measure.main(argv, seams=harness.seams) == 2
+    assert not (tmp_path / "r.md").exists()
+    assert _ScorerHandler.calls == 0  # refused before the first scored entry
+
+
+def test_served_scorer_call_error_fails_the_run_and_writes_no_results_page(
+    measure, tmp_path, scorer_server
+):
+    _ScorerHandler.completions_status = 500
+    split = _small_split(tmp_path)
+    out = tmp_path / "r.md"
+    predictions = tmp_path / "p"
+    harness, built = _served_scorer_harness(measure, tmp_path, scorer_server)
+    argv = _argv(split, out, "--scorer", "served", "--max-logprobs", "24", models=(STOCK,))
+    argv += ["--predictions", str(predictions)]
+    assert measure.main(argv, seams=harness.seams) == 2
+    assert not out.exists()
+    files = _predictions_files(predictions)
+    assert len(files) == 1
+    rows = _prediction_lines(files[0])
+    assert all(row["invalid_reason"] == "tier_error" for row in rows)
+
+
+def test_served_scorer_healthy_run_is_not_a_tier_error(measure, tmp_path, scorer_server):
+    """A real round trip that answers every label cleanly writes the results page."""
+    split = _small_split(tmp_path)
+    out = tmp_path / "r.md"
+    harness, built = _served_scorer_harness(measure, tmp_path, scorer_server)
+    full = _label_logprobs(measure, "escalate")
+    _ScorerHandler.logprobs_by_call = [full, full]
+    argv = _argv(split, out, "--scorer", "served", "--max-logprobs", "24", models=(STOCK,))
+    assert measure.main(argv, seams=harness.seams) == 0
+    assert out.exists()

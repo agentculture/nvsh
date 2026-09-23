@@ -89,7 +89,11 @@ written from its results (0 tokens; arguments from the grounding path the
 scorer uses). A served scorer needs ``--max-logprobs``, the value the
 attached vLLM was started with, and it must cover every label plus
 ``scorer.TOP_MARGIN`` (risk r8); nvsh's managed launcher cannot pass that
-flag, so a served scorer is refused in managed mode.
+flag, so a served scorer is refused in managed mode. A served scorer is
+preflighted like a generative run, and a call that fails (as opposed to
+``scorer.py``'s normal "incomplete" result, when labels are simply missing
+from the top log-probabilities) is a tier error under the same
+``--allow-tier-errors`` gate; the in-process scorer has no server to check.
 
 ``--slice missing-candidate`` measures ``eval_slices.py``'s slice of the
 split (every operation entry with its gold operation left out of the
@@ -120,7 +124,7 @@ import sys
 import tempfile
 import time
 from collections import Counter
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Callable, Mapping, Sequence
 
@@ -1374,11 +1378,16 @@ class ScorerSpec:
 
 @dataclass(frozen=True)
 class ScorerHandle:
-    """A ``score_next_token`` scorer, the prompt renderer for its model, and its release."""
+    """A ``score_next_token`` scorer, the prompt renderer for its model, and its release.
+
+    ``base_url`` is the served endpoint to preflight before the first scored
+    entry (issue 46); ``None`` for the in-process scorer, which has no server.
+    """
 
     scorer: object
     render: Callable[[list[dict]], str]
     close: Callable[[], None]
+    base_url: str | None = None
 
 
 def scorer_labels_needed() -> int:
@@ -1407,8 +1416,9 @@ def build_scorer(spec: ScorerSpec) -> ScorerHandle:  # pragma: no cover - a mode
         runtime = build_runtime(
             spec.lfm_settings, spec.runtime_platform, floor_check=lambda: check_floor(floor_mb)
         )
-        chat = toolchat.ToolChat(runtime.ensure(), spec.model, stream=False)
-        return ScorerHandle(scorer=chat, render=render, close=runtime.stop)
+        base_url = runtime.ensure()
+        chat = toolchat.ToolChat(base_url, spec.model, stream=False)
+        return ScorerHandle(scorer=chat, render=render, close=runtime.stop, base_url=base_url)
 
     import torch
     from transformers import AutoModelForCausalLM
@@ -1425,11 +1435,43 @@ def build_scorer(spec: ScorerSpec) -> ScorerHandle:  # pragma: no cover - a mode
     return ScorerHandle(scorer=in_process, render=render, close=lambda: None)
 
 
-def scorer_line(entry: tier_bench.CorpusEntry, scored, elapsed_ms: float) -> dict:
-    """A predictions line from one :class:`scorer.Scored`: 0 tokens, grounded arguments."""
+class _WatchedScorer:
+    """Wraps a ``score_next_token`` scorer, counting (never swallowing) any exception.
+
+    ``scorer.score()`` itself catches every exception from a failed call and
+    treats it exactly like a legitimate "no label had any mass" result --
+    the right behaviour for a model that is simply uncertain, but wrong for
+    a server that is unreachable or crashed (issue 46's finding, applied to
+    Track B). This wrapper re-raises unchanged, so ``scorer.score()``'s own
+    handling is untouched; it only also counts the failure, so
+    :func:`scorer_predictions` can tell a real call error from a normal
+    empty distribution and mark the resulting line ``tier_error`` instead of
+    ``no_label_mass``.
+    """
+
+    def __init__(self, inner: object) -> None:
+        self._inner = inner
+        self.errors = 0
+
+    def score_next_token(self, prompt: str, *, top: int = 20) -> dict[str, float]:
+        try:
+            return self._inner.score_next_token(prompt, top=top)  # type: ignore[attr-defined]
+        except Exception:
+            self.errors += 1
+            raise
+
+
+def scorer_line(
+    entry: tier_bench.CorpusEntry, scored, elapsed_ms: float, *, call_error: bool = False
+) -> dict:
+    """A predictions line from one :class:`scorer.Scored`: 0 tokens, grounded arguments.
+
+    *call_error* marks a line whose empty result came from the scorer's own
+    call failing (issue 46), not from a normal "no label had mass" reply.
+    """
     choice = scored.choice
     if choice is None:
-        outcome = ("invalid", None, None, "no_label_mass")
+        outcome = ("invalid", None, None, TIER_ERROR_REASON if call_error else "no_label_mass")
     elif choice == tier_lfm.EXPLAIN_TOOL:
         outcome = ("explain", None, None, None)
     elif choice == tier_lfm.ESCALATE_TOOL:
@@ -1451,7 +1493,15 @@ def scorer_line(entry: tier_bench.CorpusEntry, scored, elapsed_ms: float) -> dic
 def scorer_predictions(
     plan: "RunPlan", handle: ScorerHandle, clock: Callable[[], float]
 ) -> tuple[list[dict], Counter]:
-    """Score every entry once; the request text is what Track B trained on."""
+    """Score every entry once; the request text is what Track B trained on.
+
+    *handle.scorer* is wrapped in :class:`_WatchedScorer` so a call that
+    fails (the server died, a transport error) is counted separately from a
+    model that legitimately put no mass on any label -- both look the same
+    to ``scorer.score()``, but only the first is an issue-46 tier error.
+    """
+    watched = _WatchedScorer(handle.scorer)
+    handle = replace(handle, scorer=watched)
     lines, notes = [], Counter()
     for entry in plan.entries:
         request_text = tier_lfm.request_message(
@@ -1461,15 +1511,19 @@ def scorer_predictions(
         candidates = None if offered is None else tuple(offered) + scorer.CONTROLS
         prompt = handle.render(scorer.prompt_messages(request_text, candidates))
         started = clock()
+        before = watched.errors
         scored = scorer.score(
             handle.scorer, prompt, request_text, offered=candidates, runner=plan.runner
         )
         elapsed_ms = (clock() - started) * 1000.0
-        if scored.incomplete is not None:
+        call_error = watched.errors > before
+        if call_error:
+            notes[NO_DISTRIBUTION + "the scorer's call failed"] += 1
+        elif scored.incomplete is not None:
             notes[NO_DISTRIBUTION + "labels missing from the top log-probabilities"] += 1
         elif scored.candidates is None:
             notes[NO_DISTRIBUTION + "no label mass"] += 1
-        lines.append(scorer_line(entry, scored, elapsed_ms))
+        lines.append(scorer_line(entry, scored, elapsed_ms, call_error=call_error))
     return lines, notes
 
 
@@ -1734,6 +1788,8 @@ def score_one(plan: RunPlan, model: str, revision: str, seams: Seams) -> RunReco
         return record
     record.startup_s = seams.clock() - started
     try:
+        if handle.base_url is not None:
+            seams.preflight(handle.base_url, model)
         record.predictions, record.notes = scorer_predictions(plan, handle, seams.clock)
     finally:
         handle.close()
