@@ -56,9 +56,16 @@ def merge(
         raise ValueError("the split's header does not name the train side")
     sources = {entry["id"]: entry for entry in split["entries"]}
     seen = {_normal(entry["text"]) for entry in split["entries"]}
+    ids_seen = set(sources)
     kept: list[dict] = []
     counts = {"kept": 0, "duplicate": 0, "leaked": 0, "off_split": 0}
     for variation in variations:
+        vid = variation.get("id")
+        if vid in ids_seen:
+            raise ValueError(
+                f"{vid!r}: variation id is already used by the split or another variation"
+            )
+        ids_seen.add(vid)
         if variation.get("side") != "train":
             raise ValueError(f"{variation.get('id')}: side {variation.get('side')!r} is not train")
         source = sources.get(variation.get("source_id"))

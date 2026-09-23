@@ -54,7 +54,11 @@ def test_variations_are_appended_with_their_source_id() -> None:
 
 
 def test_a_repeat_of_the_source_or_an_earlier_variation_is_dropped() -> None:
-    variations = [_variation("show gpu  LOAD"), _variation("GPU busy?"), _variation("gpu busy?")]
+    variations = [
+        _variation("show gpu  LOAD", id="g1~v1"),
+        _variation("GPU busy?", id="g1~v2"),
+        _variation("gpu busy?", id="g1~v3"),
+    ]
     _, counts = _module().merge(_split(), variations)
     assert counts == {"kept": 1, "duplicate": 2, "leaked": 0, "off_split": 0}
 
@@ -64,6 +68,20 @@ def test_a_non_train_split_is_refused() -> None:
     split = _split("Split 'val' of dev.json (seed=39).")
     with pytest.raises(ValueError, match="train side"):
         module.merge(split, [])
+
+
+def test_two_variations_with_the_same_id_are_refused_even_with_different_text() -> None:
+    module = _module()
+    variations = [_variation("How busy is the GPU?"), _variation("Show me GPU usage")]
+    with pytest.raises(ValueError, match="g1~v1"):
+        module.merge(_split(), variations)
+
+
+def test_a_variation_id_equal_to_a_split_entry_id_is_refused() -> None:
+    module = _module()
+    variations = [_variation("How busy is the GPU?", id="g1")]
+    with pytest.raises(ValueError, match="g1"):
+        module.merge(_split(), variations)
 
 
 def test_a_variation_from_another_side_is_refused() -> None:
@@ -86,7 +104,7 @@ def test_a_variation_with_a_different_answer_is_refused() -> None:
 
 
 def test_a_repeat_differing_only_in_punctuation_is_dropped() -> None:
-    variations = [_variation("GPU busy?"), _variation("gpu busy")]
+    variations = [_variation("GPU busy?", id="g1~v1"), _variation("gpu busy", id="g1~v2")]
     _, counts = _module().merge(_split(), variations)
     assert counts == {"kept": 1, "duplicate": 1, "leaked": 0, "off_split": 0}
 
@@ -141,7 +159,10 @@ def _side(text: str) -> dict:
 def test_a_variation_repeating_a_validation_or_test_entry_is_dropped_as_leaked() -> None:
     module = _module()
     exclude = module.excluded_texts([_side("Is the GPU busy right now?")])
-    variations = [_variation("is the GPU busy, right now"), _variation("GPU busy?")]
+    variations = [
+        _variation("is the GPU busy, right now", id="g1~v1"),
+        _variation("GPU busy?", id="g1~v2"),
+    ]
     merged, counts = module.merge(_split(), variations, exclude)
     assert counts == {"kept": 1, "duplicate": 0, "leaked": 1, "off_split": 0}
     assert merged["entries"][-1]["text"] == "GPU busy?"
@@ -174,8 +195,8 @@ def test_filter_to_split_drops_and_counts_variations_whose_source_left_the_split
     module = _module()
     split = _split()
     variations = [
-        _variation("How busy is the GPU?"),  # source_id=g1, in the split
-        _variation("GPU is hot?", source_id="g9"),  # source_id=g9, not in the split
+        _variation("How busy is the GPU?", id="g1~v1"),  # source_id=g1, in the split
+        _variation("GPU is hot?", id="g1~v2", source_id="g9"),  # source_id=g9, not in the split
     ]
     merged, counts = module.merge(split, variations, filter_to_split=True)
     # One kept (the valid variation)
@@ -194,8 +215,8 @@ def test_without_filter_an_off_split_variation_still_raises() -> None:
     module = _module()
     split = _split()
     variations = [
-        _variation("How busy is the GPU?"),
-        _variation("GPU is hot?", source_id="g9"),
+        _variation("How busy is the GPU?", id="g1~v1"),
+        _variation("GPU is hot?", id="g1~v2", source_id="g9"),
     ]
     with pytest.raises(ValueError, match="is not in the split"):
         module.merge(split, variations, filter_to_split=False)
@@ -210,11 +231,10 @@ def test_main_prints_off_split_count(tmp_path, capsys) -> None:
     # Write accepted variations: one valid, one off-split
     accepted_path = tmp_path / "accepted.jsonl"
     accepted_path.write_text(
-        json.dumps(_variation("How busy is the GPU?")) + "\n",
-        encoding="utf-8",
-    )
-    accepted_path.write_text(
-        json.dumps(_variation("GPU is hot?", source_id="g9")) + "\n",
+        json.dumps(_variation("How busy is the GPU?"))
+        + "\n"
+        + json.dumps(_variation("GPU is hot?", id="g1~v2", source_id="g9"))
+        + "\n",
         encoding="utf-8",
     )
     out_path = tmp_path / "out.json"
@@ -230,6 +250,7 @@ def test_main_prints_off_split_count(tmp_path, capsys) -> None:
         ]
     )
     captured = capsys.readouterr()
+    assert "kept=1" in captured.out
     assert "off_split=1" in captured.out
 
 
