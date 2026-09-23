@@ -196,7 +196,12 @@ def require_localhost(base_url: str) -> None:
         raise ValueError(f"host must be 127.0.0.1, ::1 or localhost (got {parsed.hostname!r})")
 
 
-def preflight_models(base_url: str, model: str, timeout: float = PREFLIGHT_TIMEOUT) -> None:
+def preflight_models(
+    base_url: str,
+    model: str,
+    timeout: float = PREFLIGHT_TIMEOUT,
+    max_model_len: int | None = None,
+) -> None:
     """Raise ``RuntimeError`` unless *base_url* is up and serving *model*.
 
     ``GET {base_url}/models`` (localhost only, per :func:`require_localhost`,
@@ -233,6 +238,21 @@ def preflight_models(base_url: str, model: str, timeout: float = PREFLIGHT_TIMEO
             f"{url} does not list {model!r} among its served models "
             f"({sorted(i for i in ids if i)}); point --model at what the server is serving"
         )
+    if max_model_len is not None:
+        # Issue 46, lapse l3: a run reported ctx=4096 while the server had been
+        # started with --max-model-len 2048. The served length is the truth.
+        served = next((item.get("max_model_len") for item in data if item.get("id") == model), None)
+        if not isinstance(served, int):
+            raise RuntimeError(
+                f"{url} does not report max_model_len for {model!r}, so the served context "
+                f"cannot be checked against ctx={max_model_len}"
+            )
+        if served != max_model_len:
+            raise RuntimeError(
+                f"{url} serves {model!r} with max_model_len={served}, but this run is "
+                f"labelled ctx={max_model_len}; restart the server with --max-model-len "
+                f"{max_model_len} (MEASURE_CTX) or measure at ctx={served}"
+            )
 
 
 # ---------------------------------------------------------------------------
