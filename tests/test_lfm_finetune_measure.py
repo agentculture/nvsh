@@ -213,6 +213,9 @@ class Harness:
             load_config=lambda _path: SimpleNamespace(
                 tiers={"memory_floor_mb": 1024, "lfm": dict(self.lfm)}
             ),
+            # FakeRuntime.ensure() answers a URL nothing actually listens on; the
+            # issue-46 preflight is exercised by its own dedicated tests instead.
+            preflight=lambda base_url, model: None,
         )
 
     def build_tier(self, spec):
@@ -833,13 +836,22 @@ def test_predictions_are_scored_with_metrics_py(measure, tmp_path, monkeypatch):
     assert seen == [6, 6]
 
 
-def test_predictions_file_refused_on_final_runs(measure, tmp_path, capsys):
+def test_predictions_are_accepted_on_final_runs_without_request_text(measure, metrics, tmp_path):
+    """Deviation d6: track_a_calibration.py reads a final run's predictions file."""
     split = _split(tmp_path, "test.json")
+    out = tmp_path / "r.md"
+    predictions = tmp_path / "p"
     harness = Harness(measure, tmp_path, FakeDocker())
-    argv = _argv(split, tmp_path / "r.md", "--final", "--predictions", str(tmp_path / "p"))
-    assert measure.main(argv, seams=harness.seams) == 1
-    assert "--predictions" in capsys.readouterr().err
-    assert harness.specs == []
+    argv = _argv(split, out, "--final", "--predictions", str(predictions))
+    assert measure.main(argv, seams=harness.seams) == 0
+    files = _predictions_files(predictions)
+    assert len(files) == 2
+    rows = _prediction_lines(files[0])
+    assert rows  # the run actually produced lines
+    for row in rows:
+        metrics.Prediction.from_dict(row)  # raises on any schema problem
+        assert "text" not in row
+    assert "## Issue 46 metrics" in out.read_text(encoding="utf-8")
 
 
 def test_final_runs_still_report_metrics(measure, tmp_path):
@@ -1610,3 +1622,254 @@ def test_scorer_offers_only_the_slice_candidates(measure, tmp_path):
     rows = _prediction_lines(_predictions_files(predictions)[0])
     assert rows[0]["outcome"] == "invalid"  # no label had mass
     assert rows[0]["candidates"] is None
+
+
+# ---------------------------------------------------------------------------
+# Issue 46 finding: a crashed/unreachable server must not produce a
+# plausible-looking results page -- preflight before the first entry, and
+# refuse the results page when any prediction is a tier_error.
+# ---------------------------------------------------------------------------
+
+
+class _ModelsHandler(http.server.BaseHTTPRequestHandler):
+    status = 200
+    ids: list[str] = ["good-model"]
+
+    def do_GET(self) -> None:  # noqa: N802 - http.server's naming convention
+        if self.path.rstrip("/") != "/models":
+            self.send_response(404)
+            self.end_headers()
+            return
+        data = json.dumps({"data": [{"id": i} for i in _ModelsHandler.ids]}).encode("utf-8")
+        self.send_response(_ModelsHandler.status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def log_message(self, *_args) -> None:
+        pass
+
+
+@pytest.fixture
+def models_server():
+    _ModelsHandler.status = 200
+    _ModelsHandler.ids = ["good-model"]
+    server = http.server.HTTPServer(("127.0.0.1", 0), _ModelsHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield server
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+
+def _models_url(server: http.server.HTTPServer) -> str:
+    return f"http://127.0.0.1:{server.server_address[1]}"
+
+
+def test_preflight_accepts_a_server_serving_the_model(measure, models_server):
+    measure.preflight_models(_models_url(models_server), "good-model")  # does not raise
+
+
+def test_preflight_refuses_the_wrong_model_name(measure, models_server):
+    with pytest.raises(measure.MeasureError) as excinfo:
+        measure.preflight_models(_models_url(models_server), "other-model")
+    assert excinfo.value.code == measure.EXIT_ENV
+    assert "other-model" in excinfo.value.message
+
+
+def test_preflight_refuses_a_wrong_http_status(measure, models_server):
+    _ModelsHandler.status = 500
+    with pytest.raises(measure.MeasureError) as excinfo:
+        measure.preflight_models(_models_url(models_server), "good-model")
+    assert excinfo.value.code == measure.EXIT_ENV
+    assert "500" in excinfo.value.message
+
+
+def test_preflight_refuses_a_refused_connection(measure):
+    with pytest.raises(measure.MeasureError) as excinfo:
+        measure.preflight_models("http://127.0.0.1:1", "good-model")
+    assert excinfo.value.code == measure.EXIT_ENV
+
+
+def test_a_tier_error_prediction_fails_the_run_and_writes_no_results_page(measure, tmp_path):
+    split = _small_split(tmp_path)
+    out = tmp_path / "r.md"
+    predictions = tmp_path / "p"
+    harness = Harness(
+        measure,
+        tmp_path,
+        FakeDocker(),
+        scripts={STOCK: [Decline(DeclineReason.TIER_ERROR, "server dropped"), _call("escalate")]},
+    )
+    argv = _argv(split, out, "--predictions", str(predictions), models=(STOCK,))
+    assert measure.main(argv, seams=harness.seams) == 2
+    assert not out.exists()
+    # kept for debugging even though the results page is refused
+    files = _predictions_files(predictions)
+    assert len(files) == 1
+    rows = _prediction_lines(files[0])
+    assert any(row["invalid_reason"] == "tier_error" for row in rows)
+
+
+def test_allow_tier_errors_writes_the_page_with_the_count(measure, tmp_path):
+    split = _small_split(tmp_path)
+    out = tmp_path / "r.md"
+    harness = Harness(
+        measure,
+        tmp_path,
+        FakeDocker(),
+        scripts={STOCK: [Decline(DeclineReason.TIER_ERROR, "server dropped"), _call("escalate")]},
+    )
+    argv = _argv(split, out, "--allow-tier-errors", "1", models=(STOCK,))
+    assert measure.main(argv, seams=harness.seams) == 0
+    text = out.read_text(encoding="utf-8")
+    assert "1 tier-error prediction(s) permitted" in text
+    assert "--allow-tier-errors 1" in text
+
+
+def test_allow_tier_errors_rejects_a_negative_value(measure, tmp_path, capsys):
+    split = _small_split(tmp_path)
+    harness = Harness(measure, tmp_path, FakeDocker())
+    argv = _argv(split, tmp_path / "r.md", "--allow-tier-errors", "-1", models=(STOCK,))
+    assert measure.main(argv, seams=harness.seams) == 1
+    assert "--allow-tier-errors" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
+# Issue 46 (lead follow-up): Track A's preflight/tier-error rules apply to
+# Track B's served scorer (score_one) too -- a dead or wrong server there
+# must fail the same way, never a plausible-looking "no label mass" run.
+# ---------------------------------------------------------------------------
+
+
+class _ScorerHandler(http.server.BaseHTTPRequestHandler):
+    model_ids: list[str] = [STOCK]
+    completions_status = 200
+    #: One {token: logprob} dict per POST /completions call, in order.
+    logprobs_by_call: list[dict[str, float]] = []
+    calls = 0
+
+    def do_GET(self) -> None:  # noqa: N802 - http.server's naming convention
+        if self.path.rstrip("/") != "/models":
+            self.send_response(404)
+            self.end_headers()
+            return
+        data = json.dumps(
+            {"data": [{"id": model_id} for model_id in _ScorerHandler.model_ids]}
+        ).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def do_POST(self) -> None:  # noqa: N802 - http.server's naming convention
+        length = int(self.headers.get("Content-Length", 0))
+        self.rfile.read(length)
+        index = _ScorerHandler.calls
+        _ScorerHandler.calls += 1
+        if _ScorerHandler.completions_status != 200:
+            self.send_response(_ScorerHandler.completions_status)
+            self.end_headers()
+            return
+        logprobs = (
+            _ScorerHandler.logprobs_by_call[index]
+            if index < len(_ScorerHandler.logprobs_by_call)
+            else {}
+        )
+        payload = {"choices": [{"logprobs": {"top_logprobs": [logprobs]}}]}
+        data = json.dumps(payload).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def log_message(self, *_args) -> None:
+        pass
+
+
+@pytest.fixture
+def scorer_server():
+    _ScorerHandler.model_ids = [STOCK]
+    _ScorerHandler.completions_status = 200
+    _ScorerHandler.logprobs_by_call = []
+    _ScorerHandler.calls = 0
+    server = http.server.HTTPServer(("127.0.0.1", 0), _ScorerHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield server
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+
+def _served_scorer_harness(measure, tmp_path, server) -> tuple[Harness, list]:
+    """A real ToolChat-backed ScorerHandle talking to *server* (issue 46 preflight/tier-error)."""
+    from nvsh.tiers import toolchat
+
+    harness = Harness(measure, tmp_path, FakeDocker(), lfm={"engine": "vllm", "mode": "attach"})
+    url = f"http://127.0.0.1:{server.server_address[1]}"
+    built: list = []
+
+    def build_scorer(spec):
+        built.append(spec)
+        chat = toolchat.ToolChat(url, spec.model, stream=False)
+        return measure.ScorerHandle(
+            scorer=chat,
+            render=lambda messages: json.dumps(messages),
+            close=lambda: None,
+            base_url=url,
+        )
+
+    harness.seams.build_scorer = build_scorer
+    # Restore the real preflight for these tests -- the default Harness fake
+    # always passes, but this is exactly what is under test here.
+    harness.seams.preflight = measure.preflight_models
+    return harness, built
+
+
+def test_served_scorer_preflight_refuses_the_wrong_model_name(measure, tmp_path, scorer_server):
+    _ScorerHandler.model_ids = ["a-different-model"]
+    split = _small_split(tmp_path)
+    harness, built = _served_scorer_harness(measure, tmp_path, scorer_server)
+    argv = _argv(
+        split, tmp_path / "r.md", "--scorer", "served", "--max-logprobs", "24", models=(STOCK,)
+    )
+    assert measure.main(argv, seams=harness.seams) == 2
+    assert not (tmp_path / "r.md").exists()
+    assert _ScorerHandler.calls == 0  # refused before the first scored entry
+
+
+def test_served_scorer_call_error_fails_the_run_and_writes_no_results_page(
+    measure, tmp_path, scorer_server
+):
+    _ScorerHandler.completions_status = 500
+    split = _small_split(tmp_path)
+    out = tmp_path / "r.md"
+    predictions = tmp_path / "p"
+    harness, built = _served_scorer_harness(measure, tmp_path, scorer_server)
+    argv = _argv(split, out, "--scorer", "served", "--max-logprobs", "24", models=(STOCK,))
+    argv += ["--predictions", str(predictions)]
+    assert measure.main(argv, seams=harness.seams) == 2
+    assert not out.exists()
+    files = _predictions_files(predictions)
+    assert len(files) == 1
+    rows = _prediction_lines(files[0])
+    assert all(row["invalid_reason"] == "tier_error" for row in rows)
+
+
+def test_served_scorer_healthy_run_is_not_a_tier_error(measure, tmp_path, scorer_server):
+    """A real round trip that answers every label cleanly writes the results page."""
+    split = _small_split(tmp_path)
+    out = tmp_path / "r.md"
+    harness, built = _served_scorer_harness(measure, tmp_path, scorer_server)
+    full = _label_logprobs(measure, "escalate")
+    _ScorerHandler.logprobs_by_call = [full, full]
+    argv = _argv(split, out, "--scorer", "served", "--max-logprobs", "24", models=(STOCK,))
+    assert measure.main(argv, seams=harness.seams) == 0
+    assert out.exists()

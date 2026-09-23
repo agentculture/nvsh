@@ -114,13 +114,37 @@ class _FakeHandler(http.server.BaseHTTPRequestHandler):
     requests: list[dict] = []
     #: Optional message content per call, in order (default: empty).
     contents: list[str] = []
+    #: What GET /models answers with (issue 46 preflight); every fixture test uses
+    #: "fake-model", so this default satisfies preflight_models without per-test setup.
+    model_ids: list[str] = ["fake-model"]
+    #: 0-based POST call indices that simulate a dead server (issue 46: a call error).
+    fail_indices: set[int] = set()
+
+    def do_GET(self) -> None:  # noqa: N802 - http.server's naming convention
+        if self.path.rstrip("/") != "/models":
+            self.send_response(404)
+            self.end_headers()
+            return
+        data = json.dumps(
+            {"data": [{"id": model_id} for model_id in _FakeHandler.model_ids]}
+        ).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
 
     def do_POST(self) -> None:  # noqa: N802 - http.server's naming convention
+        index = _FakeHandler.calls
+        _FakeHandler.calls += 1
+        if index in _FakeHandler.fail_indices:
+            # Simulate a crashed/unreachable server for this one call: drop the
+            # connection with no response, rather than answering anything.
+            self.close_connection = True
+            return
         length = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(length)
         _FakeHandler.requests.append(json.loads(body.decode("utf-8")))
-        index = _FakeHandler.calls
-        _FakeHandler.calls += 1
         tool_calls = _FakeHandler.scripted[index] if index < len(_FakeHandler.scripted) else []
         content = _FakeHandler.contents[index] if index < len(_FakeHandler.contents) else ""
         payload = {
@@ -144,6 +168,8 @@ def fake_server():
     _FakeHandler.calls = 0
     _FakeHandler.requests = []
     _FakeHandler.scripted = [list(calls) for calls in _SCRIPTED_TOOL_CALLS]
+    _FakeHandler.model_ids = ["fake-model"]
+    _FakeHandler.fail_indices = set()
     server = http.server.HTTPServer(("127.0.0.1", 0), _FakeHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -696,7 +722,7 @@ def test_launch_serves_and_measures_then_stops_runtime(mod, fake_server, tmp_pat
 
 def test_launch_stops_runtime_even_when_measurement_fails(mod, tmp_path):
     tools_path, test_path = _write_inputs(tmp_path)
-    # base_url with no server listening -> run_measurement will raise RuntimeError
+    # base_url with no server listening -> the issue-46 preflight refuses first
     harness = _LaunchHarness(mod, base_url="http://127.0.0.1:1/v1")
     exit_code = mod.main(
         [
@@ -712,9 +738,10 @@ def test_launch_stops_runtime_even_when_measurement_fails(mod, tmp_path):
         ],
         launch_seams=harness.seams,
     )
-    assert exit_code == 1
+    assert exit_code == 2
     assert harness.runtime is not None
     assert harness.runtime.stopped == 1
+    assert not (tmp_path / "results.md").exists()
 
 
 def test_launch_reports_runtime_unavailable_without_measuring(mod, tmp_path):
@@ -993,3 +1020,94 @@ def test_nonempty_think_blocks_are_counted_and_reported(mod, fake_server, tmp_pa
 )
 def test_nonempty_think(mod, message, expected):
     assert mod.nonempty_think(message) is expected
+
+
+# ---------------------------------------------------------------------------
+# Issue 46 finding: a crashed/unreachable endpoint must not produce a
+# plausible-looking results page -- preflight before the first eval, and
+# refuse the results page when any eval is a call error.
+# ---------------------------------------------------------------------------
+
+
+def test_preflight_refuses_the_wrong_model_name(mod, fake_server):
+    with pytest.raises(RuntimeError, match="other-model"):
+        mod.preflight_models(_base_url(fake_server), "other-model")
+
+
+def test_preflight_refuses_a_refused_connection(mod):
+    with pytest.raises(RuntimeError):
+        mod.preflight_models("http://127.0.0.1:1", "fake-model")
+
+
+def test_preflight_accepts_a_server_serving_the_model(mod, fake_server):
+    mod.preflight_models(_base_url(fake_server), "fake-model")  # does not raise
+
+
+def test_main_refuses_a_wrong_model_name_before_any_eval(mod, fake_server, tmp_path):
+    tools_path, test_path = _write_inputs(tmp_path)
+    out_path = tmp_path / "results.md"
+    exit_code = mod.main(
+        [
+            "--tools",
+            str(tools_path),
+            "--test",
+            str(test_path),
+            "--url",
+            _base_url(fake_server),
+            "--model",
+            "wrong-model",
+            "--out",
+            str(out_path),
+        ]
+    )
+    assert exit_code == 2
+    assert not out_path.exists()
+    assert _FakeHandler.calls == 0  # refused before the first eval
+
+
+def test_a_call_error_fails_the_run_and_writes_no_results_page(mod, fake_server, tmp_path):
+    tools_path, test_path = _write_inputs(tmp_path)
+    out_path = tmp_path / "results.md"
+    _FakeHandler.fail_indices = {0}  # the first eval's call drops the connection
+    exit_code = mod.main(
+        [
+            "--tools",
+            str(tools_path),
+            "--test",
+            str(test_path),
+            "--url",
+            _base_url(fake_server),
+            "--model",
+            "fake-model",
+            "--out",
+            str(out_path),
+        ]
+    )
+    assert exit_code == 2
+    assert not out_path.exists()
+
+
+def test_allow_tier_errors_writes_the_page_with_the_count(mod, fake_server, tmp_path):
+    tools_path, test_path = _write_inputs(tmp_path)
+    out_path = tmp_path / "results.md"
+    _FakeHandler.fail_indices = {0}
+    exit_code = mod.main(
+        [
+            "--tools",
+            str(tools_path),
+            "--test",
+            str(test_path),
+            "--url",
+            _base_url(fake_server),
+            "--model",
+            "fake-model",
+            "--allow-tier-errors",
+            "1",
+            "--out",
+            str(out_path),
+        ]
+    )
+    assert exit_code == 0
+    text = out_path.read_text(encoding="utf-8")
+    assert "1 call-error eval(s) permitted" in text
+    assert "--allow-tier-errors 1" in text
