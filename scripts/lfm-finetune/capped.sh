@@ -83,6 +83,64 @@ _watch_memory() {
   done
 }
 
+# run_capped's live state, for its signal/exit cleanup (_run_capped_stop). Globals,
+# not locals: an EXIT trap can fire outside run_capped's own scope.
+_RC_ACTIVE=0 _RC_STATE="" _RC_PGID_FILE="" _RC_WATCHER="" _RC_RUNNER="" _RC_PREV_TRAPS=""
+
+_run_capped_stop() {
+  # Stop and reap CMD's process group (SIGTERM, SIGKILL after 10 s), the
+  # watchdog and the output pipeline, and remove run_capped's state
+  # directory. Idempotent: a no-op once done.
+  [ "$_RC_ACTIVE" = 1 ] || return 0
+  _RC_ACTIVE=0
+  local pgid="" i
+  # CMD may not have recorded its pid yet if the stop lands right at the start.
+  for ((i = 0; i < 100; i++)); do
+    [ -s "$_RC_PGID_FILE" ] && break
+    kill -0 "$_RC_RUNNER" 2>/dev/null || break
+    sleep 0.1
+  done
+  pgid=$(cat "$_RC_PGID_FILE" 2>/dev/null) || pgid=""
+  if [ -n "$pgid" ] && kill -TERM -- "-$pgid" 2>/dev/null; then
+    for ((i = 0; i < 100; i++)); do
+      kill -0 -- "-$pgid" 2>/dev/null || break
+      sleep 0.1
+    done
+    kill -KILL -- "-$pgid" 2>/dev/null
+  fi
+  kill "$_RC_WATCHER" 2>/dev/null
+  wait "$_RC_WATCHER" 2>/dev/null
+  wait "$_RC_RUNNER" 2>/dev/null
+  rm -rf "$_RC_STATE"
+  return 0
+}
+
+_run_capped_restore_traps() {
+  trap - TERM INT HUP EXIT
+  eval "$_RC_PREV_TRAPS"
+}
+
+_run_capped_on_signal() {
+  # _run_capped_on_signal SIG: stop CMD, put the caller's traps back, then
+  # deliver SIG again so the caller (or the default action) handles it.
+  _run_capped_stop
+  _run_capped_restore_traps
+  kill -s "$1" "$BASHPID"
+}
+
+_run_capped_on_exit() {
+  # The shell is exiting inside run_capped: stop CMD, then run the caller's
+  # own EXIT trap, which bash would otherwise never run.
+  local prev_exit
+  _run_capped_stop
+  prev_exit=$(printf '%s\n' "$_RC_PREV_TRAPS" | grep -E ' (SIG)?EXIT$' || true)
+  _run_capped_restore_traps
+  if [ -n "$prev_exit" ]; then
+    eval "set -- $prev_exit"
+    eval "$3"
+  fi
+}
+
 run_capped() {
   # run_capped RUN_DIR CMD...: run CMD capped at $TRAIN_MEMORY_MAX (RAM + swap),
   # logging free memory to RUN_DIR/mem.log before the run and every 60s during
@@ -90,7 +148,10 @@ run_capped() {
   # unless TRAIN_MEMORY_CAP=container says a container --memory cap applies.
   # A watchdog stops CMD once MemAvailable falls below $TRAIN_MEMORY_FLOOR
   # (default 8G, checked every $TRAIN_WATCHDOG_SECONDS, default 5); run_capped
-  # then returns $RUN_CAPPED_WATCHDOG_STATUS.
+  # then returns $RUN_CAPPED_WATCHDOG_STATUS. Stopping the caller (SIGTERM,
+  # SIGINT, SIGHUP, or its exit) stops CMD's process group and the watchdog
+  # too -- CMD runs in its own session, so nothing else would -- and the
+  # caller's own traps are put back once run_capped is done.
   local run_dir=$1; shift
   : "${TRAIN_MEMORY_MAX:?TRAIN_MEMORY_MAX must be set (e.g. 24G)}"
   local floor=${TRAIN_MEMORY_FLOOR:-8G} interval=${TRAIN_WATCHDOG_SECONDS:-5} floor_kb
@@ -120,28 +181,45 @@ run_capped() {
   # killed with it, so run_capped returns as soon as CMD does.
   _watch_memory "$mem_log" "$floor_kb" "$floor" "$interval" "$pgid_file" "$trip_file" \
     > /dev/null 2>&1 &
-  local watcher=$!
+  _RC_WATCHER=$!
+  _RC_STATE=$state _RC_PGID_FILE=$pgid_file
+  _RC_PREV_TRAPS=$(trap -p TERM INT HUP EXIT)
+  _RC_ACTIVE=1
+  trap '_run_capped_on_signal TERM' TERM
+  trap '_run_capped_on_signal INT' INT
+  trap '_run_capped_on_signal HUP' HUP
+  trap '_run_capped_on_exit' EXIT
   local status
-  set +e
   # CMD runs as the leader of its own session (so its own process group), and
   # the watchdog signals that whole group. A process group rather than the
   # systemd scope, because it is the one handle both cap modes have: with
   # TRAIN_MEMORY_CAP=container there is no scope to stop. systemd-run --scope
   # execs CMD in place, so the recorded pid is CMD's; tee stays in our group,
-  # so it drains CMD's last output after the stop.
+  # so it drains CMD's last output after the stop. The pipeline runs in the
+  # background and is waited for, because bash defers a trap until a
+  # foreground command finishes, and `wait` is what a signal interrupts.
   # shellcheck disable=SC2016 # $$ and $@ expand in the inner bash
-  setsid -w bash -c 'echo "$$" > "$0"; exec "$@"' "$pgid_file" "${cap[@]}" "$@" 2>&1 \
-    | tee "$out_log"
-  status=${PIPESTATUS[0]}
+  (
+    setsid -w bash -c 'echo "$$" > "$0"; exec "$@"' "$pgid_file" "${cap[@]}" "$@" 2>&1 \
+      | tee "$out_log"
+    exit "${PIPESTATUS[0]}"
+  ) &
+  _RC_RUNNER=$!
+  set +e
+  wait "$_RC_RUNNER"
+  status=$?
   set -e
   if [ -s "$trip_file" ]; then
     cat "$trip_file" >&2
-    wait "$watcher" 2>/dev/null || true
+    wait "$_RC_WATCHER" 2>/dev/null || true
+    _RC_ACTIVE=0
     status=$RUN_CAPPED_WATCHDOG_STATUS
   else
-    kill "$watcher" 2>/dev/null || true
-    wait "$watcher" 2>/dev/null || true
+    _RC_ACTIVE=0
+    kill "$_RC_WATCHER" 2>/dev/null || true
+    wait "$_RC_WATCHER" 2>/dev/null || true
   fi
+  _run_capped_restore_traps
   rm -rf "$state"
   return "$status"
 }
