@@ -1810,10 +1810,7 @@ def test_the_generator_never_sees_the_expected_answer() -> None:
         ("yes\nThe response runs a read-only check with no machine changes involved.", True),
         ("yes/no: no", False),
         ("yes? No, this changes the answer.", False),
-        # Issue 46, d10: "No" used as a word after a sentence break is not a
-        # verdict (it was counted as one in #39, which rejected real yeses).
-        ("Yes. No change is needed.", True),
-        ("Yes. No.", False),
+        ("Yes. No change is needed.", False),
     ],
 )
 def test_only_a_verdict_like_no_rejects_a_yes(reply, accepted) -> None:
@@ -2693,23 +2690,6 @@ def test_rereview_records_the_reviewer_temperature(tmp_path) -> None:
 
 @pytest.mark.parametrize(
     "text",
-    [
-        # A clear yes whose reason mentions "no" as an ordinary word (t18,
-        # dev-g031~v1): it was stored as a rejection.
-        "yes: The request asks to check GPU utilization, which is exactly the listed "
-        "read-only GPU memory and utilisation check; no change or broader investigation "
-        "is required.",
-        "yes. No need to hand this off; it is one of the listed checks.",
-        "yes -- no arguments are needed for this check",
-    ],
-)
-def test_parse_verdict_accepts_yes_whose_reason_uses_no_as_a_word(text):
-    accepted, _reason = aug.parse_verdict(text)
-    assert accepted is True
-
-
-@pytest.mark.parametrize(
-    "text",
     ["yes. No.", "yes; no", "yes? no -- wrong operation", "yes\nNo, it asks for a restart"],
 )
 def test_parse_verdict_still_rejects_a_standalone_no_verdict(text):
@@ -2738,25 +2718,6 @@ def test_reviewer_is_told_a_check_is_a_complete_answer() -> None:
 @pytest.mark.parametrize(
     "text",
     [
-        # t18 (0.7 pass) rejections whose "hedge" word belongs to the
-        # explanation, not to the verdict.
-        "yes: the request is a general explanation, and exit code 127 conventionally means "
-        "the shell could not find the command on PATH or at the specified path.",
-        "yes -- the request is a general explanatory question, and the response correctly "
-        "explains that the NVIDIA runtime becomes Docker's default unless another runtime "
-        "is explicitly requested.",
-        "yes. The request is a general question about nvsh behavior, and the response "
-        "correctly answers in words that nvsh does not apply fixes autonomously but "
-        "requires user approval.",
-    ],
-)
-def test_parse_verdict_ignores_a_hedge_word_inside_the_explanation(text):
-    assert aug.parse_verdict(text)[0] is True
-
-
-@pytest.mark.parametrize(
-    "text",
-    [
         "yes, but it could also be read as a restart",
         "yes, this is ambiguous between two checks",
         "yes, though it might mean the logs",
@@ -2764,4 +2725,25 @@ def test_parse_verdict_ignores_a_hedge_word_inside_the_explanation(text):
     ],
 )
 def test_parse_verdict_still_rejects_a_hedge_that_qualifies_the_yes(text):
+    assert aug.parse_verdict(text)[0] is False
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # Codex review of d10: real rejections a looser parser accepted.
+        "Yes, the operation matches the requested check, but the arguments target the "
+        "wrong device.",
+        "Yes. The operation matches the request. The arguments do not match, however.",
+        "Yes. No it does not preserve the requested operation.",
+        "Yes. On closer inspection: no it targets the wrong service.",
+        "Yes. Final verdict: no \u2013 wrong operation.",
+        "Yes. Final verdict: no (the device is wrong).",
+        # ... and ones the parser already missed before d10.
+        "Yes, not equivalent: the device is different.",
+        "Yes. Final verdict: **no**.",
+        'Yes. Final verdict: "no".',
+    ],
+)
+def test_parse_verdict_rejects_a_yes_that_is_really_a_rejection(text):
     assert aug.parse_verdict(text)[0] is False

@@ -852,23 +852,16 @@ _HEDGE_WORDS = (
 )
 #: A "no" that reads as a verdict: at the start of a line or sentence, or
 #: right after a slash or colon ("yes/no: no", "yes? No, it changes ..."),
-#: AND standing alone -- followed by punctuation or the end of the reply.
-#: A "no" inside a clause ("with no machine changes involved") or used as an
-#: ordinary word after a clause break ("; no change is required", "No need
-#: to hand it off") is not one -- counting those rejected clear yeses in
-#: real runs (issue 46, t18: 7 of 84 stored rejections).
-_NO_RE = re.compile(r"(?:^\s*|[\n.?!:;/]\s*)no\b(?=\s*(?:[.,!?:;\-\u2014]|$))", re.IGNORECASE)
+#: allowing markdown or quotes around it ("Final verdict: **no**"). A "no"
+#: inside a clause ("with no machine changes involved") is not one --
+#: counting it rejected clear yeses in a real run. Deliberately conservative
+#: after a sentence break ("Yes. No change is needed." rejects): a false
+#: reject only loses a candidate, a false accept trains on a bad one
+#: (issue 46, d10: loosening this let real rejections through).
+_NO_RE = re.compile(r"""(?:^\s*|[\n.?!:;/]\s*)[*_`"']*no\b""", re.IGNORECASE)
+#: "Yes, not ..." negates the yes it follows ("Yes, not equivalent: ...").
+_YES_NOT_RE = re.compile(r"""^[\s*_`"',.:;\-]*not\b""", re.IGNORECASE)
 _HEDGE_RE = re.compile(r"\b(" + "|".join(_HEDGE_WORDS) + r")\b", re.IGNORECASE)
-
-#: A hedge qualifies the verdict only right after it ("yes, but ...", "yes,
-#: this is ambiguous"). Further on, the same words belong to the reviewer's
-#: explanation ("the shell could not find the command", "unless another
-#: runtime is requested") and rejected clear yeses (issue 46, t18).
-_HEDGE_WINDOW_WORDS = 6
-
-
-def _verdict_window(rest: str) -> str:
-    return " ".join(rest.split()[:_HEDGE_WINDOW_WORDS])
 
 
 def parse_verdict(text: str) -> tuple[bool, str]:
@@ -889,7 +882,7 @@ def parse_verdict(text: str) -> tuple[bool, str]:
     if first_word.lower() != "yes":
         return False, stripped
     rest = stripped[match.end() :]
-    if _NO_RE.search(rest) or _HEDGE_RE.search(_verdict_window(rest)):
+    if _NO_RE.search(rest) or _HEDGE_RE.search(rest) or _YES_NOT_RE.match(rest):
         return False, stripped
     reason = rest.strip(" \t\n*_`\"'.,:;-—") or stripped
     return True, reason
