@@ -473,7 +473,12 @@ def _answer_in_words(expect: dict[str, Any]) -> str:
     )
     detail = f" -- {values}" if values else ""
     if operation is not None and operation.read_only:
-        return f"run a read-only check and report what it shows: {what}{detail}"
+        # "report what it shows" read, at high reasoning effort, as a demand
+        # that the response already contain the results (issue 46, t18).
+        return (
+            f"run this read-only check (its output is shown to the user as the answer): "
+            f"{what}{detail}"
+        )
     return f"propose this change for the user to approve: {what}{detail}"
 
 
@@ -565,8 +570,11 @@ REVIEWER_SYSTEM = (
     "for a hand-off in so many words: judge what the request needs. "
     + _capabilities()
     + " Asking the user to approve a change before making it is always the "
-    "right way to carry out a request for one of the listed changes. Start "
-    "your reply with the single word 'yes' or 'no'."
+    "right way to carry out a request for one of the listed changes. Running "
+    "one of the listed checks is a complete answer to a request for what that "
+    "check reports: its output is what the user then sees, so never reject a "
+    "check for not already containing its results. Start your reply with the "
+    "single word 'yes' or 'no'."
 )
 
 #: Skill seeds have no fixed answer text to compare against, only a capability
@@ -843,11 +851,24 @@ _HEDGE_WORDS = (
     "partially",
 )
 #: A "no" that reads as a verdict: at the start of a line or sentence, or
-#: right after a slash or colon ("yes/no: no", "yes? No, it changes ...").
-#: A "no" inside a clause ("with no machine changes involved") is not one --
-#: counting it rejected clear yeses in a real run.
-_NO_RE = re.compile(r"(?:^\s*|[\n.?!:;/]\s*)no\b", re.IGNORECASE)
+#: right after a slash or colon ("yes/no: no", "yes? No, it changes ..."),
+#: AND standing alone -- followed by punctuation or the end of the reply.
+#: A "no" inside a clause ("with no machine changes involved") or used as an
+#: ordinary word after a clause break ("; no change is required", "No need
+#: to hand it off") is not one -- counting those rejected clear yeses in
+#: real runs (issue 46, t18: 7 of 84 stored rejections).
+_NO_RE = re.compile(r"(?:^\s*|[\n.?!:;/]\s*)no\b(?=\s*(?:[.,!?:;\-\u2014]|$))", re.IGNORECASE)
 _HEDGE_RE = re.compile(r"\b(" + "|".join(_HEDGE_WORDS) + r")\b", re.IGNORECASE)
+
+#: A hedge qualifies the verdict only right after it ("yes, but ...", "yes,
+#: this is ambiguous"). Further on, the same words belong to the reviewer's
+#: explanation ("the shell could not find the command", "unless another
+#: runtime is requested") and rejected clear yeses (issue 46, t18).
+_HEDGE_WINDOW_WORDS = 6
+
+
+def _verdict_window(rest: str) -> str:
+    return " ".join(rest.split()[:_HEDGE_WINDOW_WORDS])
 
 
 def parse_verdict(text: str) -> tuple[bool, str]:
@@ -868,7 +889,7 @@ def parse_verdict(text: str) -> tuple[bool, str]:
     if first_word.lower() != "yes":
         return False, stripped
     rest = stripped[match.end() :]
-    if _NO_RE.search(rest) or _HEDGE_RE.search(rest):
+    if _NO_RE.search(rest) or _HEDGE_RE.search(_verdict_window(rest)):
         return False, stripped
     reason = rest.strip(" \t\n*_`\"'.,:;-—") or stripped
     return True, reason
