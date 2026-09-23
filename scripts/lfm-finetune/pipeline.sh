@@ -142,4 +142,4 @@ case "$STAGE" in
 esac
 }
 
-main "$@"
+main "$@"; exit $?
