@@ -437,34 +437,40 @@ change is a recorded deviation (decision c40).
 ### 8. Grounding snapshot *(not yet run)*
 
 ```bash
-python scripts/lfm-finetune/measure.py snapshot --out <snapshot.json> \
+python scripts/lfm-finetune/measure.py snapshot --out "$GROUND_SNAPSHOT" \
   --from-split "$WORK/splits/val.json" --from-split "$WORK/splits/test.json"
 ```
 
-Add the held-out file with another `--from-split` when it is unsealed. The
-command prints counts only. Every later measurement passes
-`--ground-snapshot <snapshot.json>`.
+Add the held-out file with another `--from-split`. The command prints
+counts only. `GROUND_SNAPSHOT` is a required key in the env file, and the
+pipeline's `measure-val` and `measure-final` stages pass it to every
+measurement.
 
 ### 9. Stock baseline *(not yet run as a final baseline)*
 
 Measure stock on validation, then once on the test side, the held-out set
 and the missing-candidate slice, at 2K and 4K, before any tuned run is
-scored:
+scored. Stock is always the stock copy in `$WORK/stock`, with its
+temperature-0 `generation_config.json`; the pipeline's measure stages refuse
+to run without it (P41).
+
+nvsh's managed launcher refuses an absolute model path (P48), so stock is
+measured in **attach mode**. Start vLLM by hand from the pinned image,
+serving `$WORK/stock` with `--enable-auto-tool-choice --tool-call-parser
+qwen3_coder` and the context length being measured, and point `NVSH_CONFIG`
+at it with `[tiers.lfm] mode = "attach"` and `base_url =
+"http://127.0.0.1:<port>/v1"`. Then:
 
 ```bash
-python scripts/lfm-finetune/measure.py --split "$WORK/splits/val.json" \
-  --model Qwen/Qwen3.5-0.8B --revision 2fc06364715b967f1860aea9cf38778875588b17 \
-  --label stock-val --config "$NVSH_CONFIG" --enable-thinking false \
-  --ground-snapshot <snapshot.json> --ctx 2048 --predictions "$WORK/measure/stock-val"
+$P --env qwen.env measure-val stock
 ```
 
-Run `measure.py` directly like this: the pipeline's `measure-val` and
-`measure-final` stages do not yet apply the stock copy, the snapshot or the
-thinking switch (P41, fix in progress).
-
-The t13 live check ran stock on validation in attach mode, against a vLLM
-started by hand from the pinned image. The route is the one step 13 shows
-for the AWQ build.
+The stage passes `--ground-snapshot "$GROUND_SNAPSHOT"` and
+`--enable-thinking` from `ENABLE_THINKING` (default false), and forwards any
+extra `measure.py` arguments, such as `--ctx 2048`. The t13 live check ran
+stock on validation this way. The skills evals (`measure-skills`) cannot
+measure the stock copy yet, because `measure_skills.py` has no attach mode
+(P48).
 
 ### 10. Train Track A on spark *(not yet run)*
 
@@ -498,8 +504,8 @@ NVSH_TRAIN_GPU_MEMORY_GB=<gb>   # per-process GPU budget; empty = no per-process
   available memory falls below it. The lead's probe on spark2 used a 26 GB
   floor with about 30 GB available.
 - `NVSH_TRAIN_GPU_MEMORY_GB`: `train.py` and `train_scorer.py` cap their own
-  GPU allocations with `torch.cuda.set_per_process_memory_fraction`. Until
-  g3 lands, an empty value aborts the trainer (P43), so set a number.
+  GPU allocations with `torch.cuda.set_per_process_memory_fraction`. Empty
+  means no per-process cap (P43).
 
 `pipeline.sh` exports all of these to its child processes (P36). Confirm
 what a child process will see before training, then train:
@@ -885,46 +891,88 @@ and the commit on `spec/qwen-tool-jev-issue-46`.
 
 The wave-2 review covered t13, t14, f8 to f11 and the lead's own fixes. The
 qwen worker reviewer approved every file it read, as it did in wave 1.
-Codex found seven correctness problems. All seven are *fix in progress*,
-in review-fix tasks g1 to g4.
+Codex found seven correctness problems. All seven are fixed in review-fix
+tasks g1 to g4 (merges `a57422f`, `9f446d7`, `9f8464a`, `dfd7b48`), and the
+full test suite is green.
 
-- **P40 (high). Stopping the pipeline leaves training running.**
+- **P40 (high). Stopping the pipeline left training running.**
   `run_capped` starts the command in its own process group (`setsid`, from
-  f10), so a SIGTERM to `pipeline.sh` does not reach it, and there was no
-  cleanup trap. *Found:* Codex wave-2 review. *Fix:* in progress (g1).
+  f10), so a SIGTERM to `pipeline.sh` did not reach it, and there was no
+  cleanup trap. *Found:* Codex wave-2 review. *Fix (g1):* `run_capped`
+  traps TERM, INT, HUP and EXIT, and stops and reaps the command's process
+  group, the watchdog and the `tee` pipeline. The pipeline runs in the
+  background under `wait` so the trap can fire, and the caller's traps are
+  restored afterwards. *Evidence:* a test sends SIGTERM to `run_capped` and
+  the running command is gone within 15 s. *Commit:* `85af128` (merge
+  `a57422f`).
 - **P41 (high). The pipeline's measure stages skipped the approved
   measurement setup.** They served stock from `$BASE` (no temperature-0
   generation config) instead of `$WORK/stock`, passed no
   `--ground-snapshot` (d1), did not switch thinking off, and dropped extra
-  arguments. *Found:* Codex wave-2 review. *Fix:* in progress (g1). Until
-  it lands, run `measure.py` directly as in step 9.
+  arguments. *Found:* Codex wave-2 review. *Fix (g1):* `measure-val`,
+  `measure-final` and `measure-skills` measure stock from `$WORK/stock` and
+  refuse if it is missing or fails `gen_config.py check`; `measure-val`
+  accepts `stock` as a run name. `measure-val` and `measure-final` always
+  pass `--ground-snapshot "$GROUND_SNAPSHOT"` and `--enable-thinking` from
+  `ENABLE_THINKING` (default false); `measure-skills` does not, because
+  `measure_skills.py` has no snapshot option. Extra arguments are
+  forwarded; for `measure-skills` only to the tuned run, so `--margin` never
+  lands on stock. Both env examples name `GROUND_SNAPSHOT` and
+  `ENABLE_THINKING`. *Commit:* `85af128` (merge `a57422f`).
 - **P42 (high). Track A's candidate tracing invented probabilities.** It
   credited a first-token alternative's probability to a whole label whose
   continuation was never observed (for example `gpu` counted as
   `gpu_stats`), fabricating ECE and Brier inputs. *Found:* Codex wave-2
-  review. *Fix:* in progress (g2).
+  review. *Fix (g2):* an alternative is credited only when it spells the
+  whole label plus its ending character; any other alternative that is a
+  label prefix makes the line refuse a distribution ("an alternative
+  token's continuation was not observed"). *Commit:* `e4cb18e` (merge
+  `9f446d7`). *Consequence, found while fixing it on the real Qwen
+  tokenizer:* names split into several tokens (`propose` is `prop` +
+  `ose`, `escalate` is `escal` + `ate`, `gpu_stats` is `=g` + `pu` +
+  `_stats`, and `>` is its own token). So most real Qwen lines will get no
+  Track A distribution, and Track A's ECE and Brier are probably not
+  measurable from generation log-probabilities. Calibration figures will
+  likely come from the scorer track. *Status:* an open decision for the
+  operator (it touches h17).
 - **P43 (medium). An empty GPU budget aborted training.** The env examples
   ship `NVSH_TRAIN_GPU_MEMORY_GB=` empty (meant as "no per-process cap"),
   and the trainers parsed it with `float('')` and stopped. *Found:* Codex
-  wave-2 review. *Fix:* in progress (g3).
+  wave-2 review. *Fix (g3):* an empty or whitespace value means no cap, in
+  both trainers. *Commit:* `ec41cbf` (merge `9f8464a`).
 - **P44 (medium). `assemble` needed transformers where it was not
   installed.** The render check that f4 turned on by default imports
   transformers, which the repository environment used by `pipeline.sh`'s
-  `py()` does not have. *Found:* Codex wave-2 review. *Fix:* in progress
-  (g1).
+  `py()` does not have. *Found:* Codex wave-2 review. *Fix (g1):*
+  `assemble` runs `build_dataset.py` with the training venv's site-packages
+  on `PYTHONPATH`, on top of `uv run`, so nvsh itself still comes from the
+  repository environment. *Commit:* `85af128` (merge `a57422f`).
 - **P45 (medium). Unparsed tool calls scored as explanations.** Qwen XML
   that the vLLM parser failed on reached `measure.py` as plain text, an
   explanation, and would score as explain instead of invalid. *Found:*
-  Codex wave-2 review. *Fix:* in progress (g2). nvsh's own runtime
-  (`LfmTier`) treats such output the same way; this work does not change
-  runtime code (c9), so that needs a follow-up issue.
+  Codex wave-2 review. *Fix (g2):* an explanation that contains tool-call
+  markup, or a last reply with markup and no parsed calls, is outcome
+  `invalid` with `invalid_reason` `unparsed_tool_call`. *Commit:*
+  `e4cb18e` (merge `9f446d7`). nvsh's own runtime (`LfmTier`) still treats
+  such output as an explanation; this work does not change runtime code
+  (c9). The operator has been asked whether to file an issue for it.
 - **P46 (medium). AWQ calibration split records on newlines.** The
   calibration file held one record per line, so a record containing a
   newline became several samples and later records were dropped. *Found:*
-  Codex wave-2 review. *Fix:* in progress (g4).
+  Codex wave-2 review. *Fix (g4):* AWQ calibration is JSONL, one JSON
+  string per line, so a record with newlines stays one sample; the imatrix
+  gets a separate plain-text file with newlines replaced by spaces.
+  *Commit:* `e458ae9` (merge `dfd7b48`).
 
 The committed plan record lacked deviation d5 when Codex looked; it is
 committed now (`3df700c`).
+
+- **P48. The managed launcher cannot serve the stock copy.** nvsh's managed
+  launcher refuses an absolute model path for vLLM, so stock served from
+  `$WORK/stock` is measured in attach mode. `measure-skills` always uses the
+  managed launcher and cannot measure the stock copy until
+  `measure_skills.py` gains an attach option. *Found:* the lead, while
+  merging g1. *Status:* open risk.
 
 ### Found by the linters
 
@@ -943,12 +991,19 @@ committed now (`3df700c`).
 - **GGUF on AGX Orin**: the llama.cpp build has only run on spark.
 - **The GGUF's sampling settings**: d3 covers "the GGUF's sampling metadata",
   and no step writes it yet.
-- **Track A calibration** (P11, plan risk r12).
+- **Track A calibration** (P11, P42, plan risk r12): probably not
+  measurable from generation log-probabilities, because Qwen splits label
+  names into several tokens. How to report it is an open decision for the
+  operator (h17).
 - **The re-review's exact command and filter** (step 5).
-- **The wave-2 fixes** (P40 to P46, g1 to g4) are not merged yet.
-- **nvsh's runtime and unparsed Qwen tool calls** (P45): `LfmTier` would
-  also treat a failed parse as an explanation. Out of scope here (c9); a
-  follow-up issue is needed.
+- **nvsh's runtime and unparsed Qwen tool calls** (P45): `LfmTier` still
+  treats a failed parse as an explanation. Out of scope here (c9); the
+  operator has been asked whether to file an issue.
+- **Stock on the skills evals** (P48): `measure_skills.py` cannot measure
+  the stock copy until it gains an attach option.
+- **Thinking off for LFM2.5**: the LFM env example now also sends
+  `enable_thinking` false. Whether LFM2.5's chat template ignores it has
+  not been checked.
 - **Two unidentified test failures.** After the f10 merge, one full-suite
   run had 2 failures whose names were not captured. The six runs after it
   were green. The cause is unknown.
@@ -1136,3 +1191,14 @@ ids, every expectation well formed; 41 operation (all pass
 covered (`network_info` has none, by the operator's choice); 0 exact
 overlaps with `dev.json` or the 1,720 stored variations. It stays unread
 until the single final run (t24).
+
+### 2026-09-23 ~16:55: wave-2 fixes merged (g1-g4)
+
+All seven wave-2 findings are fixed and merged, and the full suite is green
+(P40 to P46). The P42 fix showed that the real Qwen tokenizer splits label
+names into several tokens, so Track A calibration from generation
+log-probabilities is probably not measurable; how to report it is open for
+the operator. The pipeline's measure stages now enforce the stock copy, the
+grounding snapshot and thinking off. Because the managed launcher refuses an
+absolute model path, stock is measured in attach mode, and the skills evals
+cannot measure the stock copy yet (P48, open).
