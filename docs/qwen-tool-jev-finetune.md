@@ -171,6 +171,7 @@ nvsh package. These files were added or changed for issue 46:
 | `awq_oneshot.py` | New. Runs inside the separate AWQ venv: `AWQModifier` W4A16 with `lm_head`, vision, linear-attention and MTP ignored, `oneshot` with `processor=`, generation config sanitized before save. |
 | `gen_config.py` | New. `write`, `check` and `stock-copy` of a `generation_config.json` pinning greedy decoding (d3). |
 | `capped.sh` | New. `run_capped`: a hard RAM and swap cap through `systemd-run`, with a free-memory log. |
+| `draft_heldout.py` | New. Drafts the sealed held-out set with Qwen3.5-4B (pinned revision) from the operation table only; prints counts and a hash, never entry text (step 4a). |
 | `pipeline.sh` | New stages (below); training stages run capped. |
 | `pipeline-qwen.env.example` | New. The Qwen configuration: `BASE`, `BASE_REV`, `REPO`, seed 46, the four teacher roles, `TRAIN_MEMORY_MAX`. |
 | `measure.py` | Writes the shared predictions file and scores it with `metrics.py`. New: `--predictions`, `--scorer served\|in-process`, `--max-logprobs`, the `snapshot` subcommand and `--ground-snapshot` (d1), `--enable-thinking`, `--slice full\|missing-candidate`, `--ctx`. `--final` is still required for the test side. |
@@ -362,9 +363,24 @@ The held-out set is written fresh, so no model or person tuning the run has
 seen it. The agent running the experiment never reads its text.
 
 1. **Draft** with an Apache-2.0 model that is not one of the teachers, from
-   the operation table only, never from the corpus or any split. This run
-   used Qwen3.5-4B (seed 46, temperature 0.7, thinking off) *(the drafting
-   command is not recorded here)*.
+   the operation table only, never from the corpus or any split. From the
+   repository root, with the training venv's site-packages on the path and
+   `Qwen/Qwen3.5-4B` already in the Hugging Face cache:
+
+   ```bash
+   PYTHONPATH=<training site-packages>:. python scripts/lfm-finetune/draft_heldout.py <out dir>
+   ```
+
+   `draft_heldout.py` loads Qwen3.5-4B pinned at revision
+   `851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a` with transformers (bf16, on
+   the GPU) and samples with seed 46, temperature 0.7, top_p 0.9 and
+   thinking off. It sends 18 prompts (3 requests per operation, 16
+   escalate, 16 explain) that contain only the operation table: names,
+   descriptions and argument specs. It reads `dev.json` only to drop exact
+   repeats. It writes `draft.json` and `raw-generations.jsonl` to the output
+   directory and prints counts and a sha256, never entry text. This run
+   drafted on spark; the committed script's prompt strings were checked
+   byte-identical to the ones that ran.
 2. **Keep the draft as generated** as a separate v1 file and record its
    sha256.
 3. **The operator reviews and edits** the draft in a separate sitting. The
@@ -909,6 +925,13 @@ in review-fix tasks g1 to g4.
 
 The committed plan record lacked deviation d5 when Codex looked; it is
 committed now (`3df700c`).
+
+### Found by the linters
+
+- **P47. An unpinned model load in the drafting script.** `bandit` (B615)
+  flagged that `draft_heldout.py` loaded Qwen3.5-4B from the Hugging Face
+  Hub without a revision. *Fix:* pinned to the snapshot the draft was made
+  with, `851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a`. *Commit:* `fcf2701`.
 
 ## Not verified yet
 
