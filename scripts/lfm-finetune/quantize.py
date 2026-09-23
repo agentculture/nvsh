@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess  # nosec B404 - fixed argv lists, never a shell
 import sys
 from dataclasses import dataclass
@@ -52,6 +53,14 @@ VERSION_TIMEOUT = 30.0
 #: Percentage-point margin from decisions c42/c43: a drop of MORE than this
 #: many points of right proposals triggers healing.
 HEAL_MARGIN_POINTS = 3.0
+
+#: ``split.py``'s note in a side's header: ``Split '<side>' of <corpus> (seed=N).``
+#: Mirrors ``train_scorer.py``'s own copy of this pattern.
+_SPLIT_SIDE_RE = re.compile(r"Split '(\w+)' of ")
+
+#: The held-out split's file name and the phrase its header opens with.
+HELD_OUT_NAME = "held-out.json"
+_HELD_OUT_MARKER = "held-out split"
 
 #: Env var each tool path is read from (c44: no hard-coded tool paths).
 ENV_VARS = {
@@ -86,13 +95,42 @@ def default_run(argv: list[str], timeout: float) -> tuple[int, str]:  # pragma: 
 # ---------------------------------------------------------------------------
 
 
-def _load_split(path: Path) -> list[dict]:
+def _load_split(path: Path) -> dict:
     raw = json.loads(path.read_text(encoding="utf-8"))
-    return raw.get("entries", []) if isinstance(raw, dict) else raw
+    return raw if isinstance(raw, dict) else {"header": "", "entries": raw}
+
+
+def _entries_of(raw: dict) -> list[dict]:
+    return raw.get("entries", [])
 
 
 def _source_ids(entries: Iterable[dict]) -> set[str]:
     return {entry.get("source_id", entry["id"]) for entry in entries}
+
+
+def _verify_split_side(path: Path, raw: dict, expected: str) -> None:
+    """Refuse *path* unless its ``split.py`` header names *expected*.
+
+    Checking only for disjoint ``source_id``\\ s (below) cannot catch a
+    swapped ``--train``/``--val`` pair when both splits are otherwise
+    ordinary and mutually disjoint -- each file's header must name the role
+    it is used for. The held-out split is refused outright, by file name
+    and by its header's own marker, exactly as ``train_scorer.py`` refuses
+    it for training (Codex finding #3).
+    """
+    header = raw.get("header")
+    header = header if isinstance(header, str) else ""
+    if path.name == HELD_OUT_NAME or header.casefold().startswith(_HELD_OUT_MARKER):
+        raise QuantizeError(
+            f"{path}: the held-out split is never used for calibration or healing (h27)"
+        )
+    match = _SPLIT_SIDE_RE.search(header)
+    found = match.group(1) if match else None
+    if found != expected:
+        raise QuantizeError(
+            f"{path}: its header names side {found!r}, expected {expected!r} -- "
+            "calibration refuses a file whose header does not match its --train/--val/--test role"
+        )
 
 
 def build_calibration_set(
@@ -100,13 +138,23 @@ def build_calibration_set(
 ) -> list[str]:
     """Calibration text for imatrix/AWQ, drawn only from *train* (h27).
 
-    Refuses if any train entry's ``source_id`` also appears on *val* or
-    *test* -- belt-and-braces on top of ``split.py``'s own non-overlap
-    guarantee, since a hand-edited split file could reintroduce one and
-    silently leak validation/test data into calibration or a later heal run.
+    Verifies each of *train*, *val* and *test* against its ``split.py``
+    header before trusting which side it is: a swapped ``--train``/``--val``
+    pair is refused even when the two files are otherwise ordinary, mutually
+    disjoint splits (Codex finding #3), and the held-out split is refused
+    outright. On top of that, refuses if any train entry's ``source_id``
+    also appears on *val* or *test* -- belt-and-braces on top of
+    ``split.py``'s own non-overlap guarantee, since a hand-edited split file
+    could reintroduce one and silently leak validation/test data into
+    calibration or a later heal run.
     """
-    train_entries = _load_split(train)
-    other_ids = _source_ids(_load_split(val)) | _source_ids(_load_split(test))
+    train_raw, val_raw, test_raw = _load_split(train), _load_split(val), _load_split(test)
+    _verify_split_side(train, train_raw, "train")
+    _verify_split_side(val, val_raw, "val")
+    _verify_split_side(test, test_raw, "test")
+
+    train_entries = _entries_of(train_raw)
+    other_ids = _source_ids(_entries_of(val_raw)) | _source_ids(_entries_of(test_raw))
     overlap = sorted(_source_ids(train_entries) & other_ids)
     if overlap:
         raise QuantizeError(
@@ -288,10 +336,17 @@ def record_tool_versions(
 
 @dataclass(frozen=True)
 class QuantSummary:
-    """The two headline numbers ``heal_needed`` compares between bf16 and a quantized build."""
+    """What ``heal_needed`` compares between a bf16 build and a quantized one.
+
+    ``wrong_mutating_ids`` is the *set* of entry ids with a wrong mutating
+    proposal, not a count: two builds can have the same count of wrong
+    mutating proposals while disagreeing on which entries they are wrong on
+    (one build fixes an entry another build breaks), and only the set catches
+    that (Codex finding #5).
+    """
 
     right_pct: float
-    wrong_mutating: int
+    wrong_mutating_ids: frozenset[str]
 
 
 def heal_needed(bf16: QuantSummary, quant: QuantSummary) -> bool:
@@ -299,13 +354,17 @@ def heal_needed(bf16: QuantSummary, quant: QuantSummary) -> bool:
 
     Two independent triggers (decisions c42, c43), either is sufficient:
     right proposals drop by MORE than :data:`HEAL_MARGIN_POINTS` percentage
-    points, or *quant* has more wrong mutating proposals than *bf16* (a new
-    one appeared). A drop of exactly the margin, or an unchanged/lower wrong-
-    mutating count, does not trigger healing on its own.
+    points, or *quant* has a wrong mutating proposal on an entry id *bf16*
+    did not have one on. Comparing counts alone misses this: quantization
+    fixing one entry while breaking another leaves the count unchanged but
+    still needs healing, since it is a new failure, not the old one
+    persisting. A drop of exactly the margin, or a wrong-mutating id set
+    that only loses members (no new ones), does not trigger healing on its
+    own.
     """
     if bf16.right_pct - quant.right_pct > HEAL_MARGIN_POINTS:
         return True
-    if quant.wrong_mutating > bf16.wrong_mutating:
+    if quant.wrong_mutating_ids - bf16.wrong_mutating_ids:
         return True
     return False
 
