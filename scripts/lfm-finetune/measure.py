@@ -241,7 +241,9 @@ PREFLIGHT_TIMEOUT = 5.0
 TIER_ERROR_REASON = "tier_error"
 
 
-def preflight_models(base_url: str, model: str, timeout: float = PREFLIGHT_TIMEOUT) -> None:
+def preflight_models(
+    base_url: str, model: str, ctx: int | None = None, timeout: float = PREFLIGHT_TIMEOUT
+) -> None:
     """Refuse to measure a server that is not actually serving *model* (exit 2).
 
     Called before the first entry, for an attached endpoint and for a
@@ -250,12 +252,22 @@ def preflight_models(base_url: str, model: str, timeout: float = PREFLIGHT_TIMEO
     tier error, and the run still exits 0 with a plausible-looking results
     page (the live finding this guards against). The check itself
     (``GET <base_url>/models``, localhost only) is ``measure_skills.py``'s,
-    shared so both scripts refuse the same way.
+    shared so both scripts refuse the same way. With *ctx*, the served
+    ``max_model_len`` must equal it (lapse l3).
     """
     try:
-        measure_skills.preflight_models(base_url, model, timeout)
+        measure_skills.preflight_models(base_url, model, timeout, max_model_len=ctx)
     except RuntimeError as exc:
         raise MeasureError(EXIT_ENV, str(exc)) from exc
+
+
+def _served_ctx(lfm_settings: Mapping[str, object]) -> int:
+    """The context the run is labelled with, which the served model must match:
+    the same effective value :func:`serving_record` reports, the runtime's
+    ``DEFAULT_CTX`` when neither the config nor ``--ctx`` sets one (Codex review
+    of lapse l3: a missing ctx must not skip the check)."""
+    ctx = lfm_settings.get("ctx")
+    return ctx if isinstance(ctx, int) and not isinstance(ctx, bool) and ctx else DEFAULT_CTX
 
 
 @dataclass(frozen=True)
@@ -323,7 +335,7 @@ class Seams:
     load_config: Callable[[Path | None], object] = nvsh_config.load
     build_scorer: Callable[["ScorerSpec"], "ScorerHandle"] = lambda spec: build_scorer(spec)
     #: ``GET <base_url>/models`` before the first entry; raises MeasureError on failure.
-    preflight: Callable[[str, str], None] = preflight_models
+    preflight: Callable[..., None] = preflight_models
 
 
 # ---------------------------------------------------------------------------
@@ -1731,7 +1743,7 @@ def measure_one(plan: RunPlan, model: str, revision: str, seams: Seams) -> RunRe
             record.failure = f"start-up failed: {exc}"
             return record
         record.startup_s = seams.clock() - started
-        seams.preflight(base_url, model)
+        seams.preflight(base_url, model, ctx=_served_ctx(plan.lfm_settings))
         record.result = tier_bench.bench(
             plan.entries,
             split=plan.split,
@@ -1789,7 +1801,7 @@ def score_one(plan: RunPlan, model: str, revision: str, seams: Seams) -> RunReco
     record.startup_s = seams.clock() - started
     try:
         if handle.base_url is not None:
-            seams.preflight(handle.base_url, model)
+            seams.preflight(handle.base_url, model, ctx=_served_ctx(plan.lfm_settings))
         record.predictions, record.notes = scorer_predictions(plan, handle, seams.clock)
     finally:
         handle.close()

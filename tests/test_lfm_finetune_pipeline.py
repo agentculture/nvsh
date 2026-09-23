@@ -693,12 +693,12 @@ def test_measure_stages_pass_the_snapshot_thinking_and_extra_args(
     """Finding #2b/#2c: fixed grounding, thinking off, and the operator's own flags."""
     pipe = _Pipeline(tmp_path)
     pipe.ready()
-    result = pipe.run(stage, name, "--ctx", "2048", "--slice", "missing-candidate")
+    result = pipe.run(stage, name, "--slice", "missing-candidate")
     assert result.returncode == 0, result.stderr
     [(_, argv)] = pipe.calls("measure.py")
     assert _option(argv, "--ground-snapshot") == [str(pipe.snapshot)]
     assert _option(argv, "--enable-thinking") == ["false"]
-    assert _option(argv, "--ctx") == ["2048"]
+    assert _option(argv, "--ctx") == ["2048"]  # from MEASURE_CTX, never an extra arg
     assert _option(argv, "--slice") == ["missing-candidate"]
     assert _option(argv, "--max-logprobs") == ["22"]
 
@@ -1089,3 +1089,40 @@ def test_measure_final_keeps_the_single_final_runs_predictions(name: str, tmp_pa
     [(_, argv)] = pipe.calls("measure.py")
     [out] = _option(argv, "--predictions")
     assert out.endswith(f"/final/{name}")
+
+
+def test_measure_val_at_another_context_takes_it_from_the_environment(tmp_path: Path) -> None:
+    # Issue 46, lapse l3: the env file's MEASURE_CTX=2048 silently overrode an
+    # exported MEASURE_CTX=4096, so a run labelled 4K was served at 2048.
+    pipe = _Pipeline(tmp_path)
+    pipe.ready()
+    result = pipe.run("measure-val", "stock", MEASURE_CTX="4096")
+    assert result.returncode == 0, result.stderr
+    [run] = [c for c in _docker_calls(tmp_path) if c[0] == "run"]
+    assert _option(run, "--max-model-len") == ["4096"]
+    [(_, argv)] = pipe.calls("measure.py")
+    assert _option(argv, "--ctx") == ["4096"]
+    assert _option(argv, "--label") == ["stock-val-ctx4096"]
+    assert _option(argv, "--out") == [str(pipe.work / "measure" / "stock-val-ctx4096.md")]
+
+
+def test_measure_val_at_the_default_context_keeps_its_names(tmp_path: Path) -> None:
+    pipe = _Pipeline(tmp_path)
+    pipe.ready()
+    result = pipe.run("measure-val", "stock")
+    assert result.returncode == 0, result.stderr
+    [(_, argv)] = pipe.calls("measure.py")
+    assert _option(argv, "--ctx") == ["2048"]
+    assert _option(argv, "--label") == ["stock-val"]
+
+
+@pytest.mark.parametrize("stage", ["measure-val", "measure-final"])
+def test_measure_stages_refuse_an_extra_ctx(stage: str, tmp_path: Path) -> None:
+    # Lapse l3: an extra --ctx relabels the report without changing the server.
+    pipe = _Pipeline(tmp_path)
+    pipe.ready()
+    result = pipe.run(stage, "a1", "--ctx", "4096")
+    assert result.returncode != 0
+    assert "MEASURE_CTX" in result.stderr
+    assert not pipe.calls("measure.py")
+    assert not [c for c in _docker_calls(tmp_path) if c[0] == "run"]

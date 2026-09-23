@@ -134,6 +134,12 @@ def _item(record: dict[str, Any], expect: dict[str, Any], label: str, kind: str)
     }
 
 
+def _effort_value(effort: str) -> str | None:
+    """``default`` sends no reasoning effort at all (a template without one,
+    e.g. reviewer A's Gemma); any other value is sent as given."""
+    return None if effort == "default" else effort
+
+
 def _ask(role: aug.RoleConfig, item: dict[str, Any], effort: str) -> dict[str, Any]:
     seed = aug.Seed(
         source_id=item["id"],
@@ -144,7 +150,9 @@ def _ask(role: aug.RoleConfig, item: dict[str, Any], effort: str) -> dict[str, A
         needs_change_check=aug._needs_change_check(item["expect"]),
     )
     system, user = aug.reviewer_prompt(seed, item["text"])
-    payload = aug.chat_payload(dataclasses.replace(role, reasoning_effort=effort), system, user)
+    payload = aug.chat_payload(
+        dataclasses.replace(role, reasoning_effort=_effort_value(effort)), system, user
+    )
     headers = {"Content-Type": "application/json"}
     if role.key:
         headers["Authorization"] = f"Bearer {role.key}"
@@ -188,7 +196,12 @@ def score(items: list[dict[str, Any]], answers: list[dict[str, Any]]) -> dict[st
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("candidates", nargs="+", help="train-side candidate JSONL files")
-    parser.add_argument("--efforts", nargs="+", default=["medium", "xhigh"])
+    parser.add_argument(
+        "--efforts",
+        nargs="+",
+        default=["medium", "xhigh"],
+        help="reasoning efforts to probe; 'default' sends none",
+    )
     parser.add_argument("--per-kind", type=int, default=6)
     parser.add_argument("--workers", type=int, default=2)
     parser.add_argument("--out", required=True)

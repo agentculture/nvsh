@@ -1095,12 +1095,22 @@ def _variation_number(variation_id: str) -> int:
     return int(tail) if tail.isdigit() else 0
 
 
+#: Acceptance rules for a fresh run: "both" (reviewer A AND reviewer B, the
+#: original rule) or "reviewer_b" (reviewer B alone decides; reviewer A is
+#: still asked and recorded). Issue 46 d11: reviewer A (senses) failed the
+#: reviewer probe (3 false accepts, 2 false rejects of 53) while reviewer B
+#: passed it, and the t18 re-review already decides by reviewer B (d8).
+#: The deterministic guards apply under either rule.
+DECIDE_BY_RULES = ("both", "reviewer_b")
+
+
 def _process_variation(
     seed: Seed,
     variation_id: str,
     roles: dict[str, RoleConfig],
     counts: PipelineCounts,
     caller: RoleCaller,
+    decide_by: str = "both",
 ) -> dict[str, Any]:
     """Run one seed through generator -> corrector -> both reviewers.
 
@@ -1151,7 +1161,10 @@ def _process_variation(
     if handoff:
         verdicts["handoff_check"] = {"accept": False, "reason": f"asks for {handoff!r}"}
         leaked = leaked or handoff
-    accepted = accept_a and accept_b and not leaked
+    if decide_by == "reviewer_b":
+        accepted = accept_b and not leaked
+    else:
+        accepted = accept_a and accept_b and not leaked
     # The record keeps the source entry's own corpus fields (kind/source/
     # class for a split seed; nothing for a skill seed, which is not a
     # corpus entry) and separately records which seed file shape produced
@@ -1170,9 +1183,14 @@ def _process_variation(
         "reasoning_efforts": reasoning_efforts,
     }
     record.update(seed.corpus_fields)
+    if decide_by != "both":
+        # Every verdict is kept when one reviewer is not deciding, so the
+        # overruled opinion stays auditable on accepted records too.
+        record["decided_by"] = decide_by
+        record["verdicts"] = verdicts
     if accepted:
         counts.accepted += 1
-    else:
+    elif "verdicts" not in record:
         record["verdicts"] = verdicts
     return {"accepted": accepted, "record": record}
 
@@ -1575,7 +1593,12 @@ def run_pipeline(
     progress_every: float = 60.0,
     now_fn: Callable[[], float] = time.monotonic,
     progress_out: Any = None,
+    decide_by: str = "both",
 ) -> PipelineCounts:
+    if decide_by not in DECIDE_BY_RULES:
+        raise ValueError(
+            f"decide_by must be one of {', '.join(DECIDE_BY_RULES)}, got {decide_by!r}"
+        )
     seeds: list[Seed] = []
     for seed_file in seed_files:
         seeds.extend(load_seeds(seed_file, side))
@@ -1612,7 +1635,9 @@ def run_pipeline(
             return _call_with_retry(caller, role, system, user, retry_policy, on_retry)
 
         try:
-            outcome = _process_variation(seed, variation_id, roles, local_counts, caller_with_retry)
+            outcome = _process_variation(
+                seed, variation_id, roles, local_counts, caller_with_retry, decide_by
+            )
         except (
             urllib.error.URLError,
             TimeoutError,
@@ -1707,6 +1732,15 @@ def main(argv: list[str] | None = None) -> int:
             "(stored reviewer A AND fresh reviewer B) under the clean-slate rule "
             "(deviation d8) into --accepted-out/--rejected-out, calling no model; "
             "seed_files are the re-review's own input"
+        ),
+    )
+    parser.add_argument(
+        "--decide-by",
+        choices=DECIDE_BY_RULES,
+        default="both",
+        help=(
+            "which reviewer verdicts decide acceptance in a fresh run: both (default) or "
+            "reviewer_b alone, with reviewer A still asked and recorded (issue 46, d11)"
         ),
     )
     parser.add_argument("--accepted-out", default="accepted.jsonl")
@@ -1839,6 +1873,7 @@ def main(argv: list[str] | None = None) -> int:
             max_retries=args.max_retries,
             backoff_base=args.backoff_base,
             progress_every=args.progress_every,
+            decide_by=args.decide_by,
         )
     except (SeedRefused, ConfigError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)

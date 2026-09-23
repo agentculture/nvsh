@@ -215,7 +215,7 @@ class Harness:
             ),
             # FakeRuntime.ensure() answers a URL nothing actually listens on; the
             # issue-46 preflight is exercised by its own dedicated tests instead.
-            preflight=lambda base_url, model: None,
+            preflight=lambda base_url, model, ctx=None: None,
         )
 
     def build_tier(self, spec):
@@ -1634,13 +1634,21 @@ def test_scorer_offers_only_the_slice_candidates(measure, tmp_path):
 class _ModelsHandler(http.server.BaseHTTPRequestHandler):
     status = 200
     ids: list[str] = ["good-model"]
+    #: ``max_model_len`` reported for every id; ``None`` omits the field.
+    max_model_len: int | None = None
 
     def do_GET(self) -> None:  # noqa: N802 - http.server's naming convention
         if self.path.rstrip("/") != "/models":
             self.send_response(404)
             self.end_headers()
             return
-        data = json.dumps({"data": [{"id": i} for i in _ModelsHandler.ids]}).encode("utf-8")
+        entries = []
+        for i in _ModelsHandler.ids:
+            entry: dict = {"id": i}
+            if _ModelsHandler.max_model_len is not None:
+                entry["max_model_len"] = _ModelsHandler.max_model_len
+            entries.append(entry)
+        data = json.dumps({"data": entries}).encode("utf-8")
         self.send_response(_ModelsHandler.status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(data)))
@@ -1655,6 +1663,7 @@ class _ModelsHandler(http.server.BaseHTTPRequestHandler):
 def models_server():
     _ModelsHandler.status = 200
     _ModelsHandler.ids = ["good-model"]
+    _ModelsHandler.max_model_len = None
     server = http.server.HTTPServer(("127.0.0.1", 0), _ModelsHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -1758,7 +1767,13 @@ class _ScorerHandler(http.server.BaseHTTPRequestHandler):
             self.end_headers()
             return
         data = json.dumps(
-            {"data": [{"id": model_id} for model_id in _ScorerHandler.model_ids]}
+            {
+                "data": [
+                    # vLLM reports each served model's max_model_len (lapse l3 check).
+                    {"id": model_id, "max_model_len": 4096}
+                    for model_id in _ScorerHandler.model_ids
+                ]
+            }
         ).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
@@ -1873,3 +1888,40 @@ def test_served_scorer_healthy_run_is_not_a_tier_error(measure, tmp_path, scorer
     argv = _argv(split, out, "--scorer", "served", "--max-logprobs", "24", models=(STOCK,))
     assert measure.main(argv, seams=harness.seams) == 0
     assert out.exists()
+
+
+# ---------------------------------------------------------------------------
+# served context check (issue 46, lapse l3: a "4K" run was served at 2048
+# while its report said ctx=4096)
+# ---------------------------------------------------------------------------
+
+
+def test_preflight_accepts_a_matching_served_context(measure, models_server):
+    _ModelsHandler.max_model_len = 4096
+    measure.preflight_models(_models_url(models_server), "good-model", ctx=4096)
+
+
+def test_preflight_refuses_a_different_served_context(measure, models_server):
+    _ModelsHandler.max_model_len = 2048
+    with pytest.raises(measure.MeasureError) as excinfo:
+        measure.preflight_models(_models_url(models_server), "good-model", ctx=4096)
+    assert excinfo.value.code == measure.EXIT_ENV
+    assert "2048" in excinfo.value.message and "4096" in excinfo.value.message
+
+
+def test_preflight_refuses_when_the_served_context_cannot_be_read(measure, models_server):
+    _ModelsHandler.max_model_len = None
+    with pytest.raises(measure.MeasureError) as excinfo:
+        measure.preflight_models(_models_url(models_server), "good-model", ctx=4096)
+    assert "max_model_len" in excinfo.value.message
+
+
+def test_preflight_without_ctx_is_unchanged(measure, models_server):
+    _ModelsHandler.max_model_len = None
+    measure.preflight_models(_models_url(models_server), "good-model")  # does not raise
+
+
+def test_served_ctx_defaults_to_what_the_report_shows(measure) -> None:
+    # Codex review of lapse l3: no ctx in the config must still be checked.
+    assert measure._served_ctx({}) == measure.DEFAULT_CTX
+    assert measure._served_ctx({"ctx": 2048}) == 2048

@@ -96,8 +96,14 @@ die() { echo "pipeline: $*" >&2; exit 1; }
 ENV_FILE=""
 if [ "${1:-}" = "--env" ]; then ENV_FILE=${2:-}; shift 2; fi
 [ -n "$ENV_FILE" ] || die "pass --env <file> (copy scripts/lfm-finetune/pipeline.env.example)"
+# An exported MEASURE_CTX outranks the env file's (issue 46, lapse l3: the
+# file's 2048 silently replaced an exported 4096, so a run labelled 4K was
+# served at 2048). A measure-val run at another context gets its own names.
+_measure_ctx_from_environment=${MEASURE_CTX:-}
 # shellcheck disable=SC1090
 source "$ENV_FILE"
+if [ -n "$_measure_ctx_from_environment" ]; then MEASURE_CTX=$_measure_ctx_from_environment; fi
+MEASURE_CTX=${MEASURE_CTX:-2048}
 # The memory caps must reach the stages' child processes (train.py and
 # train_scorer.py read NVSH_TRAIN_GPU_MEMORY_GB), not only this shell.
 export TRAIN_MEMORY_MAX TRAIN_MEMORY_FLOOR TRAIN_WATCHDOG_SECONDS TRAIN_MEMORY_CAP \
@@ -158,6 +164,16 @@ measure_model_dir() {
   if [ "$name" = stock ]; then stock_dir; return; fi
   [ -d "$WORK/runs/$name/merged" ] || die "no $WORK/runs/$name/merged; run train $name first"
   echo "$WORK/runs/$name/merged"
+}
+
+refuse_extra_ctx() {
+  # An extra --ctx relabels the report without changing the server (lapse l3).
+  local arg
+  for arg in "$@"; do
+    case $arg in
+      --ctx | --ctx=*) die "do not pass --ctx to a measure stage; set MEASURE_CTX (it starts the server and labels the run)" ;;
+    esac
+  done
 }
 
 measure_revision() {
@@ -302,20 +318,25 @@ case "$STAGE" in
     ;;
   measure-val)
     name=${1:?measure-val <name> [measure.py args]}; shift
+    refuse_extra_ctx "$@"
     snapshot=$(ground_snapshot); rev=$(measure_revision "$name")
-    serve_for_measure "$name" "$name-val"
+    label="$name-val"
+    if [ "$MEASURE_CTX" != 2048 ]; then label="$name-val-ctx$MEASURE_CTX"; fi
+    serve_for_measure "$name" "$label"
     py scripts/lfm-finetune/measure.py --split "$WORK/splits/val.json" --model "$name" \
-      --revision "$rev" --label "$name-val" --config "$measure_config" \
+      --revision "$rev" --label "$label" --config "$measure_config" --ctx "$MEASURE_CTX" \
       --ground-snapshot "$snapshot" --enable-thinking "${ENABLE_THINKING:-false}" \
       --max-logprobs "$MEASURE_MAX_LOGPROBS" \
-      --out "$WORK/measure/$name-val.md" --details "$WORK/measure/$name-val.jsonl" --force "$@"
+      --out "$WORK/measure/$label.md" --details "$WORK/measure/$label.jsonl" --force "$@"
     ;;
   measure-final)
     name=${1:?measure-final <name> [measure.py args]}; shift
+    refuse_extra_ctx "$@"
     snapshot=$(ground_snapshot); rev=$(measure_revision "$name")
     serve_for_measure "$name" "final-$name"
     py scripts/lfm-finetune/measure.py --split "$WORK/splits/test.json" --final \
       --model "$name" --revision "$rev" --label "final-$name" --config "$measure_config" \
+      --ctx "$MEASURE_CTX" \
       --ground-snapshot "$snapshot" --enable-thinking "${ENABLE_THINKING:-false}" \
       --max-logprobs "$MEASURE_MAX_LOGPROBS" --predictions "$WORK/final/$name" "$@"
     ;;

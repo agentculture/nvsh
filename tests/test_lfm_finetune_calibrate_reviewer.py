@@ -104,3 +104,9 @@ def test_score_counts_false_accepts_and_false_rejects() -> None:
     assert result["false_accepts"] == ["b:bad-other-check"]
     assert result["false_rejects"] == ["a:good-read"]
     assert result["tokens_mean"] == 20
+
+
+def test_default_effort_sends_no_reasoning_effort() -> None:
+    module = _module()
+    assert module._effort_value("default") is None
+    assert module._effort_value("xhigh") == "xhigh"
