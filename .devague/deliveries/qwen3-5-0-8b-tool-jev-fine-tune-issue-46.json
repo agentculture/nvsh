@@ -2,7 +2,7 @@
   "plan_slug": "qwen3-5-0-8b-tool-jev-fine-tune-issue-46",
   "schema_version": 2,
   "created": "2026-09-23T10:18:50Z",
-  "updated": "2026-09-23T11:53:40Z",
+  "updated": "2026-09-23T12:08:29Z",
   "deviations": [
     {
       "id": "d1",
@@ -63,6 +63,19 @@
       "status": "approved",
       "classification": "acceptable",
       "seq": 4
+    },
+    {
+      "id": "d5",
+      "what": "t28's guide becomes a dedicated fine-tuning guide for the Qwen3.5-0.8B Tool-Jev (docs/qwen-tool-jev-finetune.md): design, code map, split, the experience ledger (every issue found, its evidence, the fix or workaround, and who/what found it), and step-by-step instructions to reproduce the run; the ledger is written as the run proceeds, not at closeout",
+      "task_ref": "t28",
+      "reason": "Operator request 2026-09-23: 'a guide for the fine tuning, with the code, issues, split, design, fixes, workarounds - a ledger of the experience and instructions to reproduce'",
+      "affects": [
+        "t29"
+      ],
+      "origin": "user",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 5
     }
   ],
   "evidence": [],

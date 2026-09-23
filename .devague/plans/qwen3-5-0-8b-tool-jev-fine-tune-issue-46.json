@@ -5,7 +5,7 @@
   "schema_version": 5,
   "status": "exported",
   "created": "2026-09-23T08:50:51Z",
-  "updated": "2026-09-23T11:53:40Z",
+  "updated": "2026-09-23T12:43:49Z",
   "targets": [
     {
       "id": "c1",
@@ -1146,6 +1146,22 @@
       "task_id": "t22",
       "resolved": false,
       "resolution": ""
+    },
+    {
+      "id": "r13",
+      "text": "t20 probe on spark2 (GB10 unified memory): an 8 GB CUDA allocation succeeded inside a systemd scope capped at MemoryMax=1G, MemorySwapMax=0 \u2014 GPU allocations are not charged to the cgroup, so capped.sh does not bound training's GPU memory. Fix in progress: an available-memory floor watchdog in capped.sh plus torch.cuda.set_per_process_memory_fraction in the trainers",
+      "kind": "unknown_blocking",
+      "task_id": "t23",
+      "resolved": true,
+      "resolution": "f10 merged: capped.sh stops the run when MemAvailable falls below TRAIN_MEMORY_FLOOR (verified on spark2: an 8 GB CUDA hog stopped within 5 s at 22.9 GB available vs a 26 GB floor, rc 3, no GPU process left, model-gear restarts unchanged); train.py/train_scorer.py also honour NVSH_TRAIN_GPU_MEMORY_GB (torch per-process fraction; a 2 GiB allocation over a 1 GB budget was refused on spark)"
+    },
+    {
+      "id": "r14",
+      "text": "quantize.py's AWQ path calls an llm-compressor command line ($LLM_COMPRESSOR --scheme AWQ ...), but the t16 spike showed the working recipe is llm-compressor 0.14's Python oneshot with processor=tokenizer, ignoring linear-attention/vision/MTP/lm_head, then copying tokenizer + preprocessor files for vLLM; its GGUF step converts to f16 where the spike used bf16. The quantize stage has never run against the real tools \u2014 fix before t25 (found by the documentation agent reading code against the spike log)",
+      "kind": "unknown_nonblocking",
+      "task_id": "t25",
+      "resolved": true,
+      "resolution": "f11 merged and live-checked: awq_oneshot.py (AWQ venv) quantized the stock copy (1.1 GB, weights saved after the generation config is sanitized before save), finish_awq_export copied tokenizer/preprocessor files and wrote generation_config.json; the pinned vLLM served it with Marlin and the file's temperature 0 (three byte-identical runs), tool calls parse"
     }
   ],
   "obligations": []
