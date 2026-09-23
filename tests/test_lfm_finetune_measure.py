@@ -1767,7 +1767,13 @@ class _ScorerHandler(http.server.BaseHTTPRequestHandler):
             self.end_headers()
             return
         data = json.dumps(
-            {"data": [{"id": model_id} for model_id in _ScorerHandler.model_ids]}
+            {
+                "data": [
+                    # vLLM reports each served model's max_model_len (lapse l3 check).
+                    {"id": model_id, "max_model_len": 4096}
+                    for model_id in _ScorerHandler.model_ids
+                ]
+            }
         ).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
