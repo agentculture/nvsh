@@ -122,97 +122,37 @@ def model_card(
     results_name: str,
     data_summary: str,
     licence_kind: str = "lfm",
+    tool_call_parser: str = "lfm2",
 ) -> str:
     teachers = "\n".join(f"| {name} | {licence} | {role} |" for name, licence, role in TEACHERS)
     if licence_kind == "apache":
-        return f"""---
-library_name: transformers
-license: apache-2.0
-base_model: {base_repo}
-pipeline_tag: text-generation
-tags:
-- liquid
-- lfm2.5
-- nvsh
-- tool-calling
----
-
-# {repo.split("/")[-1]}
-
-A fine-tune of [{base_repo}](https://huggingface.co/{base_repo}) (revision
-`{base_revision}`) for [nvsh](https://github.com/agentculture/nvsh)'s Tier 2:
-given an operator's request at a Jetson or DGX Spark shell, answer with one
-of three tools: `propose` (an operation from nvsh's table, for the operator
-to approve), `explain` (a short answer) or `escalate` (hand the request to a
-full agent). Training run `{run}`.
-
-**This is a derivative work based on the base model.** The weights were changed by
-LoRA fine-tuning and merged; the tokenizer and chat template are the base
-model's, unchanged. See `NOTICE`.
-
-## Licence
-
-This model is a derivative of the base model under the Apache License 2.0.
-The ``LICENSE`` file is included. The base model is
-[{base_repo}](https://huggingface.co/{base_repo})
-(revision `{base_revision}`).
-
-## Use with nvsh
-
-```toml
-[tiers]
-enabled = true
-
-[tiers.lfm]
-model = "{repo}"
-engine = "vllm"
-tool_call_parser = "lfm2"
-```
-
-nvsh only proposes; the operator approves every change. See nvsh's
-`docs/tier2.md`.
-
-## Results
-
-Measured with nvsh's `scripts/lfm-finetune/measure.py` through the real Tier 2
-launcher on a DGX Spark ({results_name}):
-
-{table}
-
-## Training data
-
-{data_summary}
-
-Requests were rewritten into variations by a local pipeline
-(`scripts/lfm-finetune/augment.py`). A variation was kept only when both
-reviewers accepted it and deterministic guards found no operation identifier
-or copied answer wording in it. A training record that repeats a
-validation or test entry is dropped (`merge_variations.py --exclude`), and the
-test side is never used to choose a run.
-
-| Model | Licence | Role |
-|---|---|---|
-{teachers}
-
-The teachers' licences do not carry over to their outputs.
-
-## Recipe
-
-`scripts/lfm-finetune/pipeline.sh` and `docs/lfm-finetune.md` in the nvsh
-repository: seeded split, augmentation, assistant-only-loss LoRA training,
-merge, and measurement against the stock model.
-"""
+        family = base_repo.split("/")[0].lower()
+        licence_front = "license: apache-2.0\n"
+        base_tags = f"- {family}\n"
+        derivative = "**This is a derivative work based on the base model.**"
+        licence_section = (
+            "This model is a derivative of the base model under the Apache License 2.0.\n"
+            "The ``LICENSE`` file is included. The base model is\n"
+            f"[{base_repo}](https://huggingface.co/{base_repo})\n"
+            f"(revision `{base_revision}`).\n"
+        )
+    else:
+        licence_front = "license: other\nlicense_name: lfm1.0\nlicense_link: LICENSE\n"
+        base_tags = "- liquid\n- lfm2.5\n"
+        derivative = "**This is a modified version of LFM2.5-350M.**"
+        licence_section = (
+            "LFM Open License v1.0, the base model's licence, included as `LICENSE`.\n"
+            "Commercial use is licensed only to a user whose legal entity, including every\n"
+            "entity under common control, has annual revenue below USD 10,000,000. **This\n"
+            "threshold applies to every user of this model**, not only its publisher. A\n"
+            "user above it needs their own agreement with Liquid AI.\n"
+        )
     return f"""---
 library_name: transformers
-license: other
-license_name: lfm1.0
-license_link: LICENSE
-base_model: {base_repo}
+{licence_front}base_model: {base_repo}
 pipeline_tag: text-generation
 tags:
-- liquid
-- lfm2.5
-- nvsh
+{base_tags}- nvsh
 - tool-calling
 ---
 
@@ -225,18 +165,13 @@ of three tools: `propose` (an operation from nvsh's table, for the operator
 to approve), `explain` (a short answer) or `escalate` (hand the request to a
 full agent). Training run `{run}`.
 
-**This is a modified version of LFM2.5-350M.** The weights were changed by
+{derivative} The weights were changed by
 LoRA fine-tuning and merged; the tokenizer and chat template are the base
 model's, unchanged. See `NOTICE`.
 
 ## Licence
 
-LFM Open License v1.0, the base model's licence, included as `LICENSE`.
-Commercial use is licensed only to a user whose legal entity, including every
-entity under common control, has annual revenue below USD 10,000,000. **This
-threshold applies to every user of this model**, not only its publisher. A
-user above it needs their own agreement with Liquid AI.
-
+{licence_section}
 ## Use with nvsh
 
 ```toml
@@ -246,7 +181,7 @@ enabled = true
 [tiers.lfm]
 model = "{repo}"
 engine = "vllm"
-tool_call_parser = "lfm2"
+tool_call_parser = "{tool_call_parser}"
 ```
 
 nvsh only proposes; the operator approves every change. See nvsh's
@@ -294,6 +229,7 @@ def build(
     data_summary: str,
     out: Path,
     licence_kind: str = "lfm",
+    tool_call_parser: str = "lfm2",
 ) -> str:
     """Write the upload folder to *out*; return the checkpoint's revision."""
     stage_cache = _stage_cache()
@@ -338,6 +274,7 @@ def build(
         results_name=results.name,
         data_summary=data_summary.strip(),
         licence_kind=licence_kind,
+        tool_call_parser=tool_call_parser,
     )
     required = APACHE_REQUIRED_CARD_PHRASES if licence_kind == "apache" else REQUIRED_CARD_PHRASES
     missing = [phrase for phrase in required if phrase not in card]
@@ -372,6 +309,11 @@ def main(argv: list[str] | None = None) -> int:
         default="lfm",
         help="licence mode for the base model",
     )
+    parser.add_argument(
+        "--tool-call-parser",
+        default="lfm2",
+        help="the vLLM tool-call parser the card's nvsh snippet names (default: lfm2)",
+    )
     args = parser.parse_args(argv)
     try:
         revision = build(
@@ -383,6 +325,7 @@ def main(argv: list[str] | None = None) -> int:
             data_summary=args.data_summary,
             out=args.out,
             licence_kind=args.licence_kind,
+            tool_call_parser=args.tool_call_parser,
         )
     except ValueError as exc:
         parser.error(str(exc))

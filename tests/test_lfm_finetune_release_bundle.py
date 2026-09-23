@@ -214,3 +214,39 @@ class TestApacheLicenceKind:
             licence_kind="lfm",
         )
         assert notice_default == notice_explicit_lfm
+
+
+def test_apache_card_names_the_base_family_and_the_given_parser() -> None:
+    """A Qwen card must not carry LFM tags or LFM's vLLM tool-call parser."""
+    module = _module()
+    card = module.model_card(
+        repo="jetson-ai-lab/qwen3.5-0.8b-nvsh-tool-jev",
+        base_repo="Qwen/Qwen3.5-0.8B",
+        base_revision="2fc06364",
+        run="a1",
+        table="| x |",
+        results_name="res.md",
+        data_summary="n examples",
+        licence_kind="apache",
+        tool_call_parser="qwen3_coder",
+    )
+    front = card.split("---")[1]
+    assert "- liquid" not in front and "- lfm2.5" not in front
+    assert "- qwen" in front
+    assert 'tool_call_parser = "qwen3_coder"' in card
+    assert "lfm2" not in card.split("## Use with nvsh")[1].split("##")[0]
+
+
+def test_lfm_card_keeps_its_tags_and_parser_by_default() -> None:
+    module = _module()
+    card = module.model_card(
+        repo="r",
+        base_repo="LiquidAI/LFM2.5-350M",
+        base_revision="9e6c",
+        run="r8",
+        table="| x |",
+        results_name="res.md",
+        data_summary="n",
+    )
+    assert "- liquid\n- lfm2.5\n" in card
+    assert 'tool_call_parser = "lfm2"' in card
