@@ -577,16 +577,21 @@ Track A's calibration is scored separately, in process, by the d6 tool, once
 per checkpoint on the final side:
 
 ```bash
-"$TRAIN_PY" scripts/lfm-finetune/track_a_calibration.py --model "$WORK/runs/a1/merged" \
+PYTHONPATH=<training site-packages> uv run --frozen python \
+  scripts/lfm-finetune/track_a_calibration.py --model "$WORK/runs/a1/merged" \
   --split "$WORK/splits/test.json" --predictions <in.jsonl> --out <out.jsonl> --final
 ```
 
+Run it from the repository root, like `assemble`'s render check: the
+training venv's torch and transformers come from `PYTHONPATH`, and nvsh
+from the repository environment. The lead's live check ran it this way.
+
 It fills each prediction line's `candidates` with the exact teacher-forced
 distribution and writes a sidecar `<out>.provenance.json`. `metrics.py` then
-scores the filled file. *How the final run's predictions file reaches it is
-not settled here: `measure.py` refuses `--predictions` together with
-`--final` (unverified).* Running it with `$TRAIN_PY` is also an assumption;
-it needs torch and transformers.
+scores the filled file. *Pending (P50, task h3):* the final run's
+predictions file is its input, and `measure.py` still refuses
+`--predictions` with `--final`; `measure-final` will pass `--predictions`
+once h3 lands. Until then this step cannot run on the final side.
 
 ### 13. Quantize and heal *(not yet run)*
 
@@ -1060,6 +1065,14 @@ committed now (`3df700c`).
   live check of h2. *Fix (pending, task h3):* a preflight `GET /models`
   that must list the served name, and any tier error fails the run with exit
   2 and no results page unless `--allow-tier-errors N` is passed.
+- **P50. The final run could not feed d6's calibration step.**
+  `measure.py` refused `--predictions` on `--final` and `--acceptance` runs,
+  but `track_a_calibration.py` needs the final run's predictions file.
+  *Found:* the documentation agent, writing step 12 against `measure.py`.
+  *Fix (pending, added to task h3):* `--predictions` is allowed with
+  `--final` and `--acceptance`. The file holds ids, expected blocks and
+  outcomes, never request text, and a test asserts it has no text field.
+  `measure-final` will pass `--predictions` after h3 lands.
 
 ### Found by the linters
 
@@ -1079,9 +1092,8 @@ committed now (`3df700c`).
 - **The GGUF's sampling settings**: d3 covers "the GGUF's sampling metadata",
   and no step writes it yet.
 - **Track A calibration on the final side** (d6): the tool is verified on
-  stock with the old validation split. How the final run's predictions file
-  is produced for it, given that `measure.py` refuses `--predictions` with
-  `--final`, is not settled (step 12).
+  stock with the old validation split. On the final side it waits for P50's
+  fix (h3) and for `measure-final` to pass `--predictions`.
 - **The re-review's exact command and filter** (step 5).
 - **nvsh's runtime and unparsed Qwen tool calls** (P45): `LfmTier` still
   treats a failed parse as an explanation. Out of scope here (c9); tracked
