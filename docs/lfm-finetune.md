@@ -206,9 +206,11 @@ commercial threshold, the results and the teacher models. Names agreed
 for the `jetson-ai-lab` organisation: `lfm2.5-350m-nvsh-triage` for the
 model, `lfm2.5-350m-nvsh-triage-GGUF` for a GGUF build, and `nvsh-ops` for the
 data set. The token lives
-only in the `grant run` process. *(The create and upload lines are
-unverified: the token used in this run could not create repositories in the
-organisation.)*
+only in the `grant run` process. The token needs write access to the
+organisation's repositories. In this run a read-only token was refused, and a
+second fine-grained token with `repo.write` on `jetson-ai-lab` worked. Check
+the repository is private through the Hub API before uploading. Fetch it
+back into `hf_cache_dir` with `hf download` and compare the files.
 
 ### 10. Serve it
 
@@ -254,7 +256,6 @@ nvsh runtime change is needed.
   and GGUF export for `llama-server`.
 - Multi-round examples (inspect, read the result, then decide). Only
   single-turn examples exist; the multi-round builder was deferred.
-- Uploading and downloading a private repository (step 9).
 
 ## Running it yourself: `pipeline.sh`
 
