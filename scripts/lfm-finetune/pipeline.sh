@@ -28,17 +28,24 @@
 #   train-scorer          train the acceptance-margin scorer on split.py's own
 #                         train/val sides (train_scorer.py, a training stage)
 #   measure-val <name> [args]    validation run with per-entry details (iterate on
-#                         this); <name> "stock" measures the stock copy
-#   measure-final <name> [args]  stock and <name> back to back on the test side (a
-#                         final run)
-#   measure-skills <name> --margin "<margin>"   stock and <name> on the 104 skill
-#                         evals; the margin reaches only <name>'s run
-#                         The measure stages serve stock from WORK/stock (stock-copy
-#                         first; its greedy generation_config.json is checked), pass
-#                         --enable-thinking ENABLE_THINKING (default false) and, to
-#                         measure.py, --ground-snapshot GROUND_SNAPSHOT (required; see
-#                         `measure.py snapshot`); measure-val and measure-final hand
-#                         any further [args] to measure.py (e.g. --ctx 2048).
+#                         this)
+#   measure-final <name> [args]  a final run on the test side
+#   measure-skills <name> [--margin "<margin>"]   the 104 skill evals; a tuned
+#                         <name> needs --margin, which stock never gets
+#                         Each measure stage measures ONE model per call (deviation d7):
+#                         <name> is "stock" (the stock copy, WORK/stock -- stock-copy
+#                         first) or a run name (WORK/runs/<name>/merged). The stage
+#                         serves it with serve_for_measure.sh (MEASURE_IMAGE, pinned by
+#                         digest, on 127.0.0.1:MEASURE_PORT; the model dir must pass
+#                         gen_config.py check), writes a per-run nvsh config attaching
+#                         to it ([tiers.lfm] mode = "attach"), measures, and stops the
+#                         server again, on failure too. The served docker argv is kept
+#                         in WORK/measure/<label>.serve.json. Every call passes
+#                         --enable-thinking ENABLE_THINKING (default false);
+#                         measure.py also gets --ground-snapshot GROUND_SNAPSHOT
+#                         (required; see `measure.py snapshot`) and --max-logprobs
+#                         MEASURE_MAX_LOGPROBS, and measure-val and measure-final hand
+#                         any further [args] to it (e.g. --ctx 2048).
 #   scan <name>           scan a trained run's merged checkpoint for secrets/binaries
 #                         (scan_bundle.py scan; writes scan.json next to it)
 #   quantize <name>       Q4_K_M GGUF + INT4 AWQ export of a merged checkpoint
@@ -143,6 +150,65 @@ ground_snapshot() {
   echo "$GROUND_SNAPSHOT"
 }
 
+measure_model_dir() {
+  # The directory a measure stage serves for <name>: the stock copy, or a
+  # trained run's merged checkpoint.
+  local name=$1
+  [[ $name =~ ^[A-Za-z0-9._-]+$ ]] || die "measure: '$name' is not a run name (letters, digits, . _ -)"
+  if [ "$name" = stock ]; then stock_dir; return; fi
+  [ -d "$WORK/runs/$name/merged" ] || die "no $WORK/runs/$name/merged; run train $name first"
+  echo "$WORK/runs/$name/merged"
+}
+
+measure_revision() {
+  # The revision recorded for <name> (attach mode records it as operator-supplied).
+  if [ "$1" = stock ]; then echo "$BASE_REV"; return; fi
+  [ -d "$WORK/runs/$1/merged" ] || die "no $WORK/runs/$1/merged; run train $1 first"
+  [ -s "$WORK/runs/$1/revision" ] || die "no $WORK/runs/$1/revision; run train $1 first"
+  cat "$WORK/runs/$1/revision"
+}
+
+# shellcheck disable=SC2317  # invoked by serve_for_measure's EXIT trap
+stop_measure_server() {
+  bash "$HERE/serve_for_measure.sh" stop "$MEASURE_PORT" || true
+}
+
+serve_for_measure() {
+  # serve_for_measure NAME LABEL: serve NAME's model dir with the committed
+  # helper, stop it whenever this script exits, and write the per-run attach
+  # config $measure_config for it (deviation d7).
+  local name=$1 label=$2 model_dir
+  model_dir=$(measure_model_dir "$name")
+  MEASURE_PORT=${MEASURE_PORT:-18060}
+  MEASURE_CTX=${MEASURE_CTX:-2048}
+  MEASURE_GPU_FRACTION=${MEASURE_GPU_FRACTION:-0.08}
+  MEASURE_MAX_LOGPROBS=${MEASURE_MAX_LOGPROBS:-22}
+  MEASURE_MODEL_NAME=$name
+  export MEASURE_IMAGE TOOL_CALL_PARSER MEASURE_CTX MEASURE_GPU_FRACTION MEASURE_MAX_LOGPROBS \
+    MEASURE_MODEL_NAME MEASURE_WAIT_SECONDS MEASURE_POLL_SECONDS MEASURE_GPU_ARGS
+  trap stop_measure_server EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  bash "$HERE/serve_for_measure.sh" start "$model_dir" "$MEASURE_PORT" "$WORK/measure/$label.serve.json"
+  bash "$HERE/serve_for_measure.sh" wait "$MEASURE_PORT"
+  measure_config="$WORK/measure/$label.nvsh.toml"
+  cat > "$measure_config" <<EOF
+# Written by pipeline.sh for one measure run: attach to serve_for_measure.sh's
+# server for '$name' (deviation d7). Rewritten on every run.
+[tiers]
+enabled = true
+
+[tiers.lfm]
+engine = "vllm"
+mode = "attach"
+base_url = "http://127.0.0.1:$MEASURE_PORT/v1"
+model = "$name"
+ctx = $MEASURE_CTX
+tool_call_parser = "$TOOL_CALL_PARSER"
+image = "$MEASURE_IMAGE"
+EOF
+}
+
 train_site_packages() {
   # TRAIN_PY's site-packages, for a repo-env step that also needs the training
   # stack (transformers): on PYTHONPATH it adds that stack while the repo's own
@@ -236,38 +302,35 @@ case "$STAGE" in
     ;;
   measure-val)
     name=${1:?measure-val <name> [measure.py args]}; shift
-    snapshot=$(ground_snapshot)
-    if [ "$name" = stock ]; then
-      model=$(stock_dir); rev=$BASE_REV
-    else
-      model=$REPO; rev=$(cat "$WORK/runs/$name/revision")
-    fi
-    py scripts/lfm-finetune/measure.py --split "$WORK/splits/val.json" --model "$model" \
-      --revision "$rev" --label "$name-val" --config "$NVSH_CONFIG" \
+    snapshot=$(ground_snapshot); rev=$(measure_revision "$name")
+    serve_for_measure "$name" "$name-val"
+    py scripts/lfm-finetune/measure.py --split "$WORK/splits/val.json" --model "$name" \
+      --revision "$rev" --label "$name-val" --config "$measure_config" \
       --ground-snapshot "$snapshot" --enable-thinking "${ENABLE_THINKING:-false}" \
+      --max-logprobs "$MEASURE_MAX_LOGPROBS" \
       --out "$WORK/measure/$name-val.md" --details "$WORK/measure/$name-val.jsonl" --force "$@"
     ;;
   measure-final)
     name=${1:?measure-final <name> [measure.py args]}; shift
-    snapshot=$(ground_snapshot); stock=$(stock_dir); rev=$(cat "$WORK/runs/$name/revision")
+    snapshot=$(ground_snapshot); rev=$(measure_revision "$name")
+    serve_for_measure "$name" "final-$name"
     py scripts/lfm-finetune/measure.py --split "$WORK/splits/test.json" --final \
-      --model "$stock" --revision "$BASE_REV" --model "$REPO" --revision "$rev" \
-      --label "final-$name" --config "$NVSH_CONFIG" \
-      --ground-snapshot "$snapshot" --enable-thinking "${ENABLE_THINKING:-false}" "$@"
+      --model "$name" --revision "$rev" --label "final-$name" --config "$measure_config" \
+      --ground-snapshot "$snapshot" --enable-thinking "${ENABLE_THINKING:-false}" \
+      --max-logprobs "$MEASURE_MAX_LOGPROBS" "$@"
     ;;
   measure-skills)
-    # measure_skills.py grounds nothing, so it takes no --ground-snapshot.
-    name=${1:?measure-skills <name> --margin "<margin>"}; shift
-    stock=$(stock_dir)
-    for label in stock "$name"; do
-      model=$stock; rev=$BASE_REV; extra=()
-      if [ "$label" != stock ]; then model=$REPO; rev=$(cat "$WORK/runs/$name/revision"); extra=(--tuned "$@"); fi
-      py scripts/lfm-finetune/measure_skills.py --tools "$WORK/skills/tools.json" \
-        --test "$WORK/skills/test.jsonl" --manifest "$WORK/skills/manifest.json" \
-        --model "$model" --model-revision "$rev" --label "$label" --launch --config "$NVSH_CONFIG" \
-        --enable-thinking "${ENABLE_THINKING:-false}" \
-        --timeout "${SKILLS_TIMEOUT:-180}" --out "$WORK/measure/skills-$label.md" "${extra[@]}"
-    done
+    # measure_skills.py grounds nothing, so it takes no --ground-snapshot, and it
+    # cannot read an attach config: it is pointed at the served URL with --url.
+    name=${1:?measure-skills <name> [--margin "<margin>"]}; shift
+    rev=$(measure_revision "$name"); extra=()
+    [ "$name" = stock ] || extra=(--tuned "$@")
+    serve_for_measure "$name" "skills-$name"
+    py scripts/lfm-finetune/measure_skills.py --tools "$WORK/skills/tools.json" \
+      --test "$WORK/skills/test.jsonl" --manifest "$WORK/skills/manifest.json" \
+      --url "http://127.0.0.1:$MEASURE_PORT/v1" --model "$name" --model-revision "$rev" \
+      --label "$name" --enable-thinking "${ENABLE_THINKING:-false}" \
+      --timeout "${SKILLS_TIMEOUT:-180}" --out "$WORK/measure/skills-$name.md" "${extra[@]}"
     ;;
   scan)
     name=${1:?scan <name>}

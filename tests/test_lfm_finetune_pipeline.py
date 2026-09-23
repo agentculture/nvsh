@@ -11,19 +11,24 @@ fail closed with a plain skip when missing).
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import shutil
 import subprocess
 import sys
 import time
+import tomllib
 from pathlib import Path
 
 import pytest
+
+from nvsh.config import load as load_config
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _PIPELINE = _REPO_ROOT / "scripts" / "lfm-finetune" / "pipeline.sh"
 _LFM_ENV = _REPO_ROOT / "scripts" / "lfm-finetune" / "pipeline.env.example"
 _QWEN_ENV = _REPO_ROOT / "scripts" / "lfm-finetune" / "pipeline-qwen.env.example"
+_SERVE = _REPO_ROOT / "scripts" / "lfm-finetune" / "serve_for_measure.sh"
 
 #: The stages task t14 adds, on top of the ones issue 39 already wired up.
 _NEW_STAGES = (
@@ -58,7 +63,7 @@ def test_shellcheck_is_clean_on_pipeline_sh() -> None:
         pytest.skip("shellcheck not installed")
     capped = _PIPELINE.parent / "capped.sh"
     result = subprocess.run(
-        ["shellcheck", "-x", str(_PIPELINE), str(capped)],
+        ["shellcheck", "-x", str(_PIPELINE), str(capped), str(_SERVE)],
         capture_output=True,
         text=True,
         timeout=30,
@@ -463,23 +468,86 @@ _FAKE_UV = """#!/usr/bin/env bash
 printf '%s\\t%s\\n' "PYTHONPATH=${PYTHONPATH:-}" "$*" >> "$UV_LOG"
 case "$*" in
   *gen_config.py*) shift 3; exec "$REAL_PY" "$@" ;;
+  *measure.py*|*measure_skills.py*)
+    printf 'uv %s\\n' "${4##*/}" >> "$EVENT_LOG"
+    exit "${FAKE_MEASURE_STATUS:-0}" ;;
 esac
 exit 0
 """
 
+#: Records each docker argv as one JSON line, and the subcommand in EVENT_LOG;
+#: `logs` prints a recognisable line, everything else prints nothing.
+_FAKE_DOCKER = """#!/usr/bin/env python3
+import json, os, sys
+with open(os.environ["DOCKER_LOG"], "a", encoding="utf-8") as log:
+    log.write(json.dumps(sys.argv[1:]) + "\\n")
+with open(os.environ["EVENT_LOG"], "a", encoding="utf-8") as log:
+    log.write("docker " + (sys.argv[1] if len(sys.argv) > 1 else "") + "\\n")
+if sys.argv[1:2] == ["logs"]:
+    print("fake-vllm: the last log line")
+"""
+
+#: `curl` as the readiness probe sees it: ready unless FAKE_CURL_STATUS says not.
+_FAKE_CURL = """#!/usr/bin/env bash
+printf 'curl %s\\n' "${*: -1}" >> "$EVENT_LOG"
+exit "${FAKE_CURL_STATUS:-0}"
+"""
+
+_IMAGE = "vllm/vllm-openai@sha256:8bd082c274fae025b7079498fe1da65182ba1d4c2188c0f5a68c1042c38c3695"
+
+
+def _fake_bin(tmp_path: Path) -> tuple[Path, dict[str, str]]:
+    """A bin dir with fake uv/docker/curl (made once), and the env that points
+    them at logs."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    for name, text in (("uv", _FAKE_UV), ("docker", _FAKE_DOCKER), ("curl", _FAKE_CURL)):
+        path = bin_dir / name
+        path.write_text(text, encoding="utf-8")
+        path.chmod(0o755)
+    env = {
+        **{k: v for k, v in os.environ.items() if k != "PYTHONPATH"},
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "UV_LOG": str(tmp_path / "uv.log"),
+        "DOCKER_LOG": str(tmp_path / "docker.log"),
+        "EVENT_LOG": str(tmp_path / "events.log"),
+        "REAL_PY": sys.executable,
+    }
+    return bin_dir, env
+
+
+def _docker_calls(tmp_path: Path) -> list[list[str]]:
+    log = tmp_path / "docker.log"
+    if not log.exists():
+        return []
+    return [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+
+
+def _events(tmp_path: Path) -> list[str]:
+    log = tmp_path / "events.log"
+    return log.read_text(encoding="utf-8").splitlines() if log.exists() else []
+
+
+def _greedy_dir(path: Path) -> Path:
+    """A model dir that passes `gen_config.py check`."""
+    path.mkdir(parents=True)
+    (path / "config.json").write_text("{}", encoding="utf-8")
+    gen_config = _REPO_ROOT / "scripts" / "lfm-finetune" / "gen_config.py"
+    subprocess.run(
+        [sys.executable, str(gen_config), "write", str(path)], check=True, capture_output=True
+    )
+    return path
+
 
 class _Pipeline:
-    """pipeline.sh against the Qwen example env, with `uv` replaced by a recorder."""
+    """pipeline.sh against the Qwen example env, with `uv`, `docker` and `curl`
+    replaced by recorders."""
 
     def __init__(self, tmp_path: Path, extra_env: str = "") -> None:
         self.tmp = tmp_path
         self.work = tmp_path / "qwen-work"
         self.snapshot = tmp_path / "ground.json"
-        bin_dir = tmp_path / "bin"
-        bin_dir.mkdir()
-        uv = bin_dir / "uv"
-        uv.write_text(_FAKE_UV, encoding="utf-8")
-        uv.chmod(0o755)
+        _, self.env = _fake_bin(tmp_path)
         self.log = tmp_path / "uv.log"
         self.env_file = tmp_path / "test.env"
         self.env_file.write_text(
@@ -488,21 +556,15 @@ class _Pipeline:
             + extra_env,
             encoding="utf-8",
         )
-        self.env = {
-            **{k: v for k, v in os.environ.items() if k != "PYTHONPATH"},
-            "PATH": f"{bin_dir}:{os.environ['PATH']}",
-            "UV_LOG": str(self.log),
-            "REAL_PY": sys.executable,
-        }
 
-    def run(self, *stage_args: str) -> subprocess.CompletedProcess:
+    def run(self, *stage_args: str, **env: str) -> subprocess.CompletedProcess:
         return subprocess.run(
             ["bash", str(_PIPELINE), "--env", str(self.env_file), *stage_args],
             cwd=self.tmp,
             capture_output=True,
             text=True,
             timeout=60,
-            env=self.env,
+            env={**self.env, **env},
         )
 
     def calls(self, script: str) -> list[tuple[str, list[str]]]:
@@ -521,16 +583,9 @@ class _Pipeline:
         if snapshot:
             self.snapshot.write_text("{}", encoding="utf-8")
         if stock:
-            (self.work / "stock").mkdir(parents=True)
-            (self.work / "stock" / "config.json").write_text("{}", encoding="utf-8")
-            gen_config = _REPO_ROOT / "scripts" / "lfm-finetune" / "gen_config.py"
-            subprocess.run(
-                [sys.executable, str(gen_config), "write", str(self.work / "stock")],
-                check=True,
-                capture_output=True,
-            )
+            _greedy_dir(self.work / "stock")
         if run:
-            (self.work / "runs" / run).mkdir(parents=True)
+            _greedy_dir(self.work / "runs" / run / "merged")
             (self.work / "runs" / run / "revision").write_text("abc123\n", encoding="utf-8")
 
 
@@ -541,44 +596,61 @@ def _option(argv: list[str], name: str) -> list[str]:
 _QWEN_BASE_REV = "2fc06364715b967f1860aea9cf38778875588b17"
 
 
-def test_measure_final_measures_stock_from_the_stock_copy(tmp_path: Path) -> None:
-    """Finding #2a: the stock server gets the greedy generation_config.json."""
+def test_measure_final_measures_one_model_from_its_own_dir(tmp_path: Path) -> None:
+    """Finding #2a / deviation d7: stock is served from the stock copy (greedy
+    generation_config.json), and each final call measures exactly one model."""
     pipe = _Pipeline(tmp_path)
     pipe.ready()
+    result = pipe.run("measure-final", "stock")
+    assert result.returncode == 0, result.stderr
+    [(_, argv)] = pipe.calls("measure.py")
+    assert _option(argv, "--model") == ["stock"]
+    assert _option(argv, "--revision") == [_QWEN_BASE_REV]
+    assert "--final" in argv
+    assert _option(argv, "--split") == [str(pipe.work / "splits" / "test.json")]
+    [run] = [c for c in _docker_calls(tmp_path) if c[0] == "run"]
+    assert _option(run, "-v") == [f"{pipe.work / 'stock'}:/model:ro"]
+    assert "Qwen/Qwen3.5-0.8B" not in argv
+
+
+def test_measure_final_of_a_run_serves_its_merged_dir(tmp_path: Path) -> None:
+    pipe = _Pipeline(tmp_path)
+    pipe.ready(stock=False)
     result = pipe.run("measure-final", "a1")
     assert result.returncode == 0, result.stderr
     [(_, argv)] = pipe.calls("measure.py")
-    assert _option(argv, "--model") == [
-        str(pipe.work / "stock"),
-        "jetson-ai-lab/qwen3.5-0.8b-nvsh-tool-jev",
-    ]
-    assert _option(argv, "--revision") == [_QWEN_BASE_REV, "abc123"]
-    assert "Qwen/Qwen3.5-0.8B" not in argv
+    assert _option(argv, "--model") == ["a1"]
+    assert _option(argv, "--revision") == ["abc123"]
+    [run] = [c for c in _docker_calls(tmp_path) if c[0] == "run"]
+    assert _option(run, "-v") == [f"{pipe.work / 'runs' / 'a1' / 'merged'}:/model:ro"]
 
 
 @pytest.mark.parametrize("stage", ["measure-val", "measure-final", "measure-skills"])
 def test_a_measure_stage_refuses_without_the_stock_copy(stage: str, tmp_path: Path) -> None:
     pipe = _Pipeline(tmp_path)
     pipe.ready(stock=False)
-    name = "stock" if stage == "measure-val" else "a1"
-    result = pipe.run(stage, name)
+    result = pipe.run(stage, "stock")
     assert result.returncode == 1
     assert "stock-copy" in result.stderr
     assert not pipe.calls("measure.py") and not pipe.calls("measure_skills.py")
+    assert not [c for c in _docker_calls(tmp_path) if c[0] == "run"]
 
 
 @pytest.mark.parametrize("stage", ["measure-val", "measure-final", "measure-skills"])
-def test_a_measure_stage_refuses_a_stock_copy_without_greedy_decoding(
-    stage: str, tmp_path: Path
+@pytest.mark.parametrize("name", ["stock", "a1"])
+def test_a_measure_stage_refuses_a_model_without_greedy_decoding(
+    stage: str, name: str, tmp_path: Path
 ) -> None:
+    """Deviation d3: every measured model samples at temperature 0 from its own file."""
     pipe = _Pipeline(tmp_path)
     pipe.ready()
-    (pipe.work / "stock" / "generation_config.json").unlink()
-    name = "stock" if stage == "measure-val" else "a1"
-    result = pipe.run(stage, name)
-    assert result.returncode == 1
+    model_dir = pipe.work / "stock" if name == "stock" else pipe.work / "runs" / name / "merged"
+    (model_dir / "generation_config.json").unlink()
+    result = pipe.run(stage, name, *(["--margin", "+15"] if stage == "measure-skills" else []))
+    assert result.returncode != 0
     assert "generation_config.json" in result.stderr
     assert not pipe.calls("measure.py") and not pipe.calls("measure_skills.py")
+    assert not [c for c in _docker_calls(tmp_path) if c[0] == "run"]
 
 
 def test_measure_val_measures_stock_from_the_stock_copy(tmp_path: Path) -> None:
@@ -587,8 +659,10 @@ def test_measure_val_measures_stock_from_the_stock_copy(tmp_path: Path) -> None:
     result = pipe.run("measure-val", "stock")
     assert result.returncode == 0, result.stderr
     [(_, argv)] = pipe.calls("measure.py")
-    assert _option(argv, "--model") == [str(pipe.work / "stock")]
+    assert _option(argv, "--model") == ["stock"]
     assert _option(argv, "--revision") == [_QWEN_BASE_REV]
+    [run] = [c for c in _docker_calls(tmp_path) if c[0] == "run"]
+    assert _option(run, "-v") == [f"{pipe.work / 'stock'}:/model:ro"]
 
 
 def test_measure_val_of_a_tuned_run_needs_no_stock_copy(tmp_path: Path) -> None:
@@ -597,8 +671,17 @@ def test_measure_val_of_a_tuned_run_needs_no_stock_copy(tmp_path: Path) -> None:
     result = pipe.run("measure-val", "a1")
     assert result.returncode == 0, result.stderr
     [(_, argv)] = pipe.calls("measure.py")
-    assert _option(argv, "--model") == ["jetson-ai-lab/qwen3.5-0.8b-nvsh-tool-jev"]
+    assert _option(argv, "--model") == ["a1"]
     assert _option(argv, "--revision") == ["abc123"]
+
+
+def test_a_measure_stage_refuses_a_run_that_was_never_trained(tmp_path: Path) -> None:
+    pipe = _Pipeline(tmp_path)
+    pipe.ready(run="")
+    result = pipe.run("measure-val", "a1")
+    assert result.returncode == 1
+    assert "merged" in result.stderr
+    assert not [c for c in _docker_calls(tmp_path) if c[0] == "run"]
 
 
 @pytest.mark.parametrize(
@@ -617,6 +700,7 @@ def test_measure_stages_pass_the_snapshot_thinking_and_extra_args(
     assert _option(argv, "--enable-thinking") == ["false"]
     assert _option(argv, "--ctx") == ["2048"]
     assert _option(argv, "--slice") == ["missing-candidate"]
+    assert _option(argv, "--max-logprobs") == ["22"]
 
 
 def test_enable_thinking_comes_from_the_env_file(tmp_path: Path) -> None:
@@ -636,6 +720,7 @@ def test_a_measure_stage_refuses_a_missing_ground_snapshot(stage: str, tmp_path:
     assert result.returncode == 1
     assert "GROUND_SNAPSHOT" in result.stderr
     assert not pipe.calls("measure.py")
+    assert not _docker_calls(tmp_path)
 
 
 def test_a_measure_stage_refuses_an_unset_ground_snapshot(tmp_path: Path) -> None:
@@ -646,24 +731,319 @@ def test_a_measure_stage_refuses_an_unset_ground_snapshot(tmp_path: Path) -> Non
     assert "GROUND_SNAPSHOT" in result.stderr
 
 
-def test_measure_skills_measures_stock_from_the_stock_copy_with_thinking_off(
-    tmp_path: Path,
+@pytest.mark.parametrize("name", ["stock", "a1"])
+def test_measure_skills_measures_one_served_model_with_thinking_off(
+    name: str, tmp_path: Path
 ) -> None:
-    """measure_skills.py has no --ground-snapshot (it grounds nothing); it gets
-    the stock copy and --enable-thinking, and the margin reaches only the tuned run."""
+    """measure_skills.py has no --ground-snapshot (it grounds nothing) and cannot
+    read an attach config: it gets the helper's served URL and model name with
+    --url/--model, never --launch; the margin reaches only a tuned run."""
     pipe = _Pipeline(tmp_path)
     pipe.ready()
-    result = pipe.run("measure-skills", "a1", "--margin", "+15")
+    result = pipe.run("measure-skills", name, "--margin", "+15")
     assert result.returncode == 0, result.stderr
-    (_, stock), (_, tuned) = pipe.calls("measure_skills.py")
-    assert _option(stock, "--model") == [str(pipe.work / "stock")]
-    assert _option(stock, "--model-revision") == [_QWEN_BASE_REV]
-    assert _option(tuned, "--model") == ["jetson-ai-lab/qwen3.5-0.8b-nvsh-tool-jev"]
-    for argv in (stock, tuned):
-        assert _option(argv, "--enable-thinking") == ["false"]
-        assert "--ground-snapshot" not in argv
-    assert "--margin" not in stock
-    assert _option(tuned, "--margin") == ["+15"]
+    [(_, argv)] = pipe.calls("measure_skills.py")
+    assert _option(argv, "--url") == ["http://127.0.0.1:18060/v1"]
+    assert _option(argv, "--model") == [name]
+    assert _option(argv, "--enable-thinking") == ["false"]
+    assert "--launch" not in argv and "--config" not in argv
+    assert "--ground-snapshot" not in argv
+    assert _option(argv, "--label") == [name]
+    if name == "stock":
+        assert _option(argv, "--model-revision") == [_QWEN_BASE_REV]
+        assert "--margin" not in argv and "--tuned" not in argv
+    else:
+        assert _option(argv, "--model-revision") == ["abc123"]
+        assert _option(argv, "--margin") == ["+15"] and "--tuned" in argv
+
+
+@pytest.mark.parametrize(
+    ("stage", "script"),
+    [
+        ("measure-val", "measure.py"),
+        ("measure-final", "measure.py"),
+        ("measure-skills", "measure_skills.py"),
+    ],
+)
+@pytest.mark.parametrize("name", ["stock", "a1"])
+def test_a_measure_stage_starts_waits_runs_and_stops_the_helper(
+    stage: str, script: str, name: str, tmp_path: Path
+) -> None:
+    """Deviation d7: one model per call, served by the committed helper and
+    measured in attach mode, the container removed afterwards."""
+    pipe = _Pipeline(tmp_path)
+    pipe.ready()
+    result = pipe.run(stage, name, *(["--margin", "+15"] if stage == "measure-skills" else []))
+    assert result.returncode == 0, result.stderr
+    events = [e for e in _events(tmp_path) if not e.startswith("docker ps")]
+    run_at = events.index("docker run")
+    ready_at = events.index("curl http://127.0.0.1:18060/v1/models")
+    measure_at = events.index(f"uv {script}")
+    stop_at = events.index("docker rm")
+    assert run_at < ready_at < measure_at < stop_at
+    [stop] = [c for c in _docker_calls(tmp_path) if c[0] == "rm"]
+    assert stop == ["rm", "-f", "q46-measure-18060"]
+    [run] = [c for c in _docker_calls(tmp_path) if c[0] == "run"]
+    assert _option(run, "--served-model-name") == [name]
+    assert _option(run, "--tool-call-parser") == ["qwen3_coder"]
+    records = list((pipe.work / "measure").glob("*.serve.json"))
+    assert len(records) == 1
+    assert json.loads(records[0].read_text(encoding="utf-8"))["argv"] == ["docker", *run]
+
+
+@pytest.mark.parametrize("stage", ["measure-val", "measure-final"])
+def test_a_measure_stage_writes_an_attach_config_for_the_served_model(
+    stage: str, tmp_path: Path
+) -> None:
+    pipe = _Pipeline(tmp_path)
+    pipe.ready()
+    result = pipe.run(stage, "a1")
+    assert result.returncode == 0, result.stderr
+    [(_, argv)] = pipe.calls("measure.py")
+    [config_path] = _option(argv, "--config")
+    config = tomllib.loads(Path(config_path).read_text(encoding="utf-8"))
+    assert config["tiers"]["enabled"] is True
+    lfm = config["tiers"]["lfm"]
+    assert lfm["mode"] == "attach"
+    assert lfm["base_url"] == "http://127.0.0.1:18060/v1"
+    assert lfm["tool_call_parser"] == "qwen3_coder"
+    assert lfm["model"] == "a1"
+    assert lfm["ctx"] == 2048
+    assert lfm["image"] == _IMAGE
+    assert load_config(Path(config_path)).tiers["lfm"]["mode"] == "attach"
+
+
+@pytest.mark.parametrize(
+    ("stage", "script"),
+    [
+        ("measure-val", "measure.py"),
+        ("measure-final", "measure.py"),
+        ("measure-skills", "measure_skills.py"),
+    ],
+)
+def test_a_failing_measure_still_stops_the_helper(stage: str, script: str, tmp_path: Path) -> None:
+    pipe = _Pipeline(tmp_path)
+    pipe.ready()
+    args = ["--margin", "+15"] if stage == "measure-skills" else []
+    result = pipe.run(stage, "a1", *args, FAKE_MEASURE_STATUS="5")
+    assert result.returncode != 0
+    events = _events(tmp_path)
+    assert f"uv {script}" in events
+    assert events.index("docker rm") > events.index(f"uv {script}")
+    assert ["rm", "-f", "q46-measure-18060"] in _docker_calls(tmp_path)
+
+
+def test_a_server_that_never_becomes_ready_is_stopped_and_not_measured(tmp_path: Path) -> None:
+    pipe = _Pipeline(tmp_path, "MEASURE_WAIT_SECONDS=1\n")
+    pipe.ready()
+    result = pipe.run("measure-val", "a1", FAKE_CURL_STATUS="7", MEASURE_POLL_SECONDS="0.2")
+    assert result.returncode != 0
+    assert "fake-vllm: the last log line" in result.stderr
+    assert not pipe.calls("measure.py")
+    assert ["rm", "-f", "q46-measure-18060"] in _docker_calls(tmp_path)
+
+
+def test_measure_port_comes_from_the_env_file(tmp_path: Path) -> None:
+    pipe = _Pipeline(tmp_path, "MEASURE_PORT=18077\n")
+    pipe.ready()
+    result = pipe.run("measure-skills", "stock")
+    assert result.returncode == 0, result.stderr
+    [(_, argv)] = pipe.calls("measure_skills.py")
+    assert _option(argv, "--url") == ["http://127.0.0.1:18077/v1"]
+    assert ["rm", "-f", "q46-measure-18077"] in _docker_calls(tmp_path)
+
+
+# ---------------------------------------------------------------------------
+# serve_for_measure.sh (deviation d7): one pinned vLLM for every measured model
+# ---------------------------------------------------------------------------
+
+
+def _serve(tmp_path: Path, *args: str, **env: str) -> subprocess.CompletedProcess:
+    _, fake_env = _fake_bin(tmp_path)
+    base = {
+        "MEASURE_IMAGE": _IMAGE,
+        "TOOL_CALL_PARSER": "qwen3_coder",
+        "MEASURE_CTX": "2048",
+        "MEASURE_GPU_FRACTION": "0.08",
+        "MEASURE_MAX_LOGPROBS": "22",
+    }
+    return subprocess.run(
+        ["bash", str(_SERVE), *args],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        env={**fake_env, **base, **env},
+    )
+
+
+def test_serve_start_builds_exactly_the_pinned_flags(tmp_path: Path) -> None:
+    model = _greedy_dir(tmp_path / "models" / "a1")
+    record = tmp_path / "out" / "a1.serve.json"
+    result = _serve(tmp_path, "start", str(model), "18060", str(record))
+    assert result.returncode == 0, result.stderr
+    [run] = [c for c in _docker_calls(tmp_path) if c[0] == "run"]
+    assert run == [
+        "run",
+        "-d",
+        "--name",
+        "q46-measure-18060",
+        "-p",
+        "127.0.0.1:18060:8000",
+        "--gpus",
+        "all",
+        "-e",
+        "HF_HUB_OFFLINE=1",
+        "-v",
+        f"{model}:/model:ro",
+        _IMAGE,
+        "--model",
+        "/model",
+        "--served-model-name",
+        "a1",
+        "--max-model-len",
+        "2048",
+        "--gpu-memory-utilization",
+        "0.08",
+        "--enable-auto-tool-choice",
+        "--tool-call-parser",
+        "qwen3_coder",
+        "--max-logprobs",
+        "22",
+        "--limit-mm-per-prompt",
+        '{"image": 0, "video": 0}',
+    ]
+    saved = json.loads(record.read_text(encoding="utf-8"))
+    assert saved["argv"] == ["docker", *run]
+    assert saved["container"] == "q46-measure-18060"
+    assert saved["model_dir"] == str(model)
+    assert saved["image"] == _IMAGE
+
+
+def test_serve_start_takes_the_served_name_from_measure_model_name(tmp_path: Path) -> None:
+    model = _greedy_dir(tmp_path / "runs" / "a1" / "merged")
+    result = _serve(tmp_path, "start", str(model), "18060", MEASURE_MODEL_NAME="a1")
+    assert result.returncode == 0, result.stderr
+    [run] = [c for c in _docker_calls(tmp_path) if c[0] == "run"]
+    assert _option(run, "--served-model-name") == ["a1"]
+
+
+def test_serve_start_takes_every_value_from_the_environment(tmp_path: Path) -> None:
+    model = _greedy_dir(tmp_path / "m")
+    result = _serve(
+        tmp_path,
+        "start",
+        str(model),
+        "18099",
+        MEASURE_CTX="4096",
+        MEASURE_GPU_FRACTION="0.12",
+        MEASURE_MAX_LOGPROBS="30",
+        TOOL_CALL_PARSER="lfm2",
+    )
+    assert result.returncode == 0, result.stderr
+    [run] = [c for c in _docker_calls(tmp_path) if c[0] == "run"]
+    assert _option(run, "--max-model-len") == ["4096"]
+    assert _option(run, "--gpu-memory-utilization") == ["0.12"]
+    assert _option(run, "--max-logprobs") == ["30"]
+    assert _option(run, "--tool-call-parser") == ["lfm2"]
+    assert _option(run, "-p") == ["127.0.0.1:18099:8000"]
+    assert _option(run, "--name") == ["q46-measure-18099"]
+
+
+@pytest.mark.parametrize(
+    "image",
+    [
+        "vllm/vllm-openai:latest",
+        "vllm/vllm-openai",
+        "vllm/vllm-openai@sha256:abc",
+        "",
+    ],
+)
+def test_serve_start_refuses_an_image_without_a_digest(image: str, tmp_path: Path) -> None:
+    model = _greedy_dir(tmp_path / "m")
+    result = _serve(tmp_path, "start", str(model), "18060", MEASURE_IMAGE=image)
+    assert result.returncode != 0
+    assert "sha256" in result.stderr
+    assert not [c for c in _docker_calls(tmp_path) if c[0] == "run"]
+
+
+def test_serve_start_refuses_a_model_dir_failing_gen_config_check(tmp_path: Path) -> None:
+    model = _greedy_dir(tmp_path / "m")
+    (model / "generation_config.json").write_text('{"temperature": 0.7}', encoding="utf-8")
+    result = _serve(tmp_path, "start", str(model), "18060")
+    assert result.returncode != 0
+    assert "gen_config.py check" in result.stderr
+    assert not [c for c in _docker_calls(tmp_path) if c[0] == "run"]
+
+
+def test_serve_start_refuses_a_missing_model_dir(tmp_path: Path) -> None:
+    result = _serve(tmp_path, "start", str(tmp_path / "nope"), "18060")
+    assert result.returncode != 0
+    assert not _docker_calls(tmp_path)
+
+
+@pytest.mark.parametrize("port", ["80", "abc", "70000", ""])
+def test_serve_refuses_an_unusable_port(port: str, tmp_path: Path) -> None:
+    model = _greedy_dir(tmp_path / "m")
+    for args in (("start", str(model), port), ("stop", port), ("wait", port)):
+        result = _serve(tmp_path, *args)
+        assert result.returncode != 0, args
+    assert not _docker_calls(tmp_path)
+
+
+def test_serve_start_refuses_a_tool_call_parser_left_unset(tmp_path: Path) -> None:
+    model = _greedy_dir(tmp_path / "m")
+    result = _serve(tmp_path, "start", str(model), "18060", TOOL_CALL_PARSER="")
+    assert result.returncode != 0
+    assert "TOOL_CALL_PARSER" in result.stderr
+    assert not [c for c in _docker_calls(tmp_path) if c[0] == "run"]
+
+
+def test_serve_stop_removes_only_its_own_container(tmp_path: Path) -> None:
+    result = _serve(tmp_path, "stop", "18060")
+    assert result.returncode == 0, result.stderr
+    assert _docker_calls(tmp_path) == [["rm", "-f", "q46-measure-18060"]]
+
+
+def test_serve_wait_returns_once_the_models_endpoint_answers(tmp_path: Path) -> None:
+    result = _serve(tmp_path, "wait", "18060")
+    assert result.returncode == 0, result.stderr
+    assert "curl http://127.0.0.1:18060/v1/models" in _events(tmp_path)
+
+
+def test_serve_wait_prints_the_last_log_lines_on_a_timeout(tmp_path: Path) -> None:
+    result = _serve(
+        tmp_path,
+        "wait",
+        "18060",
+        FAKE_CURL_STATUS="7",
+        MEASURE_WAIT_SECONDS="1",
+        MEASURE_POLL_SECONDS="0.2",
+    )
+    assert result.returncode != 0
+    assert "fake-vllm: the last log line" in result.stderr
+    logs = [c for c in _docker_calls(tmp_path) if c[0] == "logs"]
+    assert logs and logs[0][-1] == "q46-measure-18060"
+    assert "--tail" in logs[0]
+
+
+def test_serve_rejects_an_unknown_command(tmp_path: Path) -> None:
+    result = _serve(tmp_path, "restart", "18060")
+    assert result.returncode != 0
+    assert "start" in result.stderr and "stop" in result.stderr and "wait" in result.stderr
+    assert not _docker_calls(tmp_path)
+
+
+def test_both_env_examples_name_the_measure_server_settings() -> None:
+    parsers = {_LFM_ENV: "lfm2", _QWEN_ENV: "qwen3_coder"}
+    for example, parser in parsers.items():
+        text = example.read_text(encoding="utf-8")
+        assert f"\nMEASURE_IMAGE={_IMAGE}\n" in text
+        assert "\nMEASURE_PORT=18060\n" in text
+        assert "\nMEASURE_CTX=2048\n" in text
+        assert "\nMEASURE_GPU_FRACTION=0.08\n" in text
+        assert "\nMEASURE_MAX_LOGPROBS=22\n" in text
+        assert f"\nTOOL_CALL_PARSER={parser}\n" in text
 
 
 def test_assemble_renders_with_the_training_environment_on_the_path(tmp_path: Path) -> None:
