@@ -2818,3 +2818,38 @@ def test_rereview_records_the_reviewer_reasoning_effort(tmp_path) -> None:
     )
     record = json.loads((tmp_path / "acc.jsonl").read_text(encoding="utf-8"))
     assert record["verdicts"]["reviewer_b"]["reasoning_effort"] == "medium"
+
+
+@pytest.mark.parametrize(
+    "text,found",
+    [
+        ("Could you please escalate this issue to a senior agent?", "escalate"),
+        ("Escalate this to a human agent: it needs investigation.", "Escalate"),
+        ("Hand this off to someone who can dig into the logs", "Hand this off"),
+        ("Temperatures keep escalating on the GPU, how hot is it?", ""),
+        ("Is a human in the loop needed to approve a restart?", ""),
+    ],
+)
+def test_asks_for_handoff(text, found) -> None:
+    assert aug.asks_for_handoff(text) == found
+
+
+def test_rereview_rejects_a_handoff_request_whatever_the_reviewer_says(tmp_path) -> None:
+    candidates = _write_jsonl(
+        tmp_path / "accepted.jsonl",
+        [
+            _stored_candidate(
+                text="Escalate this to a human agent please", expect={"escalate": True}
+            )
+        ],
+    )
+    counts = aug.run_rereview(
+        candidate_files=[candidates],
+        role=_fake_reviewer_b(),
+        accepted_out=tmp_path / "acc.jsonl",
+        rejected_out=tmp_path / "rej.jsonl",
+        caller=lambda role, system, user: "yes",
+    )
+    assert counts.accepted == 0
+    record = json.loads((tmp_path / "rej.jsonl").read_text(encoding="utf-8"))
+    assert record["verdicts"]["handoff_check"]["accept"] is False

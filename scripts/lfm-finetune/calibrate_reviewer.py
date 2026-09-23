@@ -32,7 +32,6 @@ import argparse
 import concurrent.futures
 import json
 import random
-import re
 import sys
 import urllib.request
 from pathlib import Path
@@ -45,13 +44,6 @@ from nvsh.ops.table import get as get_operation  # noqa: E402
 from nvsh.ops.table import names as operation_names  # noqa: E402
 
 SEED = 46
-#: A request that asks for the hand-off in so many words is a bad escalate
-#: example (reviewer rule: users never do); it makes a known-bad probe item.
-HANDOFF_WORDS = re.compile(
-    r"\b(escalat\w*|hand-?off|hand (it|this|that) (off|over)|(human|senior|more capable) "
-    r"(agent|assistant|operator|engineer))\b",
-    re.IGNORECASE,
-)
 
 
 def _kind(expect: dict[str, Any]) -> str:
@@ -88,7 +80,7 @@ def build_probe(records: list[dict[str, Any]], per_kind: int, seed: int = SEED) 
     items: list[dict[str, Any]] = []
 
     def pick(pool: str, count: int) -> list[dict[str, Any]]:
-        candidates = [r for r in pools.get(pool, []) if not HANDOFF_WORDS.search(r["text"])]
+        candidates = [r for r in pools.get(pool, []) if not aug.asks_for_handoff(r["text"])]
         return rng.sample(candidates, min(count, len(candidates)))
 
     for pool in ("read", "change", "escalate", "explain"):
@@ -126,7 +118,7 @@ def build_probe(records: list[dict[str, Any]], per_kind: int, seed: int = SEED) 
             )
         )
     for record in pools.get("escalate", []):
-        if HANDOFF_WORDS.search(record["text"]):
+        if aug.asks_for_handoff(record["text"]):
             items.append(_item(record, record["expect"], "bad", "bad-asks-for-handoff"))
     return items
 

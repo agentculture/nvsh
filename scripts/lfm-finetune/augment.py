@@ -1018,6 +1018,23 @@ def copies_answer_template(text: str) -> str:
     return match.group(0) if match else ""
 
 
+#: A request that asks for the hand-off in so many words: users never do
+#: (the reviewer rule), yet the reviewer let two such escalate variations
+#: through (issue 46, d10 reviewer probe). Words only -- "escalating
+#: temperatures" is not a hand-off request.
+_HANDOFF_RE = re.compile(
+    r"\b(escalate|escalation|hand[- ]?off|hand (?:it|this|that) (?:off|over)|"
+    r"(?:human|senior|more capable) (?:agent|assistant|operator|engineer))\b",
+    re.IGNORECASE,
+)
+
+
+def asks_for_handoff(text: str) -> str:
+    """The hand-off wording *text* uses, or "" if none."""
+    match = _HANDOFF_RE.search(text)
+    return match.group(0) if match else ""
+
+
 def names_internal_operation(text: str) -> str:
     """The first operation-table identifier *text* names, or "" if none.
 
@@ -1100,6 +1117,10 @@ def _process_variation(
     if copied:
         verdicts["template_check"] = {"accept": False, "reason": f"copies {copied!r}"}
         leaked = copied
+    handoff = asks_for_handoff(corrected_text)
+    if handoff:
+        verdicts["handoff_check"] = {"accept": False, "reason": f"asks for {handoff!r}"}
+        leaked = leaked or handoff
     accepted = accept_a and accept_b and not leaked
     # The record keeps the source entry's own corpus fields (kind/source/
     # class for a split seed; nothing for a skill seed, which is not a
@@ -1219,6 +1240,9 @@ def _rereview_guard_verdicts(text: str, seed: Seed) -> dict[str, dict[str, Any]]
     copied = "" if leaked else copies_answer_template(text)
     if copied:
         guard_verdicts["template_check"] = {"accept": False, "reason": f"copies {copied!r}"}
+    handoff = asks_for_handoff(text)
+    if handoff:
+        guard_verdicts["handoff_check"] = {"accept": False, "reason": f"asks for {handoff!r}"}
     return guard_verdicts
 
 
