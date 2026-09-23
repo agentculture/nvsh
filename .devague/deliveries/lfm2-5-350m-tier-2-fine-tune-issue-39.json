@@ -2,7 +2,7 @@
   "plan_slug": "lfm2-5-350m-tier-2-fine-tune-issue-39",
   "schema_version": 2,
   "created": "2026-09-22T19:41:18Z",
-  "updated": "2026-09-23T05:08:15Z",
+  "updated": "2026-09-23T05:39:00Z",
   "deviations": [
     {
       "id": "d1",
@@ -296,6 +296,44 @@
       "status": "proposed",
       "superseded": false,
       "seq": 16
+    },
+    {
+      "id": "e14",
+      "obligation_ref": "o8",
+      "test_ref": "measure.py --split train.json on jetson-ai-lab/lfm2.5-350m-nvsh-triage@c73e5b6 (downloaded from the private repo, real launcher, hf_offline)",
+      "behavior_text": "the pushed checkpoint answers its own training requests: 140/148 right proposals (each read from a structured propose call), 72/72 escalations, 0 wrong mutating; run after the final test figure, so it did not precede it as c9 asked",
+      "contract_text": "c9 export check",
+      "evidence_type": "integration",
+      "strength": "execution",
+      "strength_basis": "real launcher, the exact files fetched back from the Hub (byte-identical to the bundle); ordering deviates from c9 (run after t16, since the push was blocked until then)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-23T05:38:59Z",
+        "commit": "4acc25cb54af289a1f8c8ff1d6792859e05037b5"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 17
+    },
+    {
+      "id": "e15",
+      "obligation_ref": "o9",
+      "test_ref": "grant run --inject HF_TOKEN=HF_TOKEN_FT -- hf repos create --private / hf upload / hf download",
+      "behavior_text": "private repo created (API private: True), bundle uploaded as commit c73e5b6, fetched back into the cache byte-identical; the token lived only in grant run processes; the container received none (hf_offline)",
+      "contract_text": "c38 tokens on host, c20 private repo",
+      "evidence_type": "integration",
+      "strength": "execution",
+      "strength_basis": "each step run and checked against the Hub API and cmp",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-23T05:38:59Z",
+        "commit": "4acc25cb54af289a1f8c8ff1d6792859e05037b5"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 18
     }
   ],
   "deltas": [

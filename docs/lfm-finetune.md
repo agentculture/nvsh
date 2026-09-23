@@ -612,3 +612,23 @@ side stays unread for any later run. Validation showed the same pattern:
 r6 and r7 each made one mutating mistake, all on stop and restart phrasings,
 and r8 made none there. That suggests, without showing it, that the remaining risk is paraphrases of container
 and service changes that the train side doesn't cover.
+
+### 2026-09-23: private push and export check (t15)
+
+The operator added a fine-grained token with write access to `jetson-ai-lab`
+as the grant secret `HF_TOKEN_FT` (the first token could only read). Each
+step ran as `grant run --inject HF_TOKEN=HF_TOKEN_FT -- hf ...`:
+
+- `hf repos create jetson-ai-lab/lfm2.5-350m-nvsh-triage --private` then
+  checked with the Hub API (`private: True`) before anything was uploaded;
+- `hf upload` of `bundle-r8` gave commit `c73e5b69d92d8ed4f5669481ff84ad382ffba186`;
+- `hf download` into the cache: all nine files are byte-identical to the
+  bundle, and `refs/main` now names the Hub commit.
+
+**Export check**, served from the downloaded repository through the real
+launcher with `hf_offline = true`, on the train side's own 301 requests:
+140 of 148 right proposals, 72 of 72 escalations, 0 wrong mutating proposals.
+The pushed checkpoint does what it was trained to do. This check ran after
+the final test run, not before it as planned, because the push was blocked
+until then. The files are the ones measured in the final run (same weights,
+staged under revision `cdb0b39…`).
