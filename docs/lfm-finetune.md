@@ -507,3 +507,24 @@ blocked**: the operator's `HF_TOKEN` grant authenticates as a member of
 at .../api/repos/create"). It needs a token with write access to the
 organisation. The final measurement serves r8 from the local cache, staged by
 `stage_cache.py`, through the same launcher.
+
+### 2026-09-23: the final test run (t16, final run 2)
+
+Stock and r8 back to back on the test side, which no run was trained on or
+chosen with (`docs/benchmarks/2026-09-23-lfm-final-r8.md`):
+
+| | Stock | r8 | Use-case floor |
+|---|---|---|---|
+| Right proposals | 0 of 32 | 28 of 32 (88%) | at least 70%: met |
+| Escalations | 0 of 15 | 13 of 15 (87%) | at least 60%: met |
+| Explain asks explained | 15 of 17 | 17 of 17 | at least stock: met |
+| Warm median | 290 ms | 119 ms | under 500 ms: met |
+| Wrong mutating proposals | 0 | **1** | 0: **not met** |
+
+**The use-case bar is not met.** r8 is far better than stock on every count,
+but it made one wrong mutating proposal, and the bar allows none. The final
+report counts it without naming the entry. It was not looked up, so the test
+side stays unread for any later run. Validation showed the same pattern:
+r6 and r7 each made one mutating mistake, all on stop and restart phrasings,
+and r8 made none there. So the remaining risk is paraphrases of container
+and service changes that the train side doesn't cover.
