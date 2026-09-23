@@ -167,7 +167,8 @@ nvsh package. These files were added or changed for issue 46:
 | `metrics.py` | New. The predictions JSONL schema and every issue 46 metric: right proposals, escalation recall and precision (bench and strict), false-positive tool calls, wrong mutating, invalid outputs, ECE, Brier, tokens, time to first decision. Holds `ISSUE46_MAPPING`. |
 | `scorer.py` | New. Track B scoring over label tokens, grounded arguments, incomplete-result handling. |
 | `train_scorer.py` | New. Track B LoRA on label-restricted cross-entropy; seeded; logs each split file's sha256. |
-| `quantize.py` | New. Train-side-only calibration set (checks split headers), GGUF convert + imatrix + `Q4_K_M`, INT4 AWQ export, tool versions, `heal_needed()`. |
+| `quantize.py` | New. Train-side-only calibration set (checks split headers), bf16 GGUF convert + imatrix + `Q4_K_M`, INT4 AWQ through `awq_oneshot.py` in the AWQ venv (`AWQ_PY`), support files and `generation_config.json` for the AWQ output, tool versions, `heal_needed()`. |
+| `awq_oneshot.py` | New. Runs inside the separate AWQ venv: `AWQModifier` W4A16 with `lm_head`, vision, linear-attention and MTP ignored, `oneshot` with `processor=`, generation config sanitized before save. |
 | `gen_config.py` | New. `write`, `check` and `stock-copy` of a `generation_config.json` pinning greedy decoding (d3). |
 | `capped.sh` | New. `run_capped`: a hard RAM and swap cap through `systemd-run`, with a free-memory log. |
 | `pipeline.sh` | New stages (below); training stages run capped. |
@@ -475,16 +476,44 @@ llm-compressor (`uv pip install llmcompressor --index-strategy
 unsafe-best-match`; see ledger P25). Then:
 
 ```bash
-LLAMA_CPP_CONVERT=<llama.cpp>/convert_hf_to_gguf.py \
+LLAMA_CPP_DIR=<llama.cpp checkout> \
+LLAMA_CPP_CONVERT=<llama.cpp checkout>/convert_hf_to_gguf.py \
 LLAMA_CPP_QUANTIZE=<llama.cpp build>/bin/llama-quantize \
 LLAMA_CPP_IMATRIX=<llama.cpp build>/bin/llama-imatrix \
-LLM_COMPRESSOR=<awq venv>/bin/llmcompressor \
+AWQ_PY=<awq venv>/bin/python \
   $P --env qwen.env quantize a1
 ```
 
-This is the stage as committed today. Its AWQ and GGUF paths are being
-reworked to match the spike (ledger P35, f11, pending); the variables it
-needs will change, with `AWQ_PY` naming the AWQ venv's Python.
+`AWQ_PY` is the separate AWQ venv's Python (llm-compressor 0.14.0,
+transformers 5.17.0, compressed-tensors 0.19.0); `quantize.py` refuses to
+fall back to the training venv, whose transformers is too old for
+llm-compressor on this architecture. `LLAMA_CPP_DIR` is optional and only
+records the llama.cpp commit; without it the version reads "unknown".
+
+What the stage does:
+
+- **AWQ.** `quantize.py` runs `$AWQ_PY scripts/lfm-finetune/awq_oneshot.py
+  --model-dir ... --calibration-file ... --out-dir ...
+  --num-calibration-samples N` with train-side calibration text. The recipe
+  is `AWQModifier` on `Linear` targets, scheme W4A16, ignoring `lm_head`,
+  the vision tower, the linear-attention layers and the MTP head; `oneshot`
+  gets `processor=` the tokenizer. The generation config is sanitized before
+  the save (P37). `finish_awq_export` then copies `tokenizer.json`,
+  `tokenizer_config.json`, `vocab.json`, `merges.txt`,
+  `preprocessor_config.json` and `video_preprocessor_config.json` into the
+  output and runs `gen_config.py write`.
+- **GGUF.** `gen_config.py write` on the source directory first, then a bf16
+  text-only conversion, an imatrix from the train-side calibration text, and
+  `Q4_K_M`.
+- **Versions.** The run record names the llama.cpp commit and the AWQ venv's
+  package versions.
+
+**Serving the AWQ build needs one extra vLLM argument.** The run record
+carries `serve_args`: `--limit-mm-per-prompt '{"image": 0, "video": 0}'`.
+nvsh's launcher cannot pass extra vLLM arguments. This is a known
+limitation; a vLLM started by hand with the flag and measured in attach mode
+(`[tiers.lfm] mode = "attach"`) is the likely route *(unverified)*. No sampling
+override flag is needed: the `generation_config.json` pins temperature 0.
 
 Measure both builds with the same harness. If `heal_needed()` is true, log
 the trigger, then `$P --env qwen.env heal a1-heal a1`.
@@ -730,7 +759,14 @@ and the commit on `spec/qwen-tool-jev-issue-46`.
   (pending, review-fix task f11):* AWQ through a new `awq_oneshot.py` run by
   the separate AWQ venv's Python (`AWQ_PY`), with `processor=`, the ignore
   list, the tokenizer and preprocessor files copied and `gen_config.py`
-  applied; GGUF as bf16, then imatrix, then `Q4_K_M` *(not yet merged)*.
+  applied; GGUF as bf16, then imatrix, then `Q4_K_M`. *Commits:* `47d3af3`,
+  `99739fb` (merge `07422cd`); plan risk r14 resolved. *Evidence:* the
+  lead's live check on the stock copy. The first run failed at save (P37);
+  after the fix the output was 1.1 GB with weights. Served by the pinned
+  vLLM with `--limit-mm-per-prompt` and no sampling override flag, it used
+  `MarlinLinearKernel`, logged "Default vLLM sampling parameters have been
+  overridden by the model's generation_config.json: {'temperature': 0.0}",
+  gave byte-identical output on three runs, and its tool calls parsed.
 - **P36. The GPU budget never reached the trainer.** f10 made `train.py` and
   `train_scorer.py` read `NVSH_TRAIN_GPU_MEMORY_GB`, but `pipeline.sh`
   sources the env file without exporting its variables, and neither env
@@ -766,10 +802,12 @@ and the commit on `spec/qwen-tool-jev-issue-46`.
   transformers 5.5 on the stock copy: loaded temperature 0.0, saved with
   `model.safetensors` written, `gen_config.py write` and `check` passed,
   final file `{do_sample: false, eos_token_id: [248046, 248044],
-  temperature: 0.0}`. *Commit:* `51d91b1`. *Fix for AWQ (pending, f11):*
-  `awq_oneshot.py` resets the generation config before saving, and
-  `finish_awq_export` writes the served file afterwards *(awaiting the
-  lead's live re-check)*.
+  temperature: 0.0}`. *Commit:* `51d91b1`. *Fix for AWQ (f11):*
+  `awq_oneshot.py`'s `sanitize_generation_config()` replaces the model's
+  generation config with a bare one carrying only its token ids right before
+  the save, and `finish_awq_export` writes the served file afterwards.
+  Verified by the lead's live re-check (P35). *Commit:* `99739fb` (merge
+  `07422cd`).
 - **P38. Null token ids in the served generation config.** `gen_config.py`
   copied `bos_token_id` and `pad_token_id` from Qwen's `config.json`, where
   they are null, so the served file carried them as null. *Found:* the lead,
@@ -777,8 +815,11 @@ and the commit on `spec/qwen-tool-jev-issue-46`.
 
 ## Not verified yet
 
-- **`quantize.py`'s AWQ and GGUF paths** (ledger P35, plan risk r14): the
-  f11 fix is not merged yet, and its AWQ save must also handle P37.
+- **The GGUF half of f11 on a live run**: the lead's live re-check covered
+  the AWQ build. A bf16 GGUF, imatrix and `Q4_K_M` through the stage itself
+  is not recorded yet (the t16 spike ran the same tools by hand).
+- **Serving the AWQ build through nvsh's launcher**: not possible without
+  the extra `--limit-mm-per-prompt` argument (step 13).
 - **GGUF on AGX Orin**: the llama.cpp build has only run on spark.
 - **The GGUF's sampling settings**: d3 covers "the GGUF's sampling metadata",
   and no step writes it yet.
@@ -937,3 +978,14 @@ transformers 5.17.0 (AWQ venv; 22 MB output, no weights) and 5.5.0
 served file) and verified end to end on the stock copy. The same commit stops
 `gen_config.py` writing null `bos_token_id` and `pad_token_id`. The AWQ side
 went back to f11 *(pending)*.
+
+### 2026-09-23 ~15:45: AWQ and GGUF recipes fixed (f11, r14 resolved)
+
+f11 is merged (`07422cd`). `quantize.py` now runs AWQ through
+`awq_oneshot.py` in the separate AWQ venv (`AWQ_PY`), with the spike's
+recipe, the support files copied and the generation config written, and
+converts the GGUF from bf16. The lead's live check on the stock copy: the
+first run failed at save (P37); after the fix, 1.1 GB with weights, served
+by the pinned vLLM with `--limit-mm-per-prompt` and no override flag,
+Marlin kernel, temperature 0 taken from the file, three byte-identical
+runs, tool calls parsed (P35).
