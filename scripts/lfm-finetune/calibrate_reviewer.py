@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
+import dataclasses
 import json
 import random
 import sys
@@ -143,13 +144,7 @@ def _ask(role: aug.RoleConfig, item: dict[str, Any], effort: str) -> dict[str, A
         needs_change_check=aug._needs_change_check(item["expect"]),
     )
     system, user = aug.reviewer_prompt(seed, item["text"])
-    payload = {
-        "model": role.model,
-        "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
-        "temperature": role.temperature,
-        "max_tokens": role.max_tokens,
-        "chat_template_kwargs": {"reasoning_effort": effort},
-    }
+    payload = aug.chat_payload(dataclasses.replace(role, reasoning_effort=effort), system, user)
     headers = {"Content-Type": "application/json"}
     if role.key:
         headers["Authorization"] = f"Bearer {role.key}"

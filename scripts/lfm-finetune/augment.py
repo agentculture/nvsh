@@ -699,9 +699,9 @@ def _extract_content(message: dict[str, Any]) -> str:
     return (message.get("content") or "").strip()
 
 
-def _post_chat_completion(
-    role: RoleConfig, system: str, user: str, timeout: float | None = None
-) -> str:
+def chat_payload(role: RoleConfig, system: str, user: str) -> dict[str, Any]:
+    """The chat-completion request body every role call sends (also used by
+    ``calibrate_reviewer.py``, so the probe measures the same configuration)."""
     payload: dict[str, Any] = {
         "model": role.model,
         "messages": [
@@ -718,6 +718,13 @@ def _post_chat_completion(
         template_kwargs["reasoning_effort"] = role.reasoning_effort
     if template_kwargs:
         payload["chat_template_kwargs"] = template_kwargs
+    return payload
+
+
+def _post_chat_completion(
+    role: RoleConfig, system: str, user: str, timeout: float | None = None
+) -> str:
+    payload = chat_payload(role, system, user)
     headers = {"Content-Type": "application/json"}
     if role.key:
         headers["Authorization"] = f"Bearer {role.key}"
@@ -874,6 +881,15 @@ _HEDGE_WORDS = (
     "ambiguous",
     "unclear",
     "partially",
+    "unsure",
+)
+#: Certainty words hedge only when they qualify the yes itself ("Yes,
+#: probably.", "Yes, likely the memory check"). Anywhere later they are the
+#: reviewer's own reasoning -- "requires investigation and likely changes
+#: beyond the fixed set" justified 7 of 977 stored escalate accepts.
+_YES_CERTAINTY_RE = re.compile(
+    r"""^[\s*_`"',.:;\-\u2013\u2014]*(probably|likely|perhaps|possibly|maybe)\b""",
+    re.IGNORECASE,
 )
 #: A "no" that reads as a verdict: at the start of a line or sentence, or
 #: right after a slash or colon ("yes/no: no", "yes? No, it changes ..."),
@@ -883,9 +899,11 @@ _HEDGE_WORDS = (
 #: after a sentence break ("Yes. No change is needed." rejects): a false
 #: reject only loses a candidate, a false accept trains on a bad one
 #: (issue 46, d10: loosening this let real rejections through).
-_NO_RE = re.compile(r"""(?:^\s*|[\n.?!:;/]\s*)[*_`"']*no\b""", re.IGNORECASE)
+_NO_RE = re.compile(
+    r"""(?:(?:^\s*|[\n.?!:;/]\s*)[*_`"']*no(?![a-z])|\bno[*_`"'.!\s]*$)""", re.IGNORECASE
+)
 #: "Yes, not ..." negates the yes it follows ("Yes, not equivalent: ...").
-_YES_NOT_RE = re.compile(r"""^[\s*_`"',.:;\-]*not\b""", re.IGNORECASE)
+_YES_NOT_RE = re.compile(r"""^[\s*_`"',.:;\-\u2013\u2014]*not\b""", re.IGNORECASE)
 _HEDGE_RE = re.compile(r"\b(" + "|".join(_HEDGE_WORDS) + r")\b", re.IGNORECASE)
 
 
@@ -907,7 +925,12 @@ def parse_verdict(text: str) -> tuple[bool, str]:
     if first_word.lower() != "yes":
         return False, stripped
     rest = stripped[match.end() :]
-    if _NO_RE.search(rest) or _HEDGE_RE.search(rest) or _YES_NOT_RE.match(rest):
+    if (
+        _NO_RE.search(rest)
+        or _HEDGE_RE.search(rest)
+        or _YES_NOT_RE.match(rest)
+        or _YES_CERTAINTY_RE.match(rest)
+    ):
         return False, stripped
     reason = rest.strip(" \t\n*_`\"'.,:;-—") or stripped
     return True, reason
@@ -1023,7 +1046,8 @@ def copies_answer_template(text: str) -> str:
 #: through (issue 46, d10 reviewer probe). Words only -- "escalating
 #: temperatures" is not a hand-off request.
 _HANDOFF_RE = re.compile(
-    r"\b(escalate|escalation|hand[- ]?off|hand (?:it|this|that) (?:off|over)|"
+    r"\b(escalate (?:this|it|that|the (?:issue|problem|request|ticket))|escalate to|"
+    r"hand[- ]?off|hand (?:it|this|that) (?:off|over)|"
     r"(?:human|senior|more capable) (?:agent|assistant|operator|engineer))\b",
     re.IGNORECASE,
 )

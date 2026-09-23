@@ -2823,8 +2823,8 @@ def test_rereview_records_the_reviewer_reasoning_effort(tmp_path) -> None:
 @pytest.mark.parametrize(
     "text,found",
     [
-        ("Could you please escalate this issue to a senior agent?", "escalate"),
-        ("Escalate this to a human agent: it needs investigation.", "Escalate"),
+        ("Could you please escalate this issue to a senior agent?", "escalate this"),
+        ("Escalate this to a human agent: it needs investigation.", "Escalate this"),
         ("Hand this off to someone who can dig into the logs", "Hand this off"),
         ("Temperatures keep escalating on the GPU, how hot is it?", ""),
         ("Is a human in the loop needed to approve a restart?", ""),
@@ -2853,3 +2853,58 @@ def test_rereview_rejects_a_handoff_request_whatever_the_reviewer_says(tmp_path)
     assert counts.accepted == 0
     record = json.loads((tmp_path / "rej.jsonl").read_text(encoding="utf-8"))
     assert record["verdicts"]["handoff_check"]["accept"] is False
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # Codex's second review of d10.
+        "Yes. Final verdict: __no__.",
+        "Yes — not equivalent: the device is different.",
+        "Yes, my final answer is no.",
+        "Yes, probably.",
+        "Yes, likely the memory check.",
+        "yes. no",
+    ],
+)
+def test_parse_verdict_rejects_more_disguised_rejections(text):
+    assert aug.parse_verdict(text)[0] is False
+
+
+def test_chat_payload_is_what_augment_sends(tmp_path) -> None:
+    role = aug.RoleConfig(
+        role="REVIEWER_B",
+        url="http://fake",
+        model="cortex",
+        disable_thinking=True,
+        reasoning_effort="low",
+        temperature=0.2,
+    )
+    payload = aug.chat_payload(role, "sys", "usr")
+    assert payload["chat_template_kwargs"] == {"enable_thinking": False, "reasoning_effort": "low"}
+    assert payload["temperature"] == 0.2
+    assert payload["messages"] == [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "usr"},
+    ]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Investigate privilege escalation vulnerabilities on this machine",
+        "Escalate privileges for the deploy user",
+        "The escalation policy on this box is unclear, can you check it?",
+    ],
+)
+def test_asks_for_handoff_ignores_other_senses_of_escalation(text) -> None:
+    assert aug.asks_for_handoff(text) == ""
+
+
+def test_parse_verdict_keeps_likely_inside_an_escalation_reason() -> None:
+    # 7 of 977 stored escalate accepts reasoned this way (issue 46, d10).
+    reply = (
+        "yes, resolving a network issue requires investigation and likely changes beyond "
+        "the assistant's fixed set of checks, so it should be passed on."
+    )
+    assert aug.parse_verdict(reply)[0] is True
