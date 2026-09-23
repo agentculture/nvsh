@@ -1077,3 +1077,15 @@ def test_both_env_examples_name_the_ground_snapshot_and_thinking() -> None:
         text = example.read_text(encoding="utf-8")
         assert "\nGROUND_SNAPSHOT=" in text
         assert "\nENABLE_THINKING=false" in text
+
+
+@pytest.mark.parametrize("name", ["stock", "a1"])
+def test_measure_final_keeps_the_single_final_runs_predictions(name: str, tmp_path: Path) -> None:
+    """The final run happens once; d6's calibration step reads its predictions (P50)."""
+    pipe = _Pipeline(tmp_path)
+    pipe.ready()
+    result = pipe.run("measure-final", name)
+    assert result.returncode == 0, result.stderr
+    [(_, argv)] = pipe.calls("measure.py")
+    [out] = _option(argv, "--predictions")
+    assert out.endswith(f"/final/{name}")
