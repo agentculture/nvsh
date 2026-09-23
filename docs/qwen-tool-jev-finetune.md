@@ -250,13 +250,23 @@ Nemotron verdicts reached 80%, the full run would go non-thinking. It reached
 
 ### The sealed held-out set
 
-72 fresh entries were drafted by Qwen3.5-4B (Apache-2.0, not a teacher) from
-the operation table only (seed 46, temperature 0.7, thinking off): 39
-operation entries covering 15 of the 16 operations, 17 escalations and 16
-explain asks. sha256
-`95c7cd3eb854f1b24a133a3f77df71a162369a91a5299d2696bbcb199ae2107f`. It awaits
-the operator's review. The lead has not read it, and it is unsealed only for
-the final run (decision c51).
+Qwen3.5-4B (Apache-2.0, not a teacher) drafted 72 fresh entries from the
+operation table only (seed 46, temperature 0.7, thinking off). The operator
+reviewed and edited them. The sealed file has **69 entries: 41 operation, 13
+escalate and 15 explain**, covering 15 of the 16 operations (`network_info`
+has none; the operator chose to keep it that way).
+
+| File | sha256 |
+|---|---|
+| draft as generated (v1) | `95c7cd3eb854f1b24a133a3f77df71a162369a91a5299d2696bbcb199ae2107f` |
+| sealed, read-only | `5eb650f91c44f54ab112665dc40d71f66fe118efc79d8bcea728ed9ce0a40198` |
+
+Structural checks, run without reading any entry text: unique ids, every
+expectation well formed, every operation entry passes
+`nvsh.ops.table.validate`, and 0 exact overlaps with `dev.json` or the 1,720
+stored variations. The lead has not read it and will not read it before the
+single final run, t24 (decision c51). The procedure is
+[step 4a](#4a-draft-and-seal-the-held-out-set).
 
 ### Leakage guards
 
@@ -345,6 +355,28 @@ sha256sum "$WORK"/splits/{train,val,test}.json
 Compare the hashes with the table above. Print counts and hashes of the
 test side, never its contents. The same files are copied to spark2 byte for
 byte *(not yet run)*.
+
+### 4a. Draft and seal the held-out set
+
+The held-out set is written fresh, so no model or person tuning the run has
+seen it. The agent running the experiment never reads its text.
+
+1. **Draft** with an Apache-2.0 model that is not one of the teachers, from
+   the operation table only, never from the corpus or any split. This run
+   used Qwen3.5-4B (seed 46, temperature 0.7, thinking off) *(the drafting
+   command is not recorded here)*.
+2. **Keep the draft as generated** as a separate v1 file and record its
+   sha256.
+3. **The operator reviews and edits** the draft in a separate sitting. The
+   agent does not see the edits.
+4. **Validate the structure without reading text**: the file parses as JSON
+   (one intermediate save in this run did not, and the operator fixed it),
+   ids are unique, every expectation is well formed, every operation entry
+   passes `nvsh.ops.table.validate`, and no entry exactly repeats a corpus
+   entry or a stored variation. Print only counts and per-operation
+   coverage.
+5. **Seal**: write a read-only copy and record its sha256. It is opened
+   only by the final run, with `measure.py --acceptance`.
 
 ### 5. Re-review with reviewer B
 
@@ -1070,3 +1102,14 @@ The operator edited the held-out draft. The original is kept as a separate
 v1 file (sha256 `95c7cd3e...2107f`). The latest save does not parse as JSON
 (line 505, column 5); the operator is fixing it. The held-out set is not
 sealed yet.
+
+### 2026-09-23 ~16:25: held-out set sealed (t17 done)
+
+The operator fixed the file and finished the review. Sealed read-only copy:
+sha256 `5eb650f91c44f54ab112665dc40d71f66fe118efc79d8bcea728ed9ce0a40198`.
+The lead's structural checks, with no entry text read: 69 entries, unique
+ids, every expectation well formed; 41 operation (all pass
+`nvsh.ops.table.validate`), 13 escalate, 15 explain; 15 of 16 operations
+covered (`network_info` has none, by the operator's choice); 0 exact
+overlaps with `dev.json` or the 1,720 stored variations. It stays unread
+until the single final run (t24).
