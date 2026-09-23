@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-09-22T17:34:36Z",
-  "updated": "2026-09-23T05:08:07Z",
+  "updated": "2026-09-23T06:05:05Z",
   "claims": [
     {
       "id": "c1",
@@ -1183,6 +1183,17 @@
       ],
       "origin": "llm",
       "status": "proposed"
+    },
+    {
+      "id": "l4",
+      "code": "control-absent",
+      "what": "method bar: the skills task has no validation side, and three recipes (s1, s2, s3) were each scored on the same 104 NVIDIA evals; the margin was stated before s1, but s3's pass is the best of three looks at one test set, and the s3 recipe change was motivated by s1/s2's test results",
+      "skipped_check": "a validation side for the skills task (e.g. holding out a slice of skills or evals) before iterating",
+      "refs": [
+        "c37"
+      ],
+      "origin": "llm",
+      "status": "proposed"
     }
   ],
   "obligations": [
@@ -1282,6 +1293,24 @@
       "seam": "scripts/scan-secrets.py; pipeline.env.example",
       "behavior": "no endpoint or key committed; generation code outside nvsh/",
       "source_text": "The generation and review pipeline lives in scripts/lfm-finetune/, never in nvsh/, and never commits an endpoint or key: model endpoints and ids come from the environment at run time (keys via grant run), since scripts/scan-secrets.py rejects committed non-localhost endpoints; generated data is committed or pushed only with the model ids and versions that produced it.",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o12",
+      "claim_id": "c37",
+      "seam": "measure_skills.py stock vs tuned on NVIDIA's 104 evals",
+      "behavior": "tuned beats stock by the margin stated before s1: +15 points overall and not-named at least 24 of 70",
+      "source_text": "Method validation on Jetson skill routing: each of NVIDIA's JetPack 7.2 agent skills (14 in jetson-device-skills, 24 in jetson-bsp-skills) becomes one tool whose description is its SKILL.md description, and a request is answered by calling the right skill. NVIDIA's own 104 evals (56 device, 48 BSP; each names the expected skill) are the test set and are never trained on, which gives an independent author for the test set; training examples are generated separately from the SKILL.md descriptions and references. LFM2.5-350M tuned with this recipe beats stock on those 104 evals by a margin the guide states in advance, through the same chat-template check, export check and vLLM + lfm2 path as the nvsh run.",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o13",
+      "claim_id": "c36",
+      "seam": "both bars",
+      "behavior": "at least one bar met, always with 0 wrong mutating proposals",
+      "source_text": "A successful fine-tune meets at least one of two bars, always with 0 wrong mutating proposals: (1) method validation -- the same recipe (split, template check, train, merge, export check, vLLM + lfm2 measurement) measurably improves LFM2.5-350M over stock on a public task with enough data; or (2) the nvsh use case improves dramatically, to at least >= 70% right proposals and >= 60% escalations on the committed test fold with a warm median < 500 ms. (1) without (2) is reported as 'the method works, nvsh's data is short', and the next step is collecting data (multi-round follow-up v2, issue 38), not more tuning.",
       "origin": "llm",
       "status": "proposed"
     }

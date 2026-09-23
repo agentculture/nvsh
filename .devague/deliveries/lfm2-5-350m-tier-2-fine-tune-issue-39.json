@@ -2,7 +2,7 @@
   "plan_slug": "lfm2-5-350m-tier-2-fine-tune-issue-39",
   "schema_version": 2,
   "created": "2026-09-22T19:41:18Z",
-  "updated": "2026-09-23T05:39:00Z",
+  "updated": "2026-09-23T06:05:05Z",
   "deviations": [
     {
       "id": "d1",
@@ -334,6 +334,44 @@
       "status": "proposed",
       "superseded": false,
       "seq": 18
+    },
+    {
+      "id": "e16",
+      "obligation_ref": "o12",
+      "test_ref": "docs/benchmarks/2026-09-23-skills-s3.md and -skills-stock.md (measure_skills.py --launch, same session)",
+      "behavior_text": "s3 52/104 (50%) vs stock 35/104 (34%), +16 points; not-named 33/70 vs 12/70; named 19/34 vs 23/34; export check 14/20 own training requests right, 20/20 structured calls",
+      "contract_text": "c37 method validation margin",
+      "evidence_type": "integration",
+      "strength": "execution",
+      "strength_basis": "real launcher; margin written into the report before results; caveat lapse l4: third recipe scored on the same 104 evals, no validation side; export check ran after the test measurement",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-23T06:05:04Z",
+        "commit": "85b2f154673faf2e8c73df9e3da7410f763e9bec"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 19
+    },
+    {
+      "id": "e17",
+      "obligation_ref": "o13",
+      "test_ref": "final run 2 (r8) and skills s3",
+      "behavior_text": "bar (1) method validation met (s3, caveat l4; skill routing proposes no mutating operation); bar (2) use case not met (r8: 1 wrong mutating on test). Reported as c36 says: the method works, nvsh's data is short",
+      "contract_text": "c36 either-or success",
+      "evidence_type": "observation",
+      "strength": "fidelity",
+      "strength_basis": "combines e1 and the c37 evidence",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-23T06:05:04Z",
+        "commit": "85b2f154673faf2e8c73df9e3da7410f763e9bec"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 20
     }
   ],
   "deltas": [
