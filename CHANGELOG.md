@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/). This project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.18.0] - 2026-09-23
+
+### Added
+
+- `[tiers.lfm] hf_offline`: serve Tier 2 only from `hf_cache_dir` (`HF_HUB_OFFLINE=1`), for a private tuned model fetched on the host; no token enters the container.
+- Explain-labelled corpus entries (`{"explain": true, "answer": ...}`): 116 read-only questions Tier 2 should answer in words; `nvsh tiers bench` scores them and never counts one as an escalation.
+- LFM2.5-350M fine-tune tooling under `scripts/lfm-finetune/` (seeded split, dataset builder, augmentation pipeline, training, cache staging, measurement, release bundle, `pipeline.sh`), and `docs/lfm-finetune.md` rewritten as a verified guide with its run log (part of #39).
+
+### Changed
+
+- The tuned 350M (r8) beats stock on the test side (28 of 32 right proposals against 0, 13 of 15 escalations against 0, 17 of 17 explained, 119 ms) but made one wrong mutating proposal, so it is not adopted; `docs/tier2.md` still describes stock behaviour.
+- dev-g284..g286 relabelled from escalate to explain; dev.json is now 431 entries.
+
 ## [0.17.0] - 2026-09-19
 
 ### Added

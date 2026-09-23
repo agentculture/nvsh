@@ -99,5 +99,8 @@ answer to a read-only question is not counted; the mutating and
 should-escalate rows are a fair reading.
 
 The follow-up is a fine-tune of the 350M that teaches the control tools:
-[`lfm-finetune.md`](lfm-finetune.md). Cold start was 185 to 254 s including
+[`lfm-finetune.md`](lfm-finetune.md). Its first result (issue 39, run r8) is
+28 of 32 right proposals and 13 of 15 escalations on the test side, against 0
+for stock, at a 119 ms median. It is **not adopted**, because it made one wrong
+mutating proposal and the bar allows none. Cold start was 185 to 254 s including
 the first model download; start-up from a warm cache was not timed.
