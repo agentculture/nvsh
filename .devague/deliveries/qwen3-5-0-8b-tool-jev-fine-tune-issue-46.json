@@ -2,7 +2,7 @@
   "plan_slug": "qwen3-5-0-8b-tool-jev-fine-tune-issue-46",
   "schema_version": 2,
   "created": "2026-09-23T10:18:50Z",
-  "updated": "2026-09-23T19:19:31Z",
+  "updated": "2026-09-23T23:37:04Z",
   "deviations": [
     {
       "id": "d1",
@@ -143,6 +143,30 @@
       "status": "approved",
       "classification": "acceptable",
       "seq": 10
+    },
+    {
+      "id": "d11",
+      "what": "t19's fresh variations for the 95 new train-side sources are accepted by reviewer B (cortex, reasoning effort xhigh, temperature 0.2) plus the deterministic guards (augment.py --decide-by reviewer_b), the same rule as the t18 re-review (d8); reviewer A (senses) is still asked and its verdict recorded on every record, but does not gate. Generator worker at temperature 0.7, corrector cortex 0.2, 6 variations per source (existing sources average about 5.7)",
+      "task_ref": "t19",
+      "reason": "reviewer A failed the known-good/known-bad reviewer probe (3 false accepts, 2 false rejects of 53; it judges whether the assistant can handle a request, not whether the given response is right), while reviewer B passed 0/0; one acceptance rule across the frozen dataset; decided by the lead under the operator's standing goal to /deviate and decide",
+      "affects": [],
+      "origin": "llm",
+      "status": "proposed",
+      "classification": "acceptable",
+      "seq": 11
+    },
+    {
+      "id": "d12",
+      "what": "Stock's only test-side and held-out run happens in t24, scored once with the Track A and Track B checkpoints (t21 and t24 both named a stock test-side run; the held-out file is unsealed exactly once, in t24); t21 measures stock on validation at 2K and 4K plus the 104 Jetson skills evals. Skills margin for issue 46, written before any skills scoring: neither track trains on skills, so the bar is a regression guard -- a tuned checkpoint passes if its overall skills score is at least stock's minus 5 points (n/104) and its not-named score is at least stock's minus 5 points (n/70); reported with n/N for each checkpoint in t24, not one of the c33-c36 success bars",
+      "task_ref": "t21",
+      "reason": "t21's 'stock on the clean test side once' and t24's 'stock scored exactly once on the clean test side and held-out' would be two test-side runs; c20 requires the skills margin to be committed before the scored run; decided by the lead under the operator's standing goal",
+      "affects": [
+        "t24"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "classification": "acceptable",
+      "seq": 12
     }
   ],
   "evidence": [],

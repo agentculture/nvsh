@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-09-23T06:56:50Z",
-  "updated": "2026-09-23T19:19:31Z",
+  "updated": "2026-09-23T23:17:26Z",
   "claims": [
     {
       "id": "c1",
@@ -1334,6 +1334,17 @@
         "d8",
         "d9",
         "d10"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l3",
+      "code": "instrument-changed-mid-series",
+      "what": "The t21 stock validation run labelled 4K was served at --max-model-len 2048: the env file's MEASURE_CTX=2048 overrode the exported MEASURE_CTX=4096, while measure.py --ctx 4096 wrote ctx=4096 into the report without checking the server; the lead reported 'same result at 4K' to the operator before verifying the serving record",
+      "skipped_check": "compare the serving record's --max-model-len with the reported ctx before reporting",
+      "refs": [
+        "t21"
       ],
       "origin": "llm",
       "status": "proposed"
