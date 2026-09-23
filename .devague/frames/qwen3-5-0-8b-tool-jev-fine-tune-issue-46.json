@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-09-23T06:56:50Z",
-  "updated": "2026-09-23T08:43:16Z",
+  "updated": "2026-09-23T08:47:40Z",
   "claims": [
     {
       "id": "c1",
@@ -495,7 +495,15 @@
       "origin": "user",
       "status": "confirmed",
       "honesty_conditions": [],
-      "hard_questions": [],
+      "hard_questions": [
+        {
+          "id": "q9",
+          "text": "Track B scores which operation (or explain/escalate) to take; where do its arguments come from and how is Track B scored on argument exact-match: nvsh grounding like Tier 1, arguments generated after the scored choice, or argument metrics reported for Track A only?",
+          "resolved": true,
+          "blocking": false,
+          "resolution": "User 2026-09-23: Track B scores the choice only; its arguments come from nvsh's deterministic grounding (as Tier 1 does) and are scored the same way as Track A's; the report says so."
+        }
+      ],
       "links": [],
       "instruction": "",
       "revisions": []
@@ -695,7 +703,15 @@
       "origin": "user",
       "status": "confirmed",
       "honesty_conditions": [],
-      "hard_questions": [],
+      "hard_questions": [
+        {
+          "id": "q10",
+          "text": "Who writes the fresh held-out entries, and where do they live? nvsh/tiers/corpus/held-out.json ships empty by policy: entries must be written in a separate sitting from dev.json, by the operator or sampled from real opted-in records, not by the agent that wrote the training data",
+          "resolved": true,
+          "blocking": false,
+          "resolution": "User 2026-09-23: another Apache-2.0 model that is not a teacher drafts the fresh held-out entries from the ops table only; the operator reviews them; the agent never reads them before the final run."
+        }
+      ],
       "links": [],
       "instruction": "Record the new seed and the new entries' author/date in the run log",
       "revisions": []
@@ -803,6 +819,164 @@
       "links": [],
       "instruction": "Two measure runs per quant (spark); the served config for each is committed in the run log",
       "revisions": []
+    },
+    {
+      "id": "c45",
+      "kind": "requirement",
+      "text": "Re-seeding the split handles the train-only variations: every stored variation (1,195 accepted, 525 rejected) is side=train, and merge_variations.py:61-65 raises when a variation's source is not in the train split. Before the freeze, variations whose source moved to validation or test are dropped (never promoted to those sides), sources newly on the train side are augmented by the same all-Apache pipeline, and the kept/dropped/new counts are recorded",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h29",
+          "text": "No validation or test entry of the new split has any variation in any training file, and no variation appears on the validation or test side",
+          "status": "confirmed",
+          "instruction": "Check every training variation's source_id against the new val/test ids: 0 hits"
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "merge_variations.py gains a filter-by-current-split mode with a test; run log shows the three counts",
+      "revisions": []
+    },
+    {
+      "id": "c46",
+      "kind": "requirement",
+      "text": "The evaluation covers issue 46's cases the spec omitted: behaviour when the correct operation is not among the offered candidates (it should escalate), and the rate of invalid or unparseable outputs (malformed tool call, operation not in nvsh/ops/table.py, arguments failing the operation schema), reported for stock, Track A and Track B",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h30",
+          "text": "The removed-candidate slice is built from test entries by removing the gold operation only, without editing any entry's text",
+          "status": "confirmed",
+          "instruction": "Slice builder test: text unchanged, candidate list differs by exactly the gold operation"
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "A test-side slice with the gold operation removed from the candidate set; harness counts invalid outputs separately from wrong ones",
+      "revisions": []
+    },
+    {
+      "id": "c47",
+      "kind": "requirement",
+      "text": "Every dataset and model bundle passes a secrets and private-host scan (scripts/scan-secrets.py rules, plus nvsh/redact.py over every text field) before any upload, private or public; a bundle with a finding is not uploaded",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h31",
+          "text": "The scan runs on the exact folder that is uploaded, after the last change to it",
+          "status": "confirmed",
+          "instruction": "Scan file records the folder's content hash, and the upload step checks it"
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "Scan output saved next to each bundle; upload step refuses without a clean scan file",
+      "revisions": []
+    },
+    {
+      "id": "c48",
+      "kind": "boundary",
+      "text": "Uploads start private; making a model or dataset repo public is irreversible in practice, so each repo goes public only after the operator explicitly approves that repo by name (issue 39's t15 precedent: ask first)",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h32",
+          "text": "No repo from this work is public before the operator's recorded approval",
+          "status": "confirmed",
+          "instruction": "hf repo info shows private until the approval entry's timestamp"
+        }
+      ],
+      "hard_questions": [
+        {
+          "id": "q8",
+          "text": "Which Hugging Face organisation and repo names do the public model(s) and dataset use (issue 39 used jetson-ai-lab/lfm2.5-350m-nvsh-triage, private)?",
+          "resolved": true,
+          "blocking": false,
+          "resolution": "User 2026-09-23: jetson-ai-lab org, qwen3.5-0.8b-nvsh-* names (e.g. jetson-ai-lab/qwen3.5-0.8b-nvsh-tool-jev plus -GGUF and -AWQ); private until approved per c48."
+        }
+      ],
+      "links": [],
+      "instruction": "Run log records the approval before the visibility change",
+      "revisions": []
+    },
+    {
+      "id": "c49",
+      "kind": "requirement",
+      "text": "Training on spark2 is contained so it cannot take down the model-gear stack: the training process has a hard memory cap well under the roughly 30 GB spark2 has free, and a run that nears the cap is stopped rather than left to the kernel OOM killer",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h33",
+          "text": "No model-gear container on spark2 restarts or is OOM-killed while a training run is active",
+          "status": "confirmed",
+          "instruction": "docker ps restart counts and journalctl OOM lines checked before and after each spark2 run"
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "Record the cap mechanism (container --memory or cgroup) and spark2 free memory before and during each run",
+      "revisions": []
+    },
+    {
+      "id": "c50",
+      "kind": "requirement",
+      "text": "The training environment is pinned and committed (Python, torch, transformers, peft, trl, unsloth versions plus a lock or requirements file) so h3's reproducibility is possible; today the venv on spark is untracked (transformers 5.5.0, peft 0.21.0, trl 0.24.0)",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h34",
+          "text": "spark and spark2 train from the same pinned versions",
+          "status": "confirmed",
+          "instruction": "Diff the version lines of both hosts' run logs"
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "A scripts/lfm-finetune requirements/lock file; spark2's venv built from it; versions printed in each run log",
+      "revisions": []
+    },
+    {
+      "id": "c51",
+      "kind": "decision",
+      "text": "Fresh held-out entries are drafted by an Apache-2.0 model that is not one of the pipeline's teachers, from the operation table only, reviewed by the operator, and sealed: the agent does not read them before the final run",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "Run log names the drafting model and licence; the sealed file's hash is recorded before training and checked at the final run",
+      "revisions": []
+    },
+    {
+      "id": "c52",
+      "kind": "decision",
+      "text": "Track B outputs a scored choice only; its arguments come from nvsh's deterministic grounding (as Tier 1 does) and are scored with the same argument metrics as Track A",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "Comparison table footnotes Track B's argument source",
+      "revisions": []
+    },
+    {
+      "id": "c53",
+      "kind": "decision",
+      "text": "Published repos use the jetson-ai-lab org with qwen3.5-0.8b-nvsh-* names (model, -GGUF, -AWQ) and stay private until the operator approves each one",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "Env files' REPO values match; visibility changes logged per c48",
+      "revisions": []
     }
   ],
   "open_vagueness": [
@@ -847,6 +1021,15 @@
       "text": "Whether current AWQ tooling (e.g. llm-compressor) quantizes Qwen3.5's Gated-DeltaNet layers correctly and whether INT4 AWQ kernels run on GB10 (sm_121) in the pinned vLLM image; spike before relying on INT4 AWQ",
       "kind": "unknown_nonblocking",
       "claim_id": "c44",
+      "resolved": false,
+      "resolution": "",
+      "resolution_claim_id": null
+    },
+    {
+      "id": "v6",
+      "text": "The Qwen3.5-0.8B weights are not in spark's HF cache (only Qwen3.5-4B is), so this pass could not render the real template, check the loss mask, or confirm unsloth loads Qwen3_5ForConditionalGeneration text-only; these stay first-task checks (c5, c7)",
+      "kind": "unknown_nonblocking",
+      "claim_id": "c5",
       "resolved": false,
       "resolution": "",
       "resolution_claim_id": null
@@ -1044,6 +1227,89 @@
       "seeds": [
         "q4"
       ]
+    },
+    {
+      "id": "s25",
+      "surface": "challenge pass / failure-mode lens: scripts/lfm-finetune/merge_variations.py + aug/nvsh-*.jsonl",
+      "finding": "Probe: all accepted/rejected variations carry side=train; merge() raises 'source ... is not in the split' (lines 61-65) for any variation whose source leaves the train side after a re-seed",
+      "seeds": [
+        "c45"
+      ]
+    },
+    {
+      "id": "s26",
+      "surface": "challenge pass / missing counter-evidence lens: issue 46 Evaluation section vs exported spec",
+      "finding": "Issue 46 asks to 'evaluate behavior when the correct tool is not among the candidates' and for an unsafe/invalid action rate; spec text had 0 matches for 'not among' and 'unsafe'",
+      "seeds": [
+        "c46"
+      ]
+    },
+    {
+      "id": "s27",
+      "surface": "challenge pass / security lens: scripts/lfm-finetune/dataset_bundle.py + release_bundle.py",
+      "finding": "grep for redact|scan|secret in both bundle builders found nothing; scan-secrets.py only covers repo files, not the upload folders",
+      "seeds": [
+        "c47"
+      ]
+    },
+    {
+      "id": "s28",
+      "surface": "challenge pass / reversibility lens: public release of model + dataset",
+      "finding": "Issue 39 pushed privately only after asking (delivery record t15); the spec says 'share publicly' but had no approval step and no named org/repo",
+      "seeds": [
+        "c48",
+        "q8"
+      ]
+    },
+    {
+      "id": "s29",
+      "surface": "challenge pass / operations + containment lens: ssh spark2 (free, docker ps)",
+      "finding": "spark2 runs model-gear-{gateway,vllm-primary,rerank,embed,hand} with about 30 GB available of 121 GB unified memory; an unbounded training process competes for the same pool",
+      "seeds": [
+        "c49"
+      ]
+    },
+    {
+      "id": "s30",
+      "surface": "challenge pass / unstated-assumption lens: scripts/lfm-finetune/ + the training venv",
+      "finding": "No requirements/lock file in scripts/lfm-finetune; docs/lfm-finetune.md pins no versions; spark2 has no venv, so it would be built unpinned",
+      "seeds": [
+        "c50"
+      ]
+    },
+    {
+      "id": "s31",
+      "surface": "challenge pass / overlooked data-flow lens: issue 46 Track B vs c16/c25",
+      "finding": "Issue 46 wants argument exact-match for both tracks, but a candidate scorer outputs a choice, not arguments; no claim says where Track B's arguments come from",
+      "seeds": [
+        "q9"
+      ]
+    },
+    {
+      "id": "s32",
+      "surface": "challenge pass / overlooked-actors lens: nvsh/tiers/corpus/held-out.json header",
+      "finding": "held-out.json has 0 entries; its header requires a separate sitting and names the operator or real opted-in records as authors",
+      "seeds": [
+        "q10"
+      ]
+    },
+    {
+      "id": "s33",
+      "surface": "challenge pass / cheap-probe lens: HF cache on spark",
+      "finding": "Only models--Qwen--Qwen3.5-4B cached; the 0.8B template and mask probes were not run in this pass (no download during a read-only sweep)",
+      "seeds": []
+    },
+    {
+      "id": "s34",
+      "surface": "challenge pass / adjacent-systems lens: augmentation gateway",
+      "finding": "AUG_URL is localhost:8001 on spark (model-gear-gateway); spark2 is 192.168.1.193 (not the Pi associate endpoint 192.168.1.138); re-review traffic ends before training per c40, so no overlap with Track B training \u2014 clean, residual risk only if c40's ordering slips",
+      "seeds": []
+    },
+    {
+      "id": "s35",
+      "surface": "challenge pass / concurrency + observability lens: pipeline.sh stages, measure background load",
+      "finding": "pipeline.sh writes `work/<log>.log` + `.done` per stage and measure.py records background load (h26); spark permanently runs model-gear-vllm-multimodal (about 33 GB), so \"quiet\" means no other training/measure job, not an idle GPU \u2014 clean pass with that residual",
+      "seeds": []
     }
   ],
   "lapses": [],

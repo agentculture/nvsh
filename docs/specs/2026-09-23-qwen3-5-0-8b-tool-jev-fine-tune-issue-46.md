@@ -65,6 +65,26 @@
   - instruction: Two measure runs per quant (spark); the served config for each is committed in the run log
   - honesty: Calibration and healing data come from the train side only; no validation or test entry is used for imatrix, AWQ calibration or healing
     - instruction: grep the calibration file's `source_ids` against the val/test split files: 0 overlap
+- Re-seeding the split handles the train-only variations: every stored variation (1,195 accepted, 525 rejected) is side=train, and `merge_variations.py`:61-65 raises when a variation's source is not in the train split. Before the freeze, variations whose source moved to validation or test are dropped (never promoted to those sides), sources newly on the train side are augmented by the same all-Apache pipeline, and the kept/dropped/new counts are recorded
+  - instruction: `merge_variations.py` gains a filter-by-current-split mode with a test; run log shows the three counts
+  - honesty: No validation or test entry of the new split has any variation in any training file, and no variation appears on the validation or test side
+    - instruction: Check every training variation's `source_id` against the new val/test ids: 0 hits
+- The evaluation covers issue 46's cases the spec omitted: behaviour when the correct operation is not among the offered candidates (it should escalate), and the rate of invalid or unparseable outputs (malformed tool call, operation not in nvsh/ops/table.py, arguments failing the operation schema), reported for stock, Track A and Track B
+  - instruction: A test-side slice with the gold operation removed from the candidate set; harness counts invalid outputs separately from wrong ones
+  - honesty: The removed-candidate slice is built from test entries by removing the gold operation only, without editing any entry's text
+    - instruction: Slice builder test: text unchanged, candidate list differs by exactly the gold operation
+- Every dataset and model bundle passes a secrets and private-host scan (scripts/scan-secrets.py rules, plus nvsh/redact.py over every text field) before any upload, private or public; a bundle with a finding is not uploaded
+  - instruction: Scan output saved next to each bundle; upload step refuses without a clean scan file
+  - honesty: The scan runs on the exact folder that is uploaded, after the last change to it
+    - instruction: Scan file records the folder's content hash, and the upload step checks it
+- Training on spark2 is contained so it cannot take down the model-gear stack: the training process has a hard memory cap well under the roughly 30 GB spark2 has free, and a run that nears the cap is stopped rather than left to the kernel OOM killer
+  - instruction: Record the cap mechanism (container --memory or cgroup) and spark2 free memory before and during each run
+  - honesty: No model-gear container on spark2 restarts or is OOM-killed while a training run is active
+    - instruction: docker ps restart counts and journalctl OOM lines checked before and after each spark2 run
+- The training environment is pinned and committed (Python, torch, transformers, peft, trl, unsloth versions plus a lock or requirements file) so h3's reproducibility is possible; today the venv on spark is untracked (transformers 5.5.0, peft 0.21.0, trl 0.24.0)
+  - instruction: A scripts/lfm-finetune requirements/lock file; spark2's venv built from it; versions printed in each run log
+  - honesty: spark and spark2 train from the same pinned versions
+    - instruction: Diff the version lines of both hosts' run logs
 
 ## Honesty conditions
 
@@ -83,6 +103,8 @@
 - Latency and memory are measured while spark has no other training or measurement job running, with background load recorded as in issue 39's measure.py
 - A heal run is attributable: its trigger (the measured loss vs bf16) and its train-side data are recorded before it runs
   - instruction: Run log entry precedes the heal run id
+- No repo from this work is public before the operator's recorded approval
+  - instruction: hf repo info shows private until the approval entry's timestamp
 
 ## Success signals
 
@@ -105,6 +127,8 @@
   - instruction: Check PR body keywords
 - Both Sparks train independently in parallel; there is no distributed training across spark and spark2 (issue 46: 'do not require distributed training across the two machines')
   - instruction: Run logs on each host; no torch.distributed init
+- Uploads start private; making a model or dataset repo public is irreversible in practice, so each repo goes public only after the operator explicitly approves that repo by name (issue 39's t15 precedent: ask first)
+  - instruction: Run log records the approval before the visibility change
 
 ## Non-goals
 
@@ -167,6 +191,25 @@
   - seeds: `q1` (question, resolved)
 - `s24` — `nvsh/tiers/needle.py vs docs/tier2.md (tier contracts)`: Tier 1 is one blocking round trip picking one typed operation from nvsh/ops/table.py, no inspection; Tier 2 inspects read-only ops for up to 4 rounds and ends in propose/explain/escalate; no repo text compares a Tool-Jev to either
   - seeds: `q4` (question, resolved)
+- `s25` — `challenge pass / failure-mode lens: scripts/lfm-finetune/merge_variations.py + aug/nvsh-*.jsonl`: Probe: all accepted/rejected variations carry side=train; merge() raises 'source ... is not in the split' (lines 61-65) for any variation whose source leaves the train side after a re-seed
+  - seeds: `c45`
+- `s26` — `challenge pass / missing counter-evidence lens: issue 46 Evaluation section vs exported spec`: Issue 46 asks to 'evaluate behavior when the correct tool is not among the candidates' and for an unsafe/invalid action rate; spec text had 0 matches for 'not among' and 'unsafe'
+  - seeds: `c46`
+- `s27` — `challenge pass / security lens: scripts/lfm-finetune/dataset_bundle.py + release_bundle.py`: grep for redact|scan|secret in both bundle builders found nothing; scan-secrets.py only covers repo files, not the upload folders
+  - seeds: `c47`
+- `s28` — `challenge pass / reversibility lens: public release of model + dataset`: Issue 39 pushed privately only after asking (delivery record t15); the spec says 'share publicly' but had no approval step and no named org/repo
+  - seeds: `c48`, `q8` (question, resolved)
+- `s29` — `challenge pass / operations + containment lens: ssh spark2 (free, docker ps)`: spark2 runs model-gear-{gateway,vllm-primary,rerank,embed,hand} with about 30 GB available of 121 GB unified memory; an unbounded training process competes for the same pool
+  - seeds: `c49`
+- `s30` — `challenge pass / unstated-assumption lens: scripts/lfm-finetune/ + the training venv`: No requirements/lock file in scripts/lfm-finetune; docs/lfm-finetune.md pins no versions; spark2 has no venv, so it would be built unpinned
+  - seeds: `c50`
+- `s31` — `challenge pass / overlooked data-flow lens: issue 46 Track B vs c16/c25`: Issue 46 wants argument exact-match for both tracks, but a candidate scorer outputs a choice, not arguments; no claim says where Track B's arguments come from
+  - seeds: `q9` (question, resolved)
+- `s32` — `challenge pass / overlooked-actors lens: nvsh/tiers/corpus/held-out.json header`: held-out.json has 0 entries; its header requires a separate sitting and names the operator or real opted-in records as authors
+  - seeds: `q10` (question, resolved)
+- `s33` — `challenge pass / cheap-probe lens: HF cache on spark`: Only models--Qwen--Qwen3.5-4B cached; the 0.8B template and mask probes were not run in this pass (no download during a read-only sweep)
+- `s34` — `challenge pass / adjacent-systems lens: augmentation gateway`: `AUG_URL` is localhost:8001 on spark (model-gear-gateway); spark2 is 192.168.1.193 (not the Pi associate endpoint 192.168.1.138); re-review traffic ends before training per c40, so no overlap with Track B training — clean, residual risk only if c40's ordering slips
+- `s35` — `challenge pass / concurrency + observability lens: pipeline.sh stages, measure background load`: pipeline.sh writes `work/<log>.log` + `.done` per stage and measure.py records background load (h26); spark permanently runs model-gear-vllm-multimodal (about 33 GB), so "quiet" means no other training/measure job, not an idle GPU — clean pass with that residual
 
 ## Decisions
 
@@ -188,6 +231,12 @@
   - instruction: Run log shows the bf16 vs quant numbers before any heal run
 - A quantized build may lose at most 3 percentage points of right proposals against its bf16 checkpoint and must add no wrong mutating proposal; the absolute success bars (c33-c36) still apply to it
   - instruction: Comparison table shows bf16 and each quant side by side with the delta
+- Fresh held-out entries are drafted by an Apache-2.0 model that is not one of the pipeline's teachers, from the operation table only, reviewed by the operator, and sealed: the agent does not read them before the final run
+  - instruction: Run log names the drafting model and licence; the sealed file's hash is recorded before training and checked at the final run
+- Track B outputs a scored choice only; its arguments come from nvsh's deterministic grounding (as Tier 1 does) and are scored with the same argument metrics as Track A
+  - instruction: Comparison table footnotes Track B's argument source
+- Published repos use the jetson-ai-lab org with qwen3.5-0.8b-nvsh-\* names (model, -GGUF, -AWQ) and stay private until the operator approves each one
+  - instruction: Env files' REPO values match; visibility changes logged per c48
 
 ## Hard questions
 
@@ -198,6 +247,9 @@
 - Is the clean test side a re-seeded split of the same corpus, or new held-out entries authored for this work? (resolved: User 2026-09-23: re-seed + fresh held-out entries; old test entries excluded from training.)
 - Does data generated or reviewed by Nemotron 3.5 Lightning (OpenMDW-1.1) stay in the shareable dataset, or is it filtered to Apache-2.0 teachers only before publication? (resolved: User 2026-09-23: replace Nemotron-generated/reviewed records by re-running that role with an Apache-2.0 teacher (Qwen 3.8 27B suggested).)
 - Can Track B train on spark2 alongside the running model-gear stack (about 30 GB free), or does the stack need to be paused/moved during training runs? (resolved: User 2026-09-23: Track B trains on spark2 alongside the running model-gear stack (~30 GB free), memory capped; latency/memory numbers are taken when the stack is quiet or on spark.)
+- Track B scores which operation (or explain/escalate) to take; where do its arguments come from and how is Track B scored on argument exact-match: nvsh grounding like Tier 1, arguments generated after the scored choice, or argument metrics reported for Track A only? (resolved: User 2026-09-23: Track B scores the choice only; its arguments come from nvsh's deterministic grounding (as Tier 1 does) and are scored the same way as Track A's; the report says so.)
+- Who writes the fresh held-out entries, and where do they live? nvsh/tiers/corpus/held-out.json ships empty by policy: entries must be written in a separate sitting from dev.json, by the operator or sampled from real opted-in records, not by the agent that wrote the training data (resolved: User 2026-09-23: another Apache-2.0 model that is not a teacher drafts the fresh held-out entries from the ops table only; the operator reviews them; the agent never reads them before the final run.)
+- Which Hugging Face organisation and repo names do the public model(s) and dataset use (issue 39 used jetson-ai-lab/lfm2.5-350m-nvsh-triage, private)? (resolved: User 2026-09-23: jetson-ai-lab org, qwen3.5-0.8b-nvsh-\* names (e.g. jetson-ai-lab/qwen3.5-0.8b-nvsh-tool-jev plus -GGUF and -AWQ); private until approved per c48.)
 
 ## Open parks
 
@@ -205,6 +257,7 @@
 - [unknown_nonblocking] Minimum llama.cpp build with correct Gated-DeltaNet (`qwen3_5`) support for Jetson/CPU serving, and which build ships in the Jetson containers
 - [unknown_nonblocking] What a representative K8s-friendly serving profile is (CPU-only llama.cpp? small-GPU vLLM?) and its resource limits
 - [unknown_nonblocking] Whether current AWQ tooling (e.g. llm-compressor) quantizes Qwen3.5's Gated-DeltaNet layers correctly and whether INT4 AWQ kernels run on GB10 (`sm_121`) in the pinned vLLM image; spike before relying on INT4 AWQ
+- [unknown_nonblocking] The Qwen3.5-0.8B weights are not in spark's HF cache (only Qwen3.5-4B is), so this pass could not render the real template, check the loss mask, or confirm unsloth loads `Qwen3_5ForConditionalGeneration` text-only; these stay first-task checks (c5, c7)
 
 ## Resolved vagueness
 
