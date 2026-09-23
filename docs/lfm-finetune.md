@@ -526,5 +526,5 @@ but it made one wrong mutating proposal, and the bar allows none. The final
 report counts it without naming the entry. It was not looked up, so the test
 side stays unread for any later run. Validation showed the same pattern:
 r6 and r7 each made one mutating mistake, all on stop and restart phrasings,
-and r8 made none there. So the remaining risk is paraphrases of container
+and r8 made none there. That suggests, without showing it, that the remaining risk is paraphrases of container
 and service changes that the train side doesn't cover.
