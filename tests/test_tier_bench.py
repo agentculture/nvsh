@@ -180,6 +180,51 @@ def test_load_corpus_reports_bad_entries_without_raising(tmp_path):
     assert len(loaded.problems) == 3
 
 
+def test_load_corpus_accepts_an_explain_expectation_with_no_problems(tmp_path):
+    corpus_path = tmp_path / "explain.json"
+    corpus_path.write_text(
+        json.dumps(
+            {
+                "entries": [
+                    {
+                        "id": "e1",
+                        "kind": "explicit",
+                        "text": "why is the gpu at 100 percent",
+                        "expect": {"explain": True},
+                        "source": "test",
+                    }
+                ]
+            }
+        )
+    )
+    loaded = bench_mod.load_corpus(corpus_path)
+    assert loaded.problems == ()
+    assert [entry.id for entry in loaded.entries] == ["e1"]
+    assert loaded.entries[0].expect == {"explain": True}
+
+
+def test_load_corpus_reports_a_problem_when_expect_has_neither_form(tmp_path):
+    corpus_path = tmp_path / "neither.json"
+    corpus_path.write_text(
+        json.dumps(
+            {
+                "entries": [
+                    {
+                        "id": "e1",
+                        "kind": "explicit",
+                        "text": "do something",
+                        "expect": {},
+                        "source": "test",
+                    }
+                ]
+            }
+        )
+    )
+    loaded = bench_mod.load_corpus(corpus_path)
+    assert loaded.entries == ()
+    assert len(loaded.problems) == 1
+
+
 # ---------------------------------------------------------------------------
 # Metrics, computed directly (no router involved)
 # ---------------------------------------------------------------------------
@@ -215,6 +260,37 @@ def test_operation_accuracy_counts_operation_and_argument_matches():
     assert accuracy["argument_correct"] == 1
     assert accuracy["accuracy"] == pytest.approx(2 / 3)
     assert accuracy["argument_accuracy"] == pytest.approx(1 / 3)
+
+
+def test_operation_accuracy_excludes_explain_entries_from_the_target_total():
+    explain_entry = _entry("a", "explicit", "why is it slow", {"explain": True})
+    correct_entry = _entry("b", "explicit", "x", {"operation": "gpu_stats", "args": {}})
+
+    items = [
+        _item(explain_entry, bench_mod.TierOutcome(escalated_to="agent")),
+        _item(correct_entry, bench_mod.TierOutcome(handled_by="needle", operation="gpu_stats")),
+    ]
+    accuracy = bench_mod.compute_operation_accuracy(items)
+    assert accuracy["total"] == 1
+    assert accuracy["operation_correct"] == 1
+
+
+def test_is_correct_treats_explain_as_should_decline_when_declined():
+    explain_entry = _entry("a", "explicit", "why is it slow", {"explain": True})
+    declined_via_escalation = _item(explain_entry, bench_mod.TierOutcome(escalated_to="agent"))
+    declined_via_explanation = _item(
+        explain_entry, bench_mod.TierOutcome(handled_by="lfm", explanation="it is busy")
+    )
+    assert bench_mod._is_correct(declined_via_escalation) is True
+    assert bench_mod._is_correct(declined_via_explanation) is True
+
+
+def test_is_correct_marks_explain_wrong_when_an_operation_is_proposed():
+    explain_entry = _entry("a", "explicit", "why is it slow", {"explain": True})
+    proposed_operation = _item(
+        explain_entry, bench_mod.TierOutcome(handled_by="needle", operation="gpu_stats", args={})
+    )
+    assert bench_mod._is_correct(proposed_operation) is False
 
 
 def test_false_mutating_pick_flags_a_mutating_operation_against_a_different_expectation():
@@ -728,6 +804,14 @@ def test_accuracy_by_operation_puts_should_declines_under_one_label():
     assert rows[bench_mod.ESCALATE_LABEL] == {"total": 1, "correct": 0, "missed": ["x1"]}
 
 
+def test_accuracy_by_operation_labels_explain_entries_separately_from_escalate():
+    explain_entry = _entry("x2", "explicit", "why is it slow", {"explain": True})
+    declined = bench_mod.TierOutcome(escalated_to="agent")
+    rows = bench_mod.accuracy_by_operation(_breakdown_items() + [_item(explain_entry, declined)])
+    assert rows[bench_mod.EXPLAIN_LABEL] == {"total": 1, "correct": 1, "missed": []}
+    assert bench_mod.EXPLAIN_LABEL != bench_mod.ESCALATE_LABEL
+
+
 def test_accuracy_by_class_groups_by_phrasing_and_names_the_unclassed():
     rows = bench_mod.accuracy_by_class(_breakdown_items())
     assert sorted(rows) == sorted(["imperative", "terse", bench_mod.NO_CLASS_LABEL])
@@ -744,3 +828,51 @@ def test_load_corpus_reads_the_class_field(tmp_path):
 def test_bench_result_carries_both_breakdowns():
     result = _run_bench()
     assert {"accuracy_by_operation", "accuracy_by_class"} <= set(result)
+
+
+def test_load_corpus_reports_an_expect_that_mixes_a_decline_with_an_operation(tmp_path) -> None:
+    path = tmp_path / "mixed.json"
+    path.write_text(
+        json.dumps(
+            {
+                "entries": [
+                    {
+                        "id": "m1",
+                        "kind": "explicit",
+                        "text": "q",
+                        "expect": {"explain": True, "operation": "gpu_stats", "args": {}},
+                        "source": "t",
+                    },
+                    {
+                        "id": "m2",
+                        "kind": "explicit",
+                        "text": "q",
+                        "expect": {"explain": True, "escalate": True},
+                        "source": "t",
+                    },
+                ]
+            }
+        )
+    )
+    loaded = bench_mod.load_corpus(path)
+    assert loaded.entries == ()
+    assert len(loaded.problems) == 2
+
+
+def test_an_escalated_explain_entry_is_not_a_false_escalation() -> None:
+    entry = bench_mod.CorpusEntry(
+        id="x1", kind="explicit", text="q", expect={"explain": True}, source="t"
+    )
+    item = bench_mod.ItemResult(
+        entry=entry, outcome=bench_mod.TierOutcome(escalated_to="agent"), latency_ms=1.0
+    )
+    result = bench_mod.compute_escalation([item])
+    assert result["fp"] == 0
+    assert result["tp"] == 0
+
+
+def test_a_pick_against_an_explain_entry_is_never_a_correct_calibration_sample() -> None:
+    entry = bench_mod.CorpusEntry(
+        id="x1", kind="explicit", text="q", expect={"explain": True}, source="t"
+    )
+    assert bench_mod._pick_is_correct(entry, bench_mod.TierOutcome()) is False

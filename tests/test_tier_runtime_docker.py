@@ -1055,3 +1055,25 @@ def test_build_runtime_defaults_the_cache_under_nvsh_own_cache_dir(tmp_path, mon
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
     rd.build_runtime(settings(engine="vllm"), SPARK)
     assert (tmp_path / "nvsh" / "tiers" / rd.HF_CACHE_NAME).is_dir()
+
+
+def test_hf_offline_serves_from_the_host_cache_without_asking_the_hub(tmp_path) -> None:
+    arg0 = settings(
+        engine="vllm", model="LiquidAI/LFM2.5-350M", hf_cache_dir=str(tmp_path), hf_offline=True
+    )
+    argv = rd.render_launch(arg0, SPARK, uid=1000)
+    joined = " ".join(argv)
+    assert "-e HF_HUB_OFFLINE=1" in joined
+    assert f"-v {tmp_path}:{rd.CACHE_MOUNT}" in joined
+    assert "TOKEN" not in joined
+
+
+def test_hf_offline_is_off_unless_asked(tmp_path) -> None:
+    arg0 = settings(engine="vllm", model="LiquidAI/LFM2.5-350M", hf_cache_dir=str(tmp_path))
+    assert "HF_HUB_OFFLINE=1" not in rd.render_launch(arg0, SPARK, uid=1000)
+
+
+def test_a_malformed_hf_offline_is_refused(tmp_path) -> None:
+    arg0 = settings(engine="vllm", hf_cache_dir=str(tmp_path), hf_offline="yes")
+    with pytest.raises(rd.RuntimeUnavailable, match="hf_offline"):
+        rd.render_launch(arg0, SPARK, uid=1000)

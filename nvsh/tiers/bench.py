@@ -63,6 +63,7 @@ def held_out_corpus_path() -> Path:
 
 
 ESCALATE_LABEL = "(escalate)"
+EXPLAIN_LABEL = "(explain)"
 NO_CLASS_LABEL = "(none)"
 
 # ---------------------------------------------------------------------------
@@ -72,17 +73,20 @@ NO_CLASS_LABEL = "(none)"
 
 @dataclass(frozen=True)
 class CorpusEntry:
-    """One benchmark prompt: an expected operation+arguments, or an escalation.
+    """One benchmark prompt: an expected operation+arguments, or a should-decline.
 
-    Keyed by operation NAME only, as data -- nothing in this module ever
-    switches on a specific operation name; the table in ``nvsh.ops`` is the
-    only place operations are named.
+    A should-decline expectation is either an escalation (``{"escalate":
+    True}``, the request needs the full agent) or an explain (``{"explain":
+    True}``, a read-only question a tier should answer in words rather than
+    propose or escalate). Keyed by operation NAME only, as data -- nothing in
+    this module ever switches on a specific operation name; the table in
+    ``nvsh.ops`` is the only place operations are named.
     """
 
     id: str
     kind: str  # "explicit" | "failure"
     text: str
-    expect: dict  # {"operation": name, "args": {...}} or {"escalate": True}
+    expect: dict  # {"operation": name, "args": {...}}, {"escalate": True} or {"explain": True}
     source: str
     #: How the request is phrased ("imperative", "question", "symptom",
     #: "terse", "jargon", ...). Free text, as data: the grid in
@@ -151,7 +155,12 @@ def _parse_entry(index: int, item: object) -> CorpusEntry | str:
 
 
 def _validate_expect(entry: CorpusEntry) -> str | None:
-    if entry.expect.get("escalate") is True:
+    declines = [key for key in ("escalate", "explain") if entry.expect.get(key) is True]
+    if len(declines) > 1 or (declines and "operation" in entry.expect):
+        return (
+            f"{entry.id}: expect mixes {', '.join(declines)} with another answer; give exactly one"
+        )
+    if declines:
         return None
     operation = entry.expect.get("operation")
     args = entry.expect.get("args", {})
@@ -304,9 +313,19 @@ def item_rows(items: Sequence[ItemResult]) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 
+def _expects_decline(entry: CorpusEntry) -> bool:
+    """True for a should-decline expectation: an escalation or an explain.
+
+    Tier 1 has no ``explain`` outcome of its own -- it only proposes or
+    declines -- so for Tier 1 scoring an explain expectation is judged the
+    same way an escalation is: correct when no operation was proposed.
+    """
+    return bool(entry.expect.get("escalate")) or bool(entry.expect.get("explain"))
+
+
 def _explicit_target_items(items: Sequence[ItemResult]) -> list[ItemResult]:
-    """Items whose ``expect`` names an operation, not an escalation."""
-    return [item for item in items if not item.entry.expect.get("escalate")]
+    """Items whose ``expect`` names an operation, not a should-decline."""
+    return [item for item in items if not _expects_decline(item.entry)]
 
 
 def accuracy_by_kind(items: Sequence[ItemResult]) -> dict:
@@ -324,17 +343,27 @@ def accuracy_by_kind(items: Sequence[ItemResult]) -> dict:
 
 
 def _expected_label(entry: CorpusEntry) -> str:
-    """The expected operation's name, or ``"(escalate)"`` for a should-decline."""
+    """The expected operation's name, or the should-decline label for one."""
     if entry.expect.get("escalate"):
         return ESCALATE_LABEL
+    if entry.expect.get("explain"):
+        return EXPLAIN_LABEL
     return str(entry.expect.get("operation"))
 
 
 def _is_correct(item: ItemResult) -> bool:
-    """Right operation and arguments, or an escalation where one was expected."""
+    """Right operation and arguments, or a should-decline where one was expected.
+
+    An escalation is only correct when the router actually escalated
+    (``escalated_to`` set); an explain is correct whenever no operation was
+    proposed -- Tier 1 alone can only reach that by escalating, while a run
+    with Tier 2 wired in may answer with an explanation instead.
+    """
     outcome = item.outcome
     if item.entry.expect.get("escalate"):
         return outcome is not None and outcome.escalated_to is not None
+    if item.entry.expect.get("explain"):
+        return outcome is not None and outcome.operation is None
     if outcome is None or outcome.operation != item.entry.expect.get("operation"):
         return False
     return outcome.args == item.entry.expect.get("args", {})
@@ -426,9 +455,17 @@ def compute_false_mutating(items: Sequence[ItemResult]) -> dict:
 
 
 def compute_escalation(items: Sequence[ItemResult]) -> dict:
-    """Precision/recall of "this request should escalate" over the whole corpus."""
+    """Precision/recall of "this request should escalate" over the whole corpus.
+
+    Explain entries are left out: a decline is the right Tier 1 answer for
+    them (see :func:`_is_correct`), so counting one as a false escalation
+    would penalise a correct outcome; how often they are explained is
+    reported separately.
+    """
     tp = fp = fn = tn = 0
     for item in items:
+        if item.entry.expect.get("explain"):
+            continue
         expected = bool(item.entry.expect.get("escalate"))
         got = item.outcome is not None and item.outcome.escalated_to is not None
         if expected and got:
@@ -461,7 +498,7 @@ def _pick_is_correct(entry: CorpusEntry, outcome: TierOutcome) -> bool:
     wrong service or container as a positive calibration/threshold sample,
     even though the main accuracy score correctly marks it wrong.
     """
-    if entry.expect.get("escalate"):
+    if _expects_decline(entry):
         return False
     if outcome.operation != entry.expect.get("operation"):
         return False

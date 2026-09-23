@@ -107,6 +107,52 @@ def test_an_escalation_entry_has_no_answers() -> None:
 
 
 # ---------------------------------------------------------------------------
+# test_an_explain_entry_has_no_answers
+# ---------------------------------------------------------------------------
+
+
+def test_an_explain_entry_has_no_answers() -> None:
+    """expect={"explain": True} -> should-decline example (answers == []).
+
+    Tier 1 (Needle3) has no explain capability, so the honest training
+    target for a query that expects an explanation is the same
+    should-decline shape used for escalation: no tool call at all.
+    """
+    entry: dict = {
+        "id": "t03b",
+        "kind": "explicit",
+        "text": "Why is the fan so loud?",
+        "expect": {"explain": True},
+        "source": "test",
+    }
+    result = example_from_entry(entry, tools)
+    assert result is not None
+    assert result["query"] == "Why is the fan so loud?"
+    assert result["answers"] == []
+
+
+def test_an_explain_entry_is_written_not_invalid(tmp_path: Path) -> None:
+    """An explain entry counts toward "written", never "invalid"."""
+    entries: list[dict] = [
+        {
+            "id": "t03c",
+            "kind": "explicit",
+            "text": "Why is the fan so loud?",
+            "expect": {"explain": True},
+            "source": "test",
+        }
+    ]
+    corpus_path = tmp_path / "corpus.json"
+    corpus_path.write_text(json.dumps(_tiny_corpus(entries)))
+
+    examples, counts = build(corpus_path, None, tools)
+    assert len(examples) == 1
+    assert examples[0]["answers"] == []
+    assert counts["invalid"] == 0
+    assert counts["written"] == 1
+
+
+# ---------------------------------------------------------------------------
 # test_a_failure_entry_is_skipped
 # ---------------------------------------------------------------------------
 

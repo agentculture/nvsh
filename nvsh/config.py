@@ -100,6 +100,7 @@ _VALID_TIERS_LFM_KEYS = {
     "gpu_memory_fraction",
     "tool_call_parser",
     "hf_cache_dir",
+    "hf_offline",
 }
 
 #: Accepted engines for ``[tiers.lfm]``.

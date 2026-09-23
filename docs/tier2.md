@@ -56,6 +56,7 @@ image  = "vllm/vllm-openai@sha256:<digest>"
 | `gpu_memory_fraction` | Up-front GPU share for vLLM and SGLang, default `0.08` |
 | `tool_call_parser` | Server-side tool-call parser; vLLM defaults to `lfm2` |
 | `hf_cache_dir` | Host download cache; defaults to nvsh's own tier cache |
+| `hf_offline` | `true` serves only from `hf_cache_dir` (`HF_HUB_OFFLINE=1`), for a private model fetched on the host; nvsh never passes a token into the container |
 | `port`, `ctx`, `startup_timeout_seconds` | Host port (1024 to 65535), context length, start-up wait |
 
 Every value is validated before a launch line is built; a bad one costs one
@@ -98,5 +99,9 @@ answer to a read-only question is not counted; the mutating and
 should-escalate rows are a fair reading.
 
 The follow-up is a fine-tune of the 350M that teaches the control tools:
-[`lfm-finetune.md`](lfm-finetune.md). Cold start was 185 to 254 s including
+[`lfm-finetune.md`](lfm-finetune.md). Its first result (issue 39, run r8) is
+28 of 32 right proposals and 13 of 15 escalations on the test side, against 0
+for stock, at a 119 ms median. It is **not adopted**, because it made one wrong
+mutating proposal and the bar allows none. Four test entries had leaked into
+its training, so those figures are an upper bound; see the guide. Cold start was 185 to 254 s including
 the first model download; start-up from a warm cache was not timed.

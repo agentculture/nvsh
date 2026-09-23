@@ -1,0 +1,850 @@
+{
+  "slug": "lfm2-5-350m-tier-2-fine-tune-issue-39",
+  "title": "LFM2.5-350M Tier 2 fine-tune (issue 39)",
+  "frame_slug": "lfm2-5-350m-tier-2-fine-tune-issue-39",
+  "schema_version": 5,
+  "status": "exported",
+  "created": "2026-09-22T18:34:33Z",
+  "updated": "2026-09-22T20:33:45Z",
+  "targets": [
+    {
+      "id": "c1",
+      "kind": "announcement",
+      "text": "A fine-tuned LFM2.5-350M ends Tier 2 turns with propose or escalate where those are right, and still explains read-only questions in words: it beats the stock 350M on right proposals and escalations, makes no wrong mutating proposals, and keeps a warm median under half a second on the DGX Spark",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h1",
+      "kind": "honesty",
+      "text": "The tuned-versus-stock comparison uses the same launcher, engine (vLLM, lfm2 parser), device (DGX Spark) and test fold for both models, so any gain is the model's, not the setup's.",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c2",
+      "kind": "before_state",
+      "text": "Stock LFM2.5-350M through the real launcher and vLLM made 0 of 53 right proposals and 1 of 27 escalations, with 0 wrong mutating proposals and a 218 ms warm median, on the 80-entry fold (docs/benchmarks/2026-09-19-dgx-spark-tier2.md; issue 39). Those numbers came from a scratch script around nvsh.tiers.bench.bench, not a committed command (lapse l9, issue 40).",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h2",
+      "kind": "honesty",
+      "text": "The stock figures are quoted as history from docs/benchmarks/2026-09-19-dgx-spark-tier2.md and are not used as the baseline once stock is re-measured on the committed fold (c22).",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c3",
+      "kind": "requirement",
+      "text": "Run the lfm-finetune recipe once end to end on the single-turn data and correct docs/lfm-finetune.md wherever a command was wrong: all three routes (unsloth Python, unsloth-cli, remote HF run) and the GGUF conversion are marked unverified (lines 9-14, 71, 104, 119, 131).",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h3",
+      "kind": "honesty",
+      "text": "Every command in docs/lfm-finetune.md that this run exercised is either unchanged because it worked or corrected to what actually ran; commands not exercised stay marked unverified.",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c4",
+      "kind": "requirement",
+      "text": "Before training, render one built example through tokenizer.apply_chat_template(messages, tools=tools) with the real LiquidAI/LFM2.5-350M tokenizer and read it: the tools, the assistant tool call and (for multi-round) the tool-result turns must render, loss must fall on assistant turns only, and the object-versus-string argument form (build_dataset.py --arguments-as) is settled from what renders.",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h4",
+      "kind": "honesty",
+      "text": "The rendered example is read by a person before training starts and its text (or the relevant excerpt) is recorded in docs/lfm-finetune.md, including which argument form was chosen and why.",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c6",
+      "kind": "boundary",
+      "text": "Tier 2's loop keeps accepting plain words as an Explanation (_spoke, nvsh/tiers/lfm.py:459-468); issue 39 fixes the model's habit with training data, not by making the loop reject plain text.",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h5",
+      "kind": "honesty",
+      "text": "No file under nvsh/tiers/ changes behaviour for plain-text replies as part of this work; git diff of nvsh/tiers/lfm.py shows no change to _spoke.",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c7",
+      "kind": "requirement",
+      "text": "Add explain examples for read-only questions so tuning does not teach the model to stop answering in words: the corpus today has no explain label at all -- dev.json is 318 entries, 212 expect an operation and 106 expect escalate, 0 explain (verified), and CorpusEntry (nvsh/tiers/bench.py:75-90) only knows {operation,args} or {escalate:true}; answer_for gains an explain branch.",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h6",
+      "kind": "honesty",
+      "text": "Explain entries are read-only questions a person would answer in words (no operation fits or an inspection answers it), and adding them does not change any existing dev.json entry's expectation.",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c8",
+      "kind": "requirement",
+      "text": "Train on a committed, seeded split that leaves its test fold unseen: the tuned 350M trains only on the train side of the split script's output, and stock and tuned are both measured on the same test fold, so the comparison never includes a trained-on entry.",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h7",
+      "kind": "honesty",
+      "text": "No entry used for the tuned model's training appears in the test fold it is measured on; the builder takes the split's train file, never dev.json whole, when producing the training set for a measured run.",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c9",
+      "kind": "requirement",
+      "text": "Before measuring a tuned model, ask the exported/merged model a handful of its own training requests through the real launcher; if it fails them, the numbers describe an export fault, not the model (lesson from cactus-compute/needle#134: 42/53 in JAX vs 2/30 after export, docs/needle-finetune.md:106-114).",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h8",
+      "kind": "honesty",
+      "text": "The export check runs the merged checkpoint through the same vLLM launcher Tier 2 uses, on at least 10 training examples, before any test-fold figure is recorded.",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c13",
+      "kind": "boundary",
+      "text": "Acceptance for issue 39 cannot be claimed before issues 38 and 40 land: the issue itself gates it on the Tier 2 bench option and the held-out split, and docs/lfm-finetune.md:138-144 says a tuned LFM2.5 must not be adopted until a Tier 2 bench exists; dev-fold numbers measured meanwhile are indicative only.",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h9",
+      "kind": "honesty",
+      "text": "Issue 39 is not closed by any PR in this work; PR descriptions say 'part of #39' and every dev-fold figure is labelled indicative.",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c15",
+      "kind": "boundary",
+      "text": "Nothing is published before the licence duties in docs/lfm-license-notes.md:36-42 are met (LFM Open License text, modified-work statement linking dataset and recipe, Liquid AI notices kept, no trademark use, the per-user commercial threshold stated), and nvsh itself never trains or uploads: training code stays in scripts/, which nvsh/ never imports (build_dataset.py:4-5).",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h10",
+      "kind": "honesty",
+      "text": "No public repo, model card or dataset is created; the only upload is to a private jetson-ai-lab repo, and nvsh/ contains no training or upload code (grep for unsloth/trl/upload in nvsh/ finds nothing new).",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c23",
+      "kind": "audience",
+      "text": "The operator at an nvsh prompt on a Jetson or DGX Spark with [tiers] enabled, who gets a local proposal or a clean hand-off to the full agent instead of a paragraph of words; and the nvsh maintainer who has to reproduce the tuning run and its measurement.",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h11",
+      "kind": "honesty",
+      "text": "The recipe doc can be followed by the maintainer on a fresh DGX Spark without reading this session: every step names its command, inputs and where outputs land.",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c24",
+      "kind": "after_state",
+      "text": "docs/lfm-finetune.md becomes a guide to fine-tuning LFM2.5-350M successfully, where successful means the tuned model measurably improves on the target, not merely that training runs: on the committed test fold it beats stock re-measured on the same fold on right proposals and on escalations, with 0 wrong mutating proposals, explain kept where words are right, and a warm median under 500 ms (c26, c27). The guide covers every step needed to reach and prove that: environment setup on the DGX Spark; splitting the training data with the committed seeded split script (train/test, stratified by expectation, held-out refused); chat-template check; building the training set from the train side only; training with the hyperparameters that worked; merge; export check against training examples; publishing to a private repo; measuring stock and tuned with the committed measurement script; and reading the result against the success criteria -- plus the pitfalls hit and how each was fixed. The resulting checkpoint is served by pointing [tiers.lfm] model at it, with no nvsh runtime change.",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h12",
+      "kind": "honesty",
+      "text": "Switching back to the stock model is the same one-line [tiers.lfm] model change, and no nvsh/ runtime file changes for the tuned model to work.",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h18",
+      "kind": "honesty",
+      "text": "The guide records only what this run did: the hyperparameters, loss curve end point, training time and test-fold results are the measured ones, any route not exercised (e.g. the remote HF route if local training worked) stays marked unverified, and each pitfall entry names the symptom seen and the fix applied.",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h26",
+      "kind": "honesty",
+      "text": "The guide calls the fine-tune successful only when the use-case bar (c26 with c27) or the method-validation bar is met, and says which; if only method validation passed, it says plainly that nvsh's data is the limit and points to the data-collection follow-ups.",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c25",
+      "kind": "why_it_matters",
+      "text": "Tier 2 exists to answer locally in about a fifth of a second, but a Tier 2 that never proposes or escalates just adds latency before the operator re-asks the full agent; the operator chose (deviation d4) to keep the 350M for its footprint and teach it the control tools rather than move to the 1.2B.",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h13",
+      "kind": "honesty",
+      "text": "The reason is sourced: deviation d4 and the Tier 2 latency figure are cited, not restated from memory.",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c26",
+      "kind": "success_signal",
+      "text": "Use-case bar: on the committed test fold, through the real launcher and vLLM on the DGX Spark, the tuned 350M reaches >= 70% right proposals and >= 60% correct escalations, above stock re-measured on the same fold, with 0 wrong mutating proposals and a warm median < 500 ms (indicative; formal acceptance is the held-out run, c21). Meeting this bar or the method-validation bar counts as success (decision on q6).",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h14",
+      "kind": "honesty",
+      "text": "Right proposals, escalations and wrong mutating proposals are scored by nvsh.tiers.bench's existing functions (_is_correct, compute_escalation, compute_false_mutating), not by new ad-hoc scoring.",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c27",
+      "kind": "success_signal",
+      "text": "Explain examples keep words where words are right: on the test fold's explain-labelled read-only questions, the tuned model answers with explain (or plain text) at least as often as stock, and never turns one into a mutating proposal (0).",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h15",
+      "kind": "honesty",
+      "text": "Explain-labelled outcomes are counted by the committed measurement script from the tier's outcome type, and the count is reported even when it is unfavourable.",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c28",
+      "kind": "requirement",
+      "text": "Commit a seeded split script under scripts/lfm-finetune/ that splits dev.json deterministically (fixed seed, stratified by expectation: operation, escalate, explain) into train and test files, refuses held-out.json by name exactly as build_dataset.py does, and is covered by a test that pins the split for a given seed.",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h16",
+      "kind": "honesty",
+      "text": "The split script's output for the committed seed is deterministic across machines and Python versions supported by nvsh (>=3.12).",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c29",
+      "kind": "requirement",
+      "text": "Commit the stock-versus-tuned measurement as a script under scripts/lfm-finetune/ that builds an LfmTier for a given [tiers.lfm] model and calls nvsh.tiers.bench.bench with options.tier2 (bench.py already accepts it) on a named split file, so neither the stock re-measure nor the tuned run is a scratch script (lapse l9); issue 40 later replaces it with nvsh tiers bench --tier2 lfm.",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h17",
+      "kind": "honesty",
+      "text": "The measurement script runs stock and tuned with identical options except the model id, and writes its results (with command line, seed and model revision) into a dated file under docs/benchmarks/.",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c30",
+      "kind": "requirement",
+      "text": "The explain expectation is a first-class corpus form everywhere dev.json is read: nvsh.tiers.bench._validate_expect (bench.py:153-161) today accepts only escalate or a table-valid operation, so an {explain: true} entry is reported as a problem and silently skipped; load_corpus, the Tier 1 bench (nvsh tiers bench, cli/_commands/tiers.py:439-447, where an explain entry for Tier 1 counts as should-decline), scripts/needle-finetune/build_dataset.py (expect handling lines 52-66) and the lfm builder must each accept it explicitly, and the docs quoting the 318-entry / 212 / 106 grid (docs/tiers-improving-accuracy.md:30, docs/benchmarks/2026-09-19-dgx-spark-tier2.md:10) are updated to the new counts.",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h20",
+      "kind": "honesty",
+      "text": "Changing nvsh/tiers/bench.py and nvsh/tiers/corpus/dev.json is a change inside the published nvsh package (it triggers a PyPI publish on merge): it is limited to corpus loading/validation for the explain form, carries a version bump, and does not change how existing propose/escalate entries are scored.",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c31",
+      "kind": "requirement",
+      "text": "The seeded split has three sides, train, validation and test: every iteration h19 allows (hyperparameters, data changes, epochs) is judged on validation only, and the test fold is measured once per candidate the operator declares final, so repeated unsuccessful attempts cannot tune against the test fold.",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h21",
+      "kind": "honesty",
+      "text": "Every test-fold figure in the guide and docs/benchmarks/ is from a --final run, and the count of --final runs is reported next to the result.",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c33",
+      "kind": "requirement",
+      "text": "The merged checkpoint carries the base model's chat template unchanged: training, vLLM serving and the stock baseline must all render tools and tool calls with the same template, so the pushed tokenizer_config.json chat_template is byte-compared with the base model's before measuring; the same check confirms the rendered assistant tool call is parsed by vLLM's lfm2 tool parser into structured tool_calls (toolchat.py reads message.tool_calls first, 405-415).",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h22",
+      "kind": "honesty",
+      "text": "If the trainer rewrote the template, the run is discarded or the base template is restored before merge; a tuned model is never measured with a different template than stock.",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c34",
+      "kind": "requirement",
+      "text": "The tuned model's base is exactly the model and revision stock is measured as: the 2026-09-19 benchmark names only 'LFM2.5-350M' (docs/benchmarks/2026-09-19-dgx-spark-tier2.md:37) and the local HF cache holds only LiquidAI/LFM2.5-350M-Base, so the stock re-measure records the full repo id and commit, and training starts from that same id and commit.",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h23",
+      "kind": "honesty",
+      "text": "If the post-trained LiquidAI/LFM2.5-350M is not the id that loads with tool calling, the guide says which id was used and why, rather than silently switching to -Base.",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c35",
+      "kind": "requirement",
+      "text": "Stock and tuned are measured back to back in one session under the same background load, and the measurement file records what else was using the GPU: this DGX Spark runs other GPU workloads (docker ps showed model-gear-vllm-multimodal, lobes-realtime, lobes-stt, lobes-bluetts at challenge time) sharing GB10 unified memory, which moves warm latency and can starve training or the Tier 2 container at --gpu-memory-utilization 0.08.",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h24",
+      "kind": "honesty",
+      "text": "A latency comparison is only reported when both runs share the same recorded background set; otherwise the result says the latency figures are not comparable.",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c37",
+      "kind": "success_signal",
+      "text": "Method validation on Jetson skill routing: each of NVIDIA's JetPack 7.2 agent skills (14 in jetson-device-skills, 24 in jetson-bsp-skills) becomes one tool whose description is its SKILL.md description, and a request is answered by calling the right skill. NVIDIA's own 104 evals (56 device, 48 BSP; each names the expected skill) are the test set and are never trained on, which gives an independent author for the test set; training examples are generated separately from the SKILL.md descriptions and references. LFM2.5-350M tuned with this recipe beats stock on those 104 evals by a margin the guide states in advance, through the same chat-template check, export check and vLLM + lfm2 path as the nvsh run.",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h25",
+      "kind": "honesty",
+      "text": "The margin is written into the guide before the tuned model is measured, the public task's test split is never trained on, and the dataset's licence permits this use.",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h27",
+      "kind": "honesty",
+      "text": "No eval prompt, paraphrase of one, or its ground_truth text appears in the training data (checked by an exact and near-duplicate scan before training); evals whose prompt names the skill outright (e.g. 'with /jetson-customize-nvpmodel') are reported in a separate column, since they test copying, not routing.",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c40",
+      "kind": "boundary",
+      "text": "The NVIDIA skills repos are used under their stated terms (README: documentation CC-BY-4.0, source Apache-2.0; SKILL.md frontmatter and skill cards say Apache-2.0): any dataset or model card derived from them credits NVIDIA-AI-IOT/jetson-device-skills and jetson-bsp-skills with commit shas, and nothing from them is copied into nvsh's own corpus or ops table -- the validation task lives under scripts/lfm-finetune/, separate from nvsh's use case.",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h28",
+      "kind": "honesty",
+      "text": "Attribution is written before any dataset or checkpoint trained on skill-derived data is pushed, even privately.",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c42",
+      "kind": "requirement",
+      "text": "Variations never cross the split: the seeded split assigns source entries (dev.json entries, and for method validation the SKILL.md-derived seeds) to train/val/test first, and every generated variation inherits its source's side and expected answer; NVIDIA's 104 evals are never used as generation seeds. Test-side results are reported per source entry (a source counts once, e.g. by majority over its variations) next to the per-variation figure, because x100 paraphrases of 80 entries are still 80 independent intents.",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h29",
+      "kind": "honesty",
+      "text": "Statistical claims (the use-case floor, beating stock) are judged on the per-source figure; the per-variation figure is reported as paraphrase robustness, not as extra evidence.",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c43",
+      "kind": "requirement",
+      "text": "Generation keeps the label fixed and review checks it: the generator is given the source text and its expected answer (operation+args, escalate, or explain) and asked only to rephrase; the corrector and both reviewers answer 'does this variation still mean exactly this expected answer?', and a variation enters a split only if both reviewers accept it. Rejected variations and each reviewer's verdict are kept in a log so the acceptance rate is reported.",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h30",
+      "kind": "honesty",
+      "text": "A variation whose meaning could turn a read-only or escalate request into a mutating proposal is rejected unless both reviewers accept it, and the guide reports how many such rejections occurred; no variation silently changes an expected answer.",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c44",
+      "kind": "boundary",
+      "text": "The generation and review pipeline lives in scripts/lfm-finetune/, never in nvsh/, and never commits an endpoint or key: model endpoints and ids come from the environment at run time (keys via grant run), since scripts/scan-secrets.py rejects committed non-localhost endpoints; generated data is committed or pushed only with the model ids and versions that produced it.",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h31",
+      "kind": "honesty",
+      "text": "python3 scripts/scan-secrets.py passes on every commit of the pipeline.",
+      "deferred": false,
+      "deferred_reason": ""
+    }
+  ],
+  "tasks": [
+    {
+      "id": "t1",
+      "summary": "Corpus accepts an explain expectation (nvsh/tiers/bench.py)",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "load_corpus accepts an entry whose expect is {\"explain\": true} with 0 problems; an expect with neither escalate, explain nor a table-valid operation is still reported as a problem",
+        "Tier 1 scoring (nvsh tiers bench) treats an explain entry as should-decline; existing propose/escalate scoring and every existing test in tests/test_tier_bench.py are unchanged",
+        "tests/test_tier_bench.py gains tests for the explain form; uv run pytest -n auto passes"
+      ],
+      "deps": [],
+      "covers": [
+        "c30",
+        "h20"
+      ],
+      "instruction": "Touch only nvsh/tiers/bench.py and tests/test_tier_bench.py. Extend _validate_expect (bench.py:153-161) and CorpusEntry's docstring; do not name any operation in code. Bump the version with the version-bump skill in the PR that lands this (h20)."
+    },
+    {
+      "id": "t2",
+      "summary": "Needle builder handles explain entries (scripts/needle-finetune/build_dataset.py)",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "an explain entry in the corpus is neither an error nor a propose example: it becomes the builder's should-decline form (or is skipped with a counted reason), documented in the module docstring",
+        "tests/test_needle_finetune_dataset.py covers an explain entry; all existing tests pass"
+      ],
+      "deps": [],
+      "covers": [
+        "c30"
+      ],
+      "instruction": "Touch only scripts/needle-finetune/build_dataset.py and tests/test_needle_finetune_dataset.py. Read expect handling at lines 52-66 first. Tier 1 cannot explain, so the honest mapping is decline."
+    },
+    {
+      "id": "t3",
+      "summary": "Seeded train/val/test split script (scripts/lfm-finetune/split.py)",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "same seed gives an identical split; no source id on two sides; every expectation kind (operation, escalate, explain) present on every side",
+        "passing held-out.json raises ValueError exactly as build_dataset.py does",
+        "output files carry each entry's source id so later variations can inherit the side (c42)",
+        "tests/test_lfm_finetune_split.py pins the split for the committed seed",
+        "the pinning test uses a small fixture corpus, not dev.json, so t6 adding entries cannot break it"
+      ],
+      "deps": [],
+      "covers": [
+        "c28",
+        "h16",
+        "c31",
+        "c8",
+        "h7",
+        "c42"
+      ],
+      "instruction": "New files only: scripts/lfm-finetune/split.py and tests/test_lfm_finetune_split.py. Stratify by expectation kind; use random.Random(seed) and sort before shuffling so order is platform independent. Read entries as JSON, not via load_corpus, so this task does not depend on t1."
+    },
+    {
+      "id": "t4",
+      "summary": "LFM builder: explain branch and split input (scripts/lfm-finetune/build_dataset.py)",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "an explain entry yields an assistant explain(text) tool call; answer_for keeps its propose and escalate branches unchanged",
+        "the builder accepts a split file (train side) and never reads dev.json whole when --split is given; held-out.json is still refused",
+        "tests/test_lfm_finetune_dataset.py updated: the closed set becomes {propose, escalate, explain}; all tests pass"
+      ],
+      "deps": [
+        "t1"
+      ],
+      "covers": [
+        "c7",
+        "c8",
+        "h7"
+      ],
+      "instruction": "Touch only scripts/lfm-finetune/build_dataset.py and tests/test_lfm_finetune_dataset.py. Explain text comes from the corpus entry (an 'answer' field authored with it in t6); never generate it."
+    },
+    {
+      "id": "t5",
+      "summary": "Stock-vs-tuned Tier 2 measurement script (scripts/lfm-finetune/measure.py)",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "builds an LfmTier for a given [tiers.lfm] model and calls nvsh.tiers.bench.bench with options.tier2 on a named split file; scoring uses _is_correct, compute_escalation and compute_false_mutating",
+        "refuses held-out.json unless --acceptance is passed and a test file unless --final is passed; counts explain outcomes on explain entries",
+        "reports per-variation and per-source columns; writes a dated file under docs/benchmarks/ with the command line, seed, repo id and commit, plus docker ps and nvidia-smi captured before each run",
+        "refuses to start if a container named `nvsh-tier2-<uid>` is already running, rather than stopping it",
+        "tests/test_lfm_finetune_measure.py covers all of this with the fake tier and a fake docker runner"
+      ],
+      "deps": [
+        "t1"
+      ],
+      "covers": [
+        "c29",
+        "h17",
+        "h14",
+        "h15",
+        "c35",
+        "h24",
+        "h21",
+        "h29",
+        "h1"
+      ],
+      "instruction": "New files only: scripts/lfm-finetune/measure.py and tests/test_lfm_finetune_measure.py. Print the same columns as docs/benchmarks/2026-09-19-dgx-spark-tier2.md. No endpoints or keys in the file."
+    },
+    {
+      "id": "t6",
+      "summary": "Explain entries and updated counts (nvsh/tiers/corpus/dev.json + docs)",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "dev.json gains read-only-question entries with expect {\"explain\": true} and an authored answer; no existing entry changes (a diff shows only additions)",
+        "load_corpus(dev.json) reports 0 problems; docs/tiers-improving-accuracy.md and the benchmark note quote the new counts"
+      ],
+      "deps": [
+        "t1"
+      ],
+      "covers": [
+        "c7",
+        "h6"
+      ],
+      "instruction": "Touch only nvsh/tiers/corpus/dev.json, docs/tiers-improving-accuracy.md and docs/benchmarks/2026-09-19-dgx-spark-tier2.md (a dated note, not a rewrite). Entries are questions a person would answer in words; aim for at least as many as the smallest existing expectation group per side after the split."
+    },
+    {
+      "id": "t7",
+      "summary": "Augmentation pipeline: generate, correct, double review (scripts/lfm-finetune/augment.py)",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "each variation inherits its source's split side and expected answer; NVIDIA's evals are refused as seeds",
+        "a variation enters accepted.jsonl only if both reviewers accept it; rejected.jsonl keeps source id, model ids and each verdict; the run prints counts per stage",
+        "endpoints and model ids come only from environment variables; the committed file contains no URL other than localhost and no key; scan-secrets passes",
+        "tests/test_lfm_finetune_augment.py drives the pipeline with fake OpenAI-compatible endpoints"
+      ],
+      "deps": [
+        "t3"
+      ],
+      "covers": [
+        "c42",
+        "c43",
+        "h30",
+        "c44",
+        "h31"
+      ],
+      "instruction": "New files only: scripts/lfm-finetune/augment.py and its test. The generator is told the fixed answer and asked only to rephrase; the corrector and reviewers answer 'does this still mean exactly this answer?'. Keys are supplied at run time via grant run."
+    },
+    {
+      "id": "t8",
+      "summary": "Jetson skills validation set: tools, 104-eval test set, provenance (scripts/lfm-finetune/jetson_skills.py)",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "reads both NVIDIA repos at pinned commit shas into scratch space; builds one tool per skill (38) from SKILL.md name and description; the test set is exactly the 104 evals, with evals that name the skill outright flagged",
+        "a contamination scan (exact and near-duplicate) fails the build if any eval prompt or ground_truth appears in a training file",
+        "writes a manifest mapping every derived record to repository, file, licence (CC-BY-4.0 or Apache-2.0) and transformed yes/no, and a dataset README with the attribution",
+        "tests/test_lfm_finetune_jetson_skills.py runs against a small fixture copy of both eval formats (device dict form, BSP list form)"
+      ],
+      "deps": [],
+      "covers": [
+        "c37",
+        "h27",
+        "c40",
+        "h28"
+      ],
+      "instruction": "New files only: scripts/lfm-finetune/jetson_skills.py, its test and fixtures. Handle both eval shapes: device {skill_name, evals:[{id, prompt, ...}]}, BSP [{id, question, expected_skill, ...}]. Nothing from these repos goes into nvsh/."
+    },
+    {
+      "id": "t9",
+      "summary": "Skill-routing measurement (scripts/lfm-finetune/measure_skills.py)",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "sends each eval to an OpenAI-compatible endpoint with the 38 skill tools and scores the called skill against the expected one; reports overall, skill-named-in-prompt and other columns",
+        "requires --margin before any tuned run is scored and writes it into the dated results file ahead of the numbers",
+        "tests with a fake endpoint"
+      ],
+      "deps": [
+        "t8"
+      ],
+      "covers": [
+        "c37",
+        "h25"
+      ],
+      "instruction": "New files only: scripts/lfm-finetune/measure_skills.py and its test. Use the same vLLM + lfm2 launcher path for serving as measure.py; endpoint from the environment."
+    },
+    {
+      "id": "t10",
+      "summary": "Training environment spike on the DGX Spark GB10",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "a scratch venv outside the repo has torch with CUDA on aarch64 plus unsloth (or TRL+PEFT if unsloth fails); a 20-step LoRA run on 10 examples shows the GPU in use (nvidia-smi) and a falling loss",
+        "every command that worked, and every one that failed with its symptom and fix, is written into the guide draft; routes not tried stay marked unverified"
+      ],
+      "deps": [],
+      "covers": [
+        "c3",
+        "h3"
+      ],
+      "instruction": "Run-only task on this box; no repo code. If aarch64 support fails, record why and switch to Route 3 (remote HF) as the recorded fallback (c19)."
+    },
+    {
+      "id": "t11",
+      "summary": "Chat-template and base-model check with the real tokenizer",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "one built example (single-turn propose, escalate, explain) rendered through apply_chat_template(messages, tools=tools) with LiquidAI/LFM2.5-350M at a pinned commit is recorded in the guide, with the argument form chosen (object or string) and why",
+        "loss masking is shown to cover assistant turns only; the base repo id and commit are recorded and are the ones stock is measured as"
+      ],
+      "deps": [
+        "t10",
+        "t4"
+      ],
+      "covers": [
+        "c4",
+        "h4",
+        "c34",
+        "h23"
+      ],
+      "instruction": "The post-trained LiquidAI/LFM2.5-350M exists on the Hub (sha 9e6c6ccf47cd seen 2026-09-22); pin the commit you actually use."
+    },
+    {
+      "id": "t12",
+      "summary": "Re-measure stock on the committed split and on the 104 skill evals",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "measure.py runs stock on the validation side and once with --final on the test side, and measure_skills.py runs stock on the 104 evals; both write dated files under docs/benchmarks/ with repo id, commit and background load",
+        "the 2026-09-19 figures are cited as history, not as the baseline"
+      ],
+      "deps": [
+        "t3",
+        "t6",
+        "t9",
+        "t5"
+      ],
+      "covers": [
+        "c2",
+        "h2",
+        "c34",
+        "c35",
+        "h24"
+      ],
+      "instruction": "Run back to back with the tuned runs later under the same background set where possible; check no nvsh-tier2 container is running first."
+    },
+    {
+      "id": "t13",
+      "summary": "Build training data: split, optional x100 augmentation, Jetson skills training set, contamination scan",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "the nvsh training set comes from the split's train side only; augmentation runs if t12 shows the test fold is too small to separate stock from tuned (the decision and the reason are recorded)",
+        "the Jetson training set is generated from SKILL.md text only and passes the contamination scan; accepted and rejected counts per stage are recorded"
+      ],
+      "deps": [
+        "t3",
+        "t6",
+        "t7",
+        "t8",
+        "t12",
+        "t4"
+      ],
+      "covers": [
+        "c42",
+        "h29",
+        "c43",
+        "h30",
+        "h27",
+        "c8",
+        "h7"
+      ],
+      "instruction": "Endpoints for Qwen 3.6 35B-A3B, Qwen 3.8 27B, Gemma4 26B-A4B and associate come from the environment; keys via grant run. Nothing generated is committed without the model ids that produced it."
+    },
+    {
+      "id": "t14",
+      "summary": "Train, iterating on the validation side only",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "one checkpoint per bar (nvsh use case, Jetson skills), each trained only on its train side; every iteration is judged on validation, and each change and result is logged for the guide",
+        "hyperparameters, final loss, time and GPU use of the run that is taken forward are recorded as measured"
+      ],
+      "deps": [
+        "t11",
+        "t13"
+      ],
+      "covers": [
+        "c3",
+        "h3",
+        "c31",
+        "h21",
+        "c9"
+      ],
+      "instruction": "Start from docs/needle-finetune.md's lesson: the defaults barely moved loss; 20 epochs, lr 5e-4, r32/alpha64 did. Do not look at the test side while iterating."
+    },
+    {
+      "id": "t15",
+      "summary": "Merge, template check, private push, cache prefetch and export check",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "the merged checkpoint's chat_template is byte-identical to the base's; attribution and licence notes (LFM 1.0, NVIDIA CC-BY/Apache) are written before the push",
+        "pushed to a private jetson-ai-lab repo with grant run HF_TOKEN -- hf upload; fetched into [tiers.lfm] hf_cache_dir with grant run HF_TOKEN -- hf download; no token enters the container",
+        "served through the real Tier 2 launcher with vLLM + lfm2, at least 10 training requests come back as structured tool_calls with the trained answer before any test figure is recorded; if vLLM needs an offline flag, a small [tiers.lfm] option is added with a test, and nothing else in render_launch changes"
+      ],
+      "deps": [
+        "t14"
+      ],
+      "covers": [
+        "c33",
+        "h22",
+        "c9",
+        "h8",
+        "c15",
+        "h10",
+        "c40",
+        "h28",
+        "c44"
+      ],
+      "instruction": "Any launcher change is the only nvsh/ runtime edit allowed in this plan and gets its own test and version bump."
+    },
+    {
+      "id": "t16",
+      "summary": "Final measurement against both bars",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "measure.py --final on the test side for stock and tuned back to back; measure_skills.py on the 104 evals for stock and tuned with the margin stated before scoring",
+        "results say which bar was met (use-case: >= 70% proposals, >= 60% escalations, 0 wrong mutating, < 500 ms; or method validation by the stated margin), judged per source, and are labelled indicative pending issues 38 and 40"
+      ],
+      "deps": [
+        "t15"
+      ],
+      "covers": [
+        "c1",
+        "c26",
+        "c27",
+        "c37",
+        "h25",
+        "h14",
+        "h15",
+        "h1",
+        "h24",
+        "h29"
+      ],
+      "instruction": "Report unfavourable numbers as they are. If only method validation passes, say 'the method works, nvsh's data is short'."
+    },
+    {
+      "id": "t17",
+      "summary": "Rewrite docs/lfm-finetune.md as the verified guide, plus model and dataset card drafts",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "the guide walks setup, split, template check, data build, augmentation, training, merge, export check, push, measurement and reading the result, with the commands that actually ran and a pitfalls section (symptom and fix)",
+        "states which success bar was met, or records the attempt as unsuccessful with numbers and what changed next; names both readers (operator, maintainer); cites deviation d4",
+        "model card draft (LFM Open License 1.0, >= 10M USD threshold, modified-files notice, teachers listed as generators/reviewers) and dataset README with the source manifest; docs/lfm-license-notes.md updated; markdownlint passes"
+      ],
+      "deps": [
+        "t16"
+      ],
+      "covers": [
+        "c24",
+        "h18",
+        "h26",
+        "c23",
+        "h11",
+        "c25",
+        "h13",
+        "c3",
+        "h3",
+        "h12",
+        "c15"
+      ],
+      "instruction": "Follow c45's three-artifact decision. Nothing is made public in this task."
+    },
+    {
+      "id": "t18",
+      "summary": "PR hygiene and boundary checks",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "every PR bumps the version and says 'part of #39'; none closes #39",
+        "git diff of the whole run shows no change to _spoke in nvsh/tiers/lfm.py and no training or upload code under nvsh/; switching [tiers.lfm] model back to stock is one line"
+      ],
+      "deps": [
+        "t17"
+      ],
+      "covers": [
+        "c13",
+        "h9",
+        "c6",
+        "h5",
+        "h12"
+      ],
+      "instruction": "Use the cicd skill for PRs. Ask the operator before filing the multi-round follow-up issue or commenting on issue 38 (outward actions)."
+    }
+  ],
+  "risks": [
+    {
+      "id": "r1",
+      "text": "The measurement script and an operator's own nvsh daemon share one container name (`nvsh-tier2-<uid>`) and port per user; the script must refuse, never stop the operator's container",
+      "kind": "unknown_nonblocking",
+      "task_id": "t4",
+      "resolved": false,
+      "resolution": ""
+    },
+    {
+      "id": "r2",
+      "text": "Whether unsloth (or torch with CUDA) installs and trains on aarch64 GB10 is unverified; fallback is the remote HF route",
+      "kind": "unknown_nonblocking",
+      "task_id": "t10",
+      "resolved": false,
+      "resolution": ""
+    },
+    {
+      "id": "r3",
+      "text": "Whether vLLM in the pinned image serves a private repo from the pre-filled cache without a token (offline flag) is unverified",
+      "kind": "unknown_nonblocking",
+      "task_id": "t15",
+      "resolved": true,
+      "resolution": "Probed 2026-09-22: the pinned vllm/vllm-openai@sha256:8bd082c2... image, launched as nvsh's launcher does (--user uid, HF_HOME=/cache, host HF cache mounted, lfm2 parser) plus -e HF_HUB_OFFLINE=1 and no token, served LiquidAI/LFM2.5-350M from the cache (healthy in ~130 s) and returned a structured tool_calls reply. So the offline flag is needed and sufficient; t15 adds it as a small [tiers.lfm] option (render_launch sets no such env today)."
+    },
+    {
+      "id": "r4",
+      "text": "The four generator/reviewer API endpoints were not probed during speccing; availability and throughput for a x100 run are unknown",
+      "kind": "unknown_nonblocking",
+      "task_id": "t13",
+      "resolved": true,
+      "resolution": "Probed 2026-09-22: all four roles are on the local gateway localhost:8001/v1 (Bearer key; 401 without): worker = nvidia/Qwen3.6-35B-A3B-NVFP4 (Thor), cortex = unsloth/Qwen3.8-27B-NVFP4 (spark2), senses = nvidia/Gemma-4-26B-A4B-NVFP4 (this Spark), associate = nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4 (Orin); each answered in under 1 s. worker, cortex and associate returned empty content at max_tokens=8 (reasoning models); t7 was told to use a generous max_tokens and treat empty replies as no. Throughput for a x100 run is still unmeasured."
+    },
+    {
+      "id": "r5",
+      "text": "power_set with mode balanced or low_power can never score right in the fixture world: nvsh/ops/render.py deliberately refuses to render those modes (per-board nvpmodel ids are unverified), so even an exact proposal is declined as not_renderable and escalated. Attainable right proposals: val 29 of 32, test 31 of 32; 8 of 148 training operation examples teach a proposal nvsh will always decline. Reported as a ceiling, corpus unchanged; a follow-up should decide whether those entries should expect escalate on an unrendered board.",
+      "kind": "follow_up",
+      "task_id": "t16",
+      "resolved": false,
+      "resolution": ""
+    }
+  ],
+  "obligations": []
+}
