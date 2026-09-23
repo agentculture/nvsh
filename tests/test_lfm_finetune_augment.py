@@ -2935,3 +2935,61 @@ def test_parse_verdict_rejects_codex_round_three(text):
 )
 def test_asks_for_handoff_ignores_codex_round_three(text) -> None:
     assert aug.asks_for_handoff(text) == ""
+
+
+# ---------------------------------------------------------------------------
+# --decide-by reviewer_b (issue 46, d11: reviewer A failed calibration)
+# ---------------------------------------------------------------------------
+
+
+def _run_decide(tmp_path, monkeypatch, fake_server, rev_a: str, rev_b: str, decide_by: str):
+    _server, url = fake_server
+    _server.responders.update(
+        {
+            "gen-model": _always("rephrased"),
+            "cor-model": _always("How warm is the box?"),
+            "rev-a-model": _always(rev_a),
+            "rev-b-model": _always(rev_b),
+        }
+    )
+    _set_roles(monkeypatch, url, DEFAULT_MODELS)
+    counts = aug.run_pipeline(
+        seed_files=[_split_seed_file(tmp_path)],
+        roles=aug.load_all_roles(),
+        accepted_out=tmp_path / "accepted.jsonl",
+        rejected_out=tmp_path / "rejected.jsonl",
+        per_source=1,
+        decide_by=decide_by,
+    )
+    return counts
+
+
+def test_decide_by_reviewer_b_ignores_reviewer_a_but_records_it(tmp_path, monkeypatch, fake_server):
+    counts = _run_decide(tmp_path, monkeypatch, fake_server, "no, wrong", "yes", "reviewer_b")
+    assert counts.accepted == 1
+    record = json.loads((tmp_path / "accepted.jsonl").read_text(encoding="utf-8").splitlines()[0])
+    assert record["decided_by"] == "reviewer_b"
+    assert record["verdicts"]["reviewer_a"]["accept"] is False
+    assert record["verdicts"]["reviewer_b"]["accept"] is True
+
+
+def test_decide_by_reviewer_b_still_rejects_on_reviewer_b(tmp_path, monkeypatch, fake_server):
+    counts = _run_decide(tmp_path, monkeypatch, fake_server, "yes", "no, wrong", "reviewer_b")
+    assert counts.accepted == 0
+
+
+def test_decide_by_both_is_the_default_and_unchanged(tmp_path, monkeypatch, fake_server):
+    counts = _run_decide(tmp_path, monkeypatch, fake_server, "no, wrong", "yes", "both")
+    assert counts.accepted == 0
+
+
+def test_decide_by_rejects_an_unknown_rule(tmp_path) -> None:
+    with pytest.raises(ValueError, match="decide_by"):
+        aug.run_pipeline(
+            seed_files=[_split_seed_file(tmp_path)],
+            roles={},
+            accepted_out=tmp_path / "a.jsonl",
+            rejected_out=tmp_path / "r.jsonl",
+            per_source=1,
+            decide_by="reviewer_a",
+        )
