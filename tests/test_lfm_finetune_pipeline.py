@@ -347,3 +347,22 @@ def test_an_unreadable_memory_floor_is_refused(tmp_path: Path, floor: str) -> No
     result, _ = _run_watched(tmp_path, floor, "true", prefix=prefix)
     assert result.returncode == 2
     assert "TRAIN_MEMORY_FLOOR" in result.stderr
+
+
+def test_the_memory_settings_in_the_env_file_reach_a_child_process(tmp_path: Path) -> None:
+    """Caps set only in the env file must reach train.py/train_scorer.py (child processes)."""
+    env = tmp_path / "caps.env"
+    env.write_text(
+        _QWEN_ENV.read_text(encoding="utf-8")
+        + "\nTRAIN_MEMORY_FLOOR=9G\nTRAIN_WATCHDOG_SECONDS=4\nNVSH_TRAIN_GPU_MEMORY_GB=18\n",
+        encoding="utf-8",
+    )
+    result = _run(env, tmp_path, "status")
+    assert result.returncode == 0, result.stderr
+    assert "caps (as a child sees them): max=24G floor=9G watchdog=4s gpu_gb=18" in result.stdout
+
+
+def test_both_env_examples_name_the_memory_floor_and_gpu_budget() -> None:
+    for example in (_LFM_ENV, _QWEN_ENV):
+        text = example.read_text(encoding="utf-8")
+        assert "TRAIN_MEMORY_FLOOR=" in text and "NVSH_TRAIN_GPU_MEMORY_GB=" in text
