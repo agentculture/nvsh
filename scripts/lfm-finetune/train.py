@@ -5,7 +5,13 @@ object per line with ``messages``, ``tools`` and ``source_id``. Each line is
 rendered and tokenized with the base model's own chat template
 (``apply_chat_template(..., return_assistant_tokens_mask=True)``) and the loss
 is masked to the assistant turn, so the model is trained on exactly the tool
-call Tier 2 must produce and nothing else. Tokenizing here, before a
+call Tier 2 must produce and nothing else. A template without Jinja
+generation-block markers (Qwen3.5, issue 46) cannot build that mask, so there
+the answer is located in the rendered ids instead: the prompt is rendered
+with the generation prompt and the answer is what the full rendering adds
+after it, up to and including the end-of-turn token. Where the template has
+an ``enable_thinking`` switch it is rendered with thinking off, which puts an
+empty think block before the answer, as at inference. Tokenizing here, before a
 ``datasets.Dataset`` is built, matters: ``Dataset.from_list`` merges every
 tool's schema and would add every other tool's parameters as ``null``
 (see docs/lfm-finetune.md, run log).
@@ -22,6 +28,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import time
 from pathlib import Path
@@ -32,6 +39,13 @@ DEFAULT_REVISION = "9e6c6ccf47cd318696e137d381a7ded8fe4df09f"
 
 #: The label value the loss ignores.
 IGNORE_INDEX = -100
+
+#: A Jinja generation-block tag, the marker return_assistant_tokens_mask needs.
+#: Matched as a tag so ``add_generation_prompt`` does not count.
+_GENERATION_TAG = re.compile(r"\{%-?\s*generation\s*-?%\}")
+
+#: The template variable that switches a base's thinking block on and off.
+_THINKING_SWITCH = re.compile(r"\benable_thinking\b")
 
 
 def read_examples(path: Path) -> list[dict]:
@@ -63,17 +77,86 @@ def labels_from_mask(input_ids: list[int], mask: list[int]) -> list[int]:
     return [token if keep else IGNORE_INDEX for token, keep in zip(input_ids, mask)]
 
 
+def has_generation_markers(template: str) -> bool:
+    """Whether a chat template marks the assistant turn with generation-block tags."""
+    return bool(_GENERATION_TAG.search(template))
+
+
+def thinking_off_kwargs(template: str) -> dict:
+    """Template arguments that switch thinking off, if the template has the switch."""
+    return {"enable_thinking": False} if _THINKING_SWITCH.search(template) else {}
+
+
+def answer_span(prompt_ids: list[int], full_ids: list[int], end_of_turn: int) -> tuple[int, int]:
+    """Start and end of the answer in *full_ids*: what follows the prompt, through end-of-turn.
+
+    *prompt_ids* is the rendering up to and including the generation prompt,
+    *full_ids* the rendering with the answer. Refuses a prompt that does not
+    tokenize as a prefix of the full rendering rather than guess the boundary.
+    """
+    start = len(prompt_ids)
+    if full_ids[:start] != prompt_ids:
+        raise ValueError(
+            "the prompt's rendering is not a prefix of the full rendering:"
+            " the answer cannot be located"
+        )
+    try:
+        end = full_ids.index(end_of_turn, start) + 1
+    except ValueError:
+        raise ValueError("the answer has no end-of-turn token") from None
+    if end - 1 == start:
+        raise ValueError("the answer is empty: nothing between the prompt and end-of-turn")
+    return start, end
+
+
+def _template_text(tokenizer) -> str | None:
+    template = getattr(tokenizer, "chat_template", None)
+    if isinstance(template, dict):
+        return "\n".join(str(text) for text in template.values())
+    return template if isinstance(template, str) else None
+
+
 def tokenize_example(tokenizer, example: dict, max_length: int) -> dict:
-    """input_ids, attention_mask and labels for one example, loss on the assistant turn."""
-    rendered = tokenizer.apply_chat_template(
-        example["messages"],
-        tools=example.get("tools"),
-        tokenize=True,
-        return_dict=True,
-        return_assistant_tokens_mask=True,
-    )
-    input_ids = list(rendered["input_ids"])
-    mask = list(rendered["assistant_masks"])
+    """input_ids, attention_mask and labels for one example, loss on the assistant turn.
+
+    A template with generation markers (LFM2.5) masks the assistant turn
+    itself. One without them (Qwen3.5) has the answer located by rendering
+    the prompt alone, and the labels cover exactly the answer and its
+    end-of-turn token. A tokenizer exposing no template text is taken to
+    have markers, the original path.
+    """
+    template = _template_text(tokenizer)
+    extra = thinking_off_kwargs(template) if template is not None else {}
+    if template is None or has_generation_markers(template):
+        rendered = tokenizer.apply_chat_template(
+            example["messages"],
+            tools=example.get("tools"),
+            tokenize=True,
+            return_dict=True,
+            return_assistant_tokens_mask=True,
+            **extra,
+        )
+        input_ids = list(rendered["input_ids"])
+        mask = list(rendered["assistant_masks"])
+    else:
+        prompt = tokenizer.apply_chat_template(
+            example["messages"][:-1],
+            tools=example.get("tools"),
+            tokenize=True,
+            return_dict=True,
+            add_generation_prompt=True,
+            **extra,
+        )
+        rendered = tokenizer.apply_chat_template(
+            example["messages"],
+            tools=example.get("tools"),
+            tokenize=True,
+            return_dict=True,
+            **extra,
+        )
+        input_ids = list(rendered["input_ids"])
+        start, end = answer_span(list(prompt["input_ids"]), input_ids, tokenizer.eos_token_id)
+        mask = [int(start <= index < end) for index in range(len(input_ids))]
     if len(input_ids) > max_length:
         raise ValueError(
             f"example {example.get('source_id')!r} is {len(input_ids)} tokens, over {max_length};"
