@@ -152,19 +152,17 @@ def _env(**overrides) -> dict:
         "LLAMA_CPP_CONVERT": "/opt/llama/convert.py",
         "LLAMA_CPP_QUANTIZE": "/opt/llama/quantize",
         "LLAMA_CPP_IMATRIX": "/opt/llama/imatrix",
-        "LLM_COMPRESSOR": "/opt/venv/bin/llm-compressor",
     }
     base.update(overrides)
     return base
 
 
-def test_tool_paths_from_env_reads_all_four() -> None:
+def test_tool_paths_from_env_reads_all_three() -> None:
     module = _module()
     tools = module.tool_paths_from_env(_env())
     assert tools.convert == "/opt/llama/convert.py"
     assert tools.quantize == "/opt/llama/quantize"
     assert tools.imatrix == "/opt/llama/imatrix"
-    assert tools.compressor == "/opt/venv/bin/llm-compressor"
 
 
 def test_tool_paths_from_env_refuses_a_missing_variable() -> None:
@@ -173,6 +171,22 @@ def test_tool_paths_from_env_refuses_a_missing_variable() -> None:
     del env["LLAMA_CPP_QUANTIZE"]
     with pytest.raises(module.QuantizeError, match="LLAMA_CPP_QUANTIZE"):
         module.tool_paths_from_env(env)
+
+
+# ---------------------------------------------------------------------------
+# AWQ venv python from env (risk r14: a separate venv, never the training one)
+# ---------------------------------------------------------------------------
+
+
+def test_awq_python_from_env_returns_the_path() -> None:
+    module = _module()
+    assert module.awq_python_from_env({"AWQ_PY": "/opt/awq/bin/python"}) == "/opt/awq/bin/python"
+
+
+def test_awq_python_from_env_refuses_when_unset() -> None:
+    module = _module()
+    with pytest.raises(module.QuantizeError, match="AWQ_PY"):
+        module.awq_python_from_env({})
 
 
 # ---------------------------------------------------------------------------
@@ -196,10 +210,20 @@ def test_convert_gguf_calls_the_env_configured_tool(tmp_path) -> None:
     module = _module()
     tools = module.tool_paths_from_env(_env())
     run, calls = _recording_run()
-    out_file = tmp_path / "model-f16.gguf"
+    out_file = tmp_path / "model-bf16.gguf"
     module.convert_gguf(run, tools, tmp_path / "hf-model", out_file)
     assert calls[0][0] == tools.convert
     assert str(out_file) in calls[0]
+
+
+def test_convert_gguf_requests_bf16_not_f16(tmp_path) -> None:
+    """Risk r14 / t16 spike: bf16, never f16."""
+    module = _module()
+    tools = module.tool_paths_from_env(_env())
+    run, calls = _recording_run()
+    module.convert_gguf(run, tools, tmp_path / "hf-model", tmp_path / "model-bf16.gguf")
+    assert "bf16" in calls[0]
+    assert "f16" not in calls[0]
 
 
 def test_convert_gguf_raises_on_nonzero_exit(tmp_path) -> None:
@@ -269,22 +293,89 @@ def test_quantize_q4_k_m_raises_on_nonzero_exit(tmp_path) -> None:
         )
 
 
-def test_export_awq_calls_the_env_configured_tool(tmp_path) -> None:
+def test_export_awq_invokes_awq_py_with_the_oneshot_script(tmp_path) -> None:
+    """Risk r14: a subprocess of AWQ_PY running awq_oneshot.py, never an llm-compressor CLI."""
     module = _module()
-    tools = module.tool_paths_from_env(_env())
     run, calls = _recording_run()
-    module.export_awq(run, tools, tmp_path / "hf-model", tmp_path / "calib.txt", tmp_path / "awq")
-    assert calls[0][0] == tools.compressor
+    model_dir, calib_file, out_dir = tmp_path / "hf-model", tmp_path / "calib.txt", tmp_path / "awq"
+    module.export_awq(run, "/opt/awq/bin/python", model_dir, calib_file, out_dir, 128)
+    assert calls[0][0] == "/opt/awq/bin/python"
+    assert calls[0][1] == str(module._AWQ_ONESHOT_SCRIPT)
+    assert calls[0][1].endswith("awq_oneshot.py")
+    assert str(model_dir) in calls[0]
+    assert str(calib_file) in calls[0]
+    assert str(out_dir) in calls[0]
+    assert "128" in calls[0]
 
 
 def test_export_awq_raises_on_nonzero_exit(tmp_path) -> None:
     module = _module()
-    tools = module.tool_paths_from_env(_env())
     run, _ = _recording_run(returncode=1, output="unsupported layer")
     with pytest.raises(module.QuantizeError, match="unsupported layer"):
         module.export_awq(
-            run, tools, tmp_path / "hf-model", tmp_path / "calib.txt", tmp_path / "awq"
+            run,
+            "/opt/awq/bin/python",
+            tmp_path / "hf-model",
+            tmp_path / "calib.txt",
+            tmp_path / "awq",
+            128,
         )
+
+
+# ---------------------------------------------------------------------------
+# vLLM support files + generation_config.json after the AWQ save (risk r14)
+# ---------------------------------------------------------------------------
+
+
+def test_copy_vllm_support_files_copies_present_files_resolving_symlinks(tmp_path) -> None:
+    module = _module()
+    model_dir = tmp_path / "model"
+    model_dir.mkdir()
+    out_dir = tmp_path / "awq"
+    out_dir.mkdir()
+    real = tmp_path / "blob-tokenizer.json"
+    real.write_text("{}", encoding="utf-8")
+    (model_dir / "tokenizer.json").symlink_to(real)
+    (model_dir / "vocab.json").write_text("{}", encoding="utf-8")
+
+    copied = module.copy_vllm_support_files(model_dir, out_dir)
+
+    assert set(copied) == {"tokenizer.json", "vocab.json"}
+    assert not (out_dir / "tokenizer.json").is_symlink()
+    assert (out_dir / "tokenizer.json").read_text(encoding="utf-8") == "{}"
+
+
+def test_copy_vllm_support_files_skips_files_not_present(tmp_path) -> None:
+    module = _module()
+    model_dir = tmp_path / "model"
+    model_dir.mkdir()
+    out_dir = tmp_path / "awq"
+    out_dir.mkdir()
+    (model_dir / "merges.txt").write_text("a b", encoding="utf-8")
+
+    copied = module.copy_vllm_support_files(model_dir, out_dir)
+
+    assert copied == ["merges.txt"]
+    assert not (out_dir / "tokenizer.json").exists()
+
+
+def test_finish_awq_export_writes_generation_config_and_reports_serve_args(tmp_path) -> None:
+    module = _module()
+    model_dir = tmp_path / "model"
+    model_dir.mkdir()
+    out_dir = tmp_path / "awq"
+    out_dir.mkdir()
+    (model_dir / "tokenizer_config.json").write_text("{}", encoding="utf-8")
+
+    result = module.finish_awq_export(model_dir, out_dir)
+
+    assert result["copied_files"] == ["tokenizer_config.json"]
+    assert result["serve_args"] == module.AWQ_SERVE_ARGS
+    gen_config_path = out_dir / "generation_config.json"
+    assert gen_config_path.is_file()
+    payload = json.loads(gen_config_path.read_text(encoding="utf-8"))
+    assert payload["temperature"] == 0.0
+    assert payload["do_sample"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -304,14 +395,64 @@ def test_tool_version_reports_unknown_on_failure() -> None:
     assert "unknown" in module.tool_version(run, "/opt/llama/missing")
 
 
-def test_record_tool_versions_calls_all_four_tools() -> None:
+def test_llama_cpp_commit_reads_git_head_when_dir_is_set() -> None:
+    module = _module()
+    run, calls = _recording_run(output="abc123\n")
+    commit = module.llama_cpp_commit(run, {"LLAMA_CPP_DIR": "/opt/llama.cpp"})
+    assert commit == "abc123"
+    assert calls[0] == ["git", "-C", "/opt/llama.cpp", "rev-parse", "HEAD"]
+
+
+def test_llama_cpp_commit_is_unknown_when_dir_is_not_set() -> None:
+    module = _module()
+    run, calls = _recording_run()
+    commit = module.llama_cpp_commit(run, {})
+    assert "unknown" in commit
+    assert calls == []  # never runs git without a directory to point it at
+
+
+def test_llama_cpp_commit_is_unknown_on_a_failed_git_call() -> None:
+    module = _module()
+    run, _ = _recording_run(returncode=128, output="not a git repository")
+    commit = module.llama_cpp_commit(run, {"LLAMA_CPP_DIR": "/not/a/repo"})
+    assert "unknown" in commit
+    assert "not a git repository" in commit
+
+
+def test_awq_tool_versions_parses_the_probe_output() -> None:
+    module = _module()
+    run, calls = _recording_run(output="0.14.0 5.17.0\n")
+    versions = module.awq_tool_versions(run, "/opt/awq/bin/python")
+    assert versions == {"llm-compressor": "0.14.0", "transformers": "5.17.0"}
+    assert calls[0][0] == "/opt/awq/bin/python"
+    assert calls[0][1] == "-c"
+
+
+def test_awq_tool_versions_is_unknown_on_failure() -> None:
+    module = _module()
+    run, _ = _recording_run(returncode=1, output="ModuleNotFoundError")
+    versions = module.awq_tool_versions(run, "/opt/awq/bin/python")
+    assert "unknown" in versions["llm-compressor"]
+    assert "unknown" in versions["transformers"]
+
+
+def test_record_tool_versions_covers_llama_cpp_and_awq() -> None:
     module = _module()
     tools = module.tool_paths_from_env(_env())
-    run, calls = _recording_run(output="v1")
-    versions = module.record_tool_versions(run, tools)
-    assert len(calls) == 4
-    assert all(value == "v1" for value in versions.values())
-    assert len(versions) == 4
+    run, calls = _recording_run(output="v1 v2")
+    versions = module.record_tool_versions(
+        run, tools, {"LLAMA_CPP_DIR": "/opt/llama.cpp"}, "/opt/awq/bin/python"
+    )
+    # 3 llama.cpp --version calls + 1 git rev-parse + 1 AWQ venv probe.
+    assert len(calls) == 5
+    assert set(versions) == {
+        "llama.cpp convert",
+        "llama.cpp imatrix",
+        "llama.cpp quantize",
+        "llama.cpp commit",
+        "llm-compressor",
+        "transformers",
+    }
 
 
 # ---------------------------------------------------------------------------
