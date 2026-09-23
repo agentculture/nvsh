@@ -48,6 +48,10 @@ would fail on a committed non-localhost endpoint anyway). For role
                                      not every server honours it)
     NVSH_AUG_<ROLE>_TIMEOUT          per-request timeout in seconds
                                      (optional, default 120)
+    NVSH_AUG_<ROLE>_TEMPERATURE      sampling temperature, 0-2 (optional,
+                                     default 0.7; judging roles should set
+                                     0.1-0.3). Recorded on every output
+                                     record.
 
 A missing required variable is a clear, named error, never a silent
 default.
@@ -152,6 +156,11 @@ DEFAULT_MAX_TOKENS = 1024
 #: talking to a slower/busier backend can override it independently.
 DEFAULT_TIMEOUT = 120.0
 
+#: Sampling temperature for a role that sets none. The generator relies on it
+#: for varied phrasings; a judging role (corrector, reviewers) should set a
+#: low one through ``NVSH_AUG_<ROLE>_TEMPERATURE`` (issue 46: 0.1-0.3).
+DEFAULT_TEMPERATURE = 0.7
+
 _TRUE_STRINGS = frozenset({"1", "true", "yes", "on"})
 
 
@@ -169,11 +178,13 @@ class RoleConfig:
     disable_thinking: bool = False
     #: Per-request timeout in seconds, from ``NVSH_AUG_<ROLE>_TIMEOUT``.
     timeout: float = DEFAULT_TIMEOUT
+    #: Sampling temperature, from ``NVSH_AUG_<ROLE>_TEMPERATURE`` (0-2).
+    temperature: float = DEFAULT_TEMPERATURE
 
 
 def load_role_config(role: str, env: dict[str, str] | None = None) -> RoleConfig:
     """Read
-    ``NVSH_AUG_<role>_{URL,MODEL,KEY_ENV,MAX_TOKENS,DISABLE_THINKING,TIMEOUT}``
+    ``NVSH_AUG_<role>_{URL,MODEL,KEY_ENV,MAX_TOKENS,DISABLE_THINKING,TIMEOUT,TEMPERATURE}``
     from *env* (default ``os.environ``). Raises :class:`ConfigError` naming
     the exact variable that is missing."""
     source = os.environ if env is None else env
@@ -183,6 +194,7 @@ def load_role_config(role: str, env: dict[str, str] | None = None) -> RoleConfig
     max_tokens_var = f"NVSH_AUG_{role}_MAX_TOKENS"
     disable_thinking_var = f"NVSH_AUG_{role}_DISABLE_THINKING"
     timeout_var = f"NVSH_AUG_{role}_TIMEOUT"
+    temperature_var = f"NVSH_AUG_{role}_TEMPERATURE"
 
     url = source.get(url_var)
     if not url:
@@ -218,6 +230,17 @@ def load_role_config(role: str, env: dict[str, str] | None = None) -> RoleConfig
     else:
         timeout = DEFAULT_TIMEOUT
 
+    temperature_raw = source.get(temperature_var)
+    if temperature_raw:
+        try:
+            temperature = float(temperature_raw)
+        except ValueError:
+            raise ConfigError(f"{temperature_var} must be a number, got {temperature_raw!r}")
+        if not 0.0 <= temperature <= 2.0:
+            raise ConfigError(f"{temperature_var} must be between 0 and 2, got {temperature_raw!r}")
+    else:
+        temperature = DEFAULT_TEMPERATURE
+
     return RoleConfig(
         role=role,
         url=url,
@@ -226,6 +249,7 @@ def load_role_config(role: str, env: dict[str, str] | None = None) -> RoleConfig
         max_tokens=max_tokens,
         disable_thinking=disable_thinking,
         timeout=timeout,
+        temperature=temperature,
     )
 
 
@@ -656,7 +680,7 @@ def _post_chat_completion(
             {"role": "system", "content": system},
             {"role": "user", "content": user},
         ],
-        "temperature": 0.7,
+        "temperature": role.temperature,
         "max_tokens": role.max_tokens,
     }
     if role.disable_thinking:
@@ -1019,6 +1043,7 @@ def _process_variation(
         counts.rejected_by_b += 1
 
     models = {role: cfg.model for role, cfg in roles.items()}
+    temperatures = {role: cfg.temperature for role, cfg in roles.items()}
     verdicts = {
         "reviewer_a": {"accept": accept_a, "reason": reason_a},
         "reviewer_b": {"accept": accept_b, "reason": reason_b},
@@ -1050,6 +1075,7 @@ def _process_variation(
         "text": corrected_text,
         "expect": seed.expect,
         "models": models,
+        "temperatures": temperatures,
     }
     record.update(seed.corpus_fields)
     if accepted:
@@ -1199,7 +1225,11 @@ def _process_rereview_candidate(
     new_record = dict(record)
     new_record["models"] = models
     new_record["verdicts"] = {
-        "reviewer_b": {"accept": accept_b, "reason": reason_b},
+        "reviewer_b": {
+            "accept": accept_b,
+            "reason": reason_b,
+            "temperature": role.temperature,
+        },
         **guard_verdicts,
     }
     new_record["prior_verdicts"] = prior
