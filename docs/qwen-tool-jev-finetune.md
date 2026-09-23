@@ -426,25 +426,30 @@ re-tuned for 0.8B on validation only (c20).
 
 ### 11. Train Track B on spark2 *(not yet run)*
 
-```bash
-TRAIN_MEMORY_MAX=24G TRAIN_MEMORY_FLOOR=<floor> NVSH_TRAIN_GPU_MEMORY_GB=<budget> \
-  $P --env qwen.env train-scorer
-```
-
 spark2 serves other models next to the trainer; their containers must not
 restart. Three limits apply, because on GB10 the systemd cap does not cover
-GPU allocations (P34):
+GPU allocations (P34). Set them in `qwen.env`:
 
-- `TRAIN_MEMORY_MAX`: the systemd RAM and swap cap (24G in the example).
-- `TRAIN_MEMORY_FLOOR` (default 8G): the watchdog stops the run once the
-  machine's available memory falls below it, checked every
-  `TRAIN_WATCHDOG_SECONDS` (default 5). The lead's probe on spark2 used a
-  26 GB floor with about 30 GB available.
+```bash
+TRAIN_MEMORY_MAX=24G            # systemd RAM + swap cap
+TRAIN_MEMORY_FLOOR=<floor>      # stop the run below this much available memory (default 8G)
+TRAIN_WATCHDOG_SECONDS=5        # how often the floor is checked
+NVSH_TRAIN_GPU_MEMORY_GB=<gb>   # per-process GPU budget; empty = no per-process cap
+```
+
+- `TRAIN_MEMORY_FLOOR`: the watchdog stops the run once the machine's
+  available memory falls below it. The lead's probe on spark2 used a 26 GB
+  floor with about 30 GB available.
 - `NVSH_TRAIN_GPU_MEMORY_GB`: `train.py` and `train_scorer.py` cap their own
-  GPU allocations with `torch.cuda.set_per_process_memory_fraction`. It must
-  reach the Python process as an environment variable; `pipeline.sh` does
-  not export it from the env file, and `pipeline-qwen.env.example` does not
-  list it or `TRAIN_MEMORY_FLOOR` yet.
+  GPU allocations with `torch.cuda.set_per_process_memory_fraction`.
+
+`pipeline.sh` exports all of these to its child processes (P36). Confirm
+what a child process will see before training, then train:
+
+```bash
+$P --env qwen.env status     # prints: caps (as a child sees them): max=... floor=... watchdog=...s gpu_gb=...
+$P --env qwen.env train-scorer
+```
 
 The floor and budget values for the real Track B run are not chosen yet.
 If the watchdog trips, `run_capped` returns 3 and `mem.log` records why.
@@ -723,6 +728,19 @@ and the commit on `spec/qwen-tool-jev-issue-46`.
   the separate AWQ venv's Python (`AWQ_PY`), with `processor=`, the ignore
   list, the tokenizer and preprocessor files copied and `gen_config.py`
   applied; GGUF as bf16, then imatrix, then `Q4_K_M` *(not yet merged)*.
+- **P36. The GPU budget never reached the trainer.** f10 made `train.py` and
+  `train_scorer.py` read `NVSH_TRAIN_GPU_MEMORY_GB`, but `pipeline.sh`
+  sources the env file without exporting its variables, and neither env
+  example named the new settings. Set only in the env file, the
+  per-process GPU cap would silently not apply. *Found:* the documentation
+  agent, reading f10's diff against `pipeline.sh`. *Fix:* `pipeline.sh`
+  exports `TRAIN_MEMORY_MAX`, `TRAIN_MEMORY_FLOOR`, `TRAIN_WATCHDOG_SECONDS`,
+  `TRAIN_MEMORY_CAP` and `NVSH_TRAIN_GPU_MEMORY_GB` right after sourcing the
+  env file. Both env examples name `TRAIN_MEMORY_FLOOR=8G`,
+  `TRAIN_WATCHDOG_SECONDS=5` and `NVSH_TRAIN_GPU_MEMORY_GB=` (empty means no
+  per-process cap). `status` prints the caps as a child process sees them,
+  and a test checks that a child sees values set only in the env file.
+  *Commit:* `6d805d5`.
 
 ## Not verified yet
 
@@ -867,3 +885,10 @@ captured; the six runs after it were green. The cause is unidentified.
 Reading `quantize.py` against the t16 spike log found that its AWQ and GGUF
 paths differ from what the spike ran (P35, plan risk r14). The fix, f11, is
 in progress.
+
+### 2026-09-23: memory caps exported to child processes (P36)
+
+The documentation agent found that `pipeline.sh` did not export the f10
+settings, so a GPU budget set in the env file would not have reached the
+trainer. Fixed in `6d805d5`: the caps are exported, both env examples name
+them, and `pipeline.sh status` prints them as a child process sees them.
