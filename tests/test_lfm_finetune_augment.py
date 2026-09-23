@@ -1957,30 +1957,32 @@ def test_rereview_calls_only_reviewer_b_and_reuses_stored_text(tmp_path) -> None
     record = json.loads(lines[0])
     assert record["text"] == "How warm is the box right now?"  # generator/corrector text reused
     assert record["models"]["REVIEWER_B"] == "qwen-3.8-27b"  # new reviewer model recorded
-    assert record["verdicts"]["reviewer_a"] == {"accept": True, "reason": "matches"}
+    # Clean slate (issue 46, deviation d8): the fresh verdict alone decides;
+    # the stored verdicts move to prior_verdicts as history only.
+    assert set(record["verdicts"]) == {"reviewer_b"}
     assert record["verdicts"]["reviewer_b"]["accept"] is True
+    assert record["prior_verdicts"]["reviewer_a"] == {"accept": True, "reason": "matches"}
     assert not rejected_out.exists()
 
 
-def test_rereview_stored_a_rejection_stays_rejected_without_asking_reviewer_b(tmp_path) -> None:
-    # Stored A rejected it, so no reviewer B verdict could accept it: the
-    # re-review records the rejection without spending a reviewer B call
-    # (issue 46, t18: 199 of 1176 candidates, each a multi-minute thinking
-    # call on a shared server).
+def test_rereview_is_a_clean_slate_a_stored_rejection_can_be_accepted(tmp_path) -> None:
+    # Operator, issue 46 (deviation d8): each re-review is a clean slate --
+    # the thinking reviewer is asked about every candidate and its verdict
+    # alone (plus the deterministic guards) decides, whatever was stored.
     candidates = _write_jsonl(
         tmp_path / "rejected.jsonl",
         [
             _stored_candidate(
                 reviewer_a_accept=False,
                 reviewer_a_reason="wrong operation",
-                reviewer_b_accept=True,
+                reviewer_b_accept=False,
             )
         ],
     )
-    calls = {"n": 0}
+    calls: list[str] = []
 
     def fake_caller(role, system, user):
-        calls["n"] += 1
+        calls.append(user)
         return "yes"
 
     counts = aug.run_rereview(
@@ -1990,29 +1992,32 @@ def test_rereview_stored_a_rejection_stays_rejected_without_asking_reviewer_b(tm
         rejected_out=tmp_path / "rejected-out.jsonl",
         caller=fake_caller,
     )
-    assert calls["n"] == 0
-    assert counts.accepted == 0
-    assert counts.rejected == 1
-    assert counts.compared == 0  # no fresh B verdict, so nothing to compare
-    record = json.loads((tmp_path / "rejected-out.jsonl").read_text(encoding="utf-8"))
-    assert record["verdicts"]["reviewer_a"] == {"accept": False, "reason": "wrong operation"}
-    assert record["verdicts"]["reviewer_b"]["accept"] is None
-    assert "not re-asked" in record["verdicts"]["reviewer_b"]["reason"]
-    assert record["models"]["REVIEWER_B"] == "nemotron-3.5-lightning"  # never re-asked
+    assert len(calls) == 1
+    assert "wrong operation" not in calls[0]  # the reviewer never sees a prior verdict
+    assert counts.accepted == 1
+    assert counts.rejected == 0
+    record = json.loads((tmp_path / "accepted.jsonl").read_text(encoding="utf-8"))
+    assert record["verdicts"] == {"reviewer_b": {"accept": True, "reason": "yes"}}
+    assert record["prior_verdicts"]["reviewer_a"] == {
+        "accept": False,
+        "reason": "wrong operation",
+    }
+    assert record["models"]["REVIEWER_B"] == "qwen-3.8-27b"
 
 
-def test_rereview_stored_a_rejection_still_runs_the_deterministic_guards(tmp_path) -> None:
+def test_rereview_clean_slate_still_runs_the_deterministic_guards(tmp_path) -> None:
     candidates = _write_jsonl(
         tmp_path / "rejected.jsonl",
         [_stored_candidate(reviewer_a_accept=False, text="run machine_status for me")],
     )
-    aug.run_rereview(
+    counts = aug.run_rereview(
         candidate_files=[candidates],
         role=_fake_reviewer_b(),
         accepted_out=tmp_path / "accepted.jsonl",
         rejected_out=tmp_path / "rejected-out.jsonl",
         caller=lambda role, system, user: "yes",
     )
+    assert counts.accepted == 0
     record = json.loads((tmp_path / "rejected-out.jsonl").read_text(encoding="utf-8"))
     assert record["verdicts"]["identifier_check"]["accept"] is False
 
@@ -2085,7 +2090,7 @@ def test_rereview_prints_agreement_with_stored_reviewer_b_verdicts(tmp_path, cap
     assert "agreement=2/3" in out
 
 
-def test_rereview_requires_stored_reviewer_a_verdict_or_counts_an_error(tmp_path) -> None:
+def test_rereview_needs_no_stored_reviewer_a_verdict(tmp_path) -> None:
     bad = dict(_stored_candidate())
     del bad["verdicts"]["reviewer_a"]
     candidates = _write_jsonl(tmp_path / "accepted.jsonl", [bad])
@@ -2096,10 +2101,8 @@ def test_rereview_requires_stored_reviewer_a_verdict_or_counts_an_error(tmp_path
         rejected_out=tmp_path / "rejected-out.jsonl",
         caller=lambda role, system, user: "yes",
     )
-    assert counts.errors == 1
-    assert counts.processed == 0
-    assert not (tmp_path / "accepted-out.jsonl").exists()
-    assert not (tmp_path / "rejected-out.jsonl").exists()
+    assert counts.errors == 0
+    assert counts.accepted == 1
 
 
 def test_rereview_accepts_a_real_shaped_accepted_record_with_no_verdicts(tmp_path) -> None:
@@ -2137,7 +2140,7 @@ def test_rereview_accepts_a_real_shaped_accepted_record_with_no_verdicts(tmp_pat
     out_record = json.loads(
         (tmp_path / "accepted-out.jsonl").read_text(encoding="utf-8").splitlines()[0]
     )
-    assert out_record["verdicts"]["reviewer_a"] == {"accept": True, "reason": ""}
+    assert out_record["prior_verdicts"] == {"stored_as": "accepted"}
 
 
 def test_rereview_a_deterministic_guard_failure_stays_rejected_even_when_new_b_says_yes(
@@ -2170,7 +2173,7 @@ def test_rereview_a_deterministic_guard_failure_stays_rejected_even_when_new_b_s
     out_record = json.loads(
         (tmp_path / "rejected-out.jsonl").read_text(encoding="utf-8").splitlines()[0]
     )
-    assert out_record["verdicts"]["reviewer_a"]["accept"] is True
+    assert out_record["prior_verdicts"]["reviewer_a"]["accept"] is True
     assert out_record["verdicts"]["reviewer_b"]["accept"] is True
     assert out_record["verdicts"]["template_check"]["accept"] is False
 
@@ -2457,3 +2460,99 @@ def test_skill_seeds_know_every_skill_in_their_file(tmp_path) -> None:
     )
     seeds = module.load_seeds(tools, side="train")
     assert all(seed.skill_names == ("a-skill", "b-skill") for seed in seeds)
+
+
+def _old_rule_output(record: dict[str, Any], fresh_b: bool, **guards: Any) -> dict[str, Any]:
+    """A record as the pre-d8 rereview wrote it: stored reviewer A plus the
+    fresh reviewer B verdict (and any re-run guard) under ``verdicts``."""
+    out = dict(record)
+    out["verdicts"] = {
+        "reviewer_a": (record.get("verdicts") or {}).get(
+            "reviewer_a", {"accept": True, "reason": ""}
+        ),
+        "reviewer_b": {"accept": fresh_b, "reason": "yes" if fresh_b else "no"},
+        **guards,
+    }
+    out["models"] = {**record["models"], "REVIEWER_B": "qwen-3.8-27b"}
+    return out
+
+
+def test_rederive_clean_slate_reuses_fresh_verdicts_without_calling_anyone(tmp_path) -> None:
+    stored = [
+        _stored_candidate(record_id="a~v1", source_id="a", reviewer_a_accept=False),
+        _stored_candidate(record_id="b~v1", source_id="b", no_verdicts=True),
+        _stored_candidate(record_id="c~v1", source_id="c", reviewer_a_accept=False),
+        _stored_candidate(record_id="d~v1", source_id="d", no_verdicts=True),
+    ]
+    inputs = _write_jsonl(tmp_path / "input.jsonl", stored)
+    guard = {"template_check": {"accept": False, "reason": "copies 'x'"}}
+    old_accepted = _write_jsonl(tmp_path / "old-acc.jsonl", [_old_rule_output(stored[1], True)])
+    old_rejected = _write_jsonl(
+        tmp_path / "old-rej.jsonl",
+        [
+            _old_rule_output(stored[0], True),  # A said no, fresh B yes -> now accepted
+            _old_rule_output(stored[2], False),  # fresh B no -> stays rejected
+            _old_rule_output(stored[3], True, **guard),  # guard failure -> stays rejected
+        ],
+    )
+    counts = aug.rederive_clean_slate(
+        input_files=[inputs],
+        old_outputs=[old_accepted, old_rejected],
+        accepted_out=tmp_path / "acc.jsonl",
+        rejected_out=tmp_path / "rej.jsonl",
+    )
+    assert counts.as_dict()["accepted"] == 2
+    assert counts.as_dict()["rejected"] == 2
+    acc = [json.loads(line) for line in (tmp_path / "acc.jsonl").read_text().splitlines()]
+    rej = [json.loads(line) for line in (tmp_path / "rej.jsonl").read_text().splitlines()]
+    assert sorted(r["id"] for r in acc) == ["a~v1", "b~v1"]
+    assert sorted(r["id"] for r in rej) == ["c~v1", "d~v1"]
+    a = next(r for r in acc if r["id"] == "a~v1")
+    assert set(a["verdicts"]) == {"reviewer_b"}
+    assert a["prior_verdicts"]["reviewer_a"]["accept"] is False
+    b = next(r for r in acc if r["id"] == "b~v1")
+    assert b["prior_verdicts"] == {"stored_as": "accepted"}
+    d = next(r for r in rej if r["id"] == "d~v1")
+    assert d["verdicts"]["template_check"]["accept"] is False
+
+
+def test_rederive_clean_slate_refuses_existing_outputs_and_unknown_ids(tmp_path) -> None:
+    stored = [_stored_candidate(record_id="a~v1", source_id="a")]
+    inputs = _write_jsonl(tmp_path / "input.jsonl", stored)
+    old = _write_jsonl(tmp_path / "old.jsonl", [_old_rule_output(stored[0], True)])
+    (tmp_path / "acc.jsonl").write_text("", encoding="utf-8")
+    with pytest.raises(ValueError, match="exists"):
+        aug.rederive_clean_slate([inputs], [old], tmp_path / "acc.jsonl", tmp_path / "rej.jsonl")
+    stray = _write_jsonl(
+        tmp_path / "stray.jsonl",
+        [_old_rule_output(_stored_candidate(record_id="z~v1", source_id="z"), True)],
+    )
+    with pytest.raises(ValueError, match="z~v1"):
+        aug.rederive_clean_slate([inputs], [stray], tmp_path / "a2.jsonl", tmp_path / "r2.jsonl")
+
+
+def test_main_rederive_clean_slate_cli(tmp_path, monkeypatch, capsys) -> None:
+    for name, value in {
+        "NVSH_AUG_REVIEWER_B_URL": "http://127.0.0.1:1/v1",
+        "NVSH_AUG_REVIEWER_B_MODEL": "cortex",
+        "NVSH_AUG_REVIEWER_B_KEY": "k",
+    }.items():
+        monkeypatch.setenv(name, value)
+    stored = [_stored_candidate(record_id="a~v1", source_id="a", reviewer_a_accept=False)]
+    inputs = _write_jsonl(tmp_path / "input.jsonl", stored)
+    old = _write_jsonl(tmp_path / "old.jsonl", [_old_rule_output(stored[0], True)])
+    rc = aug.main(
+        [
+            str(inputs),
+            "--rereview",
+            "--rederive-clean-slate",
+            str(old),
+            "--accepted-out",
+            str(tmp_path / "acc.jsonl"),
+            "--rejected-out",
+            str(tmp_path / "rej.jsonl"),
+        ]
+    )
+    assert rc == 0
+    assert "accepted=1" in capsys.readouterr().out
+    assert not (tmp_path / "rej.jsonl").exists()
