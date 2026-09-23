@@ -122,3 +122,131 @@ def test_results_without_a_table_are_refused(tmp_path) -> None:
     results.write_text("# nothing\n")
     with pytest.raises(ValueError, match="no metric table"):
         _build(tmp_path, results=results)
+
+
+# ---------------------------------------------------------------------------
+# Apache-2.0 mode (issue 39, t46)
+# ---------------------------------------------------------------------------
+
+_FAKE_APACHE_LICENSE = "Apache License\n" "Version 2.0\n" "\n" "TERMS AND CONDITIONS\n"
+
+
+def _apache(tmp_path: Path) -> Path:
+    snapshot = tmp_path / "hub" / "models--FakeOrg--FakeModel" / "snapshots" / ("b" * 40)
+    snapshot.mkdir(parents=True)
+    (snapshot / "chat_template.jinja").write_text("T")
+    (snapshot / "LICENSE").write_text(_FAKE_APACHE_LICENSE)
+    return snapshot
+
+
+class TestApacheLicenceKind:
+    """Apache-2.0 licence-path through release_bundle."""
+
+    def test_apache_bundle_refuses_a_non_apache_licence(self, tmp_path: Path) -> None:
+        _module()  # ensure module is available
+        base_snapshot = _base(tmp_path)  # LFM licence by default
+        results = tmp_path / "r7-val.md"
+        results.write_text(_RESULTS)
+        with pytest.raises(ValueError, match="not Apache-2.0"):
+            _module().build(
+                merged=_merged(tmp_path),
+                base_snapshot=base_snapshot,
+                repo="jetson-ai-lab/lfm2.5-350m-nvsh-triage",
+                run="r7",
+                results=results,
+                data_summary="945 examples from nvsh's train split.",
+                out=tmp_path / "bundle",
+                licence_kind="apache",
+            )
+
+    def test_apache_card_has_apache_front_matter_and_no_lfm_terms(self, tmp_path: Path) -> None:
+        _module()  # ensure module is available
+        base_snapshot = _apache(tmp_path)
+        revision = _build(tmp_path, base_snapshot=base_snapshot, licence_kind="apache")
+        assert revision is not None  # build succeeded
+        out = tmp_path / "bundle"
+        assert (out / "LICENSE").read_text() == _FAKE_APACHE_LICENSE
+        card = (out / "README.md").read_text()
+        assert "license: apache-2.0" in card
+        assert "lfm1.0" not in card
+        assert "10,000,000" not in card
+
+    def test_apache_notice_does_not_mention_liquid_ai(self, tmp_path: Path) -> None:
+        _module()  # ensure module is available
+        base_snapshot = _apache(tmp_path)
+        _build(tmp_path, base_snapshot=base_snapshot, licence_kind="apache")
+        notice = (tmp_path / "bundle" / "NOTICE").read_text()
+        assert "Liquid AI" not in notice
+
+    def test_lfm_outputs_are_unchanged_by_default(self, tmp_path: Path) -> None:
+        rb = _module()  # ensure module is available
+        # calling without licence_kind gives same text as licence_kind="lfm"
+        _base(tmp_path)  # base for completeness; not needed for model_card/notice
+        results = tmp_path / "r7-val.md"
+        results.write_text(_RESULTS)
+        card_default = rb.model_card(
+            repo="jetson-ai-lab/lfm2.5-350m-nvsh-triage",
+            base_repo="LiquidAI/LFM2.5-350M",
+            base_revision="a" * 40,
+            run="r7",
+            table=rb.results_table(results),
+            results_name="r7-val.md",
+            data_summary="945 examples from nvsh's train split.",
+        )
+        card_explicit_lfm = rb.model_card(
+            repo="jetson-ai-lab/lfm2.5-350m-nvsh-triage",
+            base_repo="LiquidAI/LFM2.5-350M",
+            base_revision="a" * 40,
+            run="r7",
+            table=rb.results_table(results),
+            results_name="r7-val.md",
+            data_summary="945 examples from nvsh's train split.",
+            licence_kind="lfm",
+        )
+        assert card_default == card_explicit_lfm
+        notice_default = rb.notice(
+            "LiquidAI/LFM2.5-350M", "a" * 40, "jetson-ai-lab/lfm2.5-350m-nvsh-triage"
+        )
+        notice_explicit_lfm = rb.notice(
+            "LiquidAI/LFM2.5-350M",
+            "a" * 40,
+            "jetson-ai-lab/lfm2.5-350m-nvsh-triage",
+            licence_kind="lfm",
+        )
+        assert notice_default == notice_explicit_lfm
+
+
+def test_apache_card_names_the_base_family_and_the_given_parser() -> None:
+    """A Qwen card must not carry LFM tags or LFM's vLLM tool-call parser."""
+    module = _module()
+    card = module.model_card(
+        repo="jetson-ai-lab/qwen3.5-0.8b-nvsh-tool-jev",
+        base_repo="Qwen/Qwen3.5-0.8B",
+        base_revision="2fc06364",
+        run="a1",
+        table="| x |",
+        results_name="res.md",
+        data_summary="n examples",
+        licence_kind="apache",
+        tool_call_parser="qwen3_coder",
+    )
+    front = card.split("---")[1]
+    assert "- liquid" not in front and "- lfm2.5" not in front
+    assert "- qwen" in front
+    assert 'tool_call_parser = "qwen3_coder"' in card
+    assert "lfm2" not in card.split("## Use with nvsh")[1].split("##")[0]
+
+
+def test_lfm_card_keeps_its_tags_and_parser_by_default() -> None:
+    module = _module()
+    card = module.model_card(
+        repo="r",
+        base_repo="LiquidAI/LFM2.5-350M",
+        base_revision="9e6c",
+        run="r8",
+        table="| x |",
+        results_name="res.md",
+        data_summary="n",
+    )
+    assert "- liquid\n- lfm2.5\n" in card
+    assert 'tool_call_parser = "lfm2"' in card
