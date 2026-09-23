@@ -54,6 +54,11 @@ def _sibling(name: str):
 
 
 scorer = _sibling("scorer")
+# The GPU memory cap is shared with train.py (issue 46, c49); train.py imports
+# nothing heavy at module level, so loading it here stays cheap.
+_train = _sibling("train")
+gpu_memory_fraction = _train.gpu_memory_fraction
+cap_gpu_memory = _train.cap_gpu_memory
 
 #: The base model and commit issue 46 pins.
 DEFAULT_BASE = "Qwen/Qwen3.5-0.8B"
@@ -280,6 +285,11 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - needs a GP
     from peft import LoraConfig, get_peft_model
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
+    try:
+        cap_gpu_memory(torch)
+    except ValueError as exc:
+        print(f"train_scorer.py: {exc}", file=sys.stderr)
+        return 2
     seed_everything(args.seed)
     tokenizer = AutoTokenizer.from_pretrained(args.base, revision=args.revision)
     labels = scorer.labels_for(scorer.candidates())
