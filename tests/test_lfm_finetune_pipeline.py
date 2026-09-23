@@ -14,6 +14,7 @@ import importlib.util
 import os
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -270,3 +271,98 @@ def test_run_capped_refuses_to_run_uncapped_without_systemd_run(tmp_path: Path) 
     result = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=60)
     assert result.returncode != 0
     assert "TRAIN_MEMORY_CAP=container" in result.stderr
+
+
+def _mem_available_kb() -> int:
+    for line in Path("/proc/meminfo").read_text(encoding="utf-8").splitlines():
+        if line.startswith("MemAvailable:"):
+            return int(line.split()[1])
+    raise AssertionError("no MemAvailable in /proc/meminfo")
+
+
+def _run_watched(tmp_path: Path, floor: str, command: str, *, prefix: str = "") -> tuple:
+    script = (
+        f'source "{_CAPPED}";{prefix} TRAIN_MEMORY_MAX=200M TRAIN_MEMORY_FLOOR={floor}'
+        f' TRAIN_WATCHDOG_SECONDS=1 run_capped "{tmp_path}" {command}'
+    )
+    started = time.monotonic()
+    result = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=60)
+    return result, time.monotonic() - started
+
+
+_HIDE_SYSTEMD_RUN = ' command() { [ "$2" = systemd-run ] && return 1; builtin command "$@"; };'
+
+
+@pytest.mark.skipif(not _user_scope_works(), reason="needs a systemd user session")
+def test_the_watchdog_stops_a_run_when_available_memory_falls_below_the_floor(
+    tmp_path: Path,
+) -> None:
+    """GPU allocations escape the cgroup cap on unified memory (c49/h33): a floor
+    on MemAvailable is the backstop. A floor above what is free trips at once."""
+    floor = f"{_mem_available_kb() * 2}K"
+    result, seconds = _run_watched(tmp_path, floor, "sleep 60")
+    assert result.returncode == 3, result.stderr
+    assert seconds < 20
+    mem_log = (tmp_path / "mem.log").read_text(encoding="utf-8")
+    assert "watchdog: MemAvailable" in mem_log
+    assert f"below floor {floor}, stopping" in mem_log
+    assert "watchdog: MemAvailable" in result.stderr
+
+
+@pytest.mark.skipif(not _user_scope_works(), reason="needs a systemd user session")
+def test_the_watchdog_stops_the_commands_children_too(tmp_path: Path) -> None:
+    """A child holding the output pipe open dies with the command, so the run ends."""
+    floor = f"{_mem_available_kb() * 2}K"
+    result, seconds = _run_watched(tmp_path, floor, "bash -c 'sleep 60 & wait'")
+    assert result.returncode == 3, result.stderr
+    assert seconds < 20
+
+
+@pytest.mark.skipif(not _user_scope_works(), reason="needs a systemd user session")
+def test_a_run_above_the_floor_finishes_normally(tmp_path: Path) -> None:
+    result, _ = _run_watched(tmp_path, "1K", "true")
+    assert result.returncode == 0, result.stderr
+    assert "watchdog" not in (tmp_path / "mem.log").read_text(encoding="utf-8")
+
+
+def test_the_watchdog_also_guards_a_container_capped_run(tmp_path: Path) -> None:
+    """With TRAIN_MEMORY_CAP=container there is no scope; the floor still applies."""
+    floor = f"{_mem_available_kb() * 2}K"
+    prefix = _HIDE_SYSTEMD_RUN + " TRAIN_MEMORY_CAP=container"
+    result, seconds = _run_watched(tmp_path, floor, "sleep 60", prefix=prefix)
+    assert result.returncode == 3, result.stderr
+    assert seconds < 20
+    assert "watchdog: MemAvailable" in (tmp_path / "mem.log").read_text(encoding="utf-8")
+
+
+def test_a_container_capped_run_above_the_floor_finishes_normally(tmp_path: Path) -> None:
+    prefix = _HIDE_SYSTEMD_RUN + " TRAIN_MEMORY_CAP=container"
+    result, _ = _run_watched(tmp_path, "1K", "true", prefix=prefix)
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize("floor", ["lots", "8X", "-1G", "0", "1.5G"])
+def test_an_unreadable_memory_floor_is_refused(tmp_path: Path, floor: str) -> None:
+    prefix = _HIDE_SYSTEMD_RUN + " TRAIN_MEMORY_CAP=container"
+    result, _ = _run_watched(tmp_path, floor, "true", prefix=prefix)
+    assert result.returncode == 2
+    assert "TRAIN_MEMORY_FLOOR" in result.stderr
+
+
+def test_the_memory_settings_in_the_env_file_reach_a_child_process(tmp_path: Path) -> None:
+    """Caps set only in the env file must reach train.py/train_scorer.py (child processes)."""
+    env = tmp_path / "caps.env"
+    env.write_text(
+        _QWEN_ENV.read_text(encoding="utf-8")
+        + "\nTRAIN_MEMORY_FLOOR=9G\nTRAIN_WATCHDOG_SECONDS=4\nNVSH_TRAIN_GPU_MEMORY_GB=18\n",
+        encoding="utf-8",
+    )
+    result = _run(env, tmp_path, "status")
+    assert result.returncode == 0, result.stderr
+    assert "caps (as a child sees them): max=24G floor=9G watchdog=4s gpu_gb=18" in result.stdout
+
+
+def test_both_env_examples_name_the_memory_floor_and_gpu_budget() -> None:
+    for example in (_LFM_ENV, _QWEN_ENV):
+        text = example.read_text(encoding="utf-8")
+        assert "TRAIN_MEMORY_FLOOR=" in text and "NVSH_TRAIN_GPU_MEMORY_GB=" in text

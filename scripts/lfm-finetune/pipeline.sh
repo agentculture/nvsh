@@ -79,6 +79,10 @@ if [ "${1:-}" = "--env" ]; then ENV_FILE=${2:-}; shift 2; fi
 [ -n "$ENV_FILE" ] || die "pass --env <file> (copy scripts/lfm-finetune/pipeline.env.example)"
 # shellcheck disable=SC1090
 source "$ENV_FILE"
+# The memory caps must reach the stages' child processes (train.py and
+# train_scorer.py read NVSH_TRAIN_GPU_MEMORY_GB), not only this shell.
+export TRAIN_MEMORY_MAX TRAIN_MEMORY_FLOOR TRAIN_WATCHDOG_SECONDS TRAIN_MEMORY_CAP \
+  NVSH_TRAIN_GPU_MEMORY_GB
 STAGE=${1:-status}; shift || true
 
 : "${WORK:?}" "${BASE:?}" "${BASE_REV:?}" "${REPO:?}" "${HF_CACHE:?}" "${SEED:?}"
@@ -277,6 +281,10 @@ PYEOF
       if [ -e "$WORK/$f" ]; then printf '%-28s %s\n' "$f" "$(wc -l < "$WORK/$f") lines"; else printf '%-28s -\n' "$f"; fi
     done
     find "$WORK/runs" -mindepth 1 -maxdepth 1 -type d -printf 'run: %f\n' 2>/dev/null
+    # shellcheck disable=SC2016  # expanded by the child, on purpose
+    bash -c 'echo "caps (as a child sees them): max=${TRAIN_MEMORY_MAX:-unset}\
+ floor=${TRAIN_MEMORY_FLOOR:-8G (default)} watchdog=${TRAIN_WATCHDOG_SECONDS:-5}s\
+ gpu_gb=${NVSH_TRAIN_GPU_MEMORY_GB:-unset}"'
     ;;
   *)
     die "unknown stage '$STAGE' -- one of: $STAGES"

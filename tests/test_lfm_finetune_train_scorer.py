@@ -246,3 +246,10 @@ def test_evaluate_reports_accuracy_and_confidence() -> None:
     assert report["accuracy"] > 1 / len(label_ids)
     assert 0.0 < report["mean_confidence"] <= 1.0
     assert report["loss"] >= 0.0
+
+
+def test_the_scorer_trainer_shares_the_gpu_memory_cap() -> None:
+    """train_scorer.py honours NVSH_TRAIN_GPU_MEMORY_GB through train.py's helper."""
+    module = _module()
+    assert module.gpu_memory_fraction("8", 128 * 2**30) == 0.0625
+    assert callable(module.cap_gpu_memory)
