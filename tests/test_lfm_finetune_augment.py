@@ -1858,6 +1858,363 @@ def test_a_request_naming_any_skill_identifier_is_caught() -> None:
     assert module.names_skill_identifier("jetson-memory-auditor", names) == ""
 
 
+# ---------------------------------------------------------------------------
+# --rereview (t11, decisions c38/c41): reviewer B only, over stored candidates
+# ---------------------------------------------------------------------------
+
+
+def _stored_candidate(
+    record_id: str = "dev-e01~v1",
+    source_id: str = "dev-e01",
+    side: str = "train",
+    seed_format: str = "split",
+    text: str = "How warm is the box right now?",
+    expect: dict[str, Any] | None = None,
+    no_verdicts: bool = False,
+    reviewer_a_accept: bool = True,
+    reviewer_a_reason: str = "matches",
+    reviewer_b_accept: bool | None = True,
+    reviewer_b_reason: str = "matches",
+    guard_verdicts: dict[str, dict[str, Any]] | None = None,
+    **extra: Any,
+) -> dict[str, Any]:
+    """A stored accepted/rejected record shaped as the real nvsh-*.jsonl
+    files from issue 39's run. There, an *accepted* record carries no
+    ``verdicts`` at all (``augment.py`` only ever writes ``verdicts`` onto a
+    rejected record -- ``no_verdicts=True`` reproduces that real shape,
+    keys ``expect``/``id``/``kind``/``models``/``seed_format``/``side``/
+    ``source``/``source_id``/``text`` and nothing else); a *rejected* record
+    always carries ``verdicts`` (reviewer_a/reviewer_b, and possibly
+    ``identifier_check``/``template_check`` from the deterministic guards).
+    """
+    record: dict[str, Any] = {
+        "id": record_id,
+        "source_id": source_id,
+        "side": side,
+        "seed_format": seed_format,
+        "text": text,
+        "expect": expect if expect is not None else {"operation": "thermal_stats", "args": {}},
+        "kind": "explicit",
+        "source": "corpus",
+        "models": {
+            "GENERATOR": "worker-model",
+            "CORRECTOR": "cortex-model",
+            "REVIEWER_A": "rev-a-model",
+            "REVIEWER_B": "nemotron-3.5-lightning",
+        },
+    }
+    if not no_verdicts:
+        record["verdicts"] = {
+            "reviewer_a": {"accept": reviewer_a_accept, "reason": reviewer_a_reason},
+        }
+        if reviewer_b_accept is not None:
+            record["verdicts"]["reviewer_b"] = {
+                "accept": reviewer_b_accept,
+                "reason": reviewer_b_reason,
+            }
+        if guard_verdicts:
+            record["verdicts"].update(guard_verdicts)
+    record.update(extra)
+    return record
+
+
+def _write_jsonl(path: Path, records: list[dict[str, Any]]) -> Path:
+    path.write_text("".join(json.dumps(r) + "\n" for r in records), encoding="utf-8")
+    return path
+
+
+def _fake_reviewer_b(role="REVIEWER_B", model="qwen-3.8-27b", url="http://fake-gateway"):
+    return aug.RoleConfig(role=role, url=url, model=model)
+
+
+def test_rereview_calls_only_reviewer_b_and_reuses_stored_text(tmp_path) -> None:
+    candidates = _write_jsonl(tmp_path / "accepted.jsonl", [_stored_candidate()])
+    calls: list[dict[str, Any]] = []
+
+    def fake_caller(role, system, user):
+        calls.append({"role": role.role, "model": role.model, "user": user})
+        return "yes: still matches"
+
+    accepted_out = tmp_path / "out-accepted.jsonl"
+    rejected_out = tmp_path / "out-rejected.jsonl"
+    counts = aug.run_rereview(
+        candidate_files=[candidates],
+        role=_fake_reviewer_b(),
+        accepted_out=accepted_out,
+        rejected_out=rejected_out,
+        caller=fake_caller,
+    )
+    assert len(calls) == 1
+    assert calls[0]["role"] == "REVIEWER_B"
+    assert "How warm is the box right now?" in calls[0]["user"]
+    assert counts.as_dict()["processed"] == 1
+    assert counts.as_dict()["accepted"] == 1
+    assert counts.as_dict()["errors"] == 0
+
+    lines = accepted_out.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 1
+    record = json.loads(lines[0])
+    assert record["text"] == "How warm is the box right now?"  # generator/corrector text reused
+    assert record["models"]["REVIEWER_B"] == "qwen-3.8-27b"  # new reviewer model recorded
+    assert record["verdicts"]["reviewer_a"] == {"accept": True, "reason": "matches"}
+    assert record["verdicts"]["reviewer_b"]["accept"] is True
+    assert not rejected_out.exists()
+
+
+def test_rereview_rederives_acceptance_from_stored_a_and_new_b(tmp_path) -> None:
+    # Stored A rejected it; a new B "yes" must still not accept it.
+    candidates = _write_jsonl(
+        tmp_path / "rejected.jsonl",
+        [_stored_candidate(reviewer_a_accept=False, reviewer_a_reason="wrong operation")],
+    )
+    counts = aug.run_rereview(
+        candidate_files=[candidates],
+        role=_fake_reviewer_b(),
+        accepted_out=tmp_path / "accepted.jsonl",
+        rejected_out=tmp_path / "rejected-out.jsonl",
+        caller=lambda role, system, user: "yes",
+    )
+    assert counts.accepted == 0
+    assert counts.rejected == 1
+    record = json.loads((tmp_path / "rejected-out.jsonl").read_text(encoding="utf-8"))
+    assert record["verdicts"]["reviewer_a"]["accept"] is False
+    assert record["verdicts"]["reviewer_b"]["accept"] is True
+
+
+def test_rereview_flips_a_previously_accepted_candidate_when_new_b_says_no(tmp_path) -> None:
+    candidates = _write_jsonl(
+        tmp_path / "accepted.jsonl",
+        [_stored_candidate(reviewer_a_accept=True, reviewer_b_accept=True)],
+    )
+    counts = aug.run_rereview(
+        candidate_files=[candidates],
+        role=_fake_reviewer_b(),
+        accepted_out=tmp_path / "accepted-out.jsonl",
+        rejected_out=tmp_path / "rejected-out.jsonl",
+        caller=lambda role, system, user: "no, this now reads as a different operation",
+    )
+    assert counts.accepted == 0
+    assert counts.rejected == 1
+    assert not (tmp_path / "accepted-out.jsonl").exists()
+
+
+def test_rereview_limit_and_sample_cap_candidates(tmp_path) -> None:
+    candidates = _write_jsonl(
+        tmp_path / "accepted.jsonl",
+        [_stored_candidate(record_id=f"dev-e0{i}~v1", source_id=f"dev-e0{i}") for i in range(3)],
+    )
+    calls = {"n": 0}
+
+    def fake_caller(role, system, user):
+        calls["n"] += 1
+        return "yes"
+
+    counts = aug.run_rereview(
+        candidate_files=[candidates],
+        role=_fake_reviewer_b(),
+        accepted_out=tmp_path / "accepted-out.jsonl",
+        rejected_out=tmp_path / "rejected-out.jsonl",
+        caller=fake_caller,
+        limit=2,
+    )
+    assert calls["n"] == 2
+    assert counts.processed == 2
+
+
+def test_rereview_prints_agreement_with_stored_reviewer_b_verdicts(tmp_path, capsys) -> None:
+    candidates = _write_jsonl(
+        tmp_path / "accepted.jsonl",
+        [
+            _stored_candidate(record_id="a~v1", source_id="a", reviewer_b_accept=True),
+            _stored_candidate(record_id="b~v1", source_id="b", reviewer_b_accept=False),
+            _stored_candidate(record_id="c~v1", source_id="c", reviewer_b_accept=True),
+        ],
+    )
+    # New reviewer agrees with the first two stored verdicts (yes, no) and
+    # disagrees with the third (stored "yes", new "no").
+    replies = iter(["yes", "no", "no"])
+
+    def fake_caller(role, system, user):
+        return next(replies)
+
+    counts = aug.run_rereview(
+        candidate_files=[candidates],
+        role=_fake_reviewer_b(),
+        accepted_out=tmp_path / "accepted-out.jsonl",
+        rejected_out=tmp_path / "rejected-out.jsonl",
+        caller=fake_caller,
+    )
+    aug._print_rereview_summary(counts)
+    out = capsys.readouterr().out
+    assert "agreement=2/3" in out
+
+
+def test_rereview_requires_stored_reviewer_a_verdict_or_counts_an_error(tmp_path) -> None:
+    bad = dict(_stored_candidate())
+    del bad["verdicts"]["reviewer_a"]
+    candidates = _write_jsonl(tmp_path / "accepted.jsonl", [bad])
+    counts = aug.run_rereview(
+        candidate_files=[candidates],
+        role=_fake_reviewer_b(),
+        accepted_out=tmp_path / "accepted-out.jsonl",
+        rejected_out=tmp_path / "rejected-out.jsonl",
+        caller=lambda role, system, user: "yes",
+    )
+    assert counts.errors == 1
+    assert counts.processed == 0
+    assert not (tmp_path / "accepted-out.jsonl").exists()
+    assert not (tmp_path / "rejected-out.jsonl").exists()
+
+
+def test_rereview_accepts_a_real_shaped_accepted_record_with_no_verdicts(tmp_path) -> None:
+    """Real ``nvsh-accepted.jsonl`` records carry none of expect/id/kind/
+    models/seed_format/side/source/source_id/text plus a ``verdicts`` block
+    -- only those nine keys, no ``verdicts`` at all. A record shaped that
+    way is a stored reviewer A (and old reviewer B) accept, not an error."""
+    record = _stored_candidate(no_verdicts=True)
+    assert set(record) == {
+        "id",
+        "source_id",
+        "side",
+        "seed_format",
+        "text",
+        "expect",
+        "kind",
+        "source",
+        "models",
+    }
+    candidates = _write_jsonl(tmp_path / "accepted.jsonl", [record])
+    counts = aug.run_rereview(
+        candidate_files=[candidates],
+        role=_fake_reviewer_b(),
+        accepted_out=tmp_path / "accepted-out.jsonl",
+        rejected_out=tmp_path / "rejected-out.jsonl",
+        caller=lambda role, system, user: "yes: still matches",
+    )
+    assert counts.errors == 0
+    assert counts.processed == 1
+    assert counts.accepted == 1
+    # old reviewer B is an implicit accept too (the record was stored as
+    # accepted), so the new "yes" agrees with it.
+    assert counts.compared == 1
+    assert counts.agreed == 1
+    out_record = json.loads(
+        (tmp_path / "accepted-out.jsonl").read_text(encoding="utf-8").splitlines()[0]
+    )
+    assert out_record["verdicts"]["reviewer_a"] == {"accept": True, "reason": ""}
+
+
+def test_rereview_a_deterministic_guard_failure_stays_rejected_even_when_new_b_says_yes(
+    tmp_path,
+) -> None:
+    """A rejected record whose stored verdicts have reviewer_a=True,
+    reviewer_b=True and a failing template_check (the deterministic guard,
+    not either reviewer) must never flip to accepted just because the fresh
+    reviewer B says yes -- the same guards a fresh run applies are re-run
+    here on the stored text."""
+    record = _stored_candidate(
+        text="Propose this change for the user to approve: reboot",
+        reviewer_a_accept=True,
+        reviewer_b_accept=True,
+        guard_verdicts={
+            "template_check": {"accept": False, "reason": "copies 'propose this change'"}
+        },
+    )
+    candidates = _write_jsonl(tmp_path / "rejected.jsonl", [record])
+    counts = aug.run_rereview(
+        candidate_files=[candidates],
+        role=_fake_reviewer_b(),
+        accepted_out=tmp_path / "accepted-out.jsonl",
+        rejected_out=tmp_path / "rejected-out.jsonl",
+        caller=lambda role, system, user: "yes",
+    )
+    assert counts.accepted == 0
+    assert counts.rejected == 1
+    assert not (tmp_path / "accepted-out.jsonl").exists()
+    out_record = json.loads(
+        (tmp_path / "rejected-out.jsonl").read_text(encoding="utf-8").splitlines()[0]
+    )
+    assert out_record["verdicts"]["reviewer_a"]["accept"] is True
+    assert out_record["verdicts"]["reviewer_b"]["accept"] is True
+    assert out_record["verdicts"]["template_check"]["accept"] is False
+
+
+def test_rereview_resume_skips_ids_already_written(tmp_path) -> None:
+    candidates = _write_jsonl(tmp_path / "accepted.jsonl", [_stored_candidate()])
+    accepted_out = tmp_path / "accepted-out.jsonl"
+    accepted_out.write_text(json.dumps({"id": "dev-e01~v1"}) + "\n", encoding="utf-8")
+    calls = {"n": 0}
+
+    def fake_caller(role, system, user):
+        calls["n"] += 1
+        return "yes"
+
+    counts = aug.run_rereview(
+        candidate_files=[candidates],
+        role=_fake_reviewer_b(),
+        accepted_out=accepted_out,
+        rejected_out=tmp_path / "rejected-out.jsonl",
+        caller=fake_caller,
+    )
+    assert calls["n"] == 0
+    assert counts.processed == 0
+
+
+def test_main_rereview_mode_needs_only_reviewer_b_config(
+    tmp_path, monkeypatch, fake_server
+) -> None:
+    _server, url = fake_server
+    monkeypatch.setenv("NVSH_AUG_REVIEWER_B_URL", url)
+    monkeypatch.setenv("NVSH_AUG_REVIEWER_B_MODEL", "qwen-3.8-27b")
+    for role in ("GENERATOR", "CORRECTOR", "REVIEWER_A"):
+        monkeypatch.delenv(f"NVSH_AUG_{role}_URL", raising=False)
+        monkeypatch.delenv(f"NVSH_AUG_{role}_MODEL", raising=False)
+    _server.responders.update({"qwen-3.8-27b": _always("yes: still matches")})
+    candidates = _write_jsonl(tmp_path / "accepted.jsonl", [_stored_candidate()])
+    accepted_out = tmp_path / "out-accepted.jsonl"
+    rc = aug.main(
+        [
+            str(candidates),
+            "--rereview",
+            "--accepted-out",
+            str(accepted_out),
+            "--rejected-out",
+            str(tmp_path / "out-rejected.jsonl"),
+            "--sample",
+            "1",
+        ]
+    )
+    assert rc == 0
+    assert json.loads(accepted_out.read_text(encoding="utf-8").splitlines()[0])["id"] == (
+        "dev-e01~v1"
+    )
+
+
+def test_sample_is_an_alias_for_limit_in_dry_run(tmp_path) -> None:
+    seed_file = _split_seed_file(tmp_path)
+    import io
+    from contextlib import redirect_stdout
+
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        rc = aug.main(
+            [
+                str(seed_file),
+                "--per-source",
+                "3",
+                "--dry-run",
+                "--sample",
+                "1",
+                "--accepted-out",
+                str(tmp_path / "accepted.jsonl"),
+                "--rejected-out",
+                str(tmp_path / "rejected.jsonl"),
+            ]
+        )
+    assert rc == 0
+    assert "dry-run: 1 " in buf.getvalue()
+
+
 def test_skill_seeds_know_every_skill_in_their_file(tmp_path) -> None:
     import json
 
