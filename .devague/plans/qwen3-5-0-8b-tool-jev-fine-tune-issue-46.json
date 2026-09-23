@@ -5,7 +5,7 @@
   "schema_version": 5,
   "status": "exported",
   "created": "2026-09-23T08:50:51Z",
-  "updated": "2026-09-23T12:43:49Z",
+  "updated": "2026-09-23T13:29:27Z",
   "targets": [
     {
       "id": "c1",
@@ -1162,6 +1162,14 @@
       "task_id": "t25",
       "resolved": true,
       "resolution": "f11 merged and live-checked: awq_oneshot.py (AWQ venv) quantized the stock copy (1.1 GB, weights saved after the generation config is sanitized before save), finish_awq_export copied tokenizer/preprocessor files and wrote generation_config.json; the pinned vLLM served it with Marlin and the file's temperature 0 (three byte-identical runs), tool calls parse"
+    },
+    {
+      "id": "r15",
+      "text": "After g1: nvsh's managed launcher (runtime_docker.check_model) refuses an absolute model path for vLLM, so the temperature-0 stock copy can be measured only in attach mode (a hand-started pinned vLLM, as t13's live check did); measure-skills always launches managed, so its stock run fails loudly until measure_skills.py gains an attach option, and measure_skills.py has no --ground-snapshot (skills routing does not ground arguments). Decide the skills-eval route before t21",
+      "kind": "unknown_nonblocking",
+      "task_id": "t21",
+      "resolved": true,
+      "resolution": "Operator approved deviation d7: every model is measured in attach mode against one pinned-vLLM helper with identical flags"
     }
   ],
   "obligations": []

@@ -2,7 +2,7 @@
   "plan_slug": "qwen3-5-0-8b-tool-jev-fine-tune-issue-46",
   "schema_version": 2,
   "created": "2026-09-23T10:18:50Z",
-  "updated": "2026-09-23T12:08:29Z",
+  "updated": "2026-09-23T13:29:27Z",
   "deviations": [
     {
       "id": "d1",
@@ -76,6 +76,34 @@
       "status": "approved",
       "classification": "acceptable",
       "seq": 5
+    },
+    {
+      "id": "d6",
+      "what": "Track A's calibration (ECE/Brier) is measured by exact in-process scoring: for each entry, teacher-force each candidate's full tool-call prefix (every table operation plus explain and escalate) under the Track A checkpoint with the same rendered prompt, and normalise over the candidates; run once per checkpoint on the final side; latency still comes from the served run",
+      "task_ref": "t24",
+      "reason": "Operator decision 2026-09-23: Qwen splits operation names into several tokens and vLLM returns logprobs only along the generated path, so generation-trace distributions are missing for most Track A lines (g2's finding on the real tokenizer), which h17 does not allow",
+      "affects": [
+        "t22",
+        "t28"
+      ],
+      "origin": "user",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 6
+    },
+    {
+      "id": "d7",
+      "what": "Every model (stock copy, Track A and Track B checkpoints, AWQ build) is measured in attach mode against a pinned vLLM started by one committed helper with identical flags (pinned image digest, qwen3_coder parser, auto tool choice, --max-logprobs, --limit-mm-per-prompt image/video 0, the model dir's own generation_config.json); pipeline measure stages measure one model per call; GGUF via llama-server the same way",
+      "task_ref": "t21",
+      "reason": "nvsh's managed launcher refuses an absolute model path for vLLM (risk r15) and cannot pass --limit-mm-per-prompt (needed by the AWQ build), so managed runs cannot serve the temperature-0 stock copy or the AWQ build; one attach route keeps serving identical across every compared model",
+      "affects": [
+        "t24",
+        "t25"
+      ],
+      "origin": "llm",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 7
     }
   ],
   "evidence": [],
