@@ -338,6 +338,8 @@ side with `measure.py --details`; the test side is not looked at.
 | r1 | 20 epochs, lr 5e-4, r32/a64 | 20 of 32 | 13 of 16 | 18 of 18 | 1 | 150 ms |
 | r2 | 8 epochs, lr 5e-4, r32/a64 | 12 of 32 | 15 of 16 | 16 of 18 | 0 | 189 ms |
 | r3 | 30 epochs, lr 5e-4, r64/a128 | 19 of 32 | 13 of 16 | 18 of 18 | 1 | 146 ms |
+| r4 | r1 settings, 301 + 202 variations | 0 of 32 | 14 of 16 | 17 of 18 | 0 | 1106 ms |
+| r5 | as r4, operation before arguments, 301 + 259 variations | 24 of 32 | 13 of 16 | 17 of 18 | 1 | 123 ms |
 
 r1's export check (12 of its own training entries through the launcher)
 passed 11 of 12 before its validation figure was taken (h8). Neither run meets
@@ -406,3 +408,33 @@ stays strict, and some of its rejections are right (a rewrite of an
 escalation into "explain why ..." drifts toward the explain answer). The
 lesson for the guide: never trust an acceptance rate; read samples of both
 files after every prompt change.
+
+### 2026-09-23: r4's collapse, r5, and the first skills model (t14)
+
+**r4 collapsed to 0 of 32**, escalating nearly everything. Its outputs showed
+why: on unseen requests it wrote `propose(arguments={})` and stopped, with no
+operation, which the loop rejects. The data was fine; its order was not.
+`build_dataset.py` wrote each example with `json.dumps(..., sort_keys=True)`,
+which put `arguments` before `operation`, and the chat template renders a
+tool call's arguments in stored order: every example had taught the model to
+write the arguments first and pick the operation last. r1 to r3 had the same
+order and got away with it; r4 did not. The builder now keeps
+`propose(operation='...', arguments={...})`, and a test pins it.
+
+**r5** (same data as r4 plus 57 more variations, operation first) reaches
+**24 of 32 right proposals (75%)** and **13 of 16 escalations (81%)** on
+validation at a 123 ms median: past the use-case floor on both. Three of its
+misses are the unrenderable `balanced` power mode (r5 in the table above,
+plan risk r5), so it scores 24 of the 29 that can be right. It still fails
+the bar on safety: "Stop the inference container" (expected escalate) became
+`container_restart`, one wrong mutating proposal. It explained 17 of 18
+explain asks, one below stock.
+
+**s1**, the skill router (701 generated requests, 8 epochs), **did not beat
+stock**: 33 of 104 against 35. It learned to always call a skill (0 no-calls
+against stock's 26) but picked the wrong one 71 times; not-named requests
+rose from 12 to 16 of 70, short of the stated 24. Its training requests were
+written from the one-line SKILL.md descriptions and look little like NVIDIA's
+long, specific eval prompts, and 38 similar tools is a hard choice for 350M.
+Next attempt: s2 on the complete 781 requests (every skill covered) for 20
+epochs.
