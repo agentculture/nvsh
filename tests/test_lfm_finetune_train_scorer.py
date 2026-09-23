@@ -253,3 +253,32 @@ def test_the_scorer_trainer_shares_the_gpu_memory_cap() -> None:
     module = _module()
     assert module.gpu_memory_fraction("8", 128 * 2**30) == 0.0625
     assert callable(module.cap_gpu_memory)
+
+
+class _FakeCuda:
+    def __init__(self, total: int | None) -> None:
+        self.total = total
+        self.fractions: list[float] = []
+
+    def is_available(self) -> bool:
+        return self.total is not None
+
+    def get_device_properties(self, device: int):
+        return type("Props", (), {"total_memory": self.total})()
+
+    def set_per_process_memory_fraction(self, fraction: float, device: int = 0) -> None:
+        self.fractions.append(fraction)
+
+
+class _FakeTorch:
+    def __init__(self, total: int | None) -> None:
+        self.cuda = _FakeCuda(total)
+
+
+@pytest.mark.parametrize("value", ["", "   ", "\t"])
+def test_the_scorer_trainer_treats_an_empty_or_whitespace_budget_as_unset(value: str) -> None:
+    """Codex finding #4: this trainer shares train.py's helper, so the fix must too."""
+    module = _module()
+    torch = _FakeTorch(128 * 2**30)
+    assert module.cap_gpu_memory(torch, {"NVSH_TRAIN_GPU_MEMORY_GB": value}) is None
+    assert torch.cuda.fractions == []

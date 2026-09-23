@@ -329,6 +329,15 @@ def test_no_gpu_memory_budget_leaves_torch_alone() -> None:
     assert torch.cuda.fractions == []
 
 
+@pytest.mark.parametrize("value", ["", "   ", "\t"])
+def test_an_empty_or_whitespace_gpu_memory_budget_is_treated_as_unset(value: str) -> None:
+    """Codex finding #4: the pipeline exports the env var empty; that must not abort training."""
+    module = _module()
+    torch = _FakeTorch(128 * 2**30)
+    assert module.cap_gpu_memory(torch, {"NVSH_TRAIN_GPU_MEMORY_GB": value}) is None
+    assert torch.cuda.fractions == []
+
+
 def test_a_gpu_memory_budget_over_the_device_is_refused_before_any_cap() -> None:
     module = _module()
     torch = _FakeTorch(128 * 2**30)
