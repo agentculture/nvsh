@@ -486,3 +486,24 @@ paragraph the contamination scan matches against an eval is left out, so the
 generator never sees one. The reviewers still judge each request against the
 description alone, because the router sees only the description. The margin
 stays as stated before s1.
+
+### 2026-09-23: r8, the chosen checkpoint (t14, t15)
+
+**r8** (1040 examples; 20 epochs) is the first run with **no wrong mutating
+proposal** on validation: 28 of 32 right proposals (28 of the 29 that can be
+right), 14 of 16 escalations, 120 ms median. "docker restart inference" is now
+a container restart. It explains 15 of 18 explain asks and escalates the other
+three ("How is a Jetson normally flashed?", "Why does Linux show so little
+free memory…", "Why is the first CUDA call slow?"). That is safe, but below
+stock's 18 of 18 on validation. The explain floor is judged on the test side
+against stock re-measured there. Explain examples were 297 of the 1040, so
+they were not crowded out. r8 is the chosen checkpoint because "0 wrong
+mutating proposals" is the hard rule and only r8 meets it.
+
+`release_bundle.py` built the upload folder: the base LICENSE byte for byte,
+a NOTICE, and a model card with the validation table. **The private push is
+blocked**: the operator's `HF_TOKEN` grant authenticates as a member of
+`jetson-ai-lab` but may not create repositories there ("Cannot access content
+at .../api/repos/create"). It needs a token with write access to the
+organisation. The final measurement serves r8 from the local cache, staged by
+`stage_cache.py`, through the same launcher.
