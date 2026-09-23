@@ -873,10 +873,10 @@ def _propose_reply(operation: str, *, think: str = "") -> dict:
     tokens = [
         _tok("<tool_call>", 0.99),
         _tok("\n<function=", 0.99),
-        _tok("propose", 0.8, {"escalate": 0.15, "explain": 0.05}),
-        _tok(">\n<parameter=operation>\n", 0.99),
-        _tok(operation, 0.9, {"thermal_stats": 0.1}),
-        _tok("\n</parameter>", 0.99),
+        _tok("propose", 0.8, {"escalate>": 0.15, "explain>": 0.05}),
+        _tok(">\n<parameter=operation>\n", 1.0),
+        _tok(operation, 0.9, {"thermal_stats\n": 0.1}),
+        _tok("\n</parameter>", 1.0),
     ]
     return {
         "message": {
@@ -899,7 +899,8 @@ def _escalate_reply(*, think: str = "") -> dict:
     tokens = [
         _tok("<tool_call>", 0.99),
         _tok("\n<function=", 0.99),
-        _tok("escalate", 0.7, {"explain": 0.2, "gpu_stats": 0.1}),
+        _tok("escalate", 0.7, {"explain>": 0.2, "gpu_stats>": 0.1}),
+        _tok(">\n", 1.0),
     ]
     return {
         "message": {
@@ -1103,12 +1104,82 @@ def test_candidates_refuse_an_ambiguous_alternative(measure):
         _tok(">", 1.0),
         _tok("service", 0.9, {"container": 0.1}),
         _tok("_status", 1.0),
+        _tok("\n", 1.0),
     ]
     call = ToolCall(name="propose", arguments={"operation": "service_status", "arguments": {}})
     ops = ("service_status", "container_list", "container_restart")
     distribution, reason = measure.generative_candidates(_tokens(measure, rows), call, ops)
     assert distribution is None
-    assert "ambiguous" in reason
+    assert "not observed" in reason
+
+
+def test_candidates_refuse_a_unique_prefix_whose_continuation_was_not_observed(measure):
+    """Codex #3: ``gpu`` at the first token is not ``gpu_stats``: ``_stats`` was never scored."""
+    from nvsh.tiers.toolchat import ToolCall
+
+    rows = [
+        _tok("<function=", 0.99),
+        _tok("propose", 1.0),
+        _tok(">", 1.0),
+        _tok("service", 0.9, {"gpu": 0.1}),
+        _tok("_restart", 1.0),
+        _tok("\n", 1.0),
+    ]
+    call = ToolCall(name="propose", arguments={"operation": "service_restart", "arguments": {}})
+    ops = ("gpu_stats", "service_restart")
+    distribution, reason = measure.generative_candidates(_tokens(measure, rows), call, ops)
+    assert distribution is None
+    assert reason == "an alternative token's continuation was not observed"
+
+
+def test_candidates_refuse_a_whole_name_without_its_end(measure):
+    """An alternative spelling all of ``escalate`` still has an unscored continuation."""
+    from nvsh.tiers.toolchat import ToolCall
+
+    rows = [
+        _tok("<function=", 0.99),
+        _tok("propose", 0.9, {"escalate": 0.1}),
+        _tok(">", 1.0),
+        _tok("gpu_stats", 1.0),
+        _tok("\n", 1.0),
+    ]
+    call = ToolCall(name="propose", arguments={"operation": "gpu_stats", "arguments": {}})
+    distribution, reason = measure.generative_candidates(
+        _tokens(measure, rows), call, ("gpu_stats",)
+    )
+    assert distribution is None
+    assert "not observed" in reason
+
+
+def test_candidates_read_the_token_that_ends_the_generated_name(measure):
+    """A longer label offered at the token after the generated name is not the name's mass."""
+    from nvsh.tiers.toolchat import ToolCall
+
+    rows = [
+        _tok("<function=", 0.99),
+        _tok("propose", 1.0),
+        _tok(">", 1.0),
+        _tok("gpu", 1.0),
+        _tok("\n", 0.8, {"_stats": 0.2}),
+    ]
+    call = ToolCall(name="propose", arguments={"operation": "gpu", "arguments": {}})
+    distribution, reason = measure.generative_candidates(
+        _tokens(measure, rows), call, ("gpu", "gpu_stats")
+    )
+    assert distribution is None
+    assert "not observed" in reason
+
+
+def test_candidates_need_the_name_to_end_inside_the_recorded_tokens(measure):
+    from nvsh.tiers.toolchat import ToolCall
+
+    rows = [_tok("<function=", 0.99), _tok("escalate", 1.0)]
+    call = ToolCall(name="escalate", arguments={})
+    distribution, reason = measure.generative_candidates(
+        _tokens(measure, rows), call, ("gpu_stats",)
+    )
+    assert distribution is None
+    assert "runs past" in reason
 
 
 def test_candidates_walk_every_token_of_the_name(measure):
@@ -1116,10 +1187,11 @@ def test_candidates_walk_every_token_of_the_name(measure):
 
     rows = [
         _tok("<function=", 0.99),
-        _tok("propose", 0.8, {"escalate": 0.15, "explain": 0.05}),
+        _tok("propose", 0.8, {"escalate>": 0.15, "explain>": 0.05}),
         _tok(">", 1.0),
-        _tok("service", 0.9, {"gpu": 0.1}),
-        _tok("_restart", 0.6, {"_status": 0.3, "_logs": 0.1}),
+        _tok("service", 0.9, {"gpu_stats\n": 0.1}),
+        _tok("_restart", 0.6, {"_status\n": 0.3, "_logs\n": 0.1}),
+        _tok("\n", 1.0),
     ]
     call = ToolCall(name="propose", arguments={"operation": "service_restart", "arguments": {}})
     ops = ("gpu_stats", "service_status", "service_logs", "service_restart")
@@ -1137,16 +1209,127 @@ def test_candidates_walk_every_token_of_the_name(measure):
     )
 
 
+def test_candidates_multiply_in_the_token_that_ends_the_name(measure):
+    """The generated name's mass includes the token closing it; a no-label alternative drops."""
+    from nvsh.tiers.toolchat import ToolCall
+
+    rows = [
+        _tok("<function=", 0.99),
+        _tok("escalate", 0.9, {"explain>": 0.1}),
+        _tok(">", 0.5, {"_now>": 0.5}),
+    ]
+    call = ToolCall(name="escalate", arguments={})
+    distribution, reason = measure.generative_candidates(
+        _tokens(measure, rows), call, ("gpu_stats",)
+    )
+    assert reason == ""
+    assert distribution == pytest.approx({"(escalate)": 0.45 / 0.55, "(explain)": 0.1 / 0.55})
+
+
 def test_candidates_do_not_split_proposal_mass_they_never_saw(measure):
     from nvsh.tiers.toolchat import ToolCall
 
-    rows = [_tok("<function=", 0.99), _tok("escalate", 0.9, {"propose": 0.1})]
+    rows = [_tok("<function=", 0.99), _tok("escalate", 0.9, {"propose>": 0.1}), _tok(">", 1.0)]
     call = ToolCall(name="escalate", arguments={})
     distribution, reason = measure.generative_candidates(
         _tokens(measure, rows), call, ("gpu_stats",)
     )
     assert distribution is None
     assert "split" in reason
+
+
+def test_unobserved_continuations_leave_the_line_without_a_distribution(
+    measure, tmp_path, chat_server
+):
+    """End to end: the refused line keeps its outcome, gets null candidates and a counted note."""
+    reply = _propose_reply("gpu_stats")
+    reply["logprobs"]["content"][4] = _tok("gpu_stats", 0.9, {"thermal": 0.1})
+    _ChatHandler.replies = [reply, _escalate_reply()]
+    split = _small_split(tmp_path)
+    predictions = tmp_path / "p"
+    out = tmp_path / "r.md"
+    harness = _lfm_harness(measure, tmp_path, chat_server)
+    argv = _argv(split, out, "--predictions", str(predictions), models=(STOCK,))
+    assert measure.main(argv, seams=harness.seams) == 0
+    op1, esc1 = _prediction_lines(_predictions_files(predictions)[0])
+    assert (op1["outcome"], op1["operation"], op1["candidates"]) == ("propose", "gpu_stats", None)
+    assert esc1["candidates"] is not None
+    text = out.read_text(encoding="utf-8")
+    assert _row(text, "Lines with a candidate distribution") == ["1 of 2"]
+    assert "an alternative token's continuation was not observed" in text
+
+
+# -- an explanation that is really an unparsed tool call (Codex #6) ----------
+
+_QWEN_XML = (
+    "<tool_call>\n<function=propose>\n<parameter=operation>\ngpu_stats\n"
+    "</parameter>\n</function>\n</tool_call>"
+)
+
+
+def _select(measure, result, text: str = "", calls=()):
+    from nvsh.tiers.toolchat import ChatReply
+
+    reply = measure.ReplyRecord(
+        reply=ChatReply(text=text, tool_calls=tuple(calls)),
+        tokens=3,
+        think=False,
+        logprobs=None,
+        at=0.0,
+    )
+    return measure.SelectRecord(
+        request=None, started=0.0, ended=0.0, result=result, replies=[reply]
+    )
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        _QWEN_XML,
+        "<function=gpu_stats>\n</function>",
+        "I will check.\n<parameter=operation>\ngpu_stats\n</parameter>",
+        '<tool_call>\n{"name": "gpu_stats"}',
+    ],
+)
+def test_an_explanation_holding_tool_call_markup_is_invalid(measure, text):
+    row = {"id": "x", "handled_by": "lfm", "operation": None}
+    select = _select(measure, Explanation(text=text), text=text)
+    assert measure._decided(row, select) == ("invalid", None, None, "unparsed_tool_call")
+    # the router's row is not needed: the tier's own result says the same
+    assert measure._decided(None, select)[3] == "unparsed_tool_call"
+
+
+def test_markup_in_the_raw_reply_is_found_even_if_the_explanation_lost_it(measure):
+    row = {"id": "x", "handled_by": "lfm", "operation": None}
+    select = _select(measure, Explanation(text="gpu_stats"), text=_QWEN_XML)
+    assert measure._decided(row, select)[3] == "unparsed_tool_call"
+
+
+def test_a_plain_explanation_is_still_an_explanation(measure):
+    row = {"id": "x", "handled_by": "lfm", "operation": None}
+    text = "The GPU is idle; a <function> in C returns a value."
+    select = _select(measure, Explanation(text=text), text=text)
+    assert measure._decided(row, select) == ("explain", None, None, None)
+
+
+def test_served_unparsed_qwen_xml_is_an_invalid_output(measure, metrics, tmp_path, chat_server):
+    """End to end: Qwen XML in message.content with no structured tool_calls."""
+    unparsed = {
+        "message": {"role": "assistant", "content": _QWEN_XML},
+        "usage": {"completion_tokens": 20},
+    }
+    _ChatHandler.replies = [unparsed]
+    split = _small_split(tmp_path)
+    predictions = tmp_path / "p"
+    harness = _lfm_harness(measure, tmp_path, chat_server)
+    argv = _argv(split, tmp_path / "r.md", "--predictions", str(predictions), models=(STOCK,))
+    assert measure.main(argv, seams=harness.seams) == 0
+    rows = _prediction_lines(_predictions_files(predictions)[0])
+    for row in rows:
+        metrics.Prediction.from_dict(row)
+        assert row["outcome"] == "invalid"
+        assert row["invalid_reason"] == "unparsed_tool_call"
+        assert row["candidates"] is None
 
 
 # -- serving record: ctx, engine, image digest, tool_call_parser -------------
