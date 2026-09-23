@@ -388,3 +388,15 @@ def test_a_split_built_example_matches_the_corpus_built_one(tmp_path) -> None:
     assert from_split
     for source_id, example in from_split.items():
         assert example["messages"] == from_corpus[source_id]["messages"]
+
+
+def test_a_written_proposal_names_the_operation_before_its_arguments(tmp_path):
+    # The chat template renders tool-call arguments in the order they are
+    # stored. Sorted keys put "arguments" before "operation", which taught
+    # r4 to write the arguments and then stop without choosing an operation.
+    out = tmp_path / "train.jsonl"
+    _module().main(["--corpus", str(dev_corpus_path()), "--out", str(out)])
+    for line in out.read_text(encoding="utf-8").splitlines():
+        call = json.loads(line)["messages"][-1]["tool_calls"][0]["function"]
+        if call["name"] == lfm.PROPOSE_TOOL:
+            assert list(call["arguments"]) == ["operation", "arguments"]

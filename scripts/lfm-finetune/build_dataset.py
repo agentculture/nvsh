@@ -275,7 +275,7 @@ def main(argv: list[str] | None = None) -> int:
         parser.error(str(exc))
     with open(out, "w", encoding="utf-8") as handle:
         for example in examples:
-            handle.write(json.dumps(example, ensure_ascii=False, sort_keys=True) + "\n")
+            handle.write(json.dumps(example, ensure_ascii=False) + "\n")
     print(f"written={len(examples)}")
     return 0
 
