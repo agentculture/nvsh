@@ -243,12 +243,14 @@ def test_escalation_recall_and_precision(result):
     assert escalation["escalated_on_explain"] == 1
 
 
-def test_abstain_is_the_escalate_outcome(result):
-    # c25: issue 46's abstain is nvsh's escalate, so abstention is the same figures.
-    assert result["abstention"] == {
-        "recall": result["escalation"]["recall"],
-        "precision": result["escalation"]["precision"],
-    }
+def test_abstain_is_the_escalate_outcome_with_strict_precision(result):
+    # c25: issue 46's abstain is nvsh's escalate. Deviation d2 (operator, 2026-09-23):
+    # abstention precision is strict -- an escalation on an explain entry is a false
+    # abstention too -- so p6 / (p6 + p12 + p10) = 1/3; bench's figure stays in "escalation".
+    assert result["abstention"]["recall"] == result["escalation"]["recall"]
+    assert result["abstention"]["precision"] == pytest.approx(1 / 3)
+    assert result["escalation"]["precision_strict"] == pytest.approx(1 / 3)
+    assert result["escalation"]["precision"] == pytest.approx(0.5)
 
 
 def test_escalation_agrees_with_bench_compute_escalation(metrics, tmp_path):

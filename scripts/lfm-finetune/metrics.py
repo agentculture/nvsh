@@ -58,7 +58,9 @@ The metrics
   definition -- recall over escalate-expected entries; precision's false
   positives are escalations of operation-expected entries. Explain entries are
   left out of both, as in bench, and escalations of them are reported
-  separately as ``escalated_on_explain``.
+  separately as ``escalated_on_explain``. ``precision_strict`` also counts
+  those as false escalations; issue 46's **abstention** precision is the
+  strict one (deviation d2), so the c34 bar is judged on it.
 * **False-positive tool calls**: proposals on explain- or escalate-expected
   entries, over all of those entries.
 * **Wrong mutating**: bench's count (a mutating operation proposed where
@@ -126,8 +128,9 @@ ISSUE46_MAPPING = (
 )
 ISSUE46_NOTE = (
     "Reporting only: every model is trained and scored on nvsh's propose/explain/escalate "
-    "tools. Issue 46's abstain is nvsh's escalate, so abstention precision and recall are "
-    "the escalation figures. Explain (answer in words, no tool) has no counterpart in "
+    "tools. Issue 46's abstain is nvsh's escalate, so abstention recall is the escalation "
+    "recall and abstention precision the strict escalation precision (an escalation on an "
+    "explain entry counts against it). Explain (answer in words, no tool) has no counterpart in "
     "issue 46's tool|abstain pair; it is shown as the no_action label issue 46 uses for "
     "Track B and is never counted as an abstention. An invalid output is not a decision."
 )
@@ -435,6 +438,9 @@ def compute(predictions: Sequence[Prediction]) -> dict:
     fp = sum(1 for p in kinds["operation"] if p.outcome == "escalate")
     recall = _ratio(tp, tp + fn)
     precision = _ratio(tp, tp + fp)
+    # Deviation d2: an escalation on an explain entry is a false abstention too.
+    on_explain = sum(1 for p in kinds["explain"] if p.outcome == "escalate")
+    precision_strict = _ratio(tp, tp + fp + on_explain)
 
     declines = kinds["explain"] + kinds["escalate"]
     right = sum(1 for p in kinds["operation"] if _right_proposal(p))
@@ -464,9 +470,10 @@ def compute(predictions: Sequence[Prediction]) -> dict:
             "fp": fp,
             "recall": recall,
             "precision": precision,
-            "escalated_on_explain": sum(1 for p in kinds["explain"] if p.outcome == "escalate"),
+            "precision_strict": precision_strict,
+            "escalated_on_explain": on_explain,
         },
-        "abstention": {"recall": recall, "precision": precision},
+        "abstention": {"recall": recall, "precision": precision_strict},
         "false_positive_tool_calls": {
             "n": false_calls,
             "N": len(declines),
