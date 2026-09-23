@@ -410,8 +410,9 @@ python scripts/lfm-finetune/measure.py --split "$WORK/splits/val.json" \
   --ground-snapshot <snapshot.json> --ctx 2048 --predictions "$WORK/measure/stock-val"
 ```
 
-The t13 live check ran stock on validation through attach mode; its exact
-command is not recorded here.
+The t13 live check ran stock on validation in attach mode, against a vLLM
+started by hand from the pinned image. The route is the one step 13 shows
+for the AWQ build.
 
 ### 10. Train Track A on spark *(not yet run)*
 
@@ -511,9 +512,19 @@ What the stage does:
 **Serving the AWQ build needs one extra vLLM argument.** The run record
 carries `serve_args`: `--limit-mm-per-prompt '{"image": 0, "video": 0}'`.
 nvsh's launcher cannot pass extra vLLM arguments. This is a known
-limitation; a vLLM started by hand with the flag and measured in attach mode
-(`[tiers.lfm] mode = "attach"`) is the likely route *(unverified)*. No sampling
-override flag is needed: the `generation_config.json` pins temperature 0.
+limitation. The route is a vLLM started by hand from the pinned image with the
+recorded arguments:
+
+```bash
+--limit-mm-per-prompt '{"image": 0, "video": 0}' \
+--enable-auto-tool-choice --tool-call-parser qwen3_coder --max-model-len 2048
+```
+
+`measure.py` then uses an nvsh config with `[tiers.lfm] mode = "attach"`
+and `base_url = "http://127.0.0.1:<port>/v1"`. This route is verified for
+stock (t13) and not yet for the AWQ build *(unverified until t25)*. No
+sampling override flag is needed: the `generation_config.json` pins
+temperature 0.
 
 Measure both builds with the same harness. If `heal_needed()` is true, log
 the trigger, then `$P --env qwen.env heal a1-heal a1`.
@@ -780,6 +791,10 @@ and the commit on `spec/qwen-tool-jev-issue-46`.
   per-process cap). `status` prints the caps as a child process sees them,
   and a test checks that a child sees values set only in the env file.
   *Commit:* `6d805d5`.
+- **P39. A stale comment in `pipeline.sh`.** After f11 the quantize
+  stage's comment still named `LLM_COMPRESSOR`; it now names `AWQ_PY` and the
+  optional `LLAMA_CPP_DIR`. *Found:* the documentation agent. *Commit:*
+  `849cad6`.
 
 ### Found in live runs after the tooling merged
 
