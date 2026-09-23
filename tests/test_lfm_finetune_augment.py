@@ -10,6 +10,7 @@ from __future__ import annotations
 import http.client
 import importlib.util
 import json
+import re
 import sys
 import threading
 import time
@@ -2158,6 +2159,149 @@ def test_rereview_resume_skips_ids_already_written(tmp_path) -> None:
     )
     assert calls["n"] == 0
     assert counts.processed == 0
+
+
+def _many_stored_candidates(n: int) -> list[dict[str, Any]]:
+    """*n* stored candidates whose text encodes its own index, so a fake
+    caller can answer deterministically from the request text alone."""
+    return [
+        _stored_candidate(
+            record_id=f"case-{i}~v1",
+            source_id=f"case-{i}",
+            text=f"case {i} request",
+        )
+        for i in range(n)
+    ]
+
+
+def _deterministic_rule_caller(delay: float = 0.01) -> Callable[[Any, str, str], str]:
+    """A fake REVIEWER_B caller with no gateway: sleeps briefly (to encourage
+    thread overlap) and answers by a fixed, deterministic rule derived from
+    the candidate's own text (rejects every third case), so a serial and a
+    concurrent run over the same candidates must produce identical output."""
+
+    def caller(role: Any, system: str, user: str) -> str:
+        if delay:
+            time.sleep(delay)
+        match = re.search(r"case (\d+) request", user)
+        index = int(match.group(1))
+        return "no, this drifted" if index % 3 == 0 else "yes, still matches"
+
+    return caller
+
+
+def _read_jsonl_ids(path: Path) -> list[str]:
+    if not path.is_file():
+        return []
+    return [json.loads(line)["id"] for line in path.read_text(encoding="utf-8").splitlines()]
+
+
+def test_rereview_concurrent_workers_write_every_id_exactly_once_as_valid_json(
+    tmp_path,
+) -> None:
+    candidates = _write_jsonl(tmp_path / "accepted.jsonl", _many_stored_candidates(40))
+    accepted_out = tmp_path / "out-accepted.jsonl"
+    rejected_out = tmp_path / "out-rejected.jsonl"
+    counts = aug.run_rereview(
+        candidate_files=[candidates],
+        role=_fake_reviewer_b(),
+        accepted_out=accepted_out,
+        rejected_out=rejected_out,
+        caller=_deterministic_rule_caller(),
+        workers=4,
+    )
+    ids = _read_jsonl_ids(accepted_out) + _read_jsonl_ids(rejected_out)
+    assert len(ids) == 40
+    assert len(set(ids)) == 40  # every id written exactly once, none interleaved/duplicated
+    assert counts.processed == 40
+
+
+def test_rereview_concurrent_counts_match_a_serial_run(tmp_path) -> None:
+    candidates_path = _write_jsonl(tmp_path / "accepted.jsonl", _many_stored_candidates(40))
+    serial_counts = aug.run_rereview(
+        candidate_files=[candidates_path],
+        role=_fake_reviewer_b(),
+        accepted_out=tmp_path / "serial-accepted.jsonl",
+        rejected_out=tmp_path / "serial-rejected.jsonl",
+        caller=_deterministic_rule_caller(delay=0.0),
+        workers=1,
+    )
+    concurrent_counts = aug.run_rereview(
+        candidate_files=[candidates_path],
+        role=_fake_reviewer_b(),
+        accepted_out=tmp_path / "conc-accepted.jsonl",
+        rejected_out=tmp_path / "conc-rejected.jsonl",
+        caller=_deterministic_rule_caller(),
+        workers=4,
+    )
+    assert serial_counts.as_dict() == concurrent_counts.as_dict()
+    assert concurrent_counts.processed == 40
+    assert concurrent_counts.accepted > 0
+    assert concurrent_counts.rejected > 0
+
+
+def test_rereview_limit_caps_attempts_exactly_under_concurrency(tmp_path) -> None:
+    candidates = _write_jsonl(tmp_path / "accepted.jsonl", _many_stored_candidates(40))
+    lock = threading.Lock()
+    calls = {"n": 0}
+
+    def counting_caller(role, system, user):
+        with lock:
+            calls["n"] += 1
+        time.sleep(0.01)
+        return "yes, still matches"
+
+    counts = aug.run_rereview(
+        candidate_files=[candidates],
+        role=_fake_reviewer_b(),
+        accepted_out=tmp_path / "accepted-out.jsonl",
+        rejected_out=tmp_path / "rejected-out.jsonl",
+        caller=counting_caller,
+        limit=10,
+        workers=4,
+    )
+    assert calls["n"] == 10
+    assert counts.processed == 10
+
+
+def test_rereview_resume_under_concurrency_writes_only_missing_ids(tmp_path) -> None:
+    candidates_path = _write_jsonl(tmp_path / "accepted.jsonl", _many_stored_candidates(40))
+    accepted_out = tmp_path / "out-accepted.jsonl"
+    rejected_out = tmp_path / "out-rejected.jsonl"
+
+    # A first, partial run (serial, capped at 15) leaves the output resumable.
+    first_counts = aug.run_rereview(
+        candidate_files=[candidates_path],
+        role=_fake_reviewer_b(),
+        accepted_out=accepted_out,
+        rejected_out=rejected_out,
+        caller=_deterministic_rule_caller(delay=0.0),
+        limit=15,
+        workers=1,
+    )
+    assert first_counts.processed == 15
+    done_before = set(_read_jsonl_ids(accepted_out)) | set(_read_jsonl_ids(rejected_out))
+    assert len(done_before) == 15
+
+    seen: list[str] = []
+    seen_lock = threading.Lock()
+
+    def tracking_caller(role, system, user):
+        with seen_lock:
+            seen.append(user)
+        return _deterministic_rule_caller(delay=0.005)(role, system, user)
+
+    resumed_counts = aug.run_rereview(
+        candidate_files=[candidates_path],
+        role=_fake_reviewer_b(),
+        accepted_out=accepted_out,
+        rejected_out=rejected_out,
+        caller=tracking_caller,
+        workers=4,
+    )
+    assert resumed_counts.processed == 25  # only the 25 ids missing from the partial run
+    all_ids = set(_read_jsonl_ids(accepted_out)) | set(_read_jsonl_ids(rejected_out))
+    assert all_ids == {f"case-{i}~v1" for i in range(40)}
 
 
 def test_main_rereview_mode_needs_only_reviewer_b_config(
