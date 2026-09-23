@@ -1997,7 +1997,9 @@ def test_rereview_is_a_clean_slate_a_stored_rejection_can_be_accepted(tmp_path) 
     assert counts.accepted == 1
     assert counts.rejected == 0
     record = json.loads((tmp_path / "accepted.jsonl").read_text(encoding="utf-8"))
-    assert record["verdicts"] == {"reviewer_b": {"accept": True, "reason": "yes"}}
+    assert record["verdicts"] == {
+        "reviewer_b": {"accept": True, "reason": "yes", "temperature": 0.7}
+    }
     assert record["prior_verdicts"]["reviewer_a"] == {
         "accept": False,
         "reason": "wrong operation",
@@ -2610,3 +2612,72 @@ def test_main_rederive_clean_slate_needs_no_reviewer_config_and_honours_dry_run(
     assert not (tmp_path / "acc.jsonl").exists()
     assert aug.main(argv) == 0
     assert (tmp_path / "acc.jsonl").exists()
+
+
+# ---------------------------------------------------------------------------
+# per-role temperature (issue 46, operator: 0.7 is too hallucination-prone
+# for a judge; reviewers run at 0.1-0.3, the generator keeps its diversity)
+# ---------------------------------------------------------------------------
+
+
+def _role_env(**extra: str) -> dict[str, str]:
+    env = {"NVSH_AUG_REVIEWER_B_URL": "http://127.0.0.1:1/v1", "NVSH_AUG_REVIEWER_B_MODEL": "m"}
+    env.update(extra)
+    return env
+
+
+def test_temperature_defaults_to_0_7_and_is_overridable_per_role() -> None:
+    assert aug.load_role_config("REVIEWER_B", _role_env()).temperature == 0.7
+    cfg = aug.load_role_config("REVIEWER_B", _role_env(NVSH_AUG_REVIEWER_B_TEMPERATURE="0.2"))
+    assert cfg.temperature == 0.2
+
+
+@pytest.mark.parametrize("raw", ["hot", "-0.1", "2.5"])
+def test_temperature_rejects_non_numbers_and_out_of_range(raw) -> None:
+    with pytest.raises(aug.ConfigError, match="NVSH_AUG_REVIEWER_B_TEMPERATURE"):
+        aug.load_role_config("REVIEWER_B", _role_env(NVSH_AUG_REVIEWER_B_TEMPERATURE=raw))
+
+
+def test_temperature_is_sent_and_recorded(tmp_path, monkeypatch, fake_server):
+    _server, url = fake_server
+    seen: dict[str, float] = {}
+
+    def _reviewer_b(body, auth):
+        seen["temperature"] = body["temperature"]
+        return "yes"
+
+    _server.responders.update(
+        {
+            "gen-model": _always("rephrased"),
+            "cor-model": _always("rephrased"),
+            "rev-a-model": _always("yes"),
+            "rev-b-model": _reviewer_b,
+        }
+    )
+    _set_roles(monkeypatch, url, DEFAULT_MODELS, NVSH_AUG_REVIEWER_B_TEMPERATURE="0.2")
+    roles = aug.load_all_roles()
+    aug.run_pipeline(
+        seed_files=[_split_seed_file(tmp_path)],
+        roles=roles,
+        accepted_out=tmp_path / "accepted.jsonl",
+        rejected_out=tmp_path / "rejected.jsonl",
+        per_source=1,
+    )
+    assert seen["temperature"] == 0.2
+    record = json.loads((tmp_path / "accepted.jsonl").read_text(encoding="utf-8").splitlines()[0])
+    assert record["temperatures"]["REVIEWER_B"] == 0.2
+    assert record["temperatures"]["GENERATOR"] == 0.7
+
+
+def test_rereview_records_the_reviewer_temperature(tmp_path) -> None:
+    candidates = _write_jsonl(tmp_path / "accepted.jsonl", [_stored_candidate()])
+    role = aug.RoleConfig(role="REVIEWER_B", url="http://fake", model="cortex", temperature=0.2)
+    aug.run_rereview(
+        candidate_files=[candidates],
+        role=role,
+        accepted_out=tmp_path / "acc.jsonl",
+        rejected_out=tmp_path / "rej.jsonl",
+        caller=lambda role, system, user: "yes",
+    )
+    record = json.loads((tmp_path / "acc.jsonl").read_text(encoding="utf-8"))
+    assert record["verdicts"]["reviewer_b"]["temperature"] == 0.2
