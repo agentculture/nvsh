@@ -1870,16 +1870,23 @@ def _stored_candidate(
     seed_format: str = "split",
     text: str = "How warm is the box right now?",
     expect: dict[str, Any] | None = None,
+    no_verdicts: bool = False,
     reviewer_a_accept: bool = True,
     reviewer_a_reason: str = "matches",
     reviewer_b_accept: bool | None = True,
     reviewer_b_reason: str = "matches",
+    guard_verdicts: dict[str, dict[str, Any]] | None = None,
     **extra: Any,
 ) -> dict[str, Any]:
     """A stored accepted/rejected record shaped as the real nvsh-*.jsonl
-    files from issue 39's run: both accepted and rejected records there
-    carry a full ``verdicts`` block (unlike a fresh run of this script,
-    which only records ``verdicts`` on a rejected record)."""
+    files from issue 39's run. There, an *accepted* record carries no
+    ``verdicts`` at all (``augment.py`` only ever writes ``verdicts`` onto a
+    rejected record -- ``no_verdicts=True`` reproduces that real shape,
+    keys ``expect``/``id``/``kind``/``models``/``seed_format``/``side``/
+    ``source``/``source_id``/``text`` and nothing else); a *rejected* record
+    always carries ``verdicts`` (reviewer_a/reviewer_b, and possibly
+    ``identifier_check``/``template_check`` from the deterministic guards).
+    """
     record: dict[str, Any] = {
         "id": record_id,
         "source_id": source_id,
@@ -1888,21 +1895,25 @@ def _stored_candidate(
         "text": text,
         "expect": expect if expect is not None else {"operation": "thermal_stats", "args": {}},
         "kind": "explicit",
+        "source": "corpus",
         "models": {
             "GENERATOR": "worker-model",
             "CORRECTOR": "cortex-model",
             "REVIEWER_A": "rev-a-model",
             "REVIEWER_B": "nemotron-3.5-lightning",
         },
-        "verdicts": {
-            "reviewer_a": {"accept": reviewer_a_accept, "reason": reviewer_a_reason},
-        },
     }
-    if reviewer_b_accept is not None:
-        record["verdicts"]["reviewer_b"] = {
-            "accept": reviewer_b_accept,
-            "reason": reviewer_b_reason,
+    if not no_verdicts:
+        record["verdicts"] = {
+            "reviewer_a": {"accept": reviewer_a_accept, "reason": reviewer_a_reason},
         }
+        if reviewer_b_accept is not None:
+            record["verdicts"]["reviewer_b"] = {
+                "accept": reviewer_b_accept,
+                "reason": reviewer_b_reason,
+            }
+        if guard_verdicts:
+            record["verdicts"].update(guard_verdicts)
     record.update(extra)
     return record
 
@@ -2053,6 +2064,79 @@ def test_rereview_requires_stored_reviewer_a_verdict_or_counts_an_error(tmp_path
     assert counts.processed == 0
     assert not (tmp_path / "accepted-out.jsonl").exists()
     assert not (tmp_path / "rejected-out.jsonl").exists()
+
+
+def test_rereview_accepts_a_real_shaped_accepted_record_with_no_verdicts(tmp_path) -> None:
+    """Real ``nvsh-accepted.jsonl`` records carry none of expect/id/kind/
+    models/seed_format/side/source/source_id/text plus a ``verdicts`` block
+    -- only those nine keys, no ``verdicts`` at all. A record shaped that
+    way is a stored reviewer A (and old reviewer B) accept, not an error."""
+    record = _stored_candidate(no_verdicts=True)
+    assert set(record) == {
+        "id",
+        "source_id",
+        "side",
+        "seed_format",
+        "text",
+        "expect",
+        "kind",
+        "source",
+        "models",
+    }
+    candidates = _write_jsonl(tmp_path / "accepted.jsonl", [record])
+    counts = aug.run_rereview(
+        candidate_files=[candidates],
+        role=_fake_reviewer_b(),
+        accepted_out=tmp_path / "accepted-out.jsonl",
+        rejected_out=tmp_path / "rejected-out.jsonl",
+        caller=lambda role, system, user: "yes: still matches",
+    )
+    assert counts.errors == 0
+    assert counts.processed == 1
+    assert counts.accepted == 1
+    # old reviewer B is an implicit accept too (the record was stored as
+    # accepted), so the new "yes" agrees with it.
+    assert counts.compared == 1
+    assert counts.agreed == 1
+    out_record = json.loads(
+        (tmp_path / "accepted-out.jsonl").read_text(encoding="utf-8").splitlines()[0]
+    )
+    assert out_record["verdicts"]["reviewer_a"] == {"accept": True, "reason": ""}
+
+
+def test_rereview_a_deterministic_guard_failure_stays_rejected_even_when_new_b_says_yes(
+    tmp_path,
+) -> None:
+    """A rejected record whose stored verdicts have reviewer_a=True,
+    reviewer_b=True and a failing template_check (the deterministic guard,
+    not either reviewer) must never flip to accepted just because the fresh
+    reviewer B says yes -- the same guards a fresh run applies are re-run
+    here on the stored text."""
+    record = _stored_candidate(
+        text="Propose this change for the user to approve: reboot",
+        reviewer_a_accept=True,
+        reviewer_b_accept=True,
+        guard_verdicts={
+            "template_check": {"accept": False, "reason": "copies 'propose this change'"}
+        },
+    )
+    candidates = _write_jsonl(tmp_path / "rejected.jsonl", [record])
+    counts = aug.run_rereview(
+        candidate_files=[candidates],
+        role=_fake_reviewer_b(),
+        accepted_out=tmp_path / "accepted-out.jsonl",
+        rejected_out=tmp_path / "rejected-out.jsonl",
+        caller=lambda role, system, user: "yes",
+    )
+    assert counts.accepted == 0
+    assert counts.rejected == 1
+    assert not (tmp_path / "accepted-out.jsonl").exists()
+    out_record = json.loads(
+        (tmp_path / "rejected-out.jsonl").read_text(encoding="utf-8").splitlines()[0]
+    )
+    assert out_record["verdicts"]["reviewer_a"]["accept"] is True
+    assert out_record["verdicts"]["reviewer_b"]["accept"] is True
+    assert out_record["verdicts"]["template_check"]["accept"] is False
 
 
 def test_rereview_resume_skips_ids_already_written(tmp_path) -> None:

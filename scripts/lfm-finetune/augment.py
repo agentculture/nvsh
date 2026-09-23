@@ -1107,8 +1107,19 @@ def load_rereview_candidates(paths: list[Path]) -> list[dict[str, Any]]:
 
 def _require_stored_reviewer_a(record: dict[str, Any]) -> tuple[bool, str]:
     """The stored reviewer A verdict a re-review re-derives acceptance from.
-    Never re-asked -- only REVIEWER_B is called during a re-review."""
+    Never re-asked -- only REVIEWER_B is called during a re-review.
+
+    ``augment.py`` only ever writes ``verdicts`` onto a *rejected* record
+    (see :func:`_process_variation`); a record stored as accepted carries no
+    ``verdicts`` at all, because being stored as accepted already means both
+    reviewers said yes and every deterministic guard passed. So a record
+    with no ``verdicts`` key is treated as an implicit reviewer A accept, and
+    this only raises when ``verdicts`` is present but missing reviewer A --
+    a genuinely malformed record, not an accepted one.
+    """
     verdicts = record.get("verdicts")
+    if verdicts is None:
+        return True, ""
     reviewer_a = verdicts.get("reviewer_a") if isinstance(verdicts, dict) else None
     if not isinstance(reviewer_a, dict) or "accept" not in reviewer_a:
         raise ValueError(
@@ -1118,14 +1129,38 @@ def _require_stored_reviewer_a(record: dict[str, Any]) -> tuple[bool, str]:
 
 
 def _stored_reviewer_b_accept(record: dict[str, Any]) -> bool | None:
-    """The old reviewer B verdict, for the pilot's agreement report -- ``None``
-    when the stored record has none (never an error: agreement reporting is
-    best-effort, unlike the required reviewer A verdict above)."""
+    """The old reviewer B verdict, for the pilot's agreement report.
+
+    A record with no ``verdicts`` at all was stored as accepted, which means
+    the old reviewer B also said yes (see :func:`_require_stored_reviewer_a`).
+    ``None`` only when ``verdicts`` is present but carries no reviewer B
+    entry -- agreement reporting is then best-effort, unlike the required
+    reviewer A verdict above.
+    """
     verdicts = record.get("verdicts")
+    if verdicts is None:
+        return True
     reviewer_b = verdicts.get("reviewer_b") if isinstance(verdicts, dict) else None
     if not isinstance(reviewer_b, dict) or "accept" not in reviewer_b:
         return None
     return bool(reviewer_b["accept"])
+
+
+def _rereview_guard_verdicts(text: str, seed: Seed) -> dict[str, dict[str, Any]]:
+    """Re-run the same deterministic guards :func:`_process_variation` applies
+    after the reviewers -- reused, not copied -- on the stored *text*: an
+    internal-operation/skill-identifier leak or a copied answer-template
+    phrase must keep a record rejected however the reviewers voted, exactly
+    as in a fresh run. Never a switch on a specific operation name; both
+    checks are the table-driven functions a fresh run already uses."""
+    guard_verdicts: dict[str, dict[str, Any]] = {}
+    leaked = names_internal_operation(text) or names_skill_identifier(text, seed.skill_names)
+    if leaked:
+        guard_verdicts["identifier_check"] = {"accept": False, "reason": f"names {leaked!r}"}
+    copied = "" if leaked else copies_answer_template(text)
+    if copied:
+        guard_verdicts["template_check"] = {"accept": False, "reason": f"copies {copied!r}"}
+    return guard_verdicts
 
 
 def _seed_from_stored_record(record: dict[str, Any]) -> Seed:
@@ -1161,7 +1196,8 @@ def _process_rereview_candidate(
     system, user = reviewer_prompt(seed, record["text"])
     accept_b, reason_b = _reviewer_verdict(role, system, user, caller)
 
-    accepted = accept_a and accept_b
+    guard_verdicts = _rereview_guard_verdicts(record["text"], seed)
+    accepted = accept_a and accept_b and not guard_verdicts
     models = dict(record.get("models", {}))
     models[role.role] = role.model
     new_record = dict(record)
@@ -1169,6 +1205,7 @@ def _process_rereview_candidate(
     new_record["verdicts"] = {
         "reviewer_a": {"accept": accept_a, "reason": reason_a},
         "reviewer_b": {"accept": accept_b, "reason": reason_b},
+        **guard_verdicts,
     }
     return {
         "accepted": accepted,
