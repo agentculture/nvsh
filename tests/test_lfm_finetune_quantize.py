@@ -26,8 +26,11 @@ def _module():
     return module
 
 
-def _write_split(path: Path, entries: list[dict]) -> Path:
-    path.write_text(json.dumps({"header": "h", "entries": entries}), encoding="utf-8")
+def _write_split(path: Path, side: str, entries: list[dict], header: str | None = None) -> Path:
+    """Write a split file with a ``split.py``-shaped header naming *side*."""
+    if header is None:
+        header = f"Split '{side}' of corpus.json (seed=1)."
+    path.write_text(json.dumps({"header": header, "entries": entries}), encoding="utf-8")
     return path
 
 
@@ -45,9 +48,9 @@ def _entry(entry_id: str, source_id: str | None = None, text: str = "hi") -> dic
 
 def test_calibration_set_uses_only_train_text(tmp_path) -> None:
     module = _module()
-    train = _write_split(tmp_path / "train.json", [_entry("t1", text="train text")])
-    val = _write_split(tmp_path / "val.json", [_entry("v1", text="val text")])
-    test = _write_split(tmp_path / "test.json", [_entry("s1", text="test text")])
+    train = _write_split(tmp_path / "train.json", "train", [_entry("t1", text="train text")])
+    val = _write_split(tmp_path / "val.json", "val", [_entry("v1", text="val text")])
+    test = _write_split(tmp_path / "test.json", "test", [_entry("s1", text="test text")])
     texts = module.build_calibration_set(train, val, test)
     assert texts == ["train text"]
 
@@ -55,18 +58,18 @@ def test_calibration_set_uses_only_train_text(tmp_path) -> None:
 def test_calibration_set_refuses_a_val_source_id_in_train(tmp_path) -> None:
     module = _module()
     # A hand-edited train file that reintroduces a val source_id (h27's belt-and-braces check).
-    train = _write_split(tmp_path / "train.json", [_entry("t1", source_id="shared")])
-    val = _write_split(tmp_path / "val.json", [_entry("v1", source_id="shared")])
-    test = _write_split(tmp_path / "test.json", [])
+    train = _write_split(tmp_path / "train.json", "train", [_entry("t1", source_id="shared")])
+    val = _write_split(tmp_path / "val.json", "val", [_entry("v1", source_id="shared")])
+    test = _write_split(tmp_path / "test.json", "test", [])
     with pytest.raises(module.QuantizeError, match="train-side only"):
         module.build_calibration_set(train, val, test)
 
 
 def test_calibration_set_refuses_a_test_source_id_in_train(tmp_path) -> None:
     module = _module()
-    train = _write_split(tmp_path / "train.json", [_entry("t1", source_id="shared")])
-    val = _write_split(tmp_path / "val.json", [])
-    test = _write_split(tmp_path / "test.json", [_entry("s1", source_id="shared")])
+    train = _write_split(tmp_path / "train.json", "train", [_entry("t1", source_id="shared")])
+    val = _write_split(tmp_path / "val.json", "val", [])
+    test = _write_split(tmp_path / "test.json", "test", [_entry("s1", source_id="shared")])
     with pytest.raises(module.QuantizeError, match="train-side only"):
         module.build_calibration_set(train, val, test)
 
@@ -74,12 +77,57 @@ def test_calibration_set_refuses_a_test_source_id_in_train(tmp_path) -> None:
 def test_calibration_set_respects_a_limit(tmp_path) -> None:
     module = _module()
     train = _write_split(
-        tmp_path / "train.json", [_entry(f"t{i}", text=f"text{i}") for i in range(5)]
+        tmp_path / "train.json", "train", [_entry(f"t{i}", text=f"text{i}") for i in range(5)]
     )
-    val = _write_split(tmp_path / "val.json", [])
-    test = _write_split(tmp_path / "test.json", [])
+    val = _write_split(tmp_path / "val.json", "val", [])
+    test = _write_split(tmp_path / "test.json", "test", [])
     texts = module.build_calibration_set(train, val, test, limit=2)
     assert texts == ["text0", "text1"]
+
+
+def test_calibration_set_refuses_swapped_train_and_val(tmp_path) -> None:
+    """Codex finding #3: --train/--val swapped, but otherwise ordinary disjoint splits."""
+    module = _module()
+    # These are ordinary, mutually disjoint splits: the swap is purely in which
+    # path is passed as --train and which as --val, so a disjointness check alone
+    # cannot catch it. The header on each file names its real side.
+    real_train = _write_split(tmp_path / "train.json", "train", [_entry("t1", text="train text")])
+    real_val = _write_split(tmp_path / "val.json", "val", [_entry("v1", text="val text")])
+    test = _write_split(tmp_path / "test.json", "test", [_entry("s1", text="test text")])
+    with pytest.raises(module.QuantizeError, match="val.*expected 'train'"):
+        # --train is given val.json, --val is given train.json.
+        module.build_calibration_set(real_val, real_train, test)
+
+
+def test_calibration_set_refuses_a_file_whose_header_names_the_wrong_side(tmp_path) -> None:
+    module = _module()
+    train = _write_split(tmp_path / "train.json", "test", [_entry("t1")])
+    val = _write_split(tmp_path / "val.json", "val", [])
+    test = _write_split(tmp_path / "test.json", "test", [])
+    with pytest.raises(module.QuantizeError, match="expected 'train'"):
+        module.build_calibration_set(train, val, test)
+
+
+def test_calibration_set_refuses_the_held_out_split_by_file_name(tmp_path) -> None:
+    module = _module()
+    train = _write_split(
+        tmp_path / "held-out.json", "train", [_entry("t1")]
+    )  # header lies about its side; the file name alone must refuse it
+    val = _write_split(tmp_path / "val.json", "val", [])
+    test = _write_split(tmp_path / "test.json", "test", [])
+    with pytest.raises(module.QuantizeError, match="held-out"):
+        module.build_calibration_set(train, val, test)
+
+
+def test_calibration_set_refuses_the_held_out_split_by_header(tmp_path) -> None:
+    module = _module()
+    train = _write_split(
+        tmp_path / "train.json", "train", [_entry("t1")], header="Held-out split of corpus.json."
+    )
+    val = _write_split(tmp_path / "val.json", "val", [])
+    test = _write_split(tmp_path / "test.json", "test", [])
+    with pytest.raises(module.QuantizeError, match="held-out"):
+        module.build_calibration_set(train, val, test)
 
 
 def test_write_calibration_file_writes_one_text_per_line(tmp_path) -> None:
@@ -273,41 +321,57 @@ def test_record_tool_versions_calls_all_four_tools() -> None:
 
 def test_heal_needed_false_when_quant_matches_bf16() -> None:
     module = _module()
-    bf16 = module.QuantSummary(right_pct=90.0, wrong_mutating=0)
-    quant = module.QuantSummary(right_pct=90.0, wrong_mutating=0)
+    bf16 = module.QuantSummary(right_pct=90.0, wrong_mutating_ids=frozenset())
+    quant = module.QuantSummary(right_pct=90.0, wrong_mutating_ids=frozenset())
     assert module.heal_needed(bf16, quant) is False
 
 
 def test_heal_needed_true_when_right_proposals_drop_more_than_3_points() -> None:
     module = _module()
-    bf16 = module.QuantSummary(right_pct=90.0, wrong_mutating=0)
-    quant = module.QuantSummary(right_pct=86.9, wrong_mutating=0)
+    bf16 = module.QuantSummary(right_pct=90.0, wrong_mutating_ids=frozenset())
+    quant = module.QuantSummary(right_pct=86.9, wrong_mutating_ids=frozenset())
     assert module.heal_needed(bf16, quant) is True
 
 
 def test_heal_needed_false_at_exactly_the_3_point_margin() -> None:
     module = _module()
-    bf16 = module.QuantSummary(right_pct=90.0, wrong_mutating=0)
-    quant = module.QuantSummary(right_pct=87.0, wrong_mutating=0)
+    bf16 = module.QuantSummary(right_pct=90.0, wrong_mutating_ids=frozenset())
+    quant = module.QuantSummary(right_pct=87.0, wrong_mutating_ids=frozenset())
     assert module.heal_needed(bf16, quant) is False
 
 
 def test_heal_needed_true_when_a_new_wrong_mutating_proposal_appears() -> None:
     module = _module()
-    bf16 = module.QuantSummary(right_pct=90.0, wrong_mutating=0)
-    quant = module.QuantSummary(right_pct=90.0, wrong_mutating=1)
+    bf16 = module.QuantSummary(right_pct=90.0, wrong_mutating_ids=frozenset())
+    quant = module.QuantSummary(right_pct=90.0, wrong_mutating_ids=frozenset({"b"}))
     assert module.heal_needed(bf16, quant) is True
 
 
-def test_heal_needed_false_when_wrong_mutating_does_not_increase() -> None:
+def test_heal_needed_false_when_wrong_mutating_ids_do_not_change() -> None:
     module = _module()
-    bf16 = module.QuantSummary(right_pct=90.0, wrong_mutating=1)
-    quant = module.QuantSummary(right_pct=90.0, wrong_mutating=1)
+    bf16 = module.QuantSummary(right_pct=90.0, wrong_mutating_ids=frozenset({"a"}))
+    quant = module.QuantSummary(right_pct=90.0, wrong_mutating_ids=frozenset({"a"}))
+    assert module.heal_needed(bf16, quant) is False
+
+
+def test_heal_needed_false_when_a_wrong_mutating_id_is_fixed_and_none_added() -> None:
+    """Fewer wrong mutating proposals, no new ones: the count drops, no healing needed."""
+    module = _module()
+    bf16 = module.QuantSummary(right_pct=90.0, wrong_mutating_ids=frozenset({"a"}))
+    quant = module.QuantSummary(right_pct=90.0, wrong_mutating_ids=frozenset())
     assert module.heal_needed(bf16, quant) is False
 
 
 def test_heal_needed_true_when_right_proposals_improve_but_wrong_mutating_appears() -> None:
     module = _module()
-    bf16 = module.QuantSummary(right_pct=80.0, wrong_mutating=0)
-    quant = module.QuantSummary(right_pct=95.0, wrong_mutating=1)
+    bf16 = module.QuantSummary(right_pct=80.0, wrong_mutating_ids=frozenset())
+    quant = module.QuantSummary(right_pct=95.0, wrong_mutating_ids=frozenset({"b"}))
+    assert module.heal_needed(bf16, quant) is True
+
+
+def test_heal_needed_true_when_the_wrong_mutating_set_changes_with_equal_counts() -> None:
+    """Codex finding #5: bf16 gets A wrong, quant fixes A but breaks B -- counts tie at 1."""
+    module = _module()
+    bf16 = module.QuantSummary(right_pct=90.0, wrong_mutating_ids=frozenset({"a"}))
+    quant = module.QuantSummary(right_pct=90.0, wrong_mutating_ids=frozenset({"b"}))
     assert module.heal_needed(bf16, quant) is True
