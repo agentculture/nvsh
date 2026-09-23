@@ -135,17 +135,17 @@ decision.
   tool-call prefix (every operation, plus explain and escalate) is
   teacher-forced under the Track A checkpoint with the training-identical
   prompt, in process, and the scores are normalised over the candidates.
-  This runs once per checkpoint on the final side. It is being built as
-  task h1 (`track_a_calibration.py`) *(pending)*.
+  This runs once per checkpoint on the final side, with
+  `track_a_calibration.py` (task h1, merged in `6806662`).
 - **d7, one serving setup for every measurement.** Every model (the stock
   copy, Track A, Track B and the AWQ build) is measured in attach mode
   against one committed helper that starts the pinned vLLM with identical
   flags: the pinned image digest, `qwen3_coder`, automatic tool choice,
   `--max-logprobs`, `--limit-mm-per-prompt` with image and video 0, and each
   model directory's own `generation_config.json`. Each `measure.py` call
-  measures one model. Proposed by the lead and approved by the operator. It
-  is being built as task h2 (`serve_for_measure.sh` and the pipeline's
-  measure stages) *(pending)*.
+  measures one model. Proposed by the lead and approved by the operator.
+  Built as task h2 (`serve_for_measure.sh` and the pipeline's measure
+  stages, merged in `1062123`).
 
 ### Quantization plan
 
@@ -188,6 +188,8 @@ nvsh package. These files were added or changed for issue 46:
 | `gen_config.py` | New. `write`, `check` and `stock-copy` of a `generation_config.json` pinning greedy decoding (d3). |
 | `capped.sh` | New. `run_capped`: a hard RAM and swap cap through `systemd-run`, with a free-memory log. |
 | `draft_heldout.py` | New. Drafts the sealed held-out set with Qwen3.5-4B (pinned revision) from the operation table only; prints counts and a hash, never entry text (step 4a). |
+| `track_a_calibration.py` | New. Exact Track A candidate distributions by teacher-forcing each candidate in process (d6); fills a predictions file's `candidates` and writes a provenance sidecar. |
+| `serve_for_measure.sh` | New. `start`, `wait` and `stop` the pinned vLLM for one model with the fixed measurement flags (d7); refuses an undigested image or a model directory without a valid `generation_config.json`. |
 | `pipeline.sh` | New stages (below); training stages run capped. |
 | `pipeline-qwen.env.example` | New. The Qwen configuration: `BASE`, `BASE_REV`, `REPO`, seed 46, the four teacher roles, `TRAIN_MEMORY_MAX`. |
 | `measure.py` | Writes the shared predictions file and scores it with `metrics.py`. New: `--predictions`, `--scorer served\|in-process`, `--max-logprobs`, the `snapshot` subcommand and `--ground-snapshot` (d1), `--enable-thinking`, `--slice full\|missing-candidate`, `--ctx`. `--final` is still required for the test side. |
@@ -464,33 +466,53 @@ measurement.
 
 ### 9. Stock baseline *(not yet run as a final baseline)*
 
-*This step changes when task h2 lands (deviation d7): every model will be
-served by one committed helper and measured one model per call. Until
-then, the route below is the one in use.*
+Every model is measured the same way (deviation d7). The pipeline's measure
+stages take one name each, `stock` for the stock copy in `$WORK/stock` or a
+run name for `$WORK/runs/<name>/merged`, and for that one model they:
 
-Measure stock on validation, then once on the test side, the held-out set
-and the missing-candidate slice, at 2K and 4K, before any tuned run is
-scored. Stock is always the stock copy in `$WORK/stock`, with its
-temperature-0 `generation_config.json`; the pipeline's measure stages refuse
-to run without it (P41).
+1. start the pinned vLLM with `serve_for_measure.sh` and wait until it
+   answers;
+2. write an attach-mode nvsh config, `$WORK/measure/<label>.nvsh.toml`;
+3. run `measure.py` against it with `--ground-snapshot "$GROUND_SNAPSHOT"`,
+   `--enable-thinking` from `ENABLE_THINKING` (default false) and
+   `--max-logprobs "$MEASURE_MAX_LOGPROBS"`, forwarding any extra arguments;
+4. stop the server on exit.
 
-nvsh's managed launcher refuses an absolute model path (P48), so stock is
-measured in **attach mode**. Start vLLM by hand from the pinned image,
-serving `$WORK/stock` with `--enable-auto-tool-choice --tool-call-parser
-qwen3_coder` and the context length being measured, and point `NVSH_CONFIG`
-at it with `[tiers.lfm] mode = "attach"` and `base_url =
-"http://127.0.0.1:<port>/v1"`. Then:
+The helper's settings come from the env file:
+
+```bash
+MEASURE_IMAGE=vllm/vllm-openai@sha256:8bd082c274fae025b7079498fe1da65182ba1d4c2188c0f5a68c1042c38c3695
+MEASURE_PORT=18060
+MEASURE_CTX=2048                # vLLM --max-model-len
+MEASURE_GPU_FRACTION=0.08       # vLLM --gpu-memory-utilization
+MEASURE_MAX_LOGPROBS=22         # 18 labels + 4 (plan risk r8)
+TOOL_CALL_PARSER=qwen3_coder
+```
+
+`serve_for_measure.sh start <model dir> <port> [record.json]` runs container
+`q46-measure-<port>`, listening on 127.0.0.1 only, with the model directory
+mounted read-only at `/model`, `HF_HUB_OFFLINE=1`, and the flags
+`--served-model-name`, `--max-model-len`, `--gpu-memory-utilization`,
+`--enable-auto-tool-choice`, `--tool-call-parser`, `--max-logprobs` and
+`--limit-mm-per-prompt '{"image": 0, "video": 0}'`. It refuses an image
+without a digest and a model directory that fails `gen_config.py check`, so
+every model decodes greedily from its own `generation_config.json`.
+`serve_for_measure.sh wait <port>` and `stop <port>` complete it.
+
+Measure stock on validation first, then the test side, the held-out set and
+the missing-candidate slice once each (step 12), at 2K and 4K, before any
+tuned run is scored:
 
 ```bash
 $P --env qwen.env measure-val stock
 ```
 
-The stage passes `--ground-snapshot "$GROUND_SNAPSHOT"` and
-`--enable-thinking` from `ENABLE_THINKING` (default false), and forwards any
-extra `measure.py` arguments, such as `--ctx 2048`. The t13 live check ran
-stock on validation this way. The skills evals (`measure-skills`) cannot
-measure the stock copy yet, because `measure_skills.py` has no attach mode
-(P48).
+For 4K, set `MEASURE_CTX=4096` and pass `--ctx 4096`
+*(the 4K run is not yet recorded)*.
+
+**Check the server is really up** (P49): until task h3 lands, `measure.py`
+against a stopped server exits 0 and writes a plausible-looking results page
+in which every line is a tier error *(fix pending)*.
 
 ### 10. Train Track A on spark *(not yet run)*
 
@@ -541,15 +563,30 @@ If the watchdog trips, `run_capped` returns 3 and `mem.log` records why.
 ### 12. Final measurement *(not yet run)*
 
 ```bash
+$P --env qwen.env measure-final stock
 $P --env qwen.env measure-final a1
 ```
 
-Once per checkpoint, on the test side, the held-out set and the
-missing-candidate slice. Any retry is a deviation. Under deviation d7, stock
-and each tuned checkpoint are measured by separate calls, each against its
-own helper-served model; the stage's exact form waits for task h2
-*(pending)*. Track A's calibration is scored separately, once per
-checkpoint, by the d6 tool (task h1, *pending*).
+One call per model (deviation d7), each against its own helper-served
+model, on the test side, the held-out set and the missing-candidate slice.
+Each is measured once; any retry is a deviation. By default
+`measure-final`'s results page still goes to `docs/benchmarks/` (a known gap
+from h2).
+
+Track A's calibration is scored separately, in process, by the d6 tool, once
+per checkpoint on the final side:
+
+```bash
+"$TRAIN_PY" scripts/lfm-finetune/track_a_calibration.py --model "$WORK/runs/a1/merged" \
+  --split "$WORK/splits/test.json" --predictions <in.jsonl> --out <out.jsonl> --final
+```
+
+It fills each prediction line's `candidates` with the exact teacher-forced
+distribution and writes a sidecar `<out>.provenance.json`. `metrics.py` then
+scores the filled file. *How the final run's predictions file reaches it is
+not settled here: `measure.py` refuses `--predictions` together with
+`--final` (unverified).* Running it with `$TRAIN_PY` is also an assumption;
+it needs torch and transformers.
 
 ### 13. Quantize and heal *(not yet run)*
 
@@ -595,7 +632,9 @@ What the stage does:
 **Serving the AWQ build needs one extra vLLM argument.** The run record
 carries `serve_args`: `--limit-mm-per-prompt '{"image": 0, "video": 0}'`.
 nvsh's launcher cannot pass extra vLLM arguments. This is a known
-limitation. The route is a vLLM started by hand from the pinned image with the
+limitation. `serve_for_measure.sh` (step 9) always passes this flag, but the
+measure stages cannot name an AWQ build yet (a known gap from h2). Until
+they can, the route is a vLLM started by hand from the pinned image with the
 recorded arguments:
 
 ```bash
@@ -959,8 +998,13 @@ full test suite is green.
   measurable from generation log-probabilities. Calibration figures will
   likely come from the scorer track. *Status:* decided by the operator as
   deviation d6: Track A calibration is scored exactly, in process, by
-  teacher-forcing each candidate (h17 kept). The tool, task h1, is
-  *pending*.
+  teacher-forcing each candidate (h17 kept). *Fix (h1):*
+  `track_a_calibration.py`. *Evidence:* the lead's live check on real
+  weights (the stock copy, issue 39's old validation split and t13's stock
+  predictions): 66 of 66 lines got a distribution summing to 1 (largest
+  error 2.2e-16), the top label was the expected one on 30 of 66, stock ECE
+  0.230 and Brier 0.754, about 4 s per entry (257 s for 66). *Commit:*
+  `6806662`. P42 is fixed.
 - **P43 (medium). An empty GPU budget aborted training.** The env examples
   ship `NVSH_TRAIN_GPU_MEMORY_GB=` empty (meant as "no per-process cap"),
   and the trainers parsed it with `float('')` and stopped. *Found:* Codex
@@ -1001,7 +1045,21 @@ committed now (`3df700c`).
   `measure_skills.py` gains an attach option. *Found:* the lead, while
   merging g1. *Status:* plan risk r15, resolved by deviation d7: every model
   is served by one helper and measured in attach mode, one model per call.
-  The helper, task h2, is *pending*.
+  *Fix (h2):* `serve_for_measure.sh` and the measure stages (step 9);
+  `measure-skills` points `measure_skills.py` at the served URL with
+  `--url`. *Evidence:* the lead's live check. The helper served the stock
+  copy and vLLM logged temperature 0 from its `generation_config.json`.
+  `measure.py` through the attach config reproduced t13's outcome counts
+  exactly (45 no decision, 12 explain, 6 escalate, 3 propose). t13 had used
+  `--override-generation-config` and this run used the model's own file,
+  so the measurement is deterministic. *Commit:* `1062123`.
+- **P49. A dead server gave a plausible baseline.** `measure.py` against a
+  stopped attach server exited 0 and wrote a results page ("Right proposals
+  0 of 32") in which all 66 lines were invalid with a tier error. A results
+  page alone cannot tell a dead server from a bad model. *Found:* the lead's
+  live check of h2. *Fix (pending, task h3):* a preflight `GET /models`
+  that must list the served name, and any tier error fails the run with exit
+  2 and no results page unless `--allow-tier-errors N` is passed.
 
 ### Found by the linters
 
@@ -1020,17 +1078,18 @@ committed now (`3df700c`).
 - **GGUF on AGX Orin**: the llama.cpp build has only run on spark.
 - **The GGUF's sampling settings**: d3 covers "the GGUF's sampling metadata",
   and no step writes it yet.
-- **Track A calibration** (P11, P42, plan risk r12): not measurable from
-  generation log-probabilities, because Qwen splits label names into several
-  tokens. Deviation d6 scores it in process instead; its tool (h1) is not
-  merged yet.
+- **Track A calibration on the final side** (d6): the tool is verified on
+  stock with the old validation split. How the final run's predictions file
+  is produced for it, given that `measure.py` refuses `--predictions` with
+  `--final`, is not settled (step 12).
 - **The re-review's exact command and filter** (step 5).
 - **nvsh's runtime and unparsed Qwen tool calls** (P45): `LfmTier` still
   treats a failed parse as an explanation. Out of scope here (c9); tracked
   as [nvsh issue #50](https://github.com/agentculture/nvsh/issues/50).
-- **The d7 measurement helper** (P48): until h2 is merged, stock is
-  measured through a hand-started vLLM (step 9), and `measure_skills.py`
-  cannot measure the stock copy.
+- **Gaps left by h2**: the measure stages cannot name an AWQ build yet;
+  `measure-final`'s results page still goes to `docs/benchmarks/` by
+  default; `--limit-mm-per-prompt` on LFM2.5 is untested.
+- **The dead-server guard** (P49, h3) is not merged yet.
 - **Thinking off for LFM2.5**: the LFM env example now also sends
   `enable_thinking` false. Whether LFM2.5's chat template ignores it has
   not been checked.
@@ -1243,3 +1302,18 @@ mode against one committed pinned-vLLM helper with identical flags, one
 model per `measure.py` call (task h2, pending); this resolves plan risk r15
 (P48). The runtime side of P45 is filed as
 [nvsh issue #50](https://github.com/agentculture/nvsh/issues/50).
+
+### 2026-09-23 ~17:40: h1 and h2 merged; a dead server looks like a baseline
+
+h1 (`6806662`): `track_a_calibration.py` scores Track A's candidates
+exactly, in process (d6). On the stock copy with issue 39's old validation
+split and t13's predictions: 66 of 66 lines got a distribution summing to 1,
+top label right on 30 of 66, ECE 0.230, Brier 0.754, 257 s. P42 is fixed.
+
+h2 (`1062123`): `serve_for_measure.sh` and single-model measure stages
+(d7). The helper served the stock copy with temperature 0 from its own
+`generation_config.json`, and the measurement reproduced t13's outcome
+counts exactly (45 no decision, 12 explain, 6 escalate, 3 propose).
+
+Pointing `measure.py` at a stopped server exited 0 and wrote a results page
+with every line a tier error (P49). The guard is task h3 *(pending)*.
