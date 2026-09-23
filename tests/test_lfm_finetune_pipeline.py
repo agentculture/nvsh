@@ -10,6 +10,8 @@ fail closed with a plain skip when missing).
 
 from __future__ import annotations
 
+import importlib.util
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -31,6 +33,10 @@ _NEW_STAGES = (
     "heal",
     "upload",
 )
+
+#: The stage task f9 adds (deviation d3: every served model needs a
+#: generation_config.json pinning greedy decoding).
+_GEN_CONFIG_STAGES = ("stock-copy",)
 
 
 def _run(env_file: Path, tmp_path: Path, *stage_args: str) -> subprocess.CompletedProcess:
@@ -75,6 +81,7 @@ def test_an_unknown_stage_dry_run_lists_every_stage(env_file: Path, tmp_path) ->
         "measure-skills",
         "status",
         *_NEW_STAGES,
+        *_GEN_CONFIG_STAGES,
     ):
         assert stage in result.stderr, f"{stage!r} missing from: {result.stderr!r}"
 
@@ -110,6 +117,48 @@ def test_upload_refuses_a_missing_bundle_even_with_final_set(env_file: Path, tmp
     )
     assert result.returncode == 1
     assert "merged" in result.stderr
+
+
+def _load_scan_bundle():
+    spec_path = _REPO_ROOT / "scripts" / "lfm-finetune" / "scan_bundle.py"
+    spec = importlib.util.spec_from_file_location("scan_bundle", spec_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.mark.parametrize("env_file", [_LFM_ENV, _QWEN_ENV], ids=["lfm", "qwen"])
+def test_upload_refuses_a_bundle_without_a_valid_generation_config(
+    env_file: Path, tmp_path
+) -> None:
+    """Deviation d3: a merged checkpoint scan_bundle.py would happily verify
+    still can't upload without a generation_config.json pinning greedy decoding."""
+    text = env_file.read_text(encoding="utf-8")
+    work_rel = next(
+        line.split("=", 1)[1].replace("$PWD/", "")
+        for line in text.splitlines()
+        if line.startswith("WORK=")
+    )
+    bundle = tmp_path / work_rel / "runs" / "somerun" / "merged"
+    bundle.mkdir(parents=True)
+    (bundle / "weights.safetensors").write_text("x", encoding="utf-8")
+
+    # Make scan_bundle.py verify pass on its own, so the refusal below isolates
+    # to gen_config.py's check rather than scan_bundle's.
+    scan_bundle = _load_scan_bundle()
+    scan_bundle.write_scan(bundle, scan_bundle._get_scan_secrets())  # noqa: SLF001
+
+    result = subprocess.run(
+        ["bash", str(_PIPELINE), "--env", str(env_file), "upload", "somerun"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        env={**os.environ, "FINAL": "1"},
+    )
+    assert result.returncode == 1
+    assert "generation_config.json" in result.stderr
+    assert not (bundle / "generation_config.json").exists()
 
 
 @pytest.mark.parametrize("env_file", [_LFM_ENV, _QWEN_ENV], ids=["lfm", "qwen"])

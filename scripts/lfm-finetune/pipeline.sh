@@ -8,6 +8,9 @@
 # full, authoritative list is $STAGES below -- an unknown stage prints it.
 #   split                 seeded train/val/test split of nvsh/tiers/corpus/dev.json
 #   skills                NVIDIA's Jetson skills at pinned commits: tools + 104 test evals
+#   stock-copy            a self-contained copy of BASE/BASE_REV's snapshot under WORK, symlinks
+#                         resolved so it can be bind-mounted into a container, with a
+#                         generation_config.json written (deviation d3: greedy decoding)
 #   augment-nvsh          variations of every train entry (augment.py, resumable)
 #   augment-skills        skill requests written from each SKILL.md (SKILLS_SEED:
 #                         tools.json for the description, bodies.json for the body)
@@ -20,7 +23,8 @@
 #                         (a leakage check between augment/rereview and assemble)
 #   assemble              training sets: nvsh-train.jsonl, $SKILLS_SET-train.jsonl
 #   train <name> [nvsh|skills]   train, merge, stage into HF_CACHE as REPO
-#                         (a training stage: runs under TRAIN_MEMORY_MAX, mem.log)
+#                         (a training stage: runs under TRAIN_MEMORY_MAX, mem.log); writes
+#                         a generation_config.json into <run>/merged (deviation d3)
 #   train-scorer          train the acceptance-margin scorer on split.py's own
 #                         train/val sides (train_scorer.py, a training stage)
 #   measure-val <name>    validation run with per-entry details (iterate on this)
@@ -30,16 +34,20 @@
 #                         (scan_bundle.py scan; writes scan.json next to it)
 #   quantize <name>       Q4_K_M GGUF + INT4 AWQ export of a merged checkpoint
 #                         (quantize.py, a training stage: needs LLAMA_CPP_CONVERT,
-#                         LLAMA_CPP_QUANTIZE, LLAMA_CPP_IMATRIX, LLM_COMPRESSOR)
+#                         LLAMA_CPP_QUANTIZE, LLAMA_CPP_IMATRIX, LLM_COMPRESSOR); writes
+#                         a generation_config.json into the AWQ export dir (deviation d3)
 #   heal <name> <base-run> [nvsh|skills]   a healing fine-tune that continues
 #                         training from <base-run>'s own merged checkpoint instead
 #                         of BASE (decisions c42/c43; a training stage). Whether
 #                         healing is needed is quantize.py's heal_needed(), decided
 #                         by a separate run (issue 46, task t18), not by this stage.
+#                         Writes a generation_config.json into <run>/merged (deviation d3)
 #   upload <name>         push a run's merged checkpoint to REPO on the Hub, private.
-#                         Refuses without FINAL=1 set and a scan_bundle.py verify
-#                         pass on the exact folder; the token comes only from the
-#                         env var HF_TOKEN_ENV names, injected by the operator.
+#                         Refuses without FINAL=1 set, a scan_bundle.py verify pass on
+#                         the exact folder, and a gen_config.py check pass on it
+#                         (deviation d3: no served model ships without greedy decoding
+#                         pinned); the token comes only from the env var HF_TOKEN_ENV
+#                         names, injected by the operator.
 #   status                what exists so far
 #
 # Nothing here uploads anything except the guarded `upload` stage above, and
@@ -52,7 +60,7 @@ set -euo pipefail
 #: Every valid stage name, in the order above -- the unknown-stage message
 #: below is the one place this list is printed, so it never drifts from the
 #: case statement silently.
-STAGES="split skills augment-nvsh augment-skills rereview filter-variations \
+STAGES="split skills stock-copy augment-nvsh augment-skills rereview filter-variations \
 assemble train train-scorer measure-val measure-final measure-skills scan \
 quantize heal upload status"
 
@@ -110,6 +118,14 @@ case "$STAGE" in
   skills)
     py scripts/lfm-finetune/jetson_skills.py build --work-dir "$WORK/skills/src" --out-dir "$WORK/skills"
     ;;
+  stock-copy)
+    out="$WORK/stock"
+    if py scripts/lfm-finetune/gen_config.py check "$out" >/dev/null 2>&1; then
+      echo "stock-copy: $out already has a valid generation_config.json"
+    else
+      py scripts/lfm-finetune/gen_config.py stock-copy "$(base_snapshot)" "$out" --force
+    fi
+    ;;
   augment-nvsh)
     aug_env
     py scripts/lfm-finetune/augment.py "$WORK/splits/train.json" --per-source "$PER_SOURCE_NVSH" \
@@ -158,6 +174,7 @@ case "$STAGE" in
     # shellcheck disable=SC2086
     run_capped "$run" "$TRAIN_PY" "$HERE/train.py" --train "$data" --out "$run" --base "$BASE" \
       --revision "$BASE_REV" $TRAIN_ARGS
+    py scripts/lfm-finetune/gen_config.py write "$run/merged"
     py scripts/lfm-finetune/stage_cache.py --merged "$run/merged" --repo "$REPO" \
       --cache "$HF_CACHE" --base-snapshot "$(base_snapshot)" | tee "$run/stage.log"
     awk '/staged/{print $NF}' "$run/stage.log" > "$run/revision"
@@ -205,6 +222,7 @@ case "$STAGE" in
     run_capped "$work" env -C "$REPO_ROOT" uv run --frozen python scripts/lfm-finetune/quantize.py \
       --model-dir "$run/merged" --train "$WORK/splits/train.json" --val "$WORK/splits/val.json" \
       --test "$WORK/splits/test.json" --work-dir "$work" "${calibration[@]}"
+    py scripts/lfm-finetune/gen_config.py write "$work/awq"
     ;;
   heal)
     name=${1:?heal <name> <base-run> [nvsh|skills]}
@@ -220,6 +238,7 @@ case "$STAGE" in
     # shellcheck disable=SC2086
     run_capped "$run" "$TRAIN_PY" "$HERE/train.py" --train "$data" --out "$run" --base "$base_merged" \
       $TRAIN_ARGS
+    py scripts/lfm-finetune/gen_config.py write "$run/merged"
     py scripts/lfm-finetune/stage_cache.py --merged "$run/merged" --repo "$REPO" \
       --cache "$HF_CACHE" --base-snapshot "$(base_snapshot)" | tee "$run/stage.log"
     awk '/staged/{print $NF}' "$run/stage.log" > "$run/revision"
@@ -231,6 +250,9 @@ case "$STAGE" in
     [ -d "$bundle" ] || die "no $bundle; run train $name first"
     py scripts/lfm-finetune/scan_bundle.py verify "$bundle" \
       || die "scan_bundle.py verify failed for $bundle; run 'scan $name' again on this exact folder"
+    py scripts/lfm-finetune/gen_config.py check "$bundle" \
+      || die "gen_config.py check failed for $bundle; write a generation_config.json" \
+        "into it (e.g. 'gen_config.py write $bundle') before uploading (deviation d3)"
     : "${HF_TOKEN_ENV:?}"
     [ -n "${!HF_TOKEN_ENV:-}" ] \
       || die "$HF_TOKEN_ENV is not set (e.g. grant run --inject $HF_TOKEN_ENV=<secret name> -- $0 ...)"
