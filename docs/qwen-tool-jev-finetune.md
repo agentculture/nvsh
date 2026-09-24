@@ -1322,6 +1322,30 @@ and the commit on `spec/qwen-tool-jev-issue-46`.
   yet tried: dropping the page cache before a measurement (needs root,
   `sync; echo 3 > /proc/sys/vm/drop_caches`) or a cgroup limit on the
   trainer's page cache, either of which might allow overlap.
+  **Why spark was this tight:** spark also runs the operator's own
+  model-gear "lobes" deployment (docker compose project `lobes`: a gateway
+  and the stt, realtime and bluetts services) alongside a
+  `model-gear-vllm-multimodal` container serving Gemma-4-26B-A4B-NVFP4 —
+  the "senses" teacher, reviewer A in t19's augmentation pipeline — which by
+  itself held about 33.6 GB of GPU memory in its vLLM `EngineCore`. A
+  training job plus a measurement server on top of that left free memory at
+  about 2.5 GiB, and any further GPU allocation failed with
+  `NV_ERR_NO_MEMORY`. *Resolved:* the operator was clear that a 128 GB
+  machine should not OOM and that unused models should be taken down rather
+  than tolerating this ("we can take down models as needed", "I'd rather be
+  cautious if we don't use the models now"). The `lobes` CLI's `stop` and
+  `fleet down` take the whole spark deployment down, gateway included, with
+  no per-lobe stop; being cautious, the lead instead stopped only the one
+  container no longer needed now that t19 is done —
+  `docker stop model-gear-vllm-multimodal` (nothing deleted; restore with
+  `docker start model-gear-vllm-multimodal` or `lobes serve --apply`) —
+  leaving the gateway, stt, realtime and bluetts running. Memory on spark,
+  measured immediately after, while `a4` kept training: used 68 → 31 GB,
+  free 15 → 51 GB, available 53 → 89 GB. *Tutorial lesson:* on a GB10
+  shared with serving lobes, check `nvidia-smi --query-compute-apps` and
+  `docker stats` for what already holds GPU memory before training and
+  measuring on the same box, and stop an unused lobe (with the operator's
+  sign-off) rather than letting jobs overlap into an OOM.
 
 ### Found by reading code against the run log
 
@@ -2404,3 +2428,31 @@ with it. Idea forward, not yet tried: dropping the page cache before a
 measurement (needs root: `sync; echo 3 > /proc/sys/vm/drop_caches`), or a
 cgroup limit on the trainer's page cache, either of which might allow
 measuring and training to overlap safely.
+
+### 2026-09-24 ~08:30: why spark was this tight — the senses lobe comes down
+
+spark was not just running the training job: it also runs the operator's
+own model-gear "lobes" deployment (docker compose project `lobes`) —
+gateway, stt, realtime, bluetts — and a `model-gear-vllm-multimodal`
+container serving Gemma-4-26B-A4B-NVFP4, the "senses" teacher (reviewer A
+in t19's augmentation), which alone held about 33.6 GB of GPU memory in its
+vLLM `EngineCore`. Training plus a measurement server on top of that is
+what pushed free memory down to about 2.5 GiB and tripped `NV_ERR_NO_MEMORY`
+(P64).
+
+The operator: "We shouldn't have OOM on a 128Gb machine. We can take down
+models as needed," and "I'd rather be cautious if we don't use the models
+now." The `lobes` CLI's `stop`/`fleet down` take the whole spark deployment
+down, gateway included, with no per-lobe stop; being cautious, the lead
+instead stopped only the one container no longer needed now that t19 is
+done: `docker stop model-gear-vllm-multimodal` (nothing deleted; restore
+with `docker start model-gear-vllm-multimodal` or `lobes serve --apply`).
+Gateway, stt, realtime and bluetts stayed up. Memory on spark, with `a4`
+still training throughout: used 68 → 31 GB, free 15 → 51 GB, available
+53 → 89 GB.
+
+**Tutorial lesson:** on a GB10 shared with serving lobes, check
+`nvidia-smi --query-compute-apps` and `docker stats` for what already holds
+GPU memory before training and measuring on the same box, and stop an
+unused lobe (with the operator's sign-off) rather than letting jobs overlap
+into an OOM.
