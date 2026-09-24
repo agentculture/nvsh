@@ -208,7 +208,7 @@ slug: `tool-jev-calibration-cycle-issue-53` · status: `exported` · from frame:
 - depends on: t20, t11
 - covers: c1, h1, c34, h2, c35, h3, c36, h4, c37, h5, c23, h24
 - acceptance:
-  - docs/benchmarks/<date>-tool-jev-calibration-cycle.md: every announcement clause with its measured number, CI and n, before (scorer-b1, sourced) vs after, per-slice reliability tables, OpenJev comparison limited to what OpenJev publishes
+  - A new benchmark file `docs/benchmarks/<date>-tool-jev-calibration-cycle.md`: every announcement clause with its measured number, CI and n, before (scorer-b1, sourced) vs after, per-slice reliability tables, OpenJev comparison limited to what OpenJev publishes
   - Names the artifact, thresholds and slices so a reader without #46 context can use it (#54's input); links #54-#60
 
 ### t23 — Close the loop: validate-delivery, summarize-delivery, version bump, PR
