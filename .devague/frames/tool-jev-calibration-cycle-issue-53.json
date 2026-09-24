@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-09-24T22:47:35Z",
-  "updated": "2026-09-24T23:12:04Z",
+  "updated": "2026-09-24T23:49:26Z",
   "claims": [
     {
       "id": "c1",
@@ -1144,6 +1144,31 @@
       "seeds": []
     }
   ],
-  "lapses": [],
+  "lapses": [
+    {
+      "id": "l1",
+      "code": "assumption-for-measurement",
+      "what": "t1: the 0.137 dev-f02 readout gap is claimed closed from code (both paths now sum the same variant token ids), not re-measured against scorer-b1",
+      "skipped_check": "rerun in-process vs served on scorer-b1 for dev-f02",
+      "refs": [
+        "t1",
+        "c39"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l2",
+      "code": "control-absent",
+      "what": "t1: the torch/tokenizer tests (variant ids, one forward position, in-process vs served) only run under the lfm-train interpreter; CI's uv env skips them",
+      "skipped_check": "CI run of the torch-dependent scorer tests",
+      "refs": [
+        "t1",
+        "h31"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    }
+  ],
   "obligations": []
 }
