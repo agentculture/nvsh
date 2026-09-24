@@ -1583,7 +1583,7 @@ def test_scorer_mode_writes_the_same_predictions_file(measure, metrics, tmp_path
     assert op3["outcome"] == "invalid"
     assert op3["invalid_reason"] == "not_grounded"
     assert all(row["tokens"] == 0 for row in rows)
-    assert fake.tops == [len(measure.scorer.candidates()) + measure.scorer.TOP_MARGIN] * 3
+    assert fake.tops == [measure.scorer.READOUT_TOP] * 3
     text = out.read_text(encoding="utf-8")
     assert "candidate scorer (served)" in text
     assert "max-logprobs 24" in text

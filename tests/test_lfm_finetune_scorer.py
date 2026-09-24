@@ -150,7 +150,7 @@ def test_score_returns_a_normalised_distribution_and_its_argmax() -> None:
     assert scored.arguments is None
     assert scored.grounding is None
     assert fake.prompts == ["prompt text"]
-    assert fake.tops[0] >= len(module.candidates())
+    assert fake.tops == [module.READOUT_TOP]
 
 
 def test_score_over_an_offered_subset_scores_only_that_subset() -> None:
@@ -461,31 +461,156 @@ def test_the_label_is_the_token_right_after_the_qwen_prompt() -> None:
 # -- the in-process scorer (torch, when importable) --
 
 
-def test_the_in_process_scorer_returns_label_logprobs_that_normalise() -> None:
-    torch = pytest.importorskip("torch")
-    module = _module()
-    labels = module.labels_for(module.candidates())
-    label_ids = {name: 10 + index for index, name in enumerate(labels)}
+class _VocabTokenizer:
+    """A tokenizer with a small vocabulary: each label as itself, spaced and tabbed, plus junk.
 
-    class _Tok:
-        pad_token_id = 0
+    Encoding a label gives its bare token, as the Qwen3.5 tokenizer does.
+    """
 
-        def encode(self, text, add_special_tokens=False):
-            return [3, 4, 5]
+    pad_token_id = 0
+
+    def __init__(self, labels) -> None:
+        self.texts = ["<pad>", "the", "Restart", "\n"]
+        for label in labels:
+            self.texts += [label, " " + label, "\t" + label]
+        self.texts += ["AB", " the"]
+
+    def get_vocab(self) -> dict[str, int]:
+        return {f"tok{index}": index for index in range(len(self.texts))}
+
+    def decode(self, ids, skip_special_tokens=False):
+        return "".join(self.texts[index] for index in ids)
+
+    def encode(self, text, add_special_tokens=False):
+        if text in self.texts:
+            return [self.texts.index(text)]
+        return [1, 2, 3]
+
+    def __len__(self) -> int:
+        return len(self.texts)
+
+
+def _fixture_logits(size: int):
+    """Deterministic, uneven next-token logits over a vocabulary of *size*."""
+    return [((index * 7919) % 97) / 13.0 - 3.0 for index in range(size)]
+
+
+def _logprobs_of(logits) -> list[float]:
+    top = max(logits)
+    total = top + math.log(sum(math.exp(value - top) for value in logits))
+    return [value - total for value in logits]
+
+
+def _torch_model(torch, logits, calls: list):
+    """A model whose last-position logits are *logits*; records each forward's logits_to_keep."""
 
     class _Model(torch.nn.Module):
         def __init__(self) -> None:
             super().__init__()
-            self.head = torch.nn.Linear(1, 64)
+            self.anchor = torch.nn.Parameter(torch.zeros(1))
+            self.fixed = torch.tensor([logits], dtype=torch.float32)
 
         def forward(self, input_ids, attention_mask=None, logits_to_keep=0):
-            hidden = torch.ones(input_ids.shape[0], input_ids.shape[1], 1)
-            logits = self.head(hidden)
-            return type("Out", (), {"logits": logits[:, -logits_to_keep:, :]})()
+            calls.append({"logits_to_keep": logits_to_keep, "length": input_ids.shape[1]})
+            positions = input_ids.shape[1] if not logits_to_keep else logits_to_keep
+            out = self.fixed.unsqueeze(1).expand(input_ids.shape[0], positions, -1)
+            return type("Out", (), {"logits": out + self.anchor})()
 
-    scorer = module.TransformersScorer(_Model(), _Tok(), labels, label_ids)
+    return _Model()
+
+
+# -- the one readout definition (issue 53, t1) --
+
+
+def test_readout_top_is_a_named_constant_of_at_least_5000() -> None:
+    module = _module()
+    assert isinstance(module.READOUT_TOP, int)
+    assert module.READOUT_TOP >= 5000
+
+
+def test_label_variant_ids_are_every_vocabulary_token_that_strips_to_the_label() -> None:
+    module = _module()
+    labels = module.labels_for(module.candidates())
+    tokenizer = _VocabTokenizer(labels.values())
+    variants = module.label_variant_ids(tokenizer, labels)
+    assert set(variants) == set(labels)
+    for name, label in labels.items():
+        texts = sorted(tokenizer.texts[index] for index in variants[name])
+        assert texts == sorted([label, " " + label, "\t" + label])
+    every = [index for ids in variants.values() for index in ids]
+    assert len(every) == len(set(every))
+
+
+def test_label_variant_ids_refuses_a_label_with_no_token() -> None:
+    module = _module()
+    labels = module.labels_for(("explain", "escalate"))
+    tokenizer = _VocabTokenizer([labels["explain"]])
+    with pytest.raises(ValueError, match="no token"):
+        module.label_variant_ids(tokenizer, labels)
+
+
+def test_distribution_counts_the_same_variants_the_vocabulary_scan_finds() -> None:
+    module = _module()
+    labels = module.labels_for(("explain", "escalate"))
+    tokenizer = _VocabTokenizer(labels.values())
+    variants = module.label_variant_ids(tokenizer, labels)
+    logprobs = {tokenizer.texts[index]: math.log(0.1) for index in variants["explain"]}
+    logprobs[labels["escalate"]] = math.log(0.1)
+    distribution, mass = module.distribution(logprobs, labels)
+    assert distribution["explain"] == pytest.approx(0.75)  # three variants against one
+    assert mass == pytest.approx(0.4)
+
+
+def test_the_served_request_asks_for_readout_top_and_one_token(monkeypatch) -> None:
+    from nvsh.tiers import toolchat
+
+    module = _module()
+    sent: list[tuple[str, dict]] = []
+
+    def fake_request(self, path, body, parse):
+        sent.append((path, dict(body)))
+        return _favouring(module, "explain")
+
+    monkeypatch.setattr(toolchat.ToolChat, "_request", fake_request)
+    chat = toolchat.ToolChat("http://127.0.0.1:8000/v1", "scorer-b1", stream=False)
+    scored = module.score(chat, "p", "x", runner=world_runner(_WORLD))
+    assert scored.choice == "explain"
+    assert len(sent) == 1
+    path, body = sent[0]
+    assert path == "/completions"
+    assert body["max_tokens"] == 1
+    assert body["logprobs"] == module.READOUT_TOP
+
+
+def test_a_readout_top_result_still_missing_labels_is_incomplete_not_renormalised() -> None:
+    module = _module()
+    labels = module.labels_for(module.candidates())
+    first, second = module.candidates()[:2]
+    fake = _FakeScorer({labels[first]: math.log(0.3), " " + labels[second]: math.log(0.2)})
+    scored = module.score(fake, "p", "x", runner=world_runner(_WORLD))
+    assert fake.tops == [module.READOUT_TOP]
+    assert scored.incomplete is not None
+    assert scored.candidates is None
+    assert scored.distribution == {}
+    assert set(scored.missing) == set(module.candidates()) - {first, second}
+    assert scored.confidence == pytest.approx(0.3)
+
+
+# -- the in-process scorer (torch, when importable) --
+
+
+def test_the_in_process_scorer_returns_label_logprobs_that_normalise() -> None:
+    torch = pytest.importorskip("torch")
+    module = _module()
+    labels = module.labels_for(module.candidates())
+    tokenizer = _VocabTokenizer(labels.values())
+    label_ids = module.label_token_ids(tokenizer, labels)
+    calls: list = []
+    model = _torch_model(torch, _fixture_logits(len(tokenizer)), calls)
+    scorer = module.TransformersScorer(model, tokenizer, labels, label_ids)
     logprobs = scorer.score_next_token("anything")
-    assert set(logprobs) == set(labels.values())
+    assert {text.strip() for text in logprobs} == set(labels.values())
+    assert len(logprobs) == 3 * len(labels)  # every variant of every label
     assert all(value <= 0 for value in logprobs.values())
     distribution, _ = module.distribution(logprobs, labels)
     assert math.isclose(sum(distribution.values()), 1.0, rel_tol=1e-6)
@@ -493,3 +618,102 @@ def test_the_in_process_scorer_returns_label_logprobs_that_normalise() -> None:
     assert scored.incomplete is None
     assert scored.missing == ()
     assert math.isclose(sum(scored.candidates.values()), 1.0, rel_tol=1e-6)
+
+
+def test_the_in_process_scorer_runs_one_forward_pass_over_one_position() -> None:
+    torch = pytest.importorskip("torch")
+    module = _module()
+    labels = module.labels_for(module.candidates())
+    tokenizer = _VocabTokenizer(labels.values())
+    calls: list = []
+    model = _torch_model(torch, _fixture_logits(len(tokenizer)), calls)
+    scorer = module.TransformersScorer(
+        model, tokenizer, labels, module.label_token_ids(tokenizer, labels)
+    )
+    module.score(scorer, "a prompt", "x", runner=world_runner(_WORLD))
+    assert calls == [{"logits_to_keep": 1, "length": 3}]
+
+
+def test_the_in_process_scorer_refuses_a_label_id_outside_its_variants() -> None:
+    pytest.importorskip("torch")
+    module = _module()
+    labels = module.labels_for(("explain", "escalate"))
+    tokenizer = _VocabTokenizer(labels.values())
+    wrong = {"explain": 1, "escalate": tokenizer.texts.index(labels["escalate"])}
+    with pytest.raises(ValueError, match="variant"):
+        module.TransformersScorer(object(), tokenizer, labels, wrong)
+
+
+def test_in_process_and_served_paths_give_the_same_distribution_on_a_fixture() -> None:
+    torch = pytest.importorskip("torch")
+    module = _module()
+    labels = module.labels_for(module.candidates())
+    tokenizer = _VocabTokenizer(labels.values())
+    logits = _fixture_logits(len(tokenizer))
+    scorer = module.TransformersScorer(
+        _torch_model(torch, logits, []),
+        tokenizer,
+        labels,
+        module.label_token_ids(tokenizer, labels),
+    )
+    in_process = module.score(scorer, "p", "x", runner=world_runner(_WORLD))
+
+    # The served path: the same next-token distribution, as a server's top log-probabilities
+    # keyed by token text (every token fits under READOUT_TOP).
+    served_logprobs: dict[str, float] = {}
+    for index, value in enumerate(_logprobs_of(logits)):
+        text = tokenizer.texts[index]
+        served_logprobs[text] = (
+            value
+            if text not in served_logprobs
+            else math.log(math.exp(served_logprobs[text]) + math.exp(value))
+        )
+    served = module.score(_FakeScorer(served_logprobs), "p", "x", runner=world_runner(_WORLD))
+
+    assert in_process.incomplete is None and served.incomplete is None
+    assert set(in_process.distribution) == set(served.distribution)
+    for name in labels:
+        assert in_process.distribution[name] == pytest.approx(served.distribution[name], abs=1e-6)
+    assert in_process.mass == pytest.approx(served.mass, abs=1e-6)
+
+
+def test_the_training_readout_matches_the_distribution() -> None:
+    torch = pytest.importorskip("torch")
+    module = _module()
+    labels = module.labels_for(module.candidates())
+    tokenizer = _VocabTokenizer(labels.values())
+    variants = module.label_variant_ids(tokenizer, labels)
+    logits = torch.tensor([_fixture_logits(len(tokenizer))] * 2)
+    label_logits = module.label_logits_from_vocab(logits, [variants[name] for name in labels])
+    assert tuple(label_logits.shape) == (2, len(labels))
+    trained = torch.softmax(label_logits, dim=-1)[0].tolist()
+    logprobs = {
+        tokenizer.texts[index]: value
+        for index, value in enumerate(_logprobs_of(logits[0].tolist()))
+    }
+    distribution, _ = module.distribution(logprobs, labels)
+    for position, name in enumerate(labels):
+        assert trained[position] == pytest.approx(distribution[name], abs=1e-6)
+
+
+def test_the_training_readout_keeps_gradients() -> None:
+    torch = pytest.importorskip("torch")
+    module = _module()
+    logits = torch.zeros(1, 6, requires_grad=True)
+    label_logits = module.label_logits_from_vocab(logits, [(1, 2), (4,)])
+    torch.nn.functional.cross_entropy(label_logits, torch.tensor([0])).backward()
+    assert logits.grad is not None
+    assert label_logits[0, 0].item() == pytest.approx(math.log(2))
+
+
+def test_label_variants_for_the_qwen_tokenizer_include_the_bare_and_spaced_label() -> None:
+    module = _module()
+    tokenizer = _qwen_tokenizer()
+    labels = module.labels_for(module.candidates())
+    variants = module.label_variant_ids(tokenizer, labels)
+    bare = module.label_token_ids(tokenizer, labels)
+    for name, label in labels.items():
+        assert bare[name] in variants[name]
+        texts = {tokenizer.decode([index]) for index in variants[name]}
+        assert {label, " " + label} <= texts
+        assert all(text.strip() == label for text in texts)
