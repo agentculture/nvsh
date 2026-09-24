@@ -26,7 +26,7 @@ are CC-BY-4.0 and are used as a test set only; nothing trained on them is
 published here. Training happens on development machines. **nvsh itself
 never trains and never uploads.**
 
-## Where the run stands (2026-09-24, about 09h45)
+## Where the run stands (2026-09-24, about 11h45)
 
 This section is a handoff: exactly what is done, what is running, what is
 next, and the exact commands, so the run can be picked up cold.
@@ -67,35 +67,42 @@ next, and the exact commands, so the run can be picked up cold.
   measurement to run without an out-of-memory failure (ledger P64); they
   are restored once the run finishes.
 
-**Running.** t25: `a3`'s `Q4_K_M` and AWQ builds are done; `scorer-b1`'s are
-building next; the measurement tooling for quantized builds is being built
-test-first, ahead of any quantized-build numbers. See [step
-13](#13-quantize-and-heal-in-progress--a3-built-scorer-b1-building) and
-ledger P67a/P67.
+**Running.** t25: `a3`'s heal (a short 1-epoch, lr 5e-5 bf16 continuation,
+not QAT — d18) is running, triggered because both of `a3`'s quantized
+builds lost just over c43's 3-point ceiling with no new wrong-mutating id.
+`scorer-b1`'s quantized builds needed no heal. See [step
+13](#13-quantize-and-heal-both-built-and-measured-a3-healing) and ledger
+P67a/P67-P72.
 
 **Next, in order:**
 
-1. **t25 (continuing):** finish `scorer-b1`'s quantized builds; measure
-   both checkpoints' `Q4_K_M` and AWQ builds on the test side against the
-   same bars; heal only if a build loses more than 3 points of right
-   proposals or adds a new wrong-mutating id (c42, c43). This is also where
-   container memory (c36, not yet measured — both t24 runs were attach-mode
-   against an already-running server) gets measured for the first time.
+1. **t25 (continuing):** re-quantize `a3` once its heal finishes, and
+   re-measure the healed builds against the same bars. Container memory
+   (c36) is now measured for `a3.q4_k_m` (about 0.65-0.80 GB resident + 0.83
+   GB GPU, well inside the 6 GB ceiling — c36 memory **PASS**); the AWQ
+   build's container memory is still not measured (attach mode).
 2. **t26:** the edge check on AGX Orin.
-3. **t27:** a private upload, only after asking the operator.
+3. **t27:** a private upload, only after asking the operator — and a check
+   on the release bundle for the still-open MTP-head config mismatch
+   (ledger P67's follow-up).
 4. **t28:** the report and this guide's final pass.
 5. **t29:** `/validate-delivery`, `/summarize-delivery`, a version bump, and
    the PR ("part of #46").
 
-**Obstacles hit along the way** are recorded as ledger entries P56-P66 and
-lapses l4/l5 under [Pitfalls hit, and the fix for each](#pitfalls-hit-and-the-fix-for-each):
+**Obstacles hit along the way** are recorded as ledger entries P56-P72 and
+lapses l4/l5/l6 under [Pitfalls hit, and the fix for each](#pitfalls-hit-and-the-fix-for-each):
 a leakage-check keying bug, Track B training on the wrong (unfrozen,
 un-augmented) file, Track A's first merges scoring bit-identical to the
 untuned base because the merge loaded the wrong model class (lapse l4), a
 GPU-memory-vs-page-cache measurement hazard on unified memory (P64), a
-related but distinct Mamba-cache sizing failure at 4K (P65), and a Track B
+related but distinct Mamba-cache sizing failure at 4K (P65), a Track B
 scorer measured without `--scorer` scoring as a broken generative model
-instead of refusing (lapse l5, P66). See also [Choosing a configuration on
+instead of refusing (lapse l5, P66), a quantize-stage Python-picked-by-
+shebang bug and a text-only merge's phantom MTP head (P67a/P67), the
+`llama-server` lifecycle work needed to measure a quantized build at all
+(P68-P70), and a wrongly-assumed calibration route for a quantized scorer,
+corrected before it was acted on (lapse l6, superseding d17). See also
+[Choosing a configuration on
 validation](#choosing-a-configuration-on-validation-track-a-and-track-b)
 for how each recipe was picked, and
 [Troubleshooting](#troubleshooting-symptoms-and-causes) for what each
@@ -418,6 +425,27 @@ decision.
   and latency still come from the served run, and agreed with the in-process
   run entry for entry on `b1`. *Merge:* `b4eeed6` (`f22`); recorded in
   `673ccb5`.
+- **d16, `measure-heldout` and the final-run label suffixes, before t24.**
+  The pipeline gained a `measure-heldout` stage (for the sealed held-out
+  set) and the `-missing-candidate`/`-exact` label suffixes, with an
+  arguments allowlist, ahead of t24's single final run. *Commits:* `6f9ab90`,
+  `ff01844`; recorded in `021c63a`.
+- **d17, a quantized scorer's calibration route (superseded by lapse l6
+  below).** Proposed a served route to a quantized scorer's calibration
+  figures, on the assumption that `llama-server`'s served-scorer path
+  returns a complete label distribution the way exact in-process scoring
+  does. This assumption was wrong (lapse l6); exact in-process scoring of a
+  quantized scorer also fails outright (a `compressed-tensors` dependency
+  gap for AWQ in the training venv, and a shape mismatch inside
+  `_dequantize` even with the AWQ venv's stack loaded). There is currently
+  no working route to a quantized scorer's calibration numbers.
+- **d18, `a3`'s heal is a short bf16 continuation, not QAT.** `c43`'s
+  `heal_needed()` fired for `a3`'s quantized builds (3.125 points lost
+  against bf16, over the 3-point ceiling, no new wrong-mutating id). The
+  heal itself: 1 epoch, lr 5e-5, continuing from `a3`'s own merged
+  checkpoint on the same frozen training set — a small corrective
+  fine-tune before re-quantizing, not quantization-aware training. The heal
+  stage was never intended to be QAT.
 
 ### Quantization plan
 
@@ -925,7 +953,7 @@ $P --env qwen.env measure-val stock --scorer in-process
 21 of 32 right proposals, abstain recall 1 of 16, precision (strict) 100%,
 false-positive tool calls 31 of 34, ECE 0.164, Brier 0.765, warm 81 ms. This
 is the "stock (exact scorer)" row in the validation table under [Where the
-run stands](#where-the-run-stands-2026-09-24-about-09h45) and repeated in the
+run stands](#where-the-run-stands-2026-09-24-about-11h45) and repeated in the
 [run log](#2026-09-24-0530-0720-t22t23-first-runs-three-pipeline-bugs-lapse-l4).
 
 **A dead server fails the run** (P49). Before the first entry, `measure.py`
@@ -1322,7 +1350,7 @@ distribution and writes a sidecar `<out>.provenance.json`. `metrics.py` then
 scores the filled file. Its input is the predictions file `measure-final`
 kept in `$WORK/final/<name>` (P50).
 
-### 13. Quantize and heal (in progress — `a3` built, `scorer-b1` building)
+### 13. Quantize and heal (both built and measured; `a3` healing)
 
 Build llama.cpp (the spike used master
 `633733d0aeedd721868bf5f1b935fa3f39f9164e`, configured with
@@ -1395,39 +1423,78 @@ What the stage does:
 - **Versions.** The run record names the llama.cpp commit and the AWQ venv's
   package versions.
 
-**Results so far, `a3` (built):** `Q4_K_M` GGUF 529 MB (from a 1.52 GB bf16
-GGUF), imatrix computed from 301 train-side entries; INT4 AWQ (W4A16, group
-size 128, pack-quantized through llm-compressor) 1.05 GB. AWQ shrinks less
-than GGUF here by design: the 18 of 24 Gated-DeltaNet linear-attention
-layers and `lm_head` stay bf16 in both recipes, but GGUF's `Q4_K_M`
-quantizes more of the remaining attention/MLP weight types than the AWQ
-recipe's `Linear`-only targets do. `scorer-b1`'s quantized builds are
-running next. Measurement tooling for the quantized builds (naming:
-`<run>.awq` / `<run>.q4_k_m`; GGUF served by a local `llama-server` build,
-llama.cpp `633733d`, CUDA) is being built test-first; the actual
-measurements against the c33-c43 bars follow once it lands.
+**Builds:** `a3`: `Q4_K_M` GGUF 529 MB (from a 1.52 GB bf16 GGUF), imatrix
+computed from 301 train-side entries; INT4 AWQ (W4A16, group size 128,
+pack-quantized through llm-compressor) 1.05 GB. AWQ shrinks less than GGUF
+here by design: the 18 of 24 Gated-DeltaNet linear-attention layers and
+`lm_head` stay bf16 in both recipes, but GGUF's `Q4_K_M` quantizes more of
+the remaining attention/MLP weight types than the AWQ recipe's
+`Linear`-only targets do. `scorer-b1` built the same way.
 
-**Serving the AWQ build needs one extra vLLM argument.** The run record
-carries `serve_args`: `--limit-mm-per-prompt '{"image": 0, "video": 0}'`.
-nvsh's launcher cannot pass extra vLLM arguments. This is a known
-limitation. `serve_for_measure.sh` (step 9) always passes this flag, but the
-measure stages cannot name an AWQ build yet (a known gap from h2). Until
-they can, the route is a vLLM started by hand from the pinned image with the
-recorded arguments:
+**Measuring a quantized build now has its own build names (ledger P68).**
+The measure stages accept `<run>.awq` (served by the pinned vLLM image,
+identically to every bf16 run) and `<run>.q4_k_m` (served by a native
+`llama-server` build, no container) directly — no more starting a server by
+hand:
 
 ```bash
---limit-mm-per-prompt '{"image": 0, "video": 0}' \
---enable-auto-tool-choice --tool-call-parser qwen3_coder --max-model-len 2048
+$P --env qwen.env measure-final a3.awq
+$P --env qwen.env measure-final a3.q4_k_m
 ```
 
-`measure.py` then uses an nvsh config with `[tiers.lfm] mode = "attach"`
-and `base_url = "http://127.0.0.1:<port>/v1"`. This route is verified for
-stock (t13) and not yet for the AWQ build *(unverified until t25)*. No
-sampling override flag is needed: the `generation_config.json` pins
-temperature 0.
+Two follow-on fixes were needed the first time each ran: `measure.py
+--label` rejected `q4_k_m`'s own underscore until the label rule allowed
+`_` (P69); and the measurement preflight, which reads a served vLLM's
+context from `GET /v1/models`, has no equivalent field for `llama-server`
+— it now reads the served context from `llama-server`'s own `GET /props`,
+`default_generation_settings.n_ctx`, only for a model reporting `owned_by:
+"llamacpp"`, only against localhost, never following a redirect (P70).
 
-Measure both builds with the same harness. If `heal_needed()` is true, log
-the trigger, then `$P --env qwen.env heal a1-heal a1`.
+**Test-side results, once each at 2K (`docs/benchmarks/2026-09-24-lfm-final-a3.awq.md`,
+`-a3.q4_k_m.md`, `-scorer-b1.awq.md`, `-scorer-b1.q4_k_m.md`):**
+
+| Build | Right proposals | Abstain recall | Precision (strict) | FP tool calls | Wrong mutating | Warm latency |
+|---|---|---|---|---|---|---|
+| `a3.awq` (vLLM) | 31/32 | 11/15 (73.3%) | 91.7% | 3/32 | 2 (same ids as bf16) | 295 ms / p95 518 ms |
+| `a3.q4_k_m` (llama-server) | 31/32 | 11/15 (73.3%) | 100% | 4/32 | 2 (same ids as bf16) | 244 ms / p95 398 ms, cold 353 ms |
+| `scorer-b1.awq` (served) | 28/32 | 11/15 (73.3%) | 91.7% | 2/32 | 0 | 22 ms |
+| `scorer-b1.q4_k_m` (served) | 27/32 | 11/15 (73.3%) | 91.7% | 2/32 | 0 | 33 ms |
+
+`a3.q4_k_m` clears both remaining bars for Track A that bf16 missed: c36's
+250 ms warm-latency ceiling (244 ms) and, for the first time, a real
+container-memory reading — `llama-server`'s own process held about
+0.65-0.80 GB resident plus about 0.83 GB of GPU memory (829 MiB in its own
+`nvidia-smi` snapshot), well inside c36's 6 GB ceiling. The AWQ build's
+container memory is still not measured (attach mode against the pinned
+vLLM image, same gap as every bf16 run).
+
+**c43 (heal): `a3`'s quantized builds need healing; `scorer-b1`'s do not.**
+`quantize.py`'s `heal_needed()` compares each quantized build's right
+proposals against its own bf16 checkpoint and checks for a new
+wrong-mutating id: `a3.awq` and `a3.q4_k_m` both lose 3.125 points (one of
+32 entries — 31/32 vs bf16's 32/32), just over c43's 3-point ceiling, with
+no new wrong-mutating id (same two ids as bf16 both times); `scorer-b1.awq`
+actually *gains* 3.125 points and `scorer-b1.q4_k_m` is unchanged (0.00),
+so neither needs healing. The trigger was logged before any heal ran, per
+c42. **d18, decided:** `a3`'s heal is a short bf16 continuation — 1 epoch,
+lr 5e-5, starting from `a3`'s own merged checkpoint, on the same frozen
+training set — not quantization-aware training; the heal stage was never
+meant to be QAT, only a small corrective nudge before re-quantizing. Heal
+of `a3` is running.
+
+**Calibration of the quantized scorer is not measurable, either way
+(d17, corrected by lapse l6).** Exact in-process scoring of a quantized
+scorer fails outright: the training venv has no `compressed-tensors` for
+AWQ, and even with the AWQ venv's stack loaded, the forward pass itself
+fails inside `_dequantize` (a size-0-vs-16 shape mismatch) — recorded as
+d17. The served route was first assumed to work around this (`llama-server`
+"should" return a complete label distribution), but that assumption was
+wrong: **lapse l6** corrects it — `llama-server`'s served-scorer path asks
+for only `len(labels) + TOP_MARGIN` top log-probabilities, exactly like any
+other served scorer (r8 applies here too, not just to vLLM), so it also
+returns 0 of 64 complete distributions. There is currently no route to a
+quantized scorer's calibration figures at all; this is left open rather
+than reported with a number that would misstate what happened.
 
 ### 14. Scan and upload, privately *(not yet run)*
 
@@ -2159,6 +2226,84 @@ committed now (`3df700c`).
   revisiting for the release bundle (t27), since anything else that reads
   the config at face value could make the same wrong assumption GGUF's
   converter did.
+- **P68. The measure stages could not name a quantized build at all (gap
+  h2).** Neither `measure-val` nor `measure-final` had a way to point at an
+  AWQ or GGUF output; every quantized checkpoint needed a vLLM or
+  `llama-server` started and pointed at by hand. *Found:* planned from h2's
+  known gap, tackled directly for t25. *Fix:* `<run>.awq` (served by the
+  pinned vLLM image, same as every bf16 run) and `<run>.q4_k_m` (served by
+  a native `llama-server` build, no container) are now build names the
+  measure stages accept; `serve_for_measure.sh` gained the
+  `llama-server` lifecycle alongside its existing vLLM one. *Merges:*
+  `93e25df`, `7e5cc8d`. This landed through three Codex review rounds on
+  the `llama-server` lifecycle specifically, since a native process (no
+  container to ask "is it running") needs its own correctness rules:
+  identity by pid *and* start time *and* exact argv (a reused pid alone is
+  not enough); listener ownership checked through the port's
+  `/proc/net/tcp` inode matched against `/proc/<pid>/fd`, not just "is
+  something listening on this port"; a `mkdir`-based lock around claiming
+  a pid file, so two callers cannot both believe they started the server; a
+  rollback path that only ever signals a pid it has itself confirmed,
+  never an unchecked one; and `wait` that does not return until the
+  server's own listener (not just "the process exists") is ready — an
+  earlier version could fall through into the code path meant for the
+  Docker/vLLM case and turn "actually ready" into a false exit 2.
+  **Accepted, known limit:** a concurrent stop and start racing on the same
+  port could still kill the replacement server rather than the one being
+  stopped; not reachable with this pipeline's one serial runner, so left
+  as a documented limit rather than fixed.
+- **P69. `measure.py --label` refused a quantized build's own name.**
+  `error: --label 'final-a3.q4_k_m' must be lower-case letters, digits, '.'
+  or '-'` — the underscore in `q4_k_m` (llama.cpp's own quantization type
+  name) failed the label's character check. *Found:* the lead, naming the
+  first GGUF final run. *Fix:* the label rule now also allows `_`.
+  *Commit:* `5a5ef81`.
+- **P70. The measurement preflight could not read a `llama-server`'s
+  context.** The same preflight that reads a served vLLM's
+  `max_model_len` from `GET /v1/models` (lapse l3, P54) has no equivalent
+  field to read from `llama-server`, which does not implement that part of
+  the OpenAI-compatible API the same way: "`.../v1/models` does not report
+  `max_model_len` for 'a3.q4_k_m'". *Found:* the lead, running the first
+  `llama-server`-served final measurement. *Fix:* `llama-server` reports
+  its own served context length at `GET /props`,
+  `default_generation_settings.n_ctx`; the preflight reads it from there
+  instead, but only when the served model reports `owned_by: "llamacpp"`,
+  only against a localhost server, and refuses to follow a redirect (a
+  hardening Codex asked for during review, since an unchecked redirect on
+  a preflight check would defeat the point of checking anything at all).
+  *Commit:* `568684f`.
+- **P71. A failed start-up can still write a results page that then blocks
+  a clean re-run.** When an in-process scorer measurement's start-up
+  failed, the run still wrote a results page consisting entirely of "not
+  measured" rows, and a later, correct re-run of the same label then
+  refused with "already exists" rather than overwriting the earlier
+  failure. *Found:* the lead, re-running a measurement after fixing its
+  actual cause. *Handled by hand this time:* the stale page was quarantined
+  rather than deleted, the same pattern as lapse l3's invalid run. **Not
+  yet fixed in code** — noted here as a hazard: check for and clear a
+  failed run's results page before assuming "already exists" means a real,
+  successful prior run.
+- **P72. `codex exec` in a backgrounded shell can hang forever waiting on
+  stdin, and it looks exactly like a slow review.** A `codex exec` review
+  launched in the background with no input redirection sat printing
+  "Reading additional input from stdin..." indefinitely, easy to mistake
+  for the model simply taking a long time. *Found:* the lead, waiting on a
+  review that never returned. *Fix (operational, not code):* always run
+  `codex exec` with `< /dev/null` in a backgrounded or non-interactive
+  shell, so it never waits on a stdin that will never come.
+- **Lapse l6 (corrects d17).** d17 assumed a served `llama-server` scorer
+  would return a complete label distribution where vLLM's served scorer
+  cannot (risk r8), and proposed routing a quantized scorer's calibration
+  through it. That assumption was never checked before being written down.
+  *Found:* the lead, actually trying the route: `llama-server`'s
+  served-scorer path asks for exactly `len(labels) + TOP_MARGIN` top
+  log-probabilities, the same shape every served scorer uses, so it also
+  returns 0 of 64 complete distributions — r8 is a property of "a served
+  scorer asks for top-k logprobs", not of vLLM specifically. *Correction:*
+  d17 is superseded; there is no working route to a quantized scorer's
+  calibration figures yet (exact in-process scoring of a quantized scorer
+  fails for its own, separate reasons — see [step
+  13](#13-quantize-and-heal-both-built-and-measured-a3-healing)).
 
 ## Troubleshooting: symptoms and causes
 
@@ -2187,6 +2332,11 @@ above.
 | A test fails, but only when run as part of the full suite while something else (for example a training job) is using the machine, and passes reliably alone | A timing-based test assumption breaks under real machine load | Known and named (`tests/test_setup_timing.py::test_setup_does_not_meaningfully_slow_down_prompt_startup`); not a bug in the code under test | [Not verified yet](#not-verified-yet) |
 | GGUF conversion fails under `uv run` with `ModuleNotFoundError: No module named 'torch'`, even though the AWQ venv has torch installed | The converter script runs under whatever `python3` its own shebang finds first on `PATH`, which inside `uv run` is the repository's own environment, not the AWQ venv | Point `LLAMA_CPP_CONVERT` at a small wrapper script that `exec`s the converter with the AWQ venv's Python explicitly, instead of running the converter directly; also make sure every tool-path variable is `export`ed in the env file, not merely set there | P67a |
 | `llama-imatrix` refuses a converted GGUF: `check_tensor_dims: tensor 'blk.24.attn_norm.weight' not found` | The source checkpoint's config still declares an MTP head (`mtp_num_hidden_layers` > 0) left over from the base model, but the text-only merge (lapse l4) carries no `mtp.*` tensor for it, so the converter wrote a block with nothing to fill it | Convert with the GGUF converter's own `--no-mtp` flag when the checkpoint declares an MTP head it has no weights for; `quantize.py` now detects this case itself | P67 |
+| There is no way to point `measure-val`/`measure-final` at an AWQ or GGUF build; a quantized checkpoint needs a server started and configured by hand | The measure stages only ever knew how to name a bf16 run (gap from h2) | `<run>.awq` (served by the pinned vLLM image) and `<run>.q4_k_m` (served by a native `llama-server`) are now accepted build names | P68 |
+| `measure.py --label` refuses a quantized build's own name: `must be lower-case letters, digits, '.' or '-'` | llama.cpp's own quantization type name (`q4_k_m`) contains an underscore, which the label rule didn't allow | The label rule now also allows `_` | P69 |
+| The measurement preflight can't confirm context on a GGUF build: `.../v1/models does not report max_model_len for '<run>.q4_k_m'` | `llama-server`'s OpenAI-compatible API doesn't expose `max_model_len` the way vLLM's does | Read the served context from `llama-server`'s own `GET /props`, `default_generation_settings.n_ctx`, only for a model reporting `owned_by: "llamacpp"`, only against localhost, and never following a redirect | P70 |
+| A failed measurement run's "already exists" refusal on a re-run, when you know this is the *first* real attempt | An earlier failed start-up still wrote a results page of all "not measured" rows, which a later, correct run then collides with | Check for and clear a failed run's stale results page before trusting "already exists"; quarantine rather than delete it | P71 |
+| A backgrounded `codex exec` review prints "Reading additional input from stdin..." and never finishes | It is waiting on a stdin that a backgrounded/non-interactive shell will never provide — easy to mistake for a slow review | Always run `codex exec` with `< /dev/null` outside an interactive terminal | P72 |
 
 ## Not verified yet
 
@@ -3139,3 +3289,63 @@ next. Measurement tooling for the quantized builds (`<run>.awq` /
 `<run>.q4_k_m` naming; GGUF served by a local `llama-server` build,
 llama.cpp `633733d`, CUDA) is being built test-first, so no quantized-build
 measurement exists yet.
+
+### 2026-09-24 ~11:45: quantized builds measured — `a3` needs a heal, `scorer-b1` doesn't
+
+The measurement tooling landed (ledger P68-P70) and both checkpoints'
+quantized builds were measured once each on the test side at 2K, committed
+as `docs/benchmarks/2026-09-24-lfm-final-{a3.awq,a3.q4_k_m,scorer-b1.awq,scorer-b1.q4_k_m}.md`.
+
+- `a3.awq` (vLLM, llm-compressor W4A16 g128): 31/32 right proposals,
+  abstain recall 11/15, precision 91.7%, false-positive tool calls 3/32,
+  wrong mutating 2 (same ids as bf16), warm 295 ms / p95 518 ms.
+- `a3.q4_k_m` (native `llama-server`, llama.cpp `633733d`, CUDA): 31/32,
+  abstain recall 11/15, precision 100%, false-positive tool calls 4/32,
+  wrong mutating 2 (same ids), warm 244 ms / p95 398 ms, cold 353 ms —
+  **c36 latency PASS for Track A** at last, on the GGUF build.
+  `llama-server`'s own process: about 0.65-0.80 GB resident plus about
+  0.83 GB GPU (829 MiB in its own `nvidia-smi` snapshot) — **c36 memory
+  PASS** (well under 6 GB), the first container-memory reading for either
+  track.
+- `scorer-b1.awq` (served): 28/32, abstain recall 11/15, precision 91.7%,
+  false-positive tool calls 2/32, wrong mutating 0, warm 22 ms.
+- `scorer-b1.q4_k_m` (served): 27/32, abstain recall 11/15, precision
+  91.7%, false-positive tool calls 2/32, wrong mutating 0, warm 33 ms.
+
+**c43 (heal_needed):** `a3.awq` and `a3.q4_k_m` both lose 3.125 points (one
+of 32) against bf16's 32/32, just over the 3-point ceiling, with no new
+wrong-mutating id — `heal_needed()` is TRUE, logged before any heal ran.
+`scorer-b1.awq` gains 3.125 points and `scorer-b1.q4_k_m` is unchanged
+(0.00) — no heal needed. **d18:** `a3`'s heal is a short bf16 continuation
+(1 epoch, lr 5e-5, from `a3`'s own merged checkpoint, the same frozen
+training set), explicitly not quantization-aware training — the heal stage
+was never meant to be QAT. Running now.
+
+**Calibration of the quantized scorer is not measurable, at all, yet
+(d17, corrected by lapse l6).** Exact in-process scoring of a quantized
+scorer fails outright: the training venv has no `compressed-tensors` for
+AWQ, and even loading the AWQ venv's own stack, the forward pass fails
+inside `_dequantize` (a size-0-vs-16 shape mismatch) — this is d17. d17 also
+proposed the served route as a workaround, on the assumption that
+`llama-server` would return a complete label distribution where vLLM
+cannot; that assumption was wrong and is corrected as **lapse l6**:
+`llama-server`'s served-scorer path asks for exactly `len(labels) +
+TOP_MARGIN` top log-probabilities, the same shape every served scorer
+uses, so it also returns 0 of 64 complete distributions (r8 applies to any
+served scorer, not only vLLM's). There is no working route to a quantized
+scorer's calibration numbers right now.
+
+**Tooling ledger, other findings from this stretch:** P69 (`measure.py
+--label` rejecting `q4_k_m`'s own underscore, fixed to allow `_`); P70
+(the measurement preflight reading `llama-server`'s served context from
+its own `GET /props` instead of the vLLM-only `/v1/models` field, guarded
+to localhost-only with no redirect following); P71 (a failed start-up
+still writing an all-"not measured" results page that then blocks a clean
+re-run with "already exists" — quarantined by hand, not yet fixed in
+code); P72 (`codex exec` in a backgrounded shell hangs forever on stdin
+unless run with `< /dev/null` — an operational lesson, not a code fix).
+
+**Next:** re-quantize `a3` once its heal finishes and re-measure; then t26
+(AGX Orin), t27 (private upload, plus a check on the still-open MTP-head
+config mismatch before the release bundle), t28 (report), t29
+(validate/summarize/version/PR).
