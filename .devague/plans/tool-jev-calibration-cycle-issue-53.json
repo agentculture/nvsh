@@ -3,9 +3,9 @@
   "title": "Tool-Jev calibration cycle (issue 53)",
   "frame_slug": "tool-jev-calibration-cycle-issue-53",
   "schema_version": 5,
-  "status": "drafting",
+  "status": "exported",
   "created": "2026-09-24T23:13:14Z",
-  "updated": "2026-09-24T23:15:30Z",
+  "updated": "2026-09-24T23:40:00Z",
   "targets": [
     {
       "id": "c1",
@@ -503,7 +503,7 @@
       "id": "t1",
       "summary": "Readout core in scorer.py: one label-probability definition and a complete top-k",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "acceptance_criteria": [
         "One function computes candidate probabilities from label logits/logprobs and is used by the in-process scorer, the served scorer and train_scorer (tests/test_lfm_finetune_scorer.py asserts both paths give the same distribution on a fixture)",
         "The served request asks for top >= 5000 via a named constant (READOUT_TOP) instead of len(labels)+TOP_MARGIN; incomplete results are still marked incomplete, never renormalised",
@@ -522,7 +522,7 @@
       "id": "t2",
       "summary": "Permutation seam in scorer.py: seeded order/letter permutation, subsets and description overrides",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "acceptance_criteria": [
         "prompt_messages/score accept an explicit label map (candidate -> letter) and an order; labels_for keeps today's fixed map as the default (existing tests unchanged)",
         "A seeded helper produces a random order + letter permutation + optional subset; the same seed gives the same map (test)",
@@ -541,7 +541,7 @@
       "id": "t3",
       "summary": "Served readout cap: servers started for measurement return >= 5000 logprobs",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "acceptance_criteria": [
         "serve_for_measure.sh defaults MEASURE_MAX_LOGPROBS to >= 5000 for vLLM (--max-logprobs) and passes no cap that truncates llama-server n_probs below it; pipeline env examples updated",
         "bash -n passes; existing serve_for_measure tests (if any) pass"
@@ -557,7 +557,7 @@
       "id": "t4",
       "summary": "Post-hoc calibration module: seeded validation folds, temperature and vector scaling fit/apply",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "acceptance_criteria": [
         "New scripts/lfm-finetune/calibration_fit.py: split validation ids into fit/selection folds with a recorded seed; no id in both (test)",
         "Fits a temperature (and a per-candidate vector) by minimising NLL on the fit fold from predictions.jsonl candidates; apply() rescales a predictions file; recovers a known temperature on synthetic data (test)",
@@ -576,7 +576,7 @@
       "id": "t5",
       "summary": "metrics.py: per-slice ECE/Brier, bootstrap CIs, abstain_uncertain outcome, reliability bins in markdown",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "acceptance_criteria": [
         "compute() reports ECE/Brier/bins per slice: read-only vs mutating (Operation.read_only), candidate count, missing-candidate, confidence bucket (test)",
         "Every rate and ECE carries n and a seeded bootstrap 95% CI (test)",
@@ -598,7 +598,7 @@
       "id": "t6",
       "summary": "Uncertainty gate module and offline threshold sweep",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "acceptance_criteria": [
         "New scripts/lfm-finetune/gate.py: decide(distribution, offered, thresholds) -> propose | explain | escalate | abstain_uncertain using p_escalate, p_top1 floor, top1-top2 margin and normalized entropy, thresholds keyed by Operation.read_only only (tests, incl. grep for no operation names)",
         "sweep_gate CLI reads predictions.jsonl (no GPU) and reports, per threshold set, accuracy, wrong-mutating, missing-candidate escalation and abstention on a given fold; refuses test/held-out unless --final (test)",
@@ -619,7 +619,7 @@
       "id": "t7",
       "summary": "Permutation probe runner with answer-change rate and CI",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "acceptance_criteria": [
         "New scripts/lfm-finetune/permutation_probe.py: for each entry, >= 10 seeded perturbations of each kind (order, letters, subset keeping gold, paraphrased descriptions) via the t2 seam; reports op-level answer-change rate with n and bootstrap 95% CI per kind (test with a fake scorer)",
         "Never canonicalises runtime order; refuses test/held-out without --final (test)"
@@ -637,7 +637,7 @@
       "id": "t8",
       "summary": "measure.py: wire the new readout, calibration apply and per-slice report into measure runs; fix P71",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "acceptance_criteria": [
         "measure runs accept --calibration <params.json> and render per-slice reliability tables into the committed benchmark markdown (test)",
         "A served run records complete/incomplete counts; incomplete lines are counted, never renormalised (test)",
@@ -657,7 +657,7 @@
       "id": "t9",
       "summary": "Pre-registered decision rule for checkpoint choice, committed before any training",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "acceptance_criteria": [
         "docs/tool-jev-calibration-rule.md states, before the first training command: the selection fold, the ordered criteria (0 wrong mutating at gate thresholds; permutation change rate; ECE after temperature; missing-candidate escalation; clean accuracy floor vs scorer-b1), tie-breaks, and what makes the c31 calibration-aware stage run",
         "The commit adding it precedes the first training run's commit/log timestamp (checked in validate-delivery)"
@@ -673,7 +673,7 @@
       "id": "t10",
       "summary": "Live guide and ledger with a documentation subagent",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "acceptance_criteria": [
         "docs/qwen-tool-jev-calibration.md exists from the start of the run: code map, corpus v2 design, every run/obstacle/fix (symptom -> cause -> fix), results, reproduce steps",
         "Updated in the same step as each run, obstacle or fix; markdownlint, scan-secrets and harness-smoke clean; no home or machine paths"
@@ -689,7 +689,7 @@
       "id": "t11",
       "summary": "Documentation relabel: Track A is a generative tool router, Track B the Jev-style scorer",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "acceptance_criteria": [
         "docs/qwen-tool-jev-finetune.md, docs/benchmarks/2026-09-24-qwen-tool-jev-comparison.md and the model-card text in release_bundle.py describe Track A as a specialized generative tool router and Track B as the Jev-style candidate scorer; no text calls them equally Jev-like"
       ],
@@ -704,7 +704,7 @@
       "id": "t12",
       "summary": "Corpus v2 tooling: versioned re-split kept outside nvsh/, with validation folds",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "acceptance_criteria": [
         "split.py can write a versioned corpus v2 (header names version, seed, source hashes) to a path outside nvsh/ and never writes nvsh/tiers/corpus (test)",
         "Target sizes are parameters: validation >= 150, test ~150, stratified by answer kind; the fold assignment from calibration_fit is recorded in the split header (test)",
@@ -720,7 +720,7 @@
       "id": "t13",
       "summary": "Draft new sources for the fresh evaluation sides and the sealed held-out",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "acceptance_criteria": [
         "Enough new reviewed entries (all-Apache teachers, reviewer B, leakage_check.py) to give validation >= 150 and test ~150 after the v2 re-split; counts per answer kind and per escalation reason recorded",
         "A new held-out is drafted with draft_heldout.py; the lead records only counts and hashes; it is sealed before any training of this cycle and stored only in the private data repo",
@@ -741,7 +741,7 @@
       "id": "t14",
       "summary": "Dataset build: per-example candidate sets and letter maps, missing-candidate and no-valid-option examples, reason candidates",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "acceptance_criteria": [
         "build_dataset.py stores offered candidates, order and letter map on every rendered example, seeded and replayable (test)",
         "Deterministic missing-candidate / no-valid-option train examples are generated from train entries only (gold removed -> escalate), eval_slices shape, never from eval sides (test)",
@@ -763,7 +763,7 @@
       "id": "t15",
       "summary": "Augment for the comparison doc's five other recommendations, then freeze the v2 training set",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "acceptance_criteria": [
         "New train-side variations for missing-argument escalation, diagnosis-vs-explanation pairs, explicit-mode power_set positives, disambiguation pairs and hard negatives, through augment.py teachers + reviewer B; acceptance counts recorded",
         "leakage_check.py is clean against every v2 eval side and the held-out; the frozen set's hashes are recorded; any later change is a /deviate record"
@@ -782,7 +782,7 @@
       "id": "t16",
       "summary": "train_scorer.py: per-row label ids and targets from the rendered prompt; optional calibration-aware loss",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "acceptance_criteria": [
         "Each row's label token ids and CE target come from that row's stored letter map and offered set; two rows with different maps give different target indices for the same gold op (test)",
         "The randomisation seed and per-row maps are logged in train-log.json",
@@ -802,7 +802,7 @@
       "id": "t17",
       "summary": "Baseline on scorer-b1 before any retraining: permutation probe, readout fidelity, offline gate and temperature",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "acceptance_criteria": [
         "Permutation probe of scorer-b1 on v2 validation: answer-change rate + CI per perturbation kind (order, letters, subset, paraphrase), before any new training",
         "Served bf16 GGUF readout at top >= 5000 matches in-process exact within 0.01 on validation (or the gap is reported); Q4_K_M served distributions recorded on validation",
@@ -828,7 +828,7 @@
       "id": "t18",
       "summary": "Training runs and selection: randomized-label variant, reasons ablation, lr variants, conditional calibration-aware stage",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "acceptance_criteria": [
         "At least: randomized-label run on v2 (reasons off), same with reasons on (c28 ablation), and a lower-lr variant; each measured in-process on the selection fold with the gate and temperature",
         "The checkpoint is chosen by the pre-registered rule (t9); reasons kept only if they improve validation",
@@ -850,7 +850,7 @@
       "id": "t19",
       "summary": "Quantize the chosen checkpoint and calibrate the deployed build",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "acceptance_criteria": [
         "Q4_K_M GGUF of the chosen checkpoint served by llama-server with top >= 5000 returns complete distributions on validation",
         "Temperature (and vector if chosen) and gate thresholds are fitted on the Q4 build's own fit/selection folds and stored with the run"
@@ -867,7 +867,7 @@
       "id": "t20",
       "summary": "Final measurement on the fresh test side and held-out, Spark and Orin",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "acceptance_criteria": [
         "Permutation answer-change rate on fresh test with >= 10 permutations per entry, point estimate and 95% CI, runtime order not canonicalised (bar <= 2.3%)",
         "Deployed Q4_K_M: ECE with bootstrap CI and reliability diagrams per slice after the fitted temperature (bar <= 0.10); complete distributions >= 95%",
@@ -894,7 +894,7 @@
       "id": "t21",
       "summary": "Private uploads without touching PR #52's artifacts",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "acceptance_criteria": [
         "New private repos (or tagged revisions) for the new scorer, GGUF and data; every bundle has a clean scan_bundle report; the six PR #52 repos are byte-identical before and after"
       ],
@@ -913,7 +913,7 @@
       "id": "t22",
       "summary": "Cycle report: comparison against scorer-b1 and OpenJev, before/after, follow-up links",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "acceptance_criteria": [
         "docs/benchmarks/<date>-tool-jev-calibration-cycle.md: every announcement clause with its measured number, CI and n, before (scorer-b1, sourced) vs after, per-slice reliability tables, OpenJev comparison limited to what OpenJev publishes",
         "Names the artifact, thresholds and slices so a reader without #46 context can use it (#54's input); links #54-#60"
@@ -942,7 +942,7 @@
       "id": "t23",
       "summary": "Close the loop: validate-delivery, summarize-delivery, version bump, PR",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "acceptance_criteria": [
         "/validate-delivery evidence filed for every success signal and honesty condition; /summarize-delivery record committed; version bumped; PR via /cicd says 'part of #53' with CI and Sonar green"
       ],
