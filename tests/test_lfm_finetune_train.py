@@ -449,12 +449,27 @@ def test_text_tokenizer_unwraps_a_multimodal_processor() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_adapter_model_class_follows_the_adapter_keys() -> None:
+def test_vision_language_adapter_keys_map_onto_the_text_model() -> None:
+    # Issue 46: unsloth trains Qwen3.5 as the vision-language class; the
+    # vision-language save wrote doubled prefixes vLLM cannot load, so every
+    # adapter is merged into the text-only causal LM (the path Track B uses).
     module = _module()
-    vl = ["base_model.model.model.language_model.layers.0.mlp.down_proj.lora_A.weight"]
-    text = ["base_model.model.model.layers.0.linear_attn.in_proj_a.lora_A.weight"]
-    assert module.adapter_model_class(vl) == "AutoModelForImageTextToText"
-    assert module.adapter_model_class(text) == "AutoModelForCausalLM"
+    vl = "base_model.model.model.language_model.layers.0.mlp.down_proj.lora_A.weight"
+    text = "base_model.model.model.layers.0.linear_attn.in_proj_a.lora_A.weight"
+    assert module.text_adapter_key(vl) == (
+        "base_model.model.model.layers.0.mlp.down_proj.lora_A.weight"
+    )
+    assert module.text_adapter_key(text) == text
+
+
+def test_adapter_leaf_modules_come_from_the_keys() -> None:
+    module = _module()
+    keys = [
+        "base_model.model.model.layers.0.mlp.down_proj.lora_A.weight",
+        "base_model.model.model.layers.0.mlp.down_proj.lora_B.weight",
+        "base_model.model.model.layers.3.linear_attn.in_proj_qkv.lora_A.weight",
+    ]
+    assert module.adapter_leaf_modules(keys) == ["down_proj", "in_proj_qkv"]
 
 
 def test_every_adapter_tensor_must_load() -> None:
