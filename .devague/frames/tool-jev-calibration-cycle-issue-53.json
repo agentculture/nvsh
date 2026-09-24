@@ -2,9 +2,9 @@
   "slug": "tool-jev-calibration-cycle-issue-53",
   "title": "Tool-Jev calibration cycle (issue 53)",
   "schema_version": 6,
-  "status": "drafting",
+  "status": "exported",
   "created": "2026-09-24T22:47:35Z",
-  "updated": "2026-09-24T22:59:24Z",
+  "updated": "2026-09-24T23:06:59Z",
   "claims": [
     {
       "id": "c1",
@@ -16,7 +16,7 @@
         {
           "id": "h1",
           "text": "Every clause of the announcement is backed by a measured report on the fresh sides; any bar missed is reported as missed, not rounded up.",
-          "status": "proposed",
+          "status": "confirmed",
           "instruction": ""
         }
       ],
@@ -30,12 +30,12 @@
       "kind": "requirement",
       "text": "Permutation probe of the existing scorer-b1 before any retraining: score the val side with (a) shuffled candidate order, (b) a random op->letter permutation, (c) candidate subsets, (d) paraphrased candidate descriptions, and report how often the semantic choice changes (OpenJev reports ~2.3% on order shuffle). Needs a new seam: labels are fixed by LABEL_ALPHABET[full.index(name)] (scripts/lfm-finetune/scorer.py:139-153) and descriptions are hard-wired to ops_table (scorer.py:174-181); no shuffle/permute hook exists today.",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "honesty_conditions": [
         {
           "id": "h6",
           "text": "The probe runs on the existing scorer-b1 checkpoint before any new training and reports answer-change rate per perturbation (order, letters, subset, paraphrase) on val.",
-          "status": "proposed",
+          "status": "confirmed",
           "instruction": ""
         }
       ],
@@ -49,12 +49,12 @@
       "kind": "requirement",
       "text": "Uncertainty-abstention gate kept separate from semantic escalate: escalate stays an ordinary candidate label (scorer.py:64), and a policy over the distribution (p_escalate, p_top1 floor, top1-top2 margin, normalized entropy) decides abstain_uncertain; today the decision is a bare argmax (scorer.py:363). Thresholds are chosen separately for read-only vs mutating ops using Operation.read_only (nvsh/ops/table.py), never an operation name.",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "honesty_conditions": [
         {
           "id": "h7",
           "text": "Escalate stays a candidate label and abstain_uncertain is a separate outcome in predictions and metrics; the gate code references Operation.read_only only.",
-          "status": "proposed",
+          "status": "confirmed",
           "instruction": ""
         }
       ],
@@ -76,12 +76,12 @@
       "kind": "requirement",
       "text": "Threshold sweeps and calibration fits run offline from stored per-example distributions: the in-process ('exact') predictions.jsonl files already hold the full label->probability dict for every entry (work/q46/final/scorer-b1/*-exact-*.predictions.jsonl: test 64, missing-candidate 32, held-out 69), so no model re-run is needed to sweep gates on existing checkpoints; fits use val.json only (measure.py check_split_allowed refuses test without --final, held-out without --acceptance).",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "honesty_conditions": [
         {
           "id": "h8",
           "text": "Gate sweeps on scorer-b1 are reproducible from stored predictions.jsonl without a GPU; thresholds are chosen on val only.",
-          "status": "proposed",
+          "status": "confirmed",
           "instruction": ""
         }
       ],
@@ -95,12 +95,12 @@
       "kind": "requirement",
       "text": "Post-hoc calibration (temperature scaling first, then vector scaling) fitted on val and applied to each line's candidates before top_candidate/brier_one (scripts/lfm-finetune/metrics.py:334-402); no fit/apply step exists today.",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "honesty_conditions": [
         {
           "id": "h9",
           "text": "The fitted temperature (and vector) is fitted on val only, stored with the run, and applied identically to test/held-out and the served build.",
-          "status": "proposed",
+          "status": "confirmed",
           "instruction": ""
         }
       ],
@@ -114,12 +114,12 @@
       "kind": "requirement",
       "text": "Per-slice calibration reporting: ECE/Brier and reliability tables split by read-only vs mutating, candidate count, missing-candidate/OOD slice and confidence bucket. metrics.py already computes 10-bin {n, confidence, accuracy} (ece_bins, metrics.py:347-363) but only over a whole file, and the committed docs/benchmarks/*.md render only the two scalars.",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "honesty_conditions": [
         {
           "id": "h10",
           "text": "Per-slice reports render the reliability bins in the committed benchmark markdown, not only the JSON.",
-          "status": "proposed",
+          "status": "confirmed",
           "instruction": ""
         }
       ],
@@ -133,12 +133,12 @@
       "kind": "requirement",
       "text": "A complete-label readout for served builds: today every served scorer run (bf16 vLLM, AWQ vLLM, Q4_K_M llama-server on Spark and Orin) returns 0/64 complete distributions because label tokens fall outside the top len(labels)+TOP_MARGIN logprobs (scorer.py:245-256, nvsh/tiers/toolchat.py:336-350, docs/benchmarks/2026-09-24-lfm-final-scorer-b1.md). The gap is the readout path, not quantization.",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "honesty_conditions": [
         {
           "id": "h11",
           "text": "A served run of the deployed build yields complete distributions for >= 95% of entries (0/64 today), and incomplete ones are still counted, never renormalised.",
-          "status": "proposed",
+          "status": "confirmed",
           "instruction": ""
         }
       ],
@@ -152,12 +152,12 @@
       "kind": "assumption",
       "text": "An equal logit_bias applied to every offered label token lifts all labels into the returned top-k while leaving their relative softmax over the offered labels unchanged (a constant shift cancels), so the served readout can be made complete without engine changes. Proposed, unverified: must be checked against in-process bf16 exact distributions on vLLM /completions and on llama-server before it is trusted.",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "honesty_conditions": [
         {
           "id": "h12",
           "text": "Served distributions with the bias trick match in-process bf16 exact distributions for the same checkpoint within a stated tolerance (e.g. max abs diff <= 0.01) on val, on both vLLM and llama-server.",
-          "status": "proposed",
+          "status": "confirmed",
           "instruction": ""
         }
       ],
@@ -179,12 +179,12 @@
       "kind": "requirement",
       "text": "Calibration is measured on the deployed artifact (scorer Q4_K_M GGUF via llama-server on DGX Spark, and on AGX Orin), not only on bf16: no ECE/Brier exists today for AWQ or Q4_K_M (deviation d17, lapse l6 in docs/deliveries/2026-09-23-qwen3-5-0-8b-tool-jev-fine-tune-issue-46.md).",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "honesty_conditions": [
         {
           "id": "h13",
           "text": "Calibration numbers exist for the Q4_K_M build measured through the served path on DGX Spark and on AGX Orin.",
-          "status": "proposed",
+          "status": "confirmed",
           "instruction": ""
         }
       ],
@@ -206,12 +206,12 @@
       "kind": "requirement",
       "text": "Training variant with per-example randomized candidate order, op->letter mapping and candidate subsets. train_scorer.py today uses one fixed label_ids list for the whole run (train_scorer.py:297) and encode() always passes offered=None (train_scorer.py:130-143), so label ids and the CE target index must become per-row.",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "honesty_conditions": [
         {
           "id": "h14",
           "text": "Training randomises order, letters and subsets per example with a recorded seed; the label ids and CE target are derived per row from the rendered prompt.",
-          "status": "proposed",
+          "status": "confirmed",
           "instruction": ""
         }
       ],
@@ -233,12 +233,12 @@
       "kind": "requirement",
       "text": "Dataset cycle: train-side missing-candidate / no-valid-option examples (the frozen 1,463-example set has 0 entries with a reduced candidate list, docs/benchmarks/2026-09-24-qwen-tool-jev-comparison.md:224-229), built deterministically from eval_slices.py's shape, plus the comparison doc's other five recommendations (missing-argument escalates, diagnosis-vs-explanation pairs, explicit-mode power_set positives, disambiguation pairs, hard negatives), through the same all-Apache augment.py teachers, reviewer B and leakage_check.py.",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "honesty_conditions": [
         {
           "id": "h15",
           "text": "New train-side data goes through the all-Apache teachers, reviewer B and leakage_check.py against every eval side, and is frozen before the final run (post-freeze changes are deviations).",
-          "status": "proposed",
+          "status": "confirmed",
           "instruction": ""
         }
       ],
@@ -260,12 +260,12 @@
       "kind": "requirement",
       "text": "Candidate sets and label assignments are stored per training example at dataset build time (build_dataset.py / merge_variations.py), not invented at collate time: corpus entries carry no candidates field today, and label token ids and the CE target are keyed off whatever list encode() renders.",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "honesty_conditions": [
         {
           "id": "h16",
           "text": "Every training example records its offered candidates and letter map, so a run can be replayed exactly.",
-          "status": "proposed",
+          "status": "confirmed",
           "instruction": ""
         }
       ],
@@ -279,12 +279,12 @@
       "kind": "requirement",
       "text": "Fresh evaluation sides: the issue-46 test side is spent (comparison doc next-iteration notes), so this cycle needs a new sealed test side and held-out, and validation grown from 66 to ~150-200 entries so threshold and temperature fits are not driven by single entries (1/15 escalate = 6.7 pts).",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "honesty_conditions": [
         {
           "id": "h17",
           "text": "The new test side and held-out are sealed before any training of this cycle; validation has >= 150 entries; the issue-46 test side is not used for any claim.",
-          "status": "proposed",
+          "status": "confirmed",
           "instruction": ""
         }
       ],
@@ -306,12 +306,12 @@
       "kind": "requirement",
       "text": "Results carry uncertainty: with n=64 test and n=32 missing-candidate, ECE/recall move 3-7 pts per entry, so reports include bootstrap confidence intervals and reliability diagrams, not just point ECE/Brier.",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "honesty_conditions": [
         {
           "id": "h18",
           "text": "Every reported rate and ECE carries a bootstrap CI and n.",
-          "status": "proposed",
+          "status": "confirmed",
           "instruction": ""
         }
       ],
@@ -325,7 +325,7 @@
       "kind": "assumption",
       "text": "Lower learning rate is a calibration lever: b4 (lr 1e-4) made the same decisions as b1 with better validation calibration (exact ECE 0.072 vs 0.097, Brier 0.132 vs 0.162; docs/qwen-tool-jev-finetune.md Track B runs) and was only rejected on abstention precision.",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "honesty_conditions": [],
       "hard_questions": [],
       "links": [],
@@ -337,12 +337,12 @@
       "kind": "boundary",
       "text": "No code switches on a specific operation name: gates and per-slice reports key on Operation.read_only and candidate count only (docs/tiers-improving-accuracy.md rule; nvsh/tiers/router.py:17-18).",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "honesty_conditions": [
         {
           "id": "h19",
           "text": "No gate, report or data rule mentions a specific operation name.",
-          "status": "proposed",
+          "status": "confirmed",
           "instruction": ""
         }
       ],
@@ -356,12 +356,12 @@
       "kind": "boundary",
       "text": "The sealed held-out is never read by the lead (counts and hashes only) and is exposed once per final checkpoint; test/held-out are never used for fitting thresholds or temperature.",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "honesty_conditions": [
         {
           "id": "h20",
           "text": "The lead reads held-out counts/hashes only; each final checkpoint is exposed to test/held-out once.",
-          "status": "proposed",
+          "status": "confirmed",
           "instruction": ""
         }
       ],
@@ -375,12 +375,12 @@
       "kind": "boundary",
       "text": "All data and model repos stay private on the Hub; making any repo public needs per-repo operator approval (issue 46 c48).",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "honesty_conditions": [
         {
           "id": "h21",
           "text": "Every Hub repo created in this cycle is private; none made public without a per-repo operator approval.",
-          "status": "proposed",
+          "status": "confirmed",
           "instruction": ""
         }
       ],
@@ -394,12 +394,12 @@
       "kind": "boundary",
       "text": "No free-form generation on the Track B path; deterministic nvsh code keeps grounding, validation and execution (issue #53 success criteria).",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "honesty_conditions": [
         {
           "id": "h22",
           "text": "The Track B path emits max_tokens=1 / one forward position; grounding and validation stay in deterministic code.",
-          "status": "proposed",
+          "status": "confirmed",
           "instruction": ""
         }
       ],
@@ -413,12 +413,12 @@
       "kind": "requirement",
       "text": "Documentation distinguishes Track A (specialized generative tool router; its distribution is reconstructed offline by track_a_calibration.py teacher forcing) from Track B (Jev-style candidate decision/scoring model) so the two are not described as equally Jev-like (issue #53 gap 4).",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "honesty_conditions": [
         {
           "id": "h23",
           "text": "Guide, comparison doc and model cards call Track A a generative tool router and Track B the Jev-style scorer.",
-          "status": "proposed",
+          "status": "confirmed",
           "instruction": ""
         }
       ],
@@ -440,7 +440,7 @@
       "kind": "non_goal",
       "text": "A generic Choice/Noul/Score API is not built in this cycle; it moved to issue #55 (issue #53 gap 5, proposed order step 5).",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "honesty_conditions": [],
       "hard_questions": [],
       "links": [],
@@ -458,7 +458,7 @@
       "kind": "non_goal",
       "text": "No change to the nvsh runtime's third-party dependency set (pyproject dependencies = []); any runtime use of the scorer goes through the existing HTTP ToolChat.score_next_token pattern (nvsh/tiers/toolchat.py).",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "honesty_conditions": [],
       "hard_questions": [],
       "links": [],
@@ -475,7 +475,7 @@
         {
           "id": "h24",
           "text": "Issues #54, #55, #56 exist and are linked from #53 and the spec.",
-          "status": "proposed",
+          "status": "confirmed",
           "instruction": ""
         }
       ],
@@ -501,12 +501,12 @@
       "kind": "success_signal",
       "text": "Permutation robustness at OpenJev level: shuffling candidate order and permuting op->letter labels changes the semantic choice in <= 2.3% of cases (OpenJev's published figure; its own base model was 18.5%, https://huggingface.co/openjev/openjev). Closed or explained with a cause other than missing data.",
       "origin": "user",
-      "status": "proposed",
+      "status": "confirmed",
       "honesty_conditions": [
         {
           "id": "h25",
           "text": "The rate is measured on the fresh test side with at least 3 random permutations per entry, at the op level, with the runtime order not canonicalised.",
-          "status": "proposed",
+          "status": "confirmed",
           "instruction": ""
         }
       ],
@@ -520,12 +520,12 @@
       "kind": "success_signal",
       "text": "Calibration on the deployed Q4_K_M scorer: ECE <= 0.10 with a bootstrap CI and a published reliability diagram, on the fresh test side. OpenJev publishes no ECE/Brier (it ships a fixed readout temperature, READOUT_T=0.85), so there is no OpenJev calibration number to match; the #46 bar c35 stands.",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "honesty_conditions": [
         {
           "id": "h26",
           "text": "ECE and CI are computed from complete served distributions of the deployed Q4_K_M after the val-fitted temperature.",
-          "status": "proposed",
+          "status": "confirmed",
           "instruction": ""
         }
       ],
@@ -539,12 +539,12 @@
       "kind": "success_signal",
       "text": "0 wrong mutating actions at the chosen gate thresholds, and escalation (semantic or uncertainty) on >= 80% of the missing-candidate slice (7/32 today); OpenJev reports no abstention mechanism, so these bars are nvsh's own (c34 lineage).",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "honesty_conditions": [
         {
           "id": "h27",
           "text": "Wrong-mutating is counted at the chosen thresholds on test and held-out; missing-candidate escalation counts semantic escalate plus uncertainty abstain.",
-          "status": "proposed",
+          "status": "confirmed",
           "instruction": ""
         }
       ],
@@ -594,12 +594,12 @@
       "kind": "requirement",
       "text": "Conditional calibration-aware training stage (our own objective, not RLCD, whose method TypeSafe has not published): if post-hoc temperature/vector scaling plus the new data does not reach the calibration bar, train with a calibration-aware objective \u2014 label smoothing / a proper-scoring-rule term (Brier) beside CE, and/or a cost-sensitive decision reward on the gate's act/abstain outcome \u2014 and compare against the post-hoc result.",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "honesty_conditions": [
         {
           "id": "h28",
           "text": "The calibration-aware stage runs only if the post-hoc + data result misses the ECE bar, and its result is compared head-to-head with post-hoc on val.",
-          "status": "proposed",
+          "status": "confirmed",
           "instruction": ""
         }
       ],
@@ -618,7 +618,7 @@
         {
           "id": "h29",
           "text": "No file under nvsh/ changes in this cycle's PRs.",
-          "status": "proposed",
+          "status": "confirmed",
           "instruction": ""
         }
       ],
@@ -644,12 +644,12 @@
       "kind": "audience",
       "text": "The nvsh operator deciding whether a local Tool-Jev scorer can make bounded routing decisions it can threshold, and the next implementer of #54 who needs a measured artifact and measured thresholds.",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "honesty_conditions": [
         {
           "id": "h2",
           "text": "The audience can read the final report without knowing issue 46's internals: it names the artifact, thresholds, slices and CIs.",
-          "status": "proposed",
+          "status": "confirmed",
           "instruction": ""
         }
       ],
@@ -663,12 +663,12 @@
       "kind": "before_state",
       "text": "scorer-b1 (PR #52) picks by bare argmax over labels fixed to table order; nobody knows whether it evaluates the supplied candidates or memorised letters; its exact ECE is 0.132 (bar 0.10), it escalates on 7/32 missing-candidate entries, and the shipped Q4_K_M has no calibration measurement at all because the served readout returns 0/64 complete distributions.",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "honesty_conditions": [
         {
           "id": "h3",
           "text": "Every number in the before state is traceable to docs/benchmarks/2026-09-24-*scorer-b1* or the #46 delivery record.",
-          "status": "proposed",
+          "status": "confirmed",
           "instruction": ""
         }
       ],
@@ -682,12 +682,12 @@
       "kind": "after_state",
       "text": "A retrained Track B scorer whose choice survives label/order permutation, whose served Q4_K_M returns complete label distributions that are calibrated after a fitted temperature, with separate semantic-escalate and uncertainty-abstain outcomes, thresholds measured per read-only/mutating, and every result reported per slice with confidence intervals on fresh evaluation sides.",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "honesty_conditions": [
         {
           "id": "h4",
           "text": "Each after-state property has a report line or chart on the fresh sides; none is claimed from bf16 alone when it concerns the deployed build.",
-          "status": "proposed",
+          "status": "confirmed",
           "instruction": ""
         }
       ],
@@ -701,12 +701,12 @@
       "kind": "why_it_matters",
       "text": "nvsh only acts safely on a small model's decision if a probability means what it says and the decision tracks the offered alternatives: that is the difference between a tiny tool classifier and a local decision primitive nvsh can threshold (issue #53 design note).",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "honesty_conditions": [
         {
           "id": "h5",
           "text": "The gate and calibration are evaluated on decisions nvsh would act on (proposals and mutating ops), not only on aggregate accuracy.",
-          "status": "proposed",
+          "status": "confirmed",
           "instruction": ""
         }
       ],
