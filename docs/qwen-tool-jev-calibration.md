@@ -112,8 +112,8 @@ this cycle's PRs. Marked *(planned)* until the task's PR merges.
 
 | File | What it does | Task |
 |---|---|---|
-| `scorer.py` | *(planned)* One shared label-probability definition for training, in-process and served scoring; served readout requests a named, large top-k (`READOUT_TOP`, >= 5000) instead of `len(labels) + TOP_MARGIN`; a seeded permutation seam (order, letter map, subsets, description overrides) so results can be compared at the operation level, not the letter. | t1, t2 |
-| `serve_for_measure.sh` | *(planned)* Measurement servers default to a logprob/`n_probs` cap of at least 5000 so served scoring returns complete label distributions. | t3 |
+| `scorer.py` | **Merged** (`0b48c79`). One shared label-probability definition, `distribution()`: a candidate's mass is the sum of next-token probabilities over every vocabulary token whose whitespace-stripped text equals its label (3 variants per letter on Qwen3.5-0.8B: `'A'`, `' A'`, `'\tA'`), normalised over offered candidates. New `label_variant_ids()` scans the vocabulary for those variants (~0.4 s over ~248k tokens); `TransformersScorer` now reads all variant ids and goes through `distribution()`, the same function a served model uses; new `label_logits_from_vocab()` is a differentiable log-sum-exp over variant ids, for training. `READOUT_TOP = 5000` is what `score()` requests from a server. Incomplete results are still never renormalised. The permutation seam (order, letter map, subsets, description overrides) is *(still planned)*, t2. | t1, t2 |
+| `serve_for_measure.sh`, `pipeline.env.example`, `pipeline-qwen.env.example` | **Merged.** `MEASURE_MAX_LOGPROBS` now defaults to 5000 (was 22) in the script and both pipeline env examples. `llama-server` has no max-logprobs flag, so nothing there caps the readout. | t3 |
 | `calibration_fit.py` | *(planned, new)* Seeded validation fit/selection folds; fits and applies temperature scaling (then vector scaling) by minimising NLL on the fit fold only; refuses test/held-out as fit input. | t4 |
 | `metrics.py` | *(planned)* Per-slice ECE/Brier/reliability bins (read-only vs mutating, candidate count, missing-candidate, confidence bucket); every rate and ECE carries n and a bootstrap 95% CI; `abstain_uncertain` counted as its own outcome, separate from semantic escalate, both rolling into the escalation bar. | t5 |
 | `gate.py` | *(planned, new)* The uncertainty-abstention gate: decides propose / explain / escalate / `abstain_uncertain` from `p_escalate`, a `p_top1` floor, the top1-top2 margin and normalized entropy; thresholds keyed only by `Operation.read_only`, never an operation name. | t6 |
@@ -246,13 +246,23 @@ choice.
 
 ## Where the run stands
 
-**Wave 1 in progress**, 2026-09-25. **Merged:** t9 (pre-registered decision
-rule, `b1c6cb6`), t10 (this guide) and t11 (Track A/B documentation
-relabel). **In progress:** t1 (readout core), t3 (served readout cap), t4
+**Wave 1 in progress**, 2026-09-25. **Merged:** t1 (readout core, `0b48c79`),
+t3 (served readout cap), t9 (pre-registered decision rule, `b1c6cb6`), t10
+(this guide) and t11 (Track A/B documentation relabel). **In progress:** t4
 (calibration-fit module) and t5 (per-slice metrics). No training run has
 happened yet — t9's rule is committed and operator-confirmed ahead of the
 cycle's first training command, as required. This section will be updated
 at each step as the lead forwards findings.
+
+Cumulative issue **#61** records every deviation, lapse and status update
+for this cycle as it happens; this guide's ledger below is the narrative
+version of the same events.
+
+**Run condition.** For the duration of this cycle, the operator has allowed
+raising or dropping teacher models on the shared model-serving lobes, and
+switching a lobe to a different supported Qwen or Gemma model, as this run
+needs (no machine names recorded here, consistent with this guide's
+redaction rule).
 
 ## Ledger (symptom -> cause -> fix)
 
@@ -283,6 +293,26 @@ at each step as the lead forwards findings.
   backticked (`` `<date>` ``); because the plan's content changed, t22
   reverted to proposed and the operator re-confirmed it before it counted
   as part of the approved split.
+- **d1, t1's scope trim at merge (operator-approved deviation).** t1's
+  first acceptance criterion originally asked `train_scorer.py` to adopt
+  the shared `distribution()` definition too; that adoption moves to t16,
+  which owns `train_scorer.py`. At the same merge, the lead updated one
+  t8-owned assertion in `tests/test_lfm_finetune_measure.py` to
+  `READOUT_TOP` so the merge stayed green; `measure.py`'s own
+  `--max-logprobs` preflight check still belongs to t8. Reason: keep task
+  ownership boundaries clean without blocking a passing merge.
+- **l1, an assumption not yet re-measured (operator-approved lapse).** The
+  pre-challenge probe's `dev-f02` 0.137 definition gap (P1 above) is
+  claimed closed on the strength of t1's code change alone; it has not yet
+  been re-measured on `scorer-b1` itself. t17 (the baseline re-probe on
+  corpus v2 validation) re-measures it.
+- **l2, no CI control for the training-interpreter path (operator-approved
+  lapse).** The torch/tokenizer-backed scorer tests (`label_variant_ids`,
+  `TransformersScorer`, `label_logits_from_vocab`) run only under the
+  training interpreter (44/44 passing there); the CI/uv environment skips
+  them (35 pass, 9 skip) because torch is not installed there. There is no
+  CI job that exercises this path; it depends on a human or the lead
+  running it under the training interpreter before trusting it.
 
 ## Reproduce steps
 
