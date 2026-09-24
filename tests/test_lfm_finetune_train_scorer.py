@@ -230,8 +230,9 @@ def test_training_is_reproducible_under_one_seed() -> None:
         )
         return [step["loss"] for step in history]
 
-    assert run(46) == run(46)
-    assert run(46) != run(47)
+    first, again, other_seed = run(46), run(46), run(47)
+    assert first == again  # two separate runs under one seed agree
+    assert first != other_seed
 
 
 def test_evaluate_reports_accuracy_and_confidence() -> None:
