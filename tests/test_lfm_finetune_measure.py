@@ -1012,9 +1012,9 @@ def _lfm_harness(measure, tmp_path, server, lfm=None) -> Harness:
 
 
 def test_served_generative_run_records_tokens_logprobs_and_thinking(
-    measure, metrics, tmp_path, chat_server
+    measure, metrics, tmp_path, chat_server, monkeypatch
 ):
-    _ChatHandler.replies = [_propose_reply("gpu_stats"), _escalate_reply()]
+    monkeypatch.setattr(_ChatHandler, "replies", [_propose_reply("gpu_stats"), _escalate_reply()])
     split = _small_split(tmp_path)
     out = tmp_path / "r.md"
     predictions = tmp_path / "p"
@@ -1045,8 +1045,8 @@ def test_served_generative_run_records_tokens_logprobs_and_thinking(
     assert _row(text, "Lines with a candidate distribution") == ["2 of 2", "2 of 2"]
 
 
-def test_thinking_not_sent_unless_configured(measure, tmp_path, chat_server):
-    _ChatHandler.replies = [_propose_reply("gpu_stats"), _escalate_reply()]
+def test_thinking_not_sent_unless_configured(measure, tmp_path, chat_server, monkeypatch):
+    monkeypatch.setattr(_ChatHandler, "replies", [_propose_reply("gpu_stats"), _escalate_reply()])
     split = _small_split(tmp_path)
     harness = _lfm_harness(measure, tmp_path, chat_server)
     assert measure.main(_argv(split, tmp_path / "r.md", models=(STOCK,)), seams=harness.seams) == 0
@@ -1055,11 +1055,14 @@ def test_thinking_not_sent_unless_configured(measure, tmp_path, chat_server):
         assert "chat_template_kwargs" not in request
 
 
-def test_nonempty_think_blocks_are_counted_and_fail_the_run(measure, tmp_path, chat_server, capsys):
-    _ChatHandler.replies = [
+def test_nonempty_think_blocks_are_counted_and_fail_the_run(
+    measure, tmp_path, chat_server, capsys, monkeypatch
+):
+    replies = [
         _propose_reply("gpu_stats", think="<think>hmm</think>"),
         _escalate_reply(think="<think>\n\n</think>"),
     ]
+    monkeypatch.setattr(_ChatHandler, "replies", replies)
     split = _small_split(tmp_path)
     out = tmp_path / "r.md"
     harness = _lfm_harness(measure, tmp_path, chat_server)
@@ -1069,8 +1072,10 @@ def test_nonempty_think_blocks_are_counted_and_fail_the_run(measure, tmp_path, c
     assert "think block" in capsys.readouterr().err
 
 
-def test_missing_candidate_slice_restricts_the_tools_offered(measure, tmp_path, chat_server):
-    _ChatHandler.replies = [_escalate_reply()]
+def test_missing_candidate_slice_restricts_the_tools_offered(
+    measure, tmp_path, chat_server, monkeypatch
+):
+    monkeypatch.setattr(_ChatHandler, "replies", [_escalate_reply()])
     split = _small_split(tmp_path)
     predictions = tmp_path / "p"
     out = tmp_path / "r.md"
@@ -1251,12 +1256,12 @@ def test_candidates_do_not_split_proposal_mass_they_never_saw(measure):
 
 
 def test_unobserved_continuations_leave_the_line_without_a_distribution(
-    measure, tmp_path, chat_server
+    measure, tmp_path, chat_server, monkeypatch
 ):
     """End to end: the refused line keeps its outcome, gets null candidates and a counted note."""
     reply = _propose_reply("gpu_stats")
     reply["logprobs"]["content"][4] = _tok("gpu_stats", 0.9, {"thermal": 0.1})
-    _ChatHandler.replies = [reply, _escalate_reply()]
+    monkeypatch.setattr(_ChatHandler, "replies", [reply, _escalate_reply()])
     split = _small_split(tmp_path)
     predictions = tmp_path / "p"
     out = tmp_path / "r.md"
@@ -1324,13 +1329,15 @@ def test_a_plain_explanation_is_still_an_explanation(measure):
     assert measure._decided(row, select) == ("explain", None, None, None)
 
 
-def test_served_unparsed_qwen_xml_is_an_invalid_output(measure, metrics, tmp_path, chat_server):
+def test_served_unparsed_qwen_xml_is_an_invalid_output(
+    measure, metrics, tmp_path, chat_server, monkeypatch
+):
     """End to end: Qwen XML in message.content with no structured tool_calls."""
     unparsed = {
         "message": {"role": "assistant", "content": _QWEN_XML},
         "usage": {"completion_tokens": 20},
     }
-    _ChatHandler.replies = [unparsed]
+    monkeypatch.setattr(_ChatHandler, "replies", [unparsed])
     split = _small_split(tmp_path)
     predictions = tmp_path / "p"
     harness = _lfm_harness(measure, tmp_path, chat_server)
@@ -1713,8 +1720,8 @@ def test_preflight_refuses_the_wrong_model_name(measure, models_server):
     assert "other-model" in excinfo.value.message
 
 
-def test_preflight_refuses_a_wrong_http_status(measure, models_server):
-    _ModelsHandler.status = 500
+def test_preflight_refuses_a_wrong_http_status(measure, models_server, monkeypatch):
+    monkeypatch.setattr(_ModelsHandler, "status", 500)
     with pytest.raises(measure.MeasureError) as excinfo:
         measure.preflight_models(_models_url(models_server), "good-model")
     assert excinfo.value.code == measure.EXIT_ENV
@@ -1872,8 +1879,10 @@ def _served_scorer_harness(measure, tmp_path, server) -> tuple[Harness, list]:
     return harness, built
 
 
-def test_served_scorer_preflight_refuses_the_wrong_model_name(measure, tmp_path, scorer_server):
-    _ScorerHandler.model_ids = ["a-different-model"]
+def test_served_scorer_preflight_refuses_the_wrong_model_name(
+    measure, tmp_path, scorer_server, monkeypatch
+):
+    monkeypatch.setattr(_ScorerHandler, "model_ids", ["a-different-model"])
     split = _small_split(tmp_path)
     harness, built = _served_scorer_harness(measure, tmp_path, scorer_server)
     argv = _argv(
@@ -1885,9 +1894,9 @@ def test_served_scorer_preflight_refuses_the_wrong_model_name(measure, tmp_path,
 
 
 def test_served_scorer_call_error_fails_the_run_and_writes_no_results_page(
-    measure, tmp_path, scorer_server
+    measure, tmp_path, scorer_server, monkeypatch
 ):
-    _ScorerHandler.completions_status = 500
+    monkeypatch.setattr(_ScorerHandler, "completions_status", 500)
     split = _small_split(tmp_path)
     out = tmp_path / "r.md"
     predictions = tmp_path / "p"
@@ -1902,13 +1911,15 @@ def test_served_scorer_call_error_fails_the_run_and_writes_no_results_page(
     assert all(row["invalid_reason"] == "tier_error" for row in rows)
 
 
-def test_served_scorer_healthy_run_is_not_a_tier_error(measure, tmp_path, scorer_server):
+def test_served_scorer_healthy_run_is_not_a_tier_error(
+    measure, tmp_path, scorer_server, monkeypatch
+):
     """A real round trip that answers every label cleanly writes the results page."""
     split = _small_split(tmp_path)
     out = tmp_path / "r.md"
     harness, built = _served_scorer_harness(measure, tmp_path, scorer_server)
     full = _label_logprobs(measure, "escalate")
-    _ScorerHandler.logprobs_by_call = [full, full]
+    monkeypatch.setattr(_ScorerHandler, "logprobs_by_call", [full, full])
     argv = _argv(split, out, "--scorer", "served", "--max-logprobs", "24", models=(STOCK,))
     assert measure.main(argv, seams=harness.seams) == 0
     assert out.exists()
@@ -1920,13 +1931,13 @@ def test_served_scorer_healthy_run_is_not_a_tier_error(measure, tmp_path, scorer
 # ---------------------------------------------------------------------------
 
 
-def test_preflight_accepts_a_matching_served_context(measure, models_server):
-    _ModelsHandler.max_model_len = 4096
+def test_preflight_accepts_a_matching_served_context(measure, models_server, monkeypatch):
+    monkeypatch.setattr(_ModelsHandler, "max_model_len", 4096)
     measure.preflight_models(_models_url(models_server), "good-model", ctx=4096)
 
 
-def test_preflight_refuses_a_different_served_context(measure, models_server):
-    _ModelsHandler.max_model_len = 2048
+def test_preflight_refuses_a_different_served_context(measure, models_server, monkeypatch):
+    monkeypatch.setattr(_ModelsHandler, "max_model_len", 2048)
     with pytest.raises(measure.MeasureError) as excinfo:
         measure.preflight_models(_models_url(models_server), "good-model", ctx=4096)
     assert excinfo.value.code == measure.EXIT_ENV
@@ -1934,54 +1945,62 @@ def test_preflight_refuses_a_different_served_context(measure, models_server):
     assert "4096" in excinfo.value.message
 
 
-def test_preflight_refuses_when_the_served_context_cannot_be_read(measure, models_server):
-    _ModelsHandler.max_model_len = None
+def test_preflight_refuses_when_the_served_context_cannot_be_read(
+    measure, models_server, monkeypatch
+):
+    monkeypatch.setattr(_ModelsHandler, "max_model_len", None)
     with pytest.raises(measure.MeasureError) as excinfo:
         measure.preflight_models(_models_url(models_server), "good-model", ctx=4096)
     assert "max_model_len" in excinfo.value.message
 
 
 @pytest.mark.parametrize("suffix", ["", "/v1"])
-def test_preflight_reads_a_llama_server_context_from_props(measure, models_server, suffix):
+def test_preflight_reads_a_llama_server_context_from_props(
+    measure, models_server, suffix, monkeypatch
+):
     """Issue 46, t25: llama-server's /v1/models has no max_model_len; its
     context is /props default_generation_settings.n_ctx at the server root."""
-    _ModelsHandler.owned_by = "llamacpp"
-    _ModelsHandler.props_n_ctx = 2048
+    monkeypatch.setattr(_ModelsHandler, "owned_by", "llamacpp")
+    monkeypatch.setattr(_ModelsHandler, "props_n_ctx", 2048)
     measure.preflight_models(_models_url(models_server) + suffix, "good-model", ctx=2048)
 
 
-def test_preflight_refuses_a_llama_server_with_another_context(measure, models_server):
-    _ModelsHandler.owned_by = "llamacpp"
-    _ModelsHandler.props_n_ctx = 4096
+def test_preflight_refuses_a_llama_server_with_another_context(measure, models_server, monkeypatch):
+    monkeypatch.setattr(_ModelsHandler, "owned_by", "llamacpp")
+    monkeypatch.setattr(_ModelsHandler, "props_n_ctx", 4096)
     with pytest.raises(measure.MeasureError) as excinfo:
         measure.preflight_models(_models_url(models_server) + "/v1", "good-model", ctx=2048)
     assert "4096" in excinfo.value.message
     assert "2048" in excinfo.value.message
 
 
-def test_preflight_refuses_a_llama_server_without_props(measure, models_server):
-    _ModelsHandler.owned_by = "llamacpp"
+def test_preflight_refuses_a_llama_server_without_props(measure, models_server, monkeypatch):
+    monkeypatch.setattr(_ModelsHandler, "owned_by", "llamacpp")
     with pytest.raises(measure.MeasureError) as excinfo:
         measure.preflight_models(_models_url(models_server) + "/v1", "good-model", ctx=2048)
     assert "n_ctx" in excinfo.value.message or "max_model_len" in excinfo.value.message
 
 
-def test_a_redirected_props_answer_is_refused(measure, models_server):
+def test_a_redirected_props_answer_is_refused(measure, models_server, monkeypatch):
     """Codex: a redirect could carry the /props answer off localhost."""
-    _ModelsHandler.owned_by = "llamacpp"
-    _ModelsHandler.props_redirect = True
+    monkeypatch.setattr(_ModelsHandler, "owned_by", "llamacpp")
+    monkeypatch.setattr(_ModelsHandler, "props_redirect", True)
     with pytest.raises(measure.MeasureError):
         measure.preflight_models(_models_url(models_server) + "/v1", "good-model", ctx=2048)
 
 
-def test_props_are_not_consulted_for_a_server_that_is_not_llama_cpp(measure, models_server):
-    _ModelsHandler.props_n_ctx = 2048  # present, but the server does not say it is llama.cpp
+def test_props_are_not_consulted_for_a_server_that_is_not_llama_cpp(
+    measure, models_server, monkeypatch
+):
+    monkeypatch.setattr(
+        _ModelsHandler, "props_n_ctx", 2048
+    )  # present, but the server does not say it is llama.cpp
     with pytest.raises(measure.MeasureError):
         measure.preflight_models(_models_url(models_server), "good-model", ctx=2048)
 
 
-def test_preflight_without_ctx_is_unchanged(measure, models_server):
-    _ModelsHandler.max_model_len = None
+def test_preflight_without_ctx_is_unchanged(measure, models_server, monkeypatch):
+    monkeypatch.setattr(_ModelsHandler, "max_model_len", None)
     measure.preflight_models(_models_url(models_server), "good-model")  # does not raise
 
 

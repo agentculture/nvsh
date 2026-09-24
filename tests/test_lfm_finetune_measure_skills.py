@@ -993,14 +993,13 @@ def test_thinking_is_not_sent_unless_configured(mod, fake_server, tmp_path):
         assert "chat_template_kwargs" not in request
 
 
-def test_nonempty_think_blocks_are_counted_and_reported(mod, fake_server, tmp_path):
+def test_nonempty_think_blocks_are_counted_and_reported(mod, fake_server, tmp_path, monkeypatch):
     tools_path, test_path = _write_inputs(tmp_path)
-    _FakeHandler.contents = ["<think>let me see</think>", "<think>\n\n</think>", "", ""]
+    monkeypatch.setattr(
+        _FakeHandler, "contents", ["<think>let me see</think>", "<think>\n\n</think>", "", ""]
+    )
     out_path = tmp_path / "results.md"
-    try:
-        code = mod.main(_skills_argv(tools_path, test_path, fake_server, out_path))
-    finally:
-        _FakeHandler.contents = []
+    code = mod.main(_skills_argv(tools_path, test_path, fake_server, out_path))
     assert code == 0
     assert "| Non-empty think blocks (must be 0) | 1 |" in out_path.read_text(encoding="utf-8")
 
@@ -1065,10 +1064,14 @@ def test_main_refuses_a_wrong_model_name_before_any_eval(mod, fake_server, tmp_p
     assert _FakeHandler.calls == 0  # refused before the first eval
 
 
-def test_a_call_error_fails_the_run_and_writes_no_results_page(mod, fake_server, tmp_path):
+def test_a_call_error_fails_the_run_and_writes_no_results_page(
+    mod, fake_server, tmp_path, monkeypatch
+):
     tools_path, test_path = _write_inputs(tmp_path)
     out_path = tmp_path / "results.md"
-    _FakeHandler.fail_indices = {0}  # the first eval's call drops the connection
+    monkeypatch.setattr(
+        _FakeHandler, "fail_indices", {0}
+    )  # the first eval's call drops the connection
     exit_code = mod.main(
         [
             "--tools",
@@ -1087,10 +1090,10 @@ def test_a_call_error_fails_the_run_and_writes_no_results_page(mod, fake_server,
     assert not out_path.exists()
 
 
-def test_allow_tier_errors_writes_the_page_with_the_count(mod, fake_server, tmp_path):
+def test_allow_tier_errors_writes_the_page_with_the_count(mod, fake_server, tmp_path, monkeypatch):
     tools_path, test_path = _write_inputs(tmp_path)
     out_path = tmp_path / "results.md"
-    _FakeHandler.fail_indices = {0}
+    monkeypatch.setattr(_FakeHandler, "fail_indices", {0})
     exit_code = mod.main(
         [
             "--tools",
