@@ -526,3 +526,26 @@ def test_write_outputs_also_writes_bodies(mod, result, tmp_path):
     bodies = json.loads((tmp_path / "bodies.json").read_text())
     assert len(bodies) == 4
     assert all("body" in b and "tool" in b for b in bodies)
+
+
+def test_scan_checks_each_distinct_training_string_once(mod, result, monkeypatch):
+    # Issue 46: every rendered training row repeats the same long system prompt
+    # (the tool definitions), so the scan re-windowed one text ~1,463 times.
+    seen: list[str] = []
+    real = mod._find_contamination
+
+    def counting(eval_id, field, text, training_texts, training_normalized, threshold):
+        seen.append(len(training_texts))
+        return real(eval_id, field, text, training_texts, training_normalized, threshold)
+
+    monkeypatch.setattr(mod, "_find_contamination", counting)
+    repeated = ["the same long system prompt " * 20] * 50 + ["a different training string here"]
+    mod.scan_contamination(result.evals, repeated)
+    assert set(seen) == {2}
+
+
+def test_scan_finds_a_copy_hidden_among_repeats(mod, result):
+    contaminated_prompt = next(e for e in result.evals if e.repo == "device").text
+    training = ["the same long system prompt"] * 30 + [f"user: {contaminated_prompt}"]
+    hits = mod.scan_contamination(result.evals, training)
+    assert any(h.reason == "exact" for h in hits)

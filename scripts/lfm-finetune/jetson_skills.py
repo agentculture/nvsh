@@ -589,7 +589,13 @@ def scan_contamination(
     threshold: float = NEAR_DUP_JACCARD_THRESHOLD,
 ) -> list[Contamination]:
     """Every eval prompt/question or ground_truth that appears -- exactly or
-    as a near-duplicate -- in *training_texts*. Empty means clean."""
+    as a near-duplicate -- in *training_texts*. Empty means clean.
+
+    Each distinct training string is checked once: a string's verdict does
+    not depend on how often it repeats, and rendered chat rows repeat the
+    same long system prompt in every row (issue 46: ~1,463 copies of the
+    tool definitions made the scan run for hours)."""
+    training_texts = list(dict.fromkeys(training_texts))
     training_normalized = [normalize_text(t) for t in training_texts]
     found: list[Contamination] = []
     for ev in evals:
