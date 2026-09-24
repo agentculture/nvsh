@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-09-23T06:56:50Z",
-  "updated": "2026-09-24T09:26:35Z",
+  "updated": "2026-09-24T10:02:21Z",
   "claims": [
     {
       "id": "c1",
@@ -1379,5 +1379,132 @@
       "status": "approved"
     }
   ],
-  "obligations": []
+  "obligations": [
+    {
+      "id": "o1",
+      "claim_id": "c33",
+      "seam": "final test-side run, shipped builds",
+      "behavior": "best tuned variant >=80% right proposals and >= stock + 30 pts on the clean test side",
+      "source_text": "On the clean test side the best tuned variant gets >=80% right proposals and >= stock + 30 percentage points",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o2",
+      "claim_id": "c34",
+      "seam": "final test-side run, shipped builds",
+      "behavior": "escalation recall >=80%, abstention precision >=80%, FP <=5%, 0 wrong mutating",
+      "source_text": "Escalation (abstain) recall >=80% and abstention precision >=80%; false-positive tool calls <=5% on explain/escalate-expected items; 0 wrong mutating proposals",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o3",
+      "claim_id": "c35",
+      "seam": "Track B exact calibration on the test side",
+      "behavior": "ECE <=0.10 and Brier lower than stock",
+      "source_text": "Track B's confidence is calibrated: ECE <=0.10 (10 equal-width bins) and Brier score lower than stock's",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o4",
+      "claim_id": "c36",
+      "seam": "shipped quantized builds at 2K on spark",
+      "behavior": "warm median decision latency <=250 ms and memory <=6 GB",
+      "source_text": "At 2K context on spark the best variant's warm median decision latency is <=250 ms and its container memory is <=6 GB",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o5",
+      "claim_id": "c9",
+      "seam": "nvsh runtime",
+      "behavior": "no nvsh runtime code change",
+      "source_text": "No nvsh runtime code change is needed to serve a Qwen checkpoint as Tier 2: LfmTier/LfmAgent/TierManager speak OpenAI-compatible chat/tool calls with nothing LFM2.5-specific (manager.py _build, agent/registry.py:295-304), so it runs under [tiers.lfm] by config alone",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o6",
+      "claim_id": "c46",
+      "seam": "missing-candidate evaluation slice",
+      "behavior": "the slice is measured for every checkpoint",
+      "source_text": "The evaluation covers issue 46's cases the spec omitted: behaviour when the correct operation is not among the offered candidates (it should escalate), and the rate of invalid or unparseable outputs (malformed tool call, operation not in nvsh/ops/table.py, arguments failing the operation schema), reported for stock, Track A and Track B",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o7",
+      "claim_id": "c44",
+      "seam": "quantized export",
+      "behavior": "Q4_K_M GGUF text-only, served by llama-server",
+      "source_text": "The best checkpoint(s) are exported as a Q4_K_M GGUF (text-only, no vision mmproj) served by nvsh's existing llama-server engine via [tiers.lfm] model_dir, and as an INT4 AWQ checkpoint served by the vllm engine; both are measured on the clean test side with the same harness, latency and memory as bf16",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o8",
+      "claim_id": "c47",
+      "seam": "bundle scan",
+      "behavior": "every dataset and model bundle passes the secrets/private-host scan before upload",
+      "source_text": "Every dataset and model bundle passes a secrets and private-host scan (scripts/scan-secrets.py rules, plus nvsh/redact.py over every text field) before any upload, private or public; a bundle with a finding is not uploaded",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o9",
+      "claim_id": "c16",
+      "seam": "measurement harness metrics",
+      "behavior": "ECE/Brier, abstention precision/recall, latency reported per run",
+      "source_text": "Measurement grows the metrics issue 46 asks for that issue 39's tooling lacks: logprobs-based confidence with ECE/Brier, abstention precision/recall, false-positive tool-invocation rate, tokens generated per decision and time to first decision. measure.py today reports right proposals, escalation TP/FN, wrong mutating/argument counts, container memory and warm/cold latency (measure.py:494-538,585-599,853-863) and has no logprob, calibration or token counts",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o10",
+      "claim_id": "c18",
+      "seam": "context comparison",
+      "behavior": "2K vs 4K compared by configuration only",
+      "source_text": "The 2K vs 4K context comparison is run by configuration only: training --max-length (train.py:122) and serving [tiers.lfm] ctx (runtime_docker.py DEFAULT_CTX 4096, validated 256..1,048,576) are both already parameters; issue 39 ran at 4096",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o11",
+      "claim_id": "c13",
+      "seam": "clean test side",
+      "behavior": "final runs only on the re-seeded test side and the sealed held-out",
+      "source_text": "Any final (test-side) run of this work is made on a test side that is clean for Qwen: issue 39's test side was partly read during iteration (lapse l2) and four test entries leaked into r8's training by exact wording (lapse l5), so its numbers are an upper bound. The delivery record's remaining work already calls for a fresh or re-seeded test side, with merge_variations.py --exclude guarding leakage",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o12",
+      "claim_id": "c48",
+      "seam": "Hub uploads",
+      "behavior": "every repo starts private; none made public in this work",
+      "source_text": "Uploads start private; making a model or dataset repo public is irreversible in practice, so each repo goes public only after the operator explicitly approves that repo by name (issue 39's t15 precedent: ask first)",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o13",
+      "claim_id": "c11",
+      "seam": "release bundles",
+      "behavior": "a Qwen bundle carries Apache-2.0 terms",
+      "source_text": "release_bundle.py is generalised so a Qwen bundle carries Apache-2.0 terms: today it hard-codes LICENSE_FIRST_LINE 'LFM Open License v1.0', REQUIRED_CARD_PHRASES (license_name: lfm1.0, the 10,000,000 threshold), Liquid AI NOTICE text and the model-card Licence section; the chat-template equality check (c33 of issue 39) and TEACHERS tuple carry over unchanged",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o14",
+      "claim_id": "c14",
+      "seam": "dataset provenance",
+      "behavior": "records and teachers documented so the dataset can be published",
+      "source_text": "Training-data provenance is documented per record and per teacher so the dataset and model can be published: corpus entries carry id/kind/text/expect/source (no licence field; licence is stated at bundle level), variations record source_id/side/models, and dataset_bundle.py's manifest adds split/origin/source_file/licence/transformed plus a role->model map (dataset_bundle.py:50-55,127-168)",
+      "origin": "llm",
+      "status": "proposed"
+    }
+  ]
 }

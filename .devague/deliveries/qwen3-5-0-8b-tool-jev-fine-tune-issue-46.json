@@ -2,7 +2,7 @@
   "plan_slug": "qwen3-5-0-8b-tool-jev-fine-tune-issue-46",
   "schema_version": 2,
   "created": "2026-09-23T10:18:50Z",
-  "updated": "2026-09-24T09:26:35Z",
+  "updated": "2026-09-24T10:02:21Z",
   "deviations": [
     {
       "id": "d1",
@@ -261,7 +261,331 @@
       "seq": 19
     }
   ],
-  "evidence": [],
-  "deltas": [],
+  "evidence": [
+    {
+      "id": "e1",
+      "obligation_ref": "o1",
+      "test_ref": "docs/benchmarks/2026-09-24-lfm-final-a3.md",
+      "behavior_text": "a3 32/32 (100%) and a3-heal.q4_k_m 32/32; scorer-b1 27/32 (84.4%); stock 2/32 (6.25%) \u2014 each measured once on the clean test side",
+      "contract_text": "On the clean test side the best tuned variant gets >=80% right proposals and >= stock + 30 percentage points",
+      "evidence_type": "integration",
+      "strength": "execution",
+      "strength_basis": "single final test-side run per checkpoint through the committed harness (pipeline.sh measure-final), results pages committed",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-24T07:08:00",
+        "commit": "db55ce4"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 20
+    },
+    {
+      "id": "e2",
+      "obligation_ref": "o2",
+      "test_ref": "docs/benchmarks/2026-09-24-lfm-final-scorer-b1.md",
+      "behavior_text": "recall 11/15 (73.3%) for a3, a3-heal.q4_k_m and scorer-b1 (FAIL); precision 100%/91.7% (pass); FP a3 4/32 12.5%, scorer-b1 2/32 6.3% (FAIL); wrong mutating a3/a3-heal 2 (FAIL), scorer-b1 0 (pass)",
+      "contract_text": "Escalation (abstain) recall >=80% and abstention precision >=80%; false-positive tool calls <=5% on explain/escalate-expected items; 0 wrong mutating",
+      "evidence_type": "integration",
+      "strength": "execution",
+      "strength_basis": "single final test-side run per checkpoint; the bar is not met by any shipped build (recall and FP fail for both)",
+      "outcome": "fail",
+      "run": {
+        "timestamp": "2026-09-24T07:08:00",
+        "commit": "db55ce4"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 21
+    },
+    {
+      "id": "e3",
+      "obligation_ref": "o3",
+      "test_ref": "docs/benchmarks/2026-09-24-lfm-final-scorer-b1-exact.md",
+      "behavior_text": "scorer-b1 exact in-process: ECE 0.132 (FAIL, >0.10), Brier 0.268 vs stock exact 0.834 (pass); quantized builds not measurable (d17, l6)",
+      "contract_text": "Track B confidence is calibrated: ECE <=0.10 (10 equal-width bins) and Brier score lower than stock",
+      "evidence_type": "integration",
+      "strength": "execution",
+      "strength_basis": "exact in-process scorer (d15) on the clean test side, stock measured the same way",
+      "outcome": "fail",
+      "run": {
+        "timestamp": "2026-09-24T07:08:00",
+        "commit": "db55ce4"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 22
+    },
+    {
+      "id": "e4",
+      "obligation_ref": "o4",
+      "test_ref": "docs/benchmarks/2026-09-24-lfm-final-a3-heal.q4_k_m.md",
+      "behavior_text": "a3-heal.q4_k_m warm median 245 ms, llama-server ~0.8 GB RSS + ~0.83 GB GPU; scorer-b1.q4_k_m 33 ms (bf16 a3 442 ms fails; quantization required as planned)",
+      "contract_text": "At 2K context on spark the best variant warm median decision latency is <=250 ms and its container memory is <=6 GB",
+      "evidence_type": "integration",
+      "strength": "execution",
+      "strength_basis": "single test-side run of each quantized build; memory from the run-time sampler (attach mode leaves docker stats unmeasured)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-24T09:00:12",
+        "commit": "0ef8747"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 23
+    },
+    {
+      "id": "e5",
+      "obligation_ref": "o5",
+      "test_ref": "git diff origin/main...HEAD -- nvsh/",
+      "behavior_text": "the diff against main under nvsh/ is empty",
+      "contract_text": "No nvsh runtime code change is needed to serve a Qwen checkpoint as Tier 2",
+      "evidence_type": "observation",
+      "strength": "execution",
+      "strength_basis": "git diff --stat shows 0 files under nvsh/ at the named commit",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-24T09:56:27",
+        "commit": "c531ad6"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 24
+    },
+    {
+      "id": "e6",
+      "obligation_ref": "o6",
+      "test_ref": "docs/benchmarks/2026-09-24-lfm-final-a3-missing-candidate.md",
+      "behavior_text": "missing-candidate slice measured once per checkpoint: stock 1/32, a3 5/32, scorer-b1 7/32 escalations \u2014 measured and reported (the behaviour itself is weak; it is the lead data recommendation)",
+      "contract_text": "The evaluation covers the case where the correct operation is not among the offered candidates (it should escalate)",
+      "evidence_type": "integration",
+      "strength": "execution",
+      "strength_basis": "eval_slices.py slice run through measure-final --slice missing-candidate",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-24T07:08:00",
+        "commit": "db55ce4"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 25
+    },
+    {
+      "id": "e7",
+      "obligation_ref": "o7",
+      "test_ref": "docs/benchmarks/2026-09-24-lfm-final-a3-heal.q4_k_m.md",
+      "behavior_text": "a3-heal and scorer-b1 exported as text-only Q4_K_M GGUF (no mmproj, --no-mtp), served by llama-server on spark and on an AGX Orin, measured once each",
+      "contract_text": "The best checkpoint(s) are exported as a Q4_K_M GGUF (text-only, no vision mmproj) served by llama-server",
+      "evidence_type": "integration",
+      "strength": "execution",
+      "strength_basis": "quantize stage + measure-final on the GGUF build; edge pages",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-24T09:00:12",
+        "commit": "0ef8747"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 26
+    },
+    {
+      "id": "e8",
+      "obligation_ref": "o8",
+      "test_ref": "scripts/lfm-finetune/scan_bundle.py",
+      "behavior_text": "six bundles scanned: 0 findings each; upload-bundle refuses without scan_bundle.py verify on the exact folder; tests/test_lfm_finetune_hub_upload.py",
+      "contract_text": "Every dataset and model bundle passes a secrets and private-host scan before upload",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "scan.json per bundle with 0 findings; hub_upload/pipeline tests green at the named commit",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-24T09:56:27",
+        "commit": "c531ad6"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 27
+    },
+    {
+      "id": "e9",
+      "obligation_ref": "o9",
+      "test_ref": "tests/test_lfm_finetune_measure.py",
+      "behavior_text": "every results page carries the issue-46 metrics table (calibration, abstention, FP, wrong mutating, latency); tests green",
+      "contract_text": "Measurement grows the metrics issue 46 asks for",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "full suite 4280 passed at the named commit",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-24T09:56:27",
+        "commit": "c531ad6"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 28
+    },
+    {
+      "id": "e10",
+      "obligation_ref": "o10",
+      "test_ref": "/home/spark/lfm-train/work/q46/measure/a3-val-ctx4096.md",
+      "behavior_text": "a3 on validation at 4K (29/32, wm 0, 440 ms) vs 2K (31/32, wm 0, 400 ms), MEASURE_CTX only; the served context is checked by the preflight",
+      "contract_text": "The 2K vs 4K context comparison is run by configuration only",
+      "evidence_type": "integration",
+      "strength": "execution",
+      "strength_basis": "validation-side runs; the 4K run is validation only (test side measured once at 2K)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-24T05:56:00",
+        "commit": "c2c2b08"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 29
+    },
+    {
+      "id": "e11",
+      "obligation_ref": "o11",
+      "test_ref": "docs/benchmarks/2026-09-24-lfm-heldout-a3.md",
+      "behavior_text": "test side re-seeded, issue-39 test entries excluded from training (leakage_check.py); sealed held-out unsealed only in t24; every checkpoint measured once per final set",
+      "contract_text": "Any final (test-side) run is made on a test side that is clean for Qwen",
+      "evidence_type": "integration",
+      "strength": "execution",
+      "strength_basis": "leakage check at assemble; t24/t25 each measured once; no retry of a scored run",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-24T07:08:00",
+        "commit": "db55ce4"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 30
+    },
+    {
+      "id": "e12",
+      "obligation_ref": "o12",
+      "test_ref": "scripts/lfm-finetune/hub_upload.py",
+      "behavior_text": "six repos (tool-jev, tool-jev-gguf, tool-jev-scorer, tool-jev-scorer-gguf, tool-jev-scorer-awq, tool-jev-data) uploaded with private=True, repo_info reports private=True for each, fetched back byte-identical at the uploaded commit with the repository file list equal to the bundle; none made public",
+      "contract_text": "Uploads start private; each repo goes public only after the operator explicitly approves it",
+      "evidence_type": "integration",
+      "strength": "execution",
+      "strength_basis": "hub_upload.py run per repo after the operator approved the upload; private flag and byte-identical fetch-back checked by the script",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-24T10:02:21",
+        "commit": "c531ad6"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 31
+    },
+    {
+      "id": "e13",
+      "obligation_ref": "o13",
+      "test_ref": "tests/test_lfm_finetune_release_bundle.py",
+      "behavior_text": "release_bundle.py --licence-kind apache builds bf16/GGUF/AWQ bundles with the Apache-2.0 LICENSE/NOTICE and the run teachers; refuses a non-Apache teacher; 5 model bundles built, scanned and uploaded",
+      "contract_text": "release_bundle.py is generalised so a Qwen bundle carries Apache-2.0 terms",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "release_bundle tests green (full suite at the named commit) and the real bundles built",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-24T10:02:21",
+        "commit": "c531ad6"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 32
+    },
+    {
+      "id": "e14",
+      "obligation_ref": "o14",
+      "test_ref": "tests/test_lfm_finetune_dataset_bundle.py",
+      "behavior_text": "dataset bundle (--apache-only, --issue 46) lists each teacher with its licence (all Apache-2.0), counts train 1,463 / validation 66 / test 64, refuses held-out by name, uploaded private",
+      "contract_text": "Training-data provenance is documented per record and per teacher so the dataset and model can be published",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "dataset_bundle tests green; real bundle built and uploaded",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-24T10:02:21",
+        "commit": "c531ad6"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 33
+    }
+  ],
+  "deltas": [
+    {
+      "id": "b1",
+      "kind": "amended",
+      "behavior_text": "Track A ships as a3-heal.q4_k_m (a short bf16 heal of a3, then Q4_K_M), not a3 itself; Track A's AWQ build is not shipped",
+      "caused_by": [
+        "d19"
+      ],
+      "evidence_refs": [
+        "e4"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    },
+    {
+      "id": "b2",
+      "kind": "added",
+      "behavior_text": "pipeline.sh measure-heldout stage and -missing-candidate/-exact labels, with an args allowlist, used for the single final run",
+      "caused_by": [
+        "d16"
+      ],
+      "evidence_refs": [
+        "e11"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    },
+    {
+      "id": "b3",
+      "kind": "amended",
+      "behavior_text": "quantized Track B calibration (c35 on the AWQ and GGUF builds) is reported as not measurable; decisions and latency measured",
+      "caused_by": [
+        "d17"
+      ],
+      "evidence_refs": [
+        "e3"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    },
+    {
+      "id": "b4",
+      "kind": "added",
+      "behavior_text": "a3 heal run (1 epoch, lr 5e-5 from a3) re-measured as a new checkpoint on the test side",
+      "caused_by": [
+        "d18"
+      ],
+      "evidence_refs": [
+        "e4"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    }
+  ],
   "supersessions": []
 }
