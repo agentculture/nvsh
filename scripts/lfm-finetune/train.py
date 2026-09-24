@@ -255,6 +255,37 @@ def merge_adapter(base: str, revision: str, adapter: Path, out: Path) -> None:  
     AutoTokenizer.from_pretrained(base, revision=revision).save_pretrained(str(out))
 
 
+#: LoRA target module sets. ``attn-mlp`` is Unsloth's own default list
+#: (attention and MLP projections), passed explicitly so the recipe records
+#: it. ``attn-mlp-gdn`` adds Qwen3.5's Gated-DeltaNet projections: 18 of its
+#: 24 layers are linear attention (``linear_attn.in_proj_*``/``out_proj``),
+#: which the default list never adapts (issue 46, risk r9). Those names occur
+#: only in the language model, never in the vision tower or the MTP head.
+LORA_TARGETS = {
+    "attn-mlp": ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
+    "attn-mlp-gdn": [
+        "q_proj",
+        "k_proj",
+        "v_proj",
+        "o_proj",
+        "gate_proj",
+        "up_proj",
+        "down_proj",
+        "in_proj_qkv",
+        "in_proj_z",
+        "in_proj_a",
+        "in_proj_b",
+        "out_proj",
+    ],
+}
+
+
+def lora_targets(name: str) -> list[str]:
+    if name not in LORA_TARGETS:
+        raise ValueError(f"unknown LoRA targets {name!r}; one of {', '.join(LORA_TARGETS)}")
+    return list(LORA_TARGETS[name])
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--train", required=True, type=Path)
@@ -268,6 +299,13 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--alpha", type=int, default=32)
     parser.add_argument("--batch", type=int, default=8)
     parser.add_argument("--seed", type=int, default=7)
+    parser.add_argument(
+        "--targets",
+        choices=sorted(LORA_TARGETS),
+        default="attn-mlp",
+        help="LoRA target modules: attn-mlp (Unsloth's default) or attn-mlp-gdn (adds the "
+        "Gated-DeltaNet projections, issue 46 r9)",
+    )
     parser.add_argument("--max-length", type=int, default=4096)
     parser.add_argument("--no-merge", action="store_true", help="save the adapter only")
     parser.add_argument(
@@ -305,8 +343,13 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - needs a GP
         args.base, revision=args.revision, max_seq_length=args.max_length, load_in_4bit=False
     )
     model = FastLanguageModel.get_peft_model(
-        model, r=args.rank, lora_alpha=args.alpha, random_state=args.seed
+        model,
+        r=args.rank,
+        lora_alpha=args.alpha,
+        random_state=args.seed,
+        target_modules=lora_targets(args.targets),
     )
+    print(f"train.py: LoRA targets {args.targets}: {', '.join(lora_targets(args.targets))}")
 
     def dataset(path: Path) -> Dataset:
         rows = [tokenize_example(tokenizer, ex, args.max_length) for ex in read_examples(path)]

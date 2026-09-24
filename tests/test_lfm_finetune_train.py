@@ -375,3 +375,40 @@ def test_a_sampling_or_missing_generation_config_is_left_alone() -> None:
     bare = _Model(None)
     module.save_valid_generation_config(bare)
     assert bare.generation_config is None
+
+
+# ---------------------------------------------------------------------------
+# LoRA targets (issue 46, risk r9: Qwen3.5's 18 Gated-DeltaNet layers)
+# ---------------------------------------------------------------------------
+
+
+def test_default_targets_are_unsloths_attention_and_mlp_list() -> None:
+    module = _module()
+    assert module.lora_targets("attn-mlp") == [
+        "q_proj",
+        "k_proj",
+        "v_proj",
+        "o_proj",
+        "gate_proj",
+        "up_proj",
+        "down_proj",
+    ]
+
+
+def test_gdn_targets_add_the_linear_attention_projections() -> None:
+    module = _module()
+    targets = module.lora_targets("attn-mlp-gdn")
+    assert targets[:7] == module.lora_targets("attn-mlp")
+    assert set(targets[7:]) == {"in_proj_qkv", "in_proj_z", "in_proj_a", "in_proj_b", "out_proj"}
+
+
+def test_unknown_targets_are_refused() -> None:
+    module = _module()
+    with pytest.raises(ValueError, match="targets"):
+        module.lora_targets("everything")
+
+
+def test_targets_option_defaults_to_attn_mlp() -> None:
+    module = _module()
+    args = module._parser().parse_args(["--train", "t.jsonl", "--out", "o"])
+    assert args.targets == "attn-mlp"
