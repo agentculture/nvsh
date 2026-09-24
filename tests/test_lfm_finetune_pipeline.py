@@ -2268,6 +2268,11 @@ class HfApi:
         _log("repo_info", repo_id, kwargs)
         return SimpleNamespace(private=True)
 
+    def list_repo_files(self, repo_id, **kwargs):
+        _log("list_repo_files", repo_id, kwargs)
+        root = REMOTE / repo_id
+        return sorted(p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file())
+
 
 def snapshot_download(repo_id, *, local_dir, **kwargs):
     _log("snapshot_download", repo_id, {k: v for k, v in kwargs.items() if k != "token"})
@@ -2496,6 +2501,7 @@ def test_upload_bundle_uploads_privately_and_fetches_back_byte_identical(tmp_pat
         "update_repo_visibility",
         "upload_folder",
         "snapshot_download",
+        "list_repo_files",
         "repo_info",
     ]
     assert calls[0] == ["HfApi", True]

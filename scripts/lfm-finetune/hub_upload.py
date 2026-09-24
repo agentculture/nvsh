@@ -80,6 +80,28 @@ def _scan_bundle():
     return module
 
 
+def check_no_symlinks(bundle: Path) -> None:
+    """Refuse any symlink in *bundle*: scanning and uploading follow links, so one
+    pointing outside the folder (the sealed held-out, a key file) would ship."""
+    links = sorted(p.relative_to(bundle).as_posix() for p in bundle.rglob("*") if p.is_symlink())
+    if links:
+        raise UploadError(f"refusing {bundle}: it holds symlink(s) {', '.join(links)}")
+
+
+def check_inventory(local: Path, remote_files: list[str]) -> list[str]:
+    """Every file the repository holds that the bundle does not, or the reverse.
+
+    The fetched copy's ``.cache/`` is download metadata and is skipped when
+    hashing, so the repository's own file list is what proves nothing extra
+    (a stale ``.cache/held-out.json``, say) is there."""
+    mine = set(digests(local))
+    theirs = set(remote_files)
+    extra = theirs - mine - EXPECTED_REMOTE_EXTRAS  # the Hub may add these on its own
+    problems = [f"{rel}: in the repository but not in the bundle" for rel in sorted(extra)]
+    problems += [f"{rel}: missing from the repository" for rel in sorted(mine - theirs)]
+    return problems
+
+
 def digests(folder: Path, *, skip_cache: bool = False) -> dict[str, str]:
     """``relative POSIX path -> sha256`` for every regular file under *folder*."""
     found: dict[str, str] = {}
@@ -129,6 +151,7 @@ def upload(
         raise UploadError("refusing to upload without FINAL=1 set")
     if not bundle.is_dir():
         raise UploadError(f"{bundle} is not a folder")
+    check_no_symlinks(bundle)
     reason = _scan_bundle().verify(bundle)
     if reason is not None:
         raise UploadError(f"scan_bundle.py verify failed for {bundle}: {reason}")
@@ -157,6 +180,9 @@ def upload(
             repo, repo_type=repo_type, revision=revision, token=token, local_dir=fetched
         )
         problems = compare(bundle, Path(fetched))
+        problems += check_inventory(
+            bundle, api.list_repo_files(repo, repo_type=repo_type, revision=revision)
+        )
         files = len(digests(bundle))
     if problems:
         raise UploadError(

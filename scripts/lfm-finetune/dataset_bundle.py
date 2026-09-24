@@ -445,6 +445,16 @@ def _intro(issue: int, model_repos: list[str] | None) -> str:
     )
 
 
+#: How each issue's arguments were grounded, for the card's Limits section.
+GROUNDING = {
+    39: "- Arguments were grounded against a fixture machine. Two `power_set` modes\n"
+    "  cannot be rendered there, which caps proposals on those entries.",
+    46: "- Arguments were grounded against one fixed snapshot of a DGX Spark (the\n"
+    "  measurement's ground snapshot); values that depend on the machine, such\n"
+    "  as power modes and service names, may differ on another device.",
+}
+
+
 def card(
     counts: dict[str, Any],
     summary: TeacherSummary,
@@ -465,6 +475,7 @@ def card(
     rate = f"{100 * counts['accepted'] / reviewed:.0f}%" if reviewed else "n/a"
     seeded = f"seed {seed}" if seed is not None else "seeded"
     run_log = RUN_LOGS.get(issue, RUN_LOGS[39])
+    grounding = GROUNDING.get(issue, GROUNDING[39])
     if summary.role_teachers:
         teachers = "\n".join(
             f"| {name} | {licence} | {desc} |" for name, licence, desc in teacher_rows(summary)
@@ -573,8 +584,7 @@ above for a variation (empty for a corpus or supplement record).
 
 - The requests are English and short; the operations are those in nvsh's
   table at the time of issue {issue}.
-- Arguments were grounded against a fixture machine. Two `power_set` modes
-  cannot be rendered there, which caps proposals on those entries.
+{grounding}
 - Variations were reviewed by models, not people. The reviewers were shown
   nvsh's list of checks and changes, and every prompt fault found by
   reading samples was fixed before the accepted set was kept (nvsh's

@@ -63,6 +63,13 @@ class FakeHub:
                 hub.calls.append(("repo_info", repo_id, kwargs))
                 return SimpleNamespace(private=hub.private)
 
+            def list_repo_files(self, repo_id, **kwargs):
+                hub.calls.append(("list_repo_files", repo_id, kwargs))
+                root = hub.remote / repo_id
+                return sorted(
+                    p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file()
+                )
+
         self.HfApi = HfApi
 
     def snapshot_download(self, repo_id, *, local_dir, **kwargs):
@@ -162,6 +169,7 @@ def test_upload_is_private_and_the_fetch_back_is_byte_identical(tmp_path, capsys
         "update_repo_visibility",
         "upload_folder",
         "snapshot_download",
+        "list_repo_files",
         "repo_info",
     ]
     assert hub.calls[0] == ("HfApi", True)  # the token came from the named variable
@@ -264,3 +272,35 @@ def test_compare_ignores_the_download_cache_and_a_hub_gitattributes(tmp_path) ->
 def test_the_result_is_json_serialisable(tmp_path) -> None:
     result = _upload(tmp_path, FakeHub(tmp_path / "remote"))
     json.dumps(result)
+
+
+def test_a_symlink_in_the_bundle_is_refused_before_any_hub_call(tmp_path) -> None:
+    """Codex on t27: a link to a file outside the bundle (e.g. the sealed held-out)
+    would otherwise be followed by the scan and the upload."""
+    outside = tmp_path / "held-out-q46.sealed.json"
+    outside.write_text('{"entries": []}')
+    bundle = _bundle(tmp_path)
+    (bundle / "extra.json").symlink_to(outside)
+    hub = FakeHub(tmp_path / "remote")
+    with pytest.raises(ValueError, match="symlink"):
+        _upload(tmp_path, hub, bundle=bundle)
+    assert hub.calls == []
+
+
+def test_an_extra_remote_file_under_cache_fails_the_fetch_back(tmp_path) -> None:
+    """Codex on t27: the download's own .cache/ metadata is skipped when hashing,
+    so the repository's file list is what proves nothing extra is there."""
+    hub = FakeHub(tmp_path / "remote")
+    stale = tmp_path / "remote" / _REPO / ".cache"
+    stale.mkdir(parents=True)
+    (stale / "held-out.json").write_text("{}")
+    with pytest.raises(ValueError, match=r"\.cache/held-out\.json"):
+        _upload(tmp_path, hub)
+
+
+def test_a_bundle_that_ships_its_own_gitattributes_passes_the_inventory(tmp_path) -> None:
+    bundle = tmp_path / "b"
+    bundle.mkdir()
+    (bundle / ".gitattributes").write_text("*.gguf filter=lfs\n")
+    (bundle / "README.md").write_text("x")
+    assert _module().check_inventory(bundle, [".gitattributes", "README.md"]) == []

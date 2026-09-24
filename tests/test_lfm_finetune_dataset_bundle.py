@@ -506,6 +506,19 @@ def test_an_issue_46_card_names_the_models_it_trained_not_issue_39s(tmp_path) ->
     assert "nvsh issue 46" in card
 
 
+@pytest.mark.parametrize(("issue", "fixture_line"), [(39, True), (46, False)])
+def test_the_grounding_limit_matches_the_issue(tmp_path, issue, fixture_line) -> None:
+    """Issue 39 grounded against a fixture machine where two power_set modes
+    could not be rendered; issue 46 grounded against one fixed snapshot."""
+    inputs = _inputs(tmp_path)
+    inputs["issue"] = issue
+    _module().build(**inputs)
+    card = (tmp_path / "bundle" / "README.md").read_text()
+    assert ("cannot be rendered there" in card) is fixture_line
+    if issue == 46:
+        assert "one fixed snapshot" in card
+
+
 def test_main_takes_several_rejected_files_the_issue_and_model_repos(tmp_path, capsys) -> None:
     inputs = _inputs(tmp_path)
     second = tmp_path / "more-rejected.jsonl"
