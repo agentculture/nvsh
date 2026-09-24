@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/). This project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.19.0] - 2026-09-24
+
+### Added
+
+- Qwen3.5-0.8B Tool-Jev fine-tune tooling for issue 46 under `scripts/lfm-finetune/`: clean-slate re-review with per-role temperature and reasoning effort, `calibrate_reviewer.py`, `leakage_check.py`, LoRA targets including Gated-DeltaNet (`--targets attn-mlp-gdn`), a verified text-only merge, the Track B candidate scorer (`train-scorer`), exact calibration for both tracks, quantized-build measurement (`<run>.awq` via vLLM, `<run>.q4_k_m` via a native llama-server), `measure-heldout`, and release/dataset bundles with private upload and byte-identical fetch-back (`bundle`, `bundle-dataset`, `upload-bundle`, `hub_upload.py`).
+- `docs/qwen-tool-jev-finetune.md`: the step-by-step Qwen recipe, a symptom -> cause troubleshooting table, the pitfall ledger (P1-P77) and decisions; `docs/benchmarks/2026-09-24-qwen-tool-jev-comparison.md` with the comparison table and the next-iteration data recommendations; every final, held-out, quantized and edge results page.
+- Six private Hugging Face repos (Apache-2.0): Track A `jetson-ai-lab/qwen3.5-0.8b-nvsh-tool-jev` (+ `-gguf`), Track B `-tool-jev-scorer` (+ `-gguf`, `-awq`) and the data set `-tool-jev-data`.
+
+### Changed
+
+- Final results on the clean test side (each checkpoint once): Track A a3 32/32 right proposals (stock 2/32), shipped as a3-heal.q4_k_m (32/32, 245 ms); Track B scorer-b1 27/32 with 0 wrong mutating proposals (33 ms as Q4_K_M, 109 ms on an AGX Orin). Neither clears every bar: escalation recall is 11/15 for both (bar 80%) and Track B's ECE is 0.132 (bar 0.10). This is part of #46; it closes neither #39 nor #46.
+- No nvsh runtime change: `git diff main -- nvsh/` is empty.
+
+### Fixed
+
+- measure.py labels may contain `_`, and its served-context preflight reads llama-server's `/props` n_ctx (localhost only, no redirects).
+- quantize.py converts with `--no-mtp` when a merged checkpoint declares an MTP head it has no weights for.
+
 ## [0.18.0] - 2026-09-23
 
 ### Added
