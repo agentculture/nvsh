@@ -1500,6 +1500,30 @@ and the commit on `spec/qwen-tool-jev-issue-46`.
   `docker stats` for what already holds GPU memory before training and
   measuring on the same box, and stop an unused lobe (with the operator's
   sign-off) rather than letting jobs overlap into an OOM.
+- **P65. A 4K measurement can fail to start for a reason that looks like
+  P64 but is not an out-of-memory error at all.** `measure-val` at
+  `MEASURE_CTX=4096` failed at server start with "Engine core
+  initialization failed"; the full server log
+  (`measure/<label>.serve.log`, kept since f25/P63) ended with `ValueError:
+  max_num_seqs (256) exceeds available Mamba cache blocks (254)`. *Found:*
+  the lead, reading the full serve log's actual root-cause line rather than
+  assuming P64's pattern from the start-up failure alone. *Root cause:* at
+  4K context with `MEASURE_GPU_FRACTION=0.08`, vLLM's CUDA-graph memory
+  estimate (about 4.95 GiB) leaves only about 1.59 GiB for the KV/Mamba
+  cache — 254 blocks — which falls below the default `max_num_seqs` of 256;
+  each Gated-DeltaNet decode sequence needs one Mamba cache block, so 256
+  concurrent sequences need at least 256 blocks. This is a cache-sizing
+  shortfall, not memory pressure from another process — **distinguish it
+  from P64 by reading the full serve log's own root-cause line** rather
+  than the generic "Engine core initialization failed" line, which both
+  failures share. *Fix:* raise `MEASURE_GPU_FRACTION` to 0.12 for a 4K run
+  (vLLM's own suggested value is 0.1207); the fraction only changes how
+  much memory is reserved for the cache, never the served model's outputs.
+  Because the env file overrides an exported variable of the same name
+  (lapse l3's mechanism; unlike `MEASURE_CTX`, `MEASURE_GPU_FRACTION` is not
+  made export-first), set it in a per-run env file rather than exporting it
+  before the call — the same per-run env file pattern as step 10's
+  `TRAIN_ARGS`.
 
 ### Found by reading code against the run log
 
@@ -1894,6 +1918,7 @@ above.
 | A tuned checkpoint scores exactly like stock — 0/32 right proposals, identical latency, as if nothing had been trained | The merge loaded a different model class than unsloth trained, so PEFT matched no adapter key and only printed a warning ("Found missing adapter keys"), not an error; the merged file is bit-identical to the base | Before trusting any merge, diff a merged weight against the base and confirm it changed, and confirm 0 missing-key warnings; `train.py`'s merge now refuses to finish otherwise | lapse l4, P62 |
 | vLLM refuses to load a merged checkpoint: `There is no module or parameter named 'language_model' in Qwen3_5Model` | An earlier merge attempt saved into the vision-language class with doubled key prefixes (`model.language_model.language_model.*`) that vLLM's loader rejects | Merge into the text-only class with the adapter keys mapped onto its parameter names instead (f24) | P62 |
 | A measurement server fails to start ("Engine core initialization failed") or dies mid-run (a `tier_error`, "server unreachable") while something else is training | A GPU allocation failed on unified memory: training sinks *free* memory to a few GiB even while *available* stays high (page cache), and GB10 does not evict page cache to satisfy a GPU allocation the way it would evict it for ordinary RAM pressure | Measure only when nothing is training on that machine's GPU; check what else holds GPU memory (`nvidia-smi --query-compute-apps`) and stop anything unused first | P63, P64 |
+| A 4K measurement also fails to start with "Engine core initialization failed", but the *full* serve log ends with `ValueError: max_num_seqs (256) exceeds available Mamba cache blocks (254)` rather than an `NV_ERR_NO_MEMORY` line | Not memory pressure from another process: at 4K, the default `MEASURE_GPU_FRACTION` leaves too little room for the KV/Mamba cache to cover the default `max_num_seqs`, since each Gated-DeltaNet decode sequence needs one Mamba cache block | Read the full serve log's own root-cause line to tell this apart from P64 at a glance; raise `MEASURE_GPU_FRACTION` (about 0.12 for a 4K run) in a per-run env file — an exported value alone is not enough, since only `MEASURE_CTX` is export-first | P65 |
 | Training crashes with `TypeError: string indices must be integers` (or similar) inside `apply_chat_template` | `FastLanguageModel.from_pretrained` returns a processor (`Qwen3VLProcessor`), not a plain tokenizer, for Qwen3.5; its chat template expects structured content, not the plain strings the dataset builder renders | Reach the processor's inner `.tokenizer` for rendering and encoding instead of the processor itself (f21, `text_tokenizer()`) | P60 |
 | A run recorded as "measured at 4K" actually served at `--max-model-len 2048` (visible in the server's own record) | A value set in the sourced env file silently overrode an exported shell variable of the same name | Export the variable and confirm the served model's reported `max_model_len` matches `--ctx` before trusting a result; the preflight now refuses a mismatch outright | lapse l3, P54 |
 | A served Track B scorer reports ECE/Brier as not available, with 0 lines carrying a complete label distribution | The other candidate labels' logprobs fell outside vLLM's returned top-k, so the result is marked incomplete and is never renormalised over a partial set | Score calibration with `--scorer in-process` instead of `--scorer served` (the two still agree on the actual decisions) | r8, d15 |
