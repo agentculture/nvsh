@@ -25,8 +25,9 @@
 #   train <name> [nvsh|skills]   train, merge, stage into HF_CACHE as REPO
 #                         (a training stage: runs under TRAIN_MEMORY_MAX, mem.log); writes
 #                         a generation_config.json into <run>/merged (deviation d3)
-#   train-scorer          train the acceptance-margin scorer on split.py's own
-#                         train/val sides (train_scorer.py, a training stage)
+#   train-scorer [name]   train the Track B scorer on assemble's frozen training set
+#                         (data/train-augmented.json) with split.py's val side
+#                         (train_scorer.py, a training stage; runs/scorer[-name])
 #   measure-val <name> [args]    validation run with per-entry details (iterate on
 #                         this)
 #   measure-final <name> [args]  a final run on the test side
@@ -321,9 +322,14 @@ case "$STAGE" in
     awk '/staged/{print $NF}' "$run/stage.log" > "$run/revision"
     ;;
   train-scorer)
-    run="$WORK/runs/scorer"; mkdir -p "$run"
+    # The same frozen, leakage-filtered set Track A renders from (issue 46:
+    # both tracks share one dataset; the raw split still holds the issue-39
+    # test entries and a duplicate of a test entry).
+    data="$WORK/data/train-augmented.json"
+    [ -s "$data" ] || die "no $data; run assemble first"
+    run="$WORK/runs/scorer${1:+-$1}"; mkdir -p "$run"
     # shellcheck disable=SC2086
-    run_capped "$run" "$TRAIN_PY" "$HERE/train_scorer.py" --train "$WORK/splits/train.json" \
+    run_capped "$run" "$TRAIN_PY" "$HERE/train_scorer.py" --train "$data" \
       --val "$WORK/splits/val.json" --out "$run" --base "$BASE" --revision "$BASE_REV" \
       ${TRAIN_SCORER_ARGS:-}
     ;;

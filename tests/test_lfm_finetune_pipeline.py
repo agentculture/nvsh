@@ -1154,3 +1154,15 @@ def test_assemble_filters_to_the_split_and_checks_leakage(tmp_path: Path) -> Non
     assert str(protected) in protected_args
     [(_, build)] = pipe.calls("build_dataset.py")
     assert _option(build, "--split") == [str(pipe.work / "data" / "train-augmented.json")]
+
+
+def test_train_scorer_trains_on_the_assembled_shared_dataset() -> None:
+    """Issue 46: Track B must train on the same frozen, leakage-filtered set as
+    Track A (data/train-augmented.json), never the raw split, which still holds
+    the issue-39 test entries and a duplicate of a test entry."""
+    text = _PIPELINE.read_text(encoding="utf-8")
+    block = text[text.index("  train-scorer)") : text.index(";;", text.index("  train-scorer)"))]
+    assert 'data="$WORK/data/train-augmented.json"' in block
+    assert '--train "$data"' in block
+    assert "splits/train.json" not in block
+    assert "run assemble first" in block
