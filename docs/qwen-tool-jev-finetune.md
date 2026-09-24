@@ -13,11 +13,11 @@ hit and its fix, and the steps to reproduce the run.
 
 **Status: in progress, 2026-09-24.** The tooling is built and reviewed, the
 spikes are done, the split is re-seeded, the stock baseline is measured on
-validation, and the reviewer-B re-review is running at its final settings.
-Nothing has been trained yet. Steps not yet run are marked *(not yet run)*,
-and anything not checked is marked *(unverified)* or listed under
-[Not verified yet](#not-verified-yet). The dated [run log](#run-log-issue-46)
-at the end records each step as it happens.
+validation, the training data is frozen, and both tracks have trained and
+been measured on validation at least once. Steps not yet run are marked
+*(not yet run)*, and anything not checked is marked *(unverified)* or listed
+under [Not verified yet](#not-verified-yet). The dated
+[run log](#run-log-issue-46) at the end records each step as it happens.
 
 **Licences.** The base, `Qwen/Qwen3.5-0.8B`, is Apache-2.0. Every teacher
 model in the data pipeline is Apache-2.0 once reviewer B is re-run (see
@@ -26,36 +26,37 @@ are CC-BY-4.0 and are used as a test set only; nothing trained on them is
 published here. Training happens on development machines. **nvsh itself
 never trains and never uploads.**
 
-## Where the run stands (2026-09-24, about 03:00)
+## Where the run stands (2026-09-24, about 07h30)
 
 - **Done:** the tooling is complete and live-checked. The sealed held-out
-  set is done: 69 entries, sha256 `5eb650f9...`. t21, the stock baseline on
-  validation, is done (numbers in [Reproduce it, step
-  9](#9-stock-baseline-t21-done-on-validation)).
-- **Running:** t18, a clean-slate re-review at the fixed settings (thinking
-  on, temperature 0.2, `reasoning_effort` xhigh, 900 s timeout, 2 workers),
-  started 2026-09-23 ~22:50 over all 1,176 candidates. About 935 of 1,176
-  done, about 97% accepted so far (up from 86% before the prompt fix in
-  d10). ETA was about 3 hours from the start.
-- **Prepared, not yet run:** t19, augmenting the 43 train-side sources that
-  are not old issue-39 test entries (22 operation, 12 explain, 9 escalate;
-  258 variations at 6 per source), decided by reviewer B alone (d11);
-  leakage checks and a stricter `assemble` are built (d14, branch
-  `agent/q46-f17`, under review, not yet merged into this branch).
-- **Also done since the last update:** t20, spark2 re-synced (versions
-  identical to spark's, see [Training environment](#1-training-environment-spark-and-spark2));
-  t21, the stock baseline on validation (2K and 4K) and the Jetson skills
-  eval at `MEASURE_CTX=8192` (numbers below); t22, a `--targets
-  attn-mlp-gdn` option added to `train.py` for the linear-attention LoRA
-  comparison (plan risk r9), also on `agent/q46-f17`.
-- **Next, data:** run t19 once its branch merges, then filter and exclude
-  (the new validation and test sides, issue 39's old test side, the
-  held-out texts, the sealed held-out), assemble, scan, freeze with hashes,
-  and copy to spark2.
-- **Then, models:** Track A on spark and Track B on spark2; one final run
-  per checkpoint plus Track A's exact calibration; quantization; the edge
-  check on AGX Orin; a private upload (with the operator's approval); the
-  report; and a PR ("part of #46").
+  set is done: 69 entries, sha256 `5eb650f9...`. t18, the clean-slate
+  re-review, is done (1,042 of 1,176 accepted). t19, augmenting the 43
+  train-side sources without stored variations, is done and the training
+  data is **frozen** (1,463 examples; decision c40). t20, spark2 re-sync, is
+  done. t21, the stock baseline on validation, is done (generative and exact
+  scorer). t18-t21 numbers are in [Reproduce it, steps
+  5-9](#5-re-review-with-reviewer-b).
+- **Also done:** t22 (Track A `--targets attn-mlp-gdn` LoRA-target option)
+  and t23 (Track B measurement, merge and staging) have both trained and
+  measured at least one checkpoint each on validation: Track A's `a1`
+  (attn-mlp) and `a2` (attn-mlp-gdn) on spark, Track B's `b1` (all-linear
+  LoRA) on spark2, plus Track B's exact in-process calibration (d15). See
+  [Reproduce it, steps 10-11](#10-train-track-a-on-spark-a1-a2-done-a3-a4-running).
+- **Running:** t22/t23 continue with three more runs: `a3` (a2 + 5 epochs)
+  and `a4` (a2 + rank 32/alpha 64) on spark, `b2` (b1 + 5 epochs) on spark2.
+  Selection is on validation only, in this order: no wrong mutating
+  proposals first, then abstention, then right proposals (r9).
+- **Not yet started:** t24, the single final run (test side, held-out set,
+  missing-candidate slice, once per checkpoint, stock included); t25,
+  quantize and heal; the edge check on AGX Orin; a private upload (with the
+  operator's approval); the report; and a PR ("part of #46").
+- Along the way, three pipeline bugs cost real time and are recorded as
+  ledger entries P56-P63 and lapse l4 below: a leakage-check keying bug
+  (fixed before merge), Track B training on the wrong (unfrozen, un-augmented)
+  file, and — the most serious — `a1`/`a2` first being merged and measured
+  as bit-identical to the untuned base model, because unsloth trains the
+  vision-language model class while the merge loaded the text-only class and
+  PEFT matched no adapter key, only warned.
 
 ## What "successful" means
 
@@ -252,8 +253,22 @@ decision.
   identical to a test entry inside the 301-entry train split, plus 7
   re-reviewed variations matching protected text (2 against the sealed
   held-out, 2 against validation, 1 against test, 2 against issue-39's old
-  test side). *Commit:* `4580c06`, on branch `agent/q46-f17`, under review
-  and not yet merged into this branch.
+  test side). *Commit:* `4580c06`, then Codex found `leakage_check.py` keyed
+  protected files by basename (so the new split's `test.json` and issue 39's
+  `test.json`, both in `PROTECTED_EXTRA`, collapsed into one file), filtered
+  by id (which could drop unrelated rows sharing an id) and passed missing or
+  null text unchecked; fixed to key by path, filter by row index and exit 2
+  on missing text (`6ad2ab3`, ledger P56). *Merge:* `9b6e559` (`f17`).
+- **d15, Track B calibration via the exact in-process scorer.** The served
+  scorer returned no complete label distribution on any of the 66 validation
+  entries: the fine-tuned scorer's other label logprobs fall outside vLLM's
+  top 22 returned logprobs (risk r8), and the harness correctly refuses to
+  renormalise a partial top-k result rather than report a distorted one.
+  Track B's calibration (ECE, Brier) is therefore reported from the
+  `--scorer in-process` run, not the served run; the two runs' *decisions*
+  and latency still come from the served run, and agreed with the in-process
+  run entry for entry on `b1`. *Merge:* `b4eeed6` (`f22`); recorded in
+  `673ccb5`.
 
 ### Quantization plan
 
@@ -343,8 +358,36 @@ from issue 39 (1,195 accepted, 525 rejected) were all train-side under seed
 - The rest have sources now on validation or test. They are dropped, never
   promoted to those sides. `merge_variations.py` used to raise on them;
   `--filter-to-split` now drops and counts them (ledger P24).
-- **95 new train-side sources** have no variations yet. They are augmented by
-  the same all-Apache pipeline *(not yet run)*.
+- **95 new train-side sources** had no variations yet: 52 are old issue-39
+  test entries, already excluded from training; the remaining **43** were
+  augmented by the same all-Apache pipeline (t19, done — 258 variations, 229
+  accepted, decided by reviewer B alone per d11).
+
+**The frozen training set** (decision c40; any later change is a recorded
+deviation): 1,463 rendered examples from 262 sources (248 original plus 14
+supplement) and 1,201 variations — propose 725, escalate 357, explain 381,
+all 16 operations covered (27-91 each):
+
+| File | sha256 |
+|---|---|
+| `splits/train.json` | `0425a5754f2adfdbdb9d7e20d6d02596f60fc6001ce848bd8cc8c84e7ddb60ab` |
+| `splits/val.json` | `6e4c625ccaecfa4f73867542634dc0eb2934bb9bbede7e7406e2f4140baf7dd3` |
+| `splits/test.json` | `17add7ba8acb918edb8cfddf8e4f1e6675f294673a1d55f0e963cb146bb29527` |
+| `data/train-augmented.json` | `910a6224585e739eac6bc2ea6faed415b3fed52b2ccf7ed997746b7620bf5fc9` |
+| `data/nvsh-train.jsonl` | `47b6e7b031b5cafdffb086f3ed804cfd86d6b56fc3fd39822d98b5c7bcdd580d` |
+| `data/leakage.json` | `6fd8e50148a31d354118c6a1f600eb668692bdbf63f9d0aed56908b6e053092a` |
+| `ground-snapshot.json` | `0d79c8fe63cef6a9b2e38a1719d173d59c4e793eed5b9ca3fe7b335148dc533b` |
+| `aug/nvsh-accepted.jsonl` | `9b2902e2e2849dbdd205d0a70a937731b7c6470468a908334d4453a4fe64f39f` |
+| `aug/rereview-accepted.jsonl` | `27b2010834b508acceb549070eca585e9636c2cc03cfe6350bc895c270ef2b38` |
+| `aug/rereview-rejected.jsonl` | `7692af9a1f91a8b63984ecec04c09b65791adfbdc9c7530aa5adbe3bbc42b830` |
+| `aug/new43-accepted.jsonl` | `8f6be53118f47badd714ba8ffd7179b1f609699c002d86141b985d2a66efea8a` |
+| `aug/new43-rejected.jsonl` | `f29ce96ffc28476edd4173fd6b4e9c11c6fcdc9332d960225ff7634187ce6091` |
+| `skills/tools.json` | `6948a39e9072ddcad0d2d79c69308b7f3cb4e03e116e3701e7a2b496849a4190` |
+| `skills/test.jsonl` | `44d3aa783c0cd332f697606aeb6d83c7b55958f9eb8802f254011a1faedcfca0` |
+
+All 8 files that matter for training (the three splits, `train-augmented.json`,
+`nvsh-train.jsonl`, `ground-snapshot.json` and the two skills files) were
+copied to spark2 and verified byte-identical.
 
 ### The teacher pipeline
 
@@ -565,7 +608,7 @@ grant run --inject NVSH_GATEWAY_KEY=<secret> -- \
   $P --env qwen.env rereview --workers 2
 ```
 
-### 6. Augment the new train sources *(not yet run)*
+### 6. Augment the new train sources (t19, done)
 
 Only the 43 train-side sources without a stored variation and without a
 matching issue-39 test entry are augmented (d14); the other 52 of the 95 are
@@ -585,7 +628,12 @@ without touching `assemble`'s output. `--decide-by reviewer_b` records both
 verdicts and `decided_by` on every new record, so the two reviewers' outputs
 stay comparable even though only one decides.
 
-### 7. Assemble and freeze *(not yet run)*
+This run used `run-augment-new43.sh` over the 43 sources and produced 258
+variations: 229 accepted by reviewer B plus the deterministic guards, 29
+rejected; reviewer A alone would have rejected 60 of the 229 (ledger P55, the
+reason d11 exists). 0 errors, 0 retries, about 70 minutes.
+
+### 7. Assemble and freeze (done)
 
 ```bash
 $P --env qwen.env assemble
@@ -601,6 +649,27 @@ the Qwen template. After this the data is frozen; any later change is a
 recorded deviation (decision c40). `leakage_check.py` can also be run by
 hand, printing counts and matching ids only (never text), so it is safe to
 run against the sealed held-out before the final run:
+
+This run's assemble: `nvsh-accepted.jsonl` (the re-review's accepts plus
+t19's accepts) held 1,271 records with 0 duplicate ids. `merge_variations`
+folded 315 sources (301 split plus 14 supplement) into 1,206 kept variations,
+59 duplicates and 6 exact protected matches excluded, 0 off-split.
+`leakage_check` then dropped 58 of the remaining 1,521 candidates (53 exact
+matches against issue 39's old test split, 2 against test, 2 against
+validation, 1 against the sealed held-out; 53 exact, 5 near-duplicate).
+Rendering produced **1,463 training examples**: 262 sources (248 original
+plus 14 supplement), 1,201 variations; propose 725, escalate 357, explain
+381; all 16 operations covered (27-91 examples each). The frozen file's
+hashes are under [Variations and the re-split](#variations-and-the-re-split).
+The frozen set was copied to spark2 and verified byte-identical (8 files:
+the three splits, the training file, `nvsh-train.jsonl`, the ground snapshot
+and the two skills files).
+
+The Jetson skills contamination scan (`jetson_skills` build) took hours on
+the first pass over the frozen file, because every rendered training string
+repeats the same long system prompt (the tool table); f18 deduplicates
+training strings before scanning, giving the identical result by
+construction in about 6 seconds (104 evals, clean). *Merge:* `b869c5d`.
 
 ```bash
 python scripts/lfm-finetune/leakage_check.py --train "$WORK/data/nvsh-train.jsonl" \
@@ -696,6 +765,20 @@ overall, 14 of 34 skill-named, 28 of 70 not-named; by area, bsp 16 of 48,
 device 26 of 56. Outcomes: 42 correct, 27 wrong_skill, 31 no_call, 4
 several_calls, 0 call_error, 0 think blocks.
 
+**Stock as scorer, exact (t23), on validation.** The same stock checkpoint,
+scored the Track B way instead of generatively (`--scorer in-process`), for
+comparison against both tracks:
+
+```bash
+$P --env qwen.env measure-val stock --scorer in-process
+```
+
+21 of 32 right proposals, abstain recall 1 of 16, precision (strict) 100%,
+false-positive tool calls 31 of 34, ECE 0.164, Brier 0.765, warm 81 ms. This
+is the "stock (exact scorer)" row in the validation table under [Where the
+run stands](#where-the-run-stands-2026-09-24-about-07h30) and repeated in the
+[run log](#2026-09-24-0530-0720-t22t23-first-runs-three-pipeline-bugs-lapse-l4).
+
 **A dead server fails the run** (P49). Before the first entry, `measure.py`
 checks `GET <base_url>/models` and requires the served model name. Any tier
 error, or a scorer call error on Track B's served path, fails the run with
@@ -704,7 +787,7 @@ for debugging). `--allow-tier-errors N` accepts up to N and prints the count
 at the top of the page. A scorer's normal "incomplete" top-k result is not an
 error.
 
-### 10. Train Track A on spark *(not yet run)*
+### 10. Train Track A on spark (a1, a2 done; a3, a4 running)
 
 ```bash
 $P --env qwen.env train a1
@@ -735,16 +818,66 @@ $P --env qwen.env measure-val a1
 $P --env qwen.env measure-val a1-gdn
 ```
 
-Compare the two on validation only, per r9. (`agent/q46-f17`, not yet
-merged into this branch, and unsloth accepting the GDN target names is
-verified only at the first real training run — see [Not verified
-yet](#not-verified-yet).)
+Compare the two on validation only, per r9. Unsloth accepting the GDN target
+names is now verified: a training run with `--targets attn-mlp-gdn` produces
+a distinct merged checkpoint from `attn-mlp` (see the merge note below).
 
-### 11. Train Track B on spark2 *(not yet run)*
+**Per-run env files, because the env file overrides an exported
+variable.** Each recipe change (epochs, rank/alpha) is its own small env
+file that sources the base `qwen.env` and then only overrides `TRAIN_ARGS`
+— *not* an exported shell variable, because (as in step 9's `MEASURE_CTX`
+lapse, l3) a value set in the sourced env file wins over one exported
+before the call:
+
+```bash
+# a2.env
+source qwen.env
+TRAIN_ARGS="--targets attn-mlp-gdn --epochs 3 --lr 2e-4 --lora-r 16 --lora-alpha 32 --seed 46"
+```
+
+```bash
+$P --env a2.env train a2
+```
+
+The real recipes trained this way: `a1` = `--targets attn-mlp`, `a2` =
+`--targets attn-mlp-gdn`, both 3 epochs, lr 2e-4, rank 16/alpha 32, batch 8,
+seed 46 — 549 steps, about 26-31 minutes each on spark, training loss about
+0.001 at the end (`train_loss` 0.091). `a3` = `a2` + 5 epochs; `a4` = `a2` +
+rank 32/alpha 64 (both in progress).
+
+**The merge must be verified, not assumed (lapse l4).** unsloth trains the
+vision-language model class (`Qwen3_5ForConditionalGeneration`); its LoRA
+adapter keys live under `model.language_model.*`. The first `a1`/`a2` merges
+loaded the **text-only** `Qwen3_5ForCausalLM` class instead, so PEFT matched
+no adapter key and silently emitted only a warning — the merged checkpoint
+came out bit-identical to the untuned base, and both were measured on
+validation (0 of 32, indistinguishable from stock) before anyone opened the
+merged weights to check. `train.py`'s merge now (f24): maps the VL adapter
+keys onto the text-only model's parameter names, replaces unsloth's
+`target_modules` regex (which misses `linear_attn` there) with the adapted
+module names, and refuses to finish unless every adapter tensor loaded and
+at least one merged weight actually changed from the base. `a1` merges 192
+tensors this way, `a2` 372. An earlier attempt (f23) merged into the VL
+class correctly but wrote doubled key prefixes
+(`model.language_model.language_model.*`,
+`model.language_model.visual.*`) that vLLM cannot load; f24 replaced it.
+**Because of this, the tuned Track A checkpoints are text-only
+(`Qwen3_5ForCausalLM`) while stock is the full vision-language
+`Qwen3_5ForConditionalGeneration`** — a fact to carry into any memory or
+latency comparison between them (see [Not verified
+yet](#not-verified-yet)).
+
+### 11. Train Track B on spark2 (b1 done, b2 running)
+
+spark2 needs its own env file: its own work-directory paths, its own private
+`HF_HOME` (step 1: the shared cache is root-owned), `HF_HUB_OFFLINE=1`, and
+`uv` called by its full path since it is not on a non-interactive `ssh`'s
+`PATH` (ledger P33). Copy `qwen.env` to `spark2.env` and edit those values
+before running anything on spark2.
 
 spark2 serves other models next to the trainer; their containers must not
 restart. Three limits apply, because on GB10 the systemd cap does not cover
-GPU allocations (P34). Set them in `qwen.env`:
+GPU allocations (P34). Set them in `spark2.env`:
 
 ```bash
 TRAIN_MEMORY_MAX=24G            # systemd RAM + swap cap
@@ -764,12 +897,44 @@ NVSH_TRAIN_GPU_MEMORY_GB=<gb>   # per-process GPU budget; empty = no per-process
 what a child process will see before training, then train:
 
 ```bash
-$P --env qwen.env status     # prints: caps (as a child sees them): max=... floor=... watchdog=...s gpu_gb=...
-$P --env qwen.env train-scorer
+$P --env spark2.env status     # prints: caps (as a child sees them): max=... floor=... watchdog=...s gpu_gb=...
+$P --env spark2.env train-scorer b1
 ```
 
-The floor and budget values for the real Track B run are not chosen yet.
-If the watchdog trips, `run_capped` returns 3 and `mem.log` records why.
+`train-scorer <name>` now trains on `data/train-augmented.json` (the frozen
+1,463-example file from step 7), not the raw split — f19 fixed a bug where it
+trained on `splits/train.json`, which still held the 52 issue-39 test entries
+and a duplicate of a test entry, and none of the variations (ledger P58).
+Like `train`, it then merges (`train.py --merge-only`), writes the greedy
+`generation_config.json` and stages the result as `$REPO-scorer` with a
+revision (f20).
+
+The real run, `b1` (all-linear LoRA, same recipe as `a1`/`a2`: 3 epochs, lr
+2e-4, rank 16/alpha 32, batch 8, seed 46): 26 minutes on spark2, trainer's own
+validation 60 of 66 (90.9%), mean confidence 0.957; spark2 kept about 25 GB
+available throughout and the serving containers (model-gear) were untouched.
+`b2` = `b1` + 5 epochs (in progress).
+
+**Measuring a served Track B run needs the training stack, not the repo's
+own venv.** The first served-scorer measurement runs exited 2 with every
+metric "not measured" and no reason: the repo's `uv` environment has no
+`transformers`, the tokenizer was being loaded from the served model name
+instead of the model directory, and a scorer report had no start-up row to
+explain the failure. f22 fixed all three: `--tokenizer <model dir>`, the
+training venv's site-packages on `PYTHONPATH` for any `--scorer` run, and
+every run failure printed to stderr.
+
+```bash
+PYTHONPATH=<training site-packages> \
+$P --env spark2.env measure-val b1 --scorer served --tokenizer "$WORK/runs/scorer-b1/merged"
+$P --env spark2.env measure-val b1 --scorer in-process
+```
+
+Measure both `--scorer served` (real decisions and latency) and `--scorer
+in-process` (exact calibration, since the served scorer cannot return a
+complete label distribution — d15) under separate labels; both are needed
+for the full picture on one checkpoint. If the watchdog trips, `run_capped`
+returns 3 and `mem.log` records why.
 
 ### 12. Final measurement *(not yet run)*
 
@@ -1377,6 +1542,105 @@ committed now (`3df700c`).
   verdict is still recorded, so the comparison is not lost, but it no longer
   gates acceptance. *Commit:* `ed01957`, recorded in `580675a`.
 
+### Found during t19 assembly and the first t22/t23 training runs
+
+- **P56. `leakage_check` collapsed two different `test.json` files into
+  one.** `leakage_check.py` keyed its protected files by basename, so the
+  new split's `test.json` and issue 39's old `test.json` — both listed in
+  `PROTECTED_EXTRA` — collapsed onto a single entry, and filtering by id
+  could drop unrelated rows that happened to share an id; missing or null
+  text also passed through unchecked. *Found:* Codex, reviewing the d14
+  tooling before merge. *Fix:* key protected files by path, filter by row
+  index, and exit 2 on missing text. *Commit:* `6ad2ab3`, merged in
+  `9b6e559` (`f17`).
+- **P57. The skills contamination scan re-scanned the same text thousands
+  of times.** Every rendered training example repeats the same long system
+  prompt (the tool table), so a scan over all 1,463 rendered rows re-ran the
+  sliding-window contamination check on that identical prompt text on every
+  row, taking hours to finish (see [Ideas forward](#ideas-forward) item 12,
+  the underlying `build_bodies` cost). *Found:* the lead, timing the first
+  full-file scan. *Fix (f18):* deduplicate training strings before scanning;
+  by construction this gives the identical result. Verified: clean, 104
+  evals, about 6 seconds. *Commit:* `f6e8bb7`, merged in `b869c5d`.
+- **P58. Track B trained on the wrong, un-augmented file.** `train-scorer`
+  trained on the raw `splits/train.json` — which still held the 52 old
+  issue-39 test entries (already excluded from training) and a duplicate of
+  a test entry, and held none of t18/t19's variations. *Found:* the lead,
+  reading `train_scorer.py`'s input path against the frozen data flow before
+  the first Track B run. *Fix (f19):* `train-scorer` trains on
+  `data/train-augmented.json` (all 1,463 frozen examples) and refuses to run
+  before `assemble` has produced it; the run name is now optional
+  (`runs/scorer-<name>`). *Commit:* `a9d7c04`, merged in `5b93e90`.
+- **P59. `train-scorer` couldn't merge without repeating `--train`.** The
+  documented merge-only form of `train.py --merge-only` still required
+  `--train`, which meant it could not be called the way the docs described.
+  *Found:* the lead, live-running the documented Track B merge command.
+  *Fix (f20):* `train-scorer` now runs `train.py --merge-only` directly
+  after training, writes the `generation_config.json` and stages the result
+  as `$REPO-scorer` with a revision, the same as `train` does for Track A;
+  `--merge-only` no longer requires `--train`. *Commit:* `75d385b`, merged
+  in `8141fad`.
+- **P60. unsloth's Qwen3.5 processor crashed on the plain-string training
+  format.** `FastLanguageModel.from_pretrained` returns a `Qwen3VLProcessor`
+  for Qwen3.5, not a plain tokenizer; its chat template expects structured
+  content parts and raised on the plain strings `build_dataset.py` renders.
+  *Found:* the lead, first live training attempt for `a1`. *Fix (f21):* a
+  new `text_tokenizer()` reaches the processor's inner `.tokenizer` for
+  rendering and encoding. Verified live: the same chat template (7,755
+  characters) and identical token ids as calling `AutoTokenizer` directly on
+  a real training example (1,436 tokens). *Commit:* `bb87232`, merged in
+  `e05563f`.
+- **P61. A served Track B measurement failed silently.** Every served-scorer
+  validation run exited 2 with every metric reported "not measured" and no
+  stated reason. Cause: the repository's own `uv` environment has no
+  `transformers` installed, the tokenizer was being loaded from the served
+  model *name* rather than the model directory, and a scorer report carried
+  no start-up row to explain a failure at all. *Found:* the lead, first live
+  `--scorer served` run against `b1`. *Fix (f22):* `--tokenizer <model dir>`
+  is now required for a scorer run, the training venv's site-packages must
+  be on `PYTHONPATH` for any `--scorer` call (documented in step 11), and
+  every run failure is printed to stderr instead of being swallowed.
+  *Commit:* `1deb5b6`, merged in `b4eeed6`.
+- **P62 (lapse l4). Track A's first merged checkpoints were bit-identical to
+  the untuned base, and were measured that way before anyone noticed.**
+  unsloth trains the *vision-language* model class
+  (`Qwen3_5ForConditionalGeneration`), whose LoRA adapter keys live under
+  `model.language_model.*`; `train.py`'s merge instead loaded the
+  **text-only** `Qwen3_5ForCausalLM` class, so PEFT matched no adapter key
+  and only printed a warning, never an error. Both `a1` and `a2` were merged
+  this way, staged, served and measured on validation — scoring 0 of 32
+  right proposals, indistinguishable from stock — before anyone opened the
+  merged weights to check whether they actually differed from the base.
+  *Found:* the lead, investigating why two independently trained recipes
+  scored identically to stock. *Fix, first attempt (f23):* merge into the VL
+  class instead; this loaded every adapter tensor correctly, but the VL
+  save wrote doubled key prefixes
+  (`model.language_model.language_model.*`,
+  `model.language_model.visual.*`) that vLLM refused to load ("There is no
+  module or parameter named 'language_model' in Qwen3_5Model"). *Fix, second
+  attempt (f24):* map the VL adapter's keys onto the text-only model's
+  parameter names, replace unsloth's `target_modules` regex (which never
+  matches `linear_attn` on the text-only class) with the mapped module
+  names, and refuse to finish the merge unless every adapter tensor loaded
+  and at least one merged weight actually changed from the base. `a1` merges
+  192 tensors this way, `a2` 372. **Consequence:** the tuned Track A
+  checkpoints are the text-only `Qwen3_5ForCausalLM` class (the vision tower
+  is dropped), while stock stays the full
+  `Qwen3_5ForConditionalGeneration` — a difference to account for in any
+  memory or latency comparison between them (see [Not verified
+  yet](#not-verified-yet)). *Commits:* `97a69fc` (merged `6a98501`, f23),
+  `c6dd8de` (merged `a7c81f8`, f24); lapse l4 recorded in `673ccb5`.
+- **P63. vLLM start-up failures during concurrent training showed only a
+  truncated log line.** Twice, starting the pinned vLLM for a measurement
+  failed with nothing more informative than "Engine core initialization
+  failed" in the helper's last 40 log lines, while Track A trained on the
+  same GPU; retried later on an otherwise-idle GPU, the same server started
+  fine. *Found:* the lead, debugging the two failed start-ups. *Fix (f25):*
+  `serve_for_measure.sh wait <port> [<full log path>]` keeps the server's
+  complete log on a failed start-up instead of only the tail; the pipeline
+  passes `$WORK/measure/<label>.serve.log`. *Commit:* `6f65887`, merged in
+  `45c5ae8`.
+
 ## Not verified yet
 
 - **The GGUF half of f11 on a live run**: the lead's live re-check covered
@@ -1394,10 +1658,6 @@ committed now (`3df700c`).
   ended up running (clean slate, temperature 0.2, xhigh, 900 s, 2 workers)
   are recorded, but the exact command that filtered the 1,720 stored
   candidates to the 1,176 train-side ones is not.
-- **Unsloth accepting the Gated-DeltaNet target names** (r9, ledger P6):
-  `train.py --targets attn-mlp-gdn` names the linear-attention projections,
-  but whether unsloth actually wraps them with a LoRA adapter is verified
-  only once a real training run using that flag completes.
 - **nvsh's runtime and unparsed Qwen tool calls** (P45): `LfmTier` still
   treats a failed parse as an explanation. Out of scope here (c9); tracked
   as [nvsh issue #50](https://github.com/agentculture/nvsh/issues/50).
@@ -1407,9 +1667,24 @@ committed now (`3df700c`).
 - **Thinking off for LFM2.5**: the LFM env example now also sends
   `enable_thinking` false. Whether LFM2.5's chat template ignores it has
   not been checked.
-- **Two unidentified test failures.** After the f10 merge, one full-suite
-  run had 2 failures whose names were not captured. The six runs after it
-  were green. The cause is unknown.
+- **A flaky timing test, now identified.** The two unidentified test
+  failures noted after the f10 merge are consistent with
+  `tests/test_setup_timing.py::test_setup_does_not_meaningfully_slow_down_prompt_startup`:
+  it fails when the machine is under load (a training run on the GPU) and
+  passes reliably alone. Not yet fixed — it is a timing assumption in the
+  test, not a bug in the code it tests.
+- **unsloth's Gated-DeltaNet path runs pure PyTorch, not fused kernels.**
+  `flash-linear-attention` and `causal-conv1d` are not installed in the
+  training venv, so unsloth's GDN (`attn-mlp-gdn`) training falls back to a
+  slower pure-PyTorch path. `a2`'s wall time (26-31 minutes, about the same
+  as `a1`) did not show an obvious slowdown in this run, but a larger recipe
+  (`a3`, `a4`) may.
+- **Track A's tuned checkpoints are text-only; stock is not.** The lapse l4
+  merge fix (P62) drops the vision tower from every tuned checkpoint
+  (`Qwen3_5ForCausalLM`), while stock stays the full vision-language class
+  (`Qwen3_5ForConditionalGeneration`). Any memory or latency comparison
+  between tuned and stock should account for this difference in model class,
+  not attribute it entirely to the fine-tune.
 - **Whether stock meets any bar**: the t13 live check was a pipeline check,
   not the baseline run.
 
@@ -1419,11 +1694,18 @@ None of these has been done yet.
 
 1. **More data.** If data limits a result, generate more train-side data
    through the same teachers and guards. The operator: "we can always
-   generate more data if needed".
-2. **LoRA on the linear-attention layers.** `train.py --targets
-   attn-mlp-gdn` now exists to add the Gated-DeltaNet projections; the
-   validation comparison against unsloth's default targets (plan risk r9,
-   ledger P6) itself is still to run.
+   generate more data if needed" — this is an acceptable fix, but the
+   training data is now frozen (c40), so doing it would be a recorded
+   deviation, not a quiet re-run. The strongest candidate: validation's
+   `a2` errors are dominated by missing-argument requests ("Set the power
+   mode" with no mode given) that get an invented argument instead of an
+   escalation — more training examples of exactly that shape are the
+   obvious next data request if a later checkpoint still shows the same
+   error class.
+2. **LoRA on the linear-attention layers — now run.** `train.py --targets
+   attn-mlp-gdn` (`a2`) beat the default attention/MLP-only targets (`a1`)
+   on validation (r9: abstain recall 81% vs 75%, 1 wrong mutating vs 2); `a3`
+   and `a4` extend `a2`'s recipe rather than `a1`'s.
 3. **Latency.** bf16 decodes at about 10 ms per token, `Q4_K_M` at about
    4.3 ms and AWQ at about 6 ms. The 250 ms bar may need a quantized build
    (plan risk r10, ledger P8).
@@ -1454,11 +1736,15 @@ None of these has been done yet.
 11. **A larger reviewer probe.** The 29 bad items in the current probe (d10,
     d11) only bound the false-accept rate to below about 10%; a bigger probe
     would tighten that bound.
-12. **The Jetson skills build's contamination scan is very slow.**
-    `build_bodies`'s sliding-window scan over long `SKILL.md` bodies pegs a
-    CPU core for over 10 minutes after the build's main outputs are already
-    written. It is a performance problem only — `bodies.json` is not used by
-    issue 46 — but worth fixing before a future run needs it on a schedule.
+12. **The Jetson skills build's contamination scan is very slow — fixed for
+    training-side scans.** `build_bodies`'s sliding-window scan over long
+    `SKILL.md` bodies pegs a CPU core for over 10 minutes after the build's
+    main outputs are already written. f18 (ledger P57) fixed the case that
+    hit this run — scanning the same repeated system prompt across every
+    rendered training example — by deduplicating training strings before
+    scanning. The underlying `build_bodies` cost against `SKILL.md` bodies
+    itself is unfixed; `bodies.json` is not used by issue 46, so it is still
+    worth fixing only if a future run needs it on a schedule.
 
 ## Run log (issue 46)
 
@@ -1844,3 +2130,152 @@ this branch.
 
 As of this update (about 03:00), the clean-slate re-review (t18) has about
 935 of 1,176 candidates done, about 97% accepted.
+
+### 2026-09-24 04:17-04:19: t18 done
+
+All 1,176 candidates finished at the fixed clean-slate settings (thinking on,
+temperature 0.2, `reasoning_effort` xhigh, 900 s timeout, 2 workers): 1,042
+accepted (88.6%), 134 rejected. 3 replies came back empty and were retried
+once (2 accepted, 1 rejected on retry). Agreement with the stored (old)
+reviewer-B verdicts: 1,013 of 1,173 on the main pass. Output hashes:
+`rereview-accepted.jsonl` sha256 `27b20108...`, `rereview-rejected.jsonl`
+sha256 `7692af9a...`. t19 generation started immediately after
+(`run-augment-new43.sh`, 43 sources).
+
+### 2026-09-24 05:44: t19 done — data FROZEN (c40; any later change is a deviation)
+
+t19 generation (43 sources, `--decide-by reviewer_b`, d14): 258 variations,
+229 accepted by reviewer B plus the guards, 29 rejected; reviewer A alone
+would have rejected 60 of the 229 (ledger P55). 0 errors, 0 retries, about 70
+minutes (04:19-05:27).
+
+Codex's review of the t19 tooling found a P1: `leakage_check` keyed
+protected files by basename, so the new split's `test.json` and issue 39's
+`test.json` (both in `PROTECTED_EXTRA`) collapsed into one; filtering by id
+could also drop unrelated rows sharing an id, and missing or null text
+passed through unchecked. Fixed: keyed by path, filtered by row index,
+exits 2 on missing text (ledger P56). *Merge:* `9b6e559`.
+
+Assemble (05:29): `nvsh-accepted.jsonl` (re-review accepts plus t19 accepts)
+held 1,271 records, 0 duplicate ids. `merge_variations`: 315 sources (301
+split plus 14 supplement), 1,206 variations kept, 59 duplicates, 6 exact
+protected matches excluded, 0 off-split. `leakage_check` on the remaining
+1,521 candidates dropped 58 (53 issue-39 test, 2 test, 2 validation, 1 sealed
+held-out; 53 exact, 5 near-duplicate). Rendered **1,463 training examples**.
+
+The Jetson skills scan on the training file took hours at first because
+every rendered row repeats the same long system prompt (the tool table); f18
+deduplicates training strings before scanning (identical result by
+construction): clean, 104 evals, 6 seconds (ledger P57). *Merge:* `b869c5d`.
+
+**Frozen training set:** 1,463 examples (262 sources = 248 original plus 14
+supplement; 1,201 variations): propose 725, escalate 357, explain 381; all
+16 operations covered (27-91 each). Hashes recorded under [Variations and
+the re-split](#variations-and-the-re-split); copied to spark2 and verified
+8 files byte-identical (the three splits, the training file,
+`nvsh-train.jsonl`, the ground snapshot, and the two skills files).
+
+A wrapper-script lesson from this stretch: `echo "$(date -Is) rc=$?"`
+reports `rc=0` every time, because the command substitution itself resets
+`$?` before the `echo` reads it — capture `rc=$?` on its own line first.
+
+### 2026-09-24 05:30-07:20: t22/t23 first runs, three pipeline bugs, lapse l4
+
+**Bug (P58):** `train-scorer` was training Track B on the raw
+`splits/train.json` (still holding the 52 issue-39 test entries and a
+duplicate of a test entry, and none of the variations). Fixed (f19,
+`a9d7c04`): trains on `data/train-augmented.json` instead, refuses before
+`assemble` has run, run name optional.
+
+**Bug (P59):** `train.py --merge-only` still required `--train`, so the
+documented Track B merge form could not be called as written. Fixed (f20,
+`75d385b`): `train-scorer` now merges, writes the greedy generation config
+and stages the result as `$REPO-scorer` with a revision, like `train` does;
+`--merge-only` no longer needs `--train`.
+
+**Bug (P60):** unsloth's `FastLanguageModel` returns a `Qwen3VLProcessor`
+for Qwen3.5; its chat template rejected the plain-string content
+`build_dataset.py` renders. Fixed (f21, `bb87232`): a `text_tokenizer()`
+reaches the processor's inner `.tokenizer`. Live check: identical chat
+template (7,755 characters) and token ids as `AutoTokenizer` on a real
+training example (1,436 tokens).
+
+**Track A recipes, `a1`/`a2`:** 3 epochs, lr 2e-4, rank 16/alpha 32, batch
+8, seed 46; 549 steps, about 26-31 minutes each on spark; training loss
+about 0.001 at the end (`train_loss` 0.091). `a1` = `--targets attn-mlp`,
+`a2` = `--targets attn-mlp-gdn`.
+
+**Track B `b1` on spark2** (all-linear LoRA, same epochs/lr/rank/batch/seed):
+26 minutes, trainer's own validation 60 of 66 (90.9%), mean confidence
+0.957; spark2 kept about 25 GB available throughout; model-gear (the serving
+containers) untouched.
+
+**Lapse l4:** `a1`/`a2` were first merged into checkpoints bit-identical to
+the base model — unsloth trained the vision-language class (adapter keys
+under `model.language_model.*`), the merge loaded the text-only
+`AutoModelForCausalLM`, PEFT matched no key and only warned — and **both
+were measured on validation (0 of 32, same as stock) before anyone checked
+whether the merged weights had actually changed.** f23 first merged into the
+VL class instead: every adapter tensor loaded, but the VL save wrote doubled
+key prefixes (`model.language_model.language_model.*`,
+`model.language_model.visual.*`) that vLLM cannot load ("There is no module
+or parameter named 'language_model' in Qwen3_5Model"). f24 (`c6dd8de`,
+merged `a7c81f8`) mapped the VL adapter's keys onto the text-only model,
+replaced unsloth's `target_modules` regex (which misses `linear_attn` there)
+with the adapted module names, and refuses the merge unless every adapter
+tensor loads and a merged weight actually changes. `a1` merges 192 tensors,
+`a2` 372. The tuned checkpoints are therefore text-only
+(`Qwen3_5ForCausalLM`, named exactly like the base checkpoint's language
+model) while stock stays `Qwen3_5ForConditionalGeneration` (ledger P62).
+
+**Track B measurement (f22, merge `b4eeed6`):** served-scorer runs were
+exiting 2 with every metric "not measured" and no reason — the repo's `uv`
+environment has no `transformers`, the tokenizer was loaded from the served
+name, and a scorer report had no start-up row. Fixed: `--tokenizer <model
+dir>`, the training venv's site-packages on `PYTHONPATH` for `--scorer`
+runs, every run failure printed to stderr (ledger P61).
+
+**d15 (Track B calibration via the exact in-process scorer):** the served
+scorer returned no complete label distribution on any validation entry (0 of
+66 — the fine-tuned scorer leaves the other letters' logprobs outside
+vLLM's top 22, risk r8, and the harness refuses to renormalise a partial
+top-k). Decisions and latency are taken from the served run; both agreed
+with the in-process run entry for entry on `b1`.
+
+**vLLM start-up failures (P63):** twice, starting the pinned vLLM for a
+measurement failed with only "Engine core initialization failed" visible in
+the helper's last 40 log lines, while Track A trained on the same GPU;
+retried on a quiet GPU, it worked. f25 (`6f65887`, merged `45c5ae8`):
+`serve_for_measure.sh wait <port> [<full log>]` now keeps the server's full
+log on a failed start-up; the pipeline passes
+`$WORK/measure/<label>.serve.log`.
+
+**A flaky test, identified:**
+`tests/test_setup_timing.py::test_setup_does_not_meaningfully_slow_down_prompt_startup`
+fails under machine load (a training run on the GPU); it passes reliably
+alone. This is consistent with the earlier unidentified intermittent
+failures after the f10 merge.
+
+**Validation results (2K context, 66 entries):**
+
+| Model | Right proposals | Abstain recall | Abstention precision (strict) | FP tool calls | Wrong mutating | Explain | Warm latency |
+|---|---|---|---|---|---|---|---|
+| Stock (generative) | 0/32 | 10/16 | — | — | 0 | 7/18 | 678 ms |
+| Stock (exact scorer) | 21/32 | 1/16 | 100% | 31/34 | 0 | — | 81 ms; ECE 0.164, Brier 0.765 |
+| `a1` | 32/32 | 12/16 (75%) | 100% | 3/34 | 2 | 18/18 | 420 ms |
+| `a2` | 32/32 | 13/16 (81%) | 100% | 2/34 | 1 | 18/18 | 419 ms |
+| `b1` (served / exact) | 28/32 (4 not grounded) | 12/16 (75%) | 92.3% | 0/34 | 0 | — | 76 ms served; exact ECE 0.097, Brier 0.162 |
+
+r9 on validation: the GDN targets (`a2`) beat `attn-mlp` (`a1`). `a2`'s
+errors: "Set the power mode" (no mode given) proposed `power_set
+max_performance` — its one wrong mutating proposal, an invented argument;
+"Is the service running?" proposed `docker.service`, also invented; "Explain
+why nginx returns 502" (should escalate) was explained instead; "switch to
+balanced mode" and "nvpmodel low power" were escalated instead of
+`power_set`. bf16 latency (about 420 ms) misses the c36 250 ms bar, as the
+plan expected (quantization is t25's job).
+
+At about 07:30, `a3` (`a2` + 5 epochs) and `a4` (`a2` + rank 32/alpha 64)
+are training on spark, and `b2` (`b1` + 5 epochs) on spark2. Selection stays
+validation-only: no wrong mutating proposals first, then abstention, then
+right proposals.
