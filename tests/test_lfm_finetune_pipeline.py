@@ -1208,3 +1208,22 @@ def test_generative_measure_stages_keep_the_repo_environment(tmp_path: Path) -> 
     [(pythonpath, argv)] = pipe.calls("measure.py")
     assert pythonpath == ""
     assert "--tokenizer" not in argv
+
+
+def test_serve_wait_saves_the_full_log_when_the_server_fails(tmp_path: Path) -> None:
+    # Issue 46: the last 40 lines never reached vLLM's root cause.
+    log = tmp_path / "run.serve.log"
+    result = _serve(
+        tmp_path,
+        "wait",
+        "18060",
+        str(log),
+        FAKE_CURL_STATUS="7",
+        MEASURE_WAIT_SECONDS="1",
+        MEASURE_POLL_SECONDS="0.2",
+    )
+    assert result.returncode != 0
+    assert "fake-vllm" in log.read_text(encoding="utf-8")
+    assert str(log) in result.stderr
+    full = [c for c in _docker_calls(tmp_path) if c[0] == "logs" and "--tail" not in c]
+    assert full and full[0][-1] == "q46-measure-18060"
