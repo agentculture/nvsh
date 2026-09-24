@@ -15,6 +15,7 @@ import importlib.util
 import json
 import os
 import shutil
+import socket
 import subprocess
 import sys
 import time
@@ -492,7 +493,16 @@ if sys.argv[1:2] == ["logs"]:
 #: `curl` as the readiness probe sees it: ready unless FAKE_CURL_STATUS says not.
 _FAKE_CURL = """#!/usr/bin/env bash
 printf 'curl %s\\n' "${*: -1}" >> "$EVENT_LOG"
-exit "${FAKE_CURL_STATUS:-0}"
+[ "${FAKE_CURL_STATUS:-0}" = 0 ] || exit "$FAKE_CURL_STATUS"
+# FAKE_CURL_ONCE: a file; once a model list has been served, every later
+# call fails (a server that goes away right after answering).
+if [ -n "${FAKE_CURL_ONCE:-}" ] && [ -f "$FAKE_CURL_ONCE" ]; then exit 7; fi
+# What the fake llama-server (or a stale server, in a test) lists.
+if [ -n "${LLAMA_MODELS:-}" ] && [ -f "$LLAMA_MODELS" ]; then
+  cat "$LLAMA_MODELS"
+  if [ -n "${FAKE_CURL_ONCE:-}" ]; then touch "$FAKE_CURL_ONCE"; fi
+fi
+exit 0
 """
 
 _IMAGE = "vllm/vllm-openai@sha256:8bd082c274fae025b7079498fe1da65182ba1d4c2188c0f5a68c1042c38c3695"
@@ -1427,8 +1437,23 @@ fi
 python3 -c 'import json, sys; print(json.dumps(sys.argv[1:]))' "$@" >> "$LLAMA_LOG"
 echo "llama-server start" >> "$EVENT_LOG"
 echo "fake-llama: the last log line"
-[ -z "${FAKE_LLAMA_DIE:-}" ] || exit 1
-trap 'echo "llama-server stop" >> "$EVENT_LOG"; exit 0' TERM
+if [ -n "${FAKE_LLAMA_DIE:-}" ]; then sleep 0.5; exit 1; fi
+alias=''; port=''; previous=''
+for arg in "$@"; do
+  [ "$previous" = --alias ] && alias=$arg
+  [ "$previous" = --port ] && port=$arg
+  previous=$arg
+done
+# Listen on the port like the real server (a child of this process, bounded).
+listener=''
+if [ -z "${FAKE_LLAMA_NO_LISTEN:-}" ]; then
+  python3 -c 'import socket, sys, time
+s = socket.socket(); s.bind(("127.0.0.1", int(sys.argv[1]))); s.listen(); time.sleep(30)' \
+    "$port" &
+  listener=$!
+fi
+printf '{"object": "list", "data": [{"id": "%s"}]}\n' "$alias" > "$LLAMA_MODELS"
+trap '[ -z "$listener" ] || kill "$listener"; echo "llama-server stop" >> "$EVENT_LOG"; exit 0' TERM
 for _ in $(seq 300); do sleep 0.1; done
 """
 
@@ -1438,7 +1463,19 @@ def _fake_llama_server(tmp_path: Path) -> dict[str, str]:
     path.parent.mkdir(exist_ok=True)
     path.write_text(_FAKE_LLAMA_SERVER, encoding="utf-8")
     path.chmod(0o755)
-    return {"LLAMA_SERVER": str(path), "LLAMA_LOG": str(tmp_path / "llama.log")}
+    return {
+        "LLAMA_SERVER": str(path),
+        "LLAMA_LOG": str(tmp_path / "llama.log"),
+        "LLAMA_MODELS": str(tmp_path / "llama-models.json"),
+    }
+
+
+def _free_port() -> int:
+    """A port nothing listens on now: serve_for_measure.sh refuses a busy one,
+    and a real measure server may hold 18060 while these tests run."""
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
 
 
 def _llama_calls(tmp_path: Path) -> list[list[str]]:
@@ -1496,7 +1533,8 @@ def test_measure_final_of_an_awq_build_serves_its_awq_dir_with_vllm(tmp_path: Pa
 
 
 def test_measure_final_of_a_gguf_build_serves_it_with_llama_server(tmp_path: Path) -> None:
-    pipe = _Pipeline(tmp_path)
+    port = _free_port()
+    pipe = _Pipeline(tmp_path, f"MEASURE_PORT={port}\n")
     pipe.ready(stock=False)
     quant = _quantized(pipe)
     llama = _fake_llama_server(tmp_path)
@@ -1510,7 +1548,7 @@ def test_measure_final_of_a_gguf_build_serves_it_with_llama_server(tmp_path: Pat
         "--host",
         "127.0.0.1",
         "--port",
-        "18060",
+        str(port),
         "--ctx-size",
         "2048",
         "--jinja",
@@ -1532,7 +1570,7 @@ def test_measure_final_of_a_gguf_build_serves_it_with_llama_server(tmp_path: Pat
     lfm = config["tiers"]["lfm"]
     assert lfm["engine"] == "llama-server"
     assert lfm["mode"] == "attach"
-    assert lfm["base_url"] == "http://127.0.0.1:18060/v1"
+    assert lfm["base_url"] == f"http://127.0.0.1:{port}/v1"
     assert lfm["model"] == "a1.q4_k_m"
     # The run record's image field names the native serving stack and version.
     assert "llama-server" in lfm["image"] and "9999 (deadbeef)" in lfm["image"]
@@ -1546,7 +1584,7 @@ def test_measure_final_of_a_gguf_build_serves_it_with_llama_server(tmp_path: Pat
     events = _events(tmp_path)
     # The fake logs its own start asynchronously, so only the readiness poll
     # is ordered against it by the helper, not by this log.
-    ready_at = events.index("curl http://127.0.0.1:18060/v1/models")
+    ready_at = events.index(f"curl http://127.0.0.1:{port}/v1/models")
     measure_at = events.index("uv measure.py")
     stop_at = events.index("llama-server stop")
     assert events.index("llama-server start") < measure_at
@@ -1555,7 +1593,7 @@ def test_measure_final_of_a_gguf_build_serves_it_with_llama_server(tmp_path: Pat
 
 @pytest.mark.parametrize("stage", ["measure-val", "measure-final", "measure-skills"])
 def test_a_failing_gguf_measure_still_stops_llama_server(stage: str, tmp_path: Path) -> None:
-    pipe = _Pipeline(tmp_path)
+    pipe = _Pipeline(tmp_path, f"MEASURE_PORT={_free_port()}\n")
     pipe.ready(stock=False)
     _quantized(pipe)
     args = ["--margin", "+15"] if stage == "measure-skills" else []
@@ -1565,10 +1603,12 @@ def test_a_failing_gguf_measure_still_stops_llama_server(stage: str, tmp_path: P
     assert result.returncode != 0
     assert "llama-server stop" in _events(tmp_path)
     assert not list((pipe.work / "measure").glob("q46-measure-*.pid"))
+    assert not list((pipe.work / "measure").glob("q46-measure-*.argv"))
 
 
 def test_measure_skills_of_a_gguf_build_uses_the_llama_server_url(tmp_path: Path) -> None:
-    pipe = _Pipeline(tmp_path)
+    port = _free_port()
+    pipe = _Pipeline(tmp_path, f"MEASURE_PORT={port}\n")
     pipe.ready(stock=False)
     quant = _quantized(pipe)
     result = pipe.run(
@@ -1576,7 +1616,7 @@ def test_measure_skills_of_a_gguf_build_uses_the_llama_server_url(tmp_path: Path
     )
     assert result.returncode == 0, result.stderr
     [(_, argv)] = pipe.calls("measure_skills.py")
-    assert _option(argv, "--url") == ["http://127.0.0.1:18060/v1"]
+    assert _option(argv, "--url") == [f"http://127.0.0.1:{port}/v1"]
     assert _option(argv, "--model") == ["a1.q4_k_m"]
     assert _option(argv, "--model-revision") == [_build_revision(quant)]
     assert _option(argv, "--margin") == ["+15"]
@@ -1653,7 +1693,9 @@ def test_a_gguf_build_needs_llama_server(tmp_path: Path) -> None:
 def test_build_names_keep_the_d16_labels(
     stage: str, args: list, label: str, tmp_path: Path
 ) -> None:
-    pipe = _Pipeline(tmp_path, f"HELDOUT_SPLIT={_held_out(tmp_path)}\n")
+    pipe = _Pipeline(
+        tmp_path, f"HELDOUT_SPLIT={_held_out(tmp_path)}\nMEASURE_PORT={_free_port()}\n"
+    )
     pipe.ready(stock=False)
     _quantized(pipe)
     build = label.split("-", 1)[1].removesuffix("-missing-candidate")
@@ -1709,7 +1751,7 @@ def test_a_served_scorer_build_gets_a_tokenizer_dir(
     build: str, tokenizer: str, tmp_path: Path
 ) -> None:
     train_py, site = _train_py(tmp_path)
-    pipe = _Pipeline(tmp_path, f"TRAIN_PY={train_py}\n")
+    pipe = _Pipeline(tmp_path, f"TRAIN_PY={train_py}\nMEASURE_PORT={_free_port()}\n")
     pipe.ready(stock=False)
     _quantized(pipe)
     _mark_scorer_run(pipe)
@@ -1764,47 +1806,119 @@ def _gguf(tmp_path: Path) -> Path:
     return path
 
 
-def _alive_pid(path: Path) -> int:
-    return int(path.read_text(encoding="utf-8").split()[0])
+def _starttime(pid: int) -> str:
+    """/proc/<pid>/stat field 22: when the process started, in clock ticks."""
+    stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+    return stat.rsplit(")", 1)[1].split()[19]
+
+
+def _llama_env(tmp_path: Path, **extra: str) -> dict[str, str]:
+    return {
+        **_fake_llama_server(tmp_path),
+        "MEASURE_RUN_DIR": str(tmp_path / "run"),
+        "MEASURE_MODEL_NAME": "a1.q4_k_m",
+        **extra,
+    }
+
+
+def _expected_argv(tmp_path: Path, model: Path, port: int) -> list[str]:
+    return [
+        str(tmp_path / "bin" / "llama-server"),
+        "--model",
+        str(model),
+        "--host",
+        "127.0.0.1",
+        "--port",
+        str(port),
+        "--ctx-size",
+        "2048",
+        "--jinja",
+        "--n-gpu-layers",
+        "999",
+        "--temp",
+        "0",
+        "--top-k",
+        "1",
+        "--alias",
+        "a1.q4_k_m",
+    ]
+
+
+def _running_with(text: str) -> list[int]:
+    """Pids of processes (other than pgrep) whose command line contains *text*."""
+    found = subprocess.run(["pgrep", "-f", text], capture_output=True, text=True)
+    return [int(pid) for pid in found.stdout.split()]
+
+
+def _wait_gone(pid: int) -> bool:
+    deadline = time.time() + 10
+    while _alive(pid) and time.time() < deadline:
+        time.sleep(0.1)
+    return not _alive(pid)
+
+
+def _impostor(tmp_path: Path, argv: list[str]) -> subprocess.Popen:
+    """The fake llama-server started outside the helper, e.g. by someone else."""
+    env = {**os.environ, **_fake_llama_server(tmp_path), "EVENT_LOG": str(tmp_path / "x.log")}
+    env["LLAMA_MODELS"] = str(tmp_path / "impostor-models.json")
+    env["FAKE_LLAMA_NO_LISTEN"] = "1"
+    proc = subprocess.Popen(argv, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    deadline = time.time() + 10
+    while str(argv[0]) not in Path(f"/proc/{proc.pid}/cmdline").read_text(errors="replace"):
+        assert time.time() < deadline
+        time.sleep(0.05)
+    return proc
+
+
+def _claim_for(run_dir: Path, port: int, pid: int, starttime: str, argv: list[str]) -> None:
+    run_dir.mkdir(exist_ok=True)
+    (run_dir / f"q46-measure-{port}.pid").write_text(f"{pid}\n{starttime}\n", encoding="utf-8")
+    (run_dir / f"q46-measure-{port}.argv").write_bytes(
+        b"".join(arg.encode() + b"\0" for arg in argv)
+    )
 
 
 def test_serve_start_runs_llama_server_for_a_gguf_file(tmp_path: Path) -> None:
     model = _gguf(tmp_path)
+    port = _free_port()
     record = tmp_path / "out" / "a1.serve.json"
     run_dir = tmp_path / "run"
-    llama = _fake_llama_server(tmp_path)
-    env = {**llama, "MEASURE_RUN_DIR": str(run_dir), "MEASURE_MODEL_NAME": "a1.q4_k_m"}
-    result = _serve(tmp_path, "start", str(model), "18061", str(record), MEASURE_IMAGE="", **env)
+    env = _llama_env(tmp_path)
+    result = _serve(tmp_path, "start", str(model), str(port), str(record), MEASURE_IMAGE="", **env)
+    pid_file = run_dir / f"q46-measure-{port}.pid"
     try:
         assert result.returncode == 0, result.stderr
         assert not _docker_calls(tmp_path)
-        pid_file = run_dir / "q46-measure-18061.pid"
-        pid = _alive_pid(pid_file)
+        pid_text, starttime = pid_file.read_text(encoding="utf-8").split()
+        pid = int(pid_text)
+        assert starttime == _starttime(pid)
+        argv = _expected_argv(tmp_path, model, port)
+        recorded = (run_dir / f"q46-measure-{port}.argv").read_bytes()
+        assert recorded == b"".join(arg.encode() + b"\0" for arg in argv)
         deadline = time.time() + 10
         while not _llama_calls(tmp_path) and time.time() < deadline:
             time.sleep(0.1)
         [served] = _llama_calls(tmp_path)
-        assert _option(served, "--model") == [str(model)]
-        assert _option(served, "--port") == ["18061"]
-        assert _option(served, "--host") == ["127.0.0.1"]
-        assert _option(served, "--alias") == ["a1.q4_k_m"]
+        assert served == argv[1:]
         saved = json.loads(record.read_text(encoding="utf-8"))
         assert saved["backend"] == "llama-server"
         assert saved["model_file"] == str(model)
         assert saved["served_model_name"] == "a1.q4_k_m"
-        assert saved["port"] == 18061
+        assert saved["port"] == port
         assert "temperature 0" in saved["decoding"]
         assert "built with fake-cc" in saved["version"]
-        assert saved["log"] == str(run_dir / "q46-measure-18061.log")
+        assert saved["log"] == str(run_dir / f"q46-measure-{port}.log")
+        assert saved["argv"] == argv
         assert _alive(pid)
+        waited = _serve(tmp_path, "wait", str(port), **env)
+        assert waited.returncode == 0, waited.stderr
+        assert "is ready" in waited.stderr
     finally:
-        stopped = _serve(tmp_path, "stop", "18061", MEASURE_RUN_DIR=str(run_dir))
+        stopped = _serve(tmp_path, "stop", str(port), **env)
     assert stopped.returncode == 0, stopped.stderr
-    deadline = time.time() + 10
-    while _alive(pid) and time.time() < deadline:
-        time.sleep(0.1)
-    assert not _alive(pid)
+    assert _wait_gone(pid)
     assert not pid_file.exists()
+    assert not (run_dir / f"q46-measure-{port}.argv").exists()
     assert "llama-server stop" in _events(tmp_path)
 
 
@@ -1814,7 +1928,12 @@ def test_serve_start_refuses_a_gguf_without_a_runnable_llama_server(
 ) -> None:
     model = _gguf(tmp_path)
     result = _serve(
-        tmp_path, "start", str(model), "18061", LLAMA_SERVER=setting, MEASURE_RUN_DIR=str(tmp_path)
+        tmp_path,
+        "start",
+        str(model),
+        str(_free_port()),
+        LLAMA_SERVER=setting,
+        MEASURE_RUN_DIR=str(tmp_path),
     )
     assert result.returncode != 0
     assert "LLAMA_SERVER" in result.stderr
@@ -1823,57 +1942,180 @@ def test_serve_start_refuses_a_gguf_without_a_runnable_llama_server(
 
 def test_serve_start_refuses_a_second_llama_server_on_one_port(tmp_path: Path) -> None:
     model = _gguf(tmp_path)
-    env = {**_fake_llama_server(tmp_path), "MEASURE_RUN_DIR": str(tmp_path / "run")}
-    first = _serve(tmp_path, "start", str(model), "18061", **env)
+    port = _free_port()
+    env = _llama_env(tmp_path)
+    first = _serve(tmp_path, "start", str(model), str(port), **env)
     try:
         assert first.returncode == 0, first.stderr
-        second = _serve(tmp_path, "start", str(model), "18061", **env)
+        second = _serve(tmp_path, "start", str(model), str(port), **env)
         assert second.returncode != 0
-        assert "stop 18061" in second.stderr
+        assert f"stop {port}" in second.stderr
     finally:
-        _serve(tmp_path, "stop", "18061", **env)
+        _serve(tmp_path, "stop", str(port), **env)
+    assert len(_llama_calls(tmp_path)) == 1
 
 
-def test_serve_stop_never_kills_a_process_it_did_not_start(tmp_path: Path) -> None:
-    other = subprocess.Popen(["sleep", "30"])
+def test_serve_start_refuses_a_port_something_already_listens_on(tmp_path: Path) -> None:
+    """Codex P1: a server already on the port would answer /v1/models and be
+    measured as the model this helper was asked to serve."""
+    model = _gguf(tmp_path)
+    env = _llama_env(tmp_path)
+    with socket.socket() as busy:
+        busy.bind(("127.0.0.1", 0))
+        busy.listen()
+        port = busy.getsockname()[1]
+        result = _serve(tmp_path, "start", str(model), str(port), **env)
+    assert result.returncode != 0
+    assert f"127.0.0.1:{port}" in result.stderr
+    assert not _running_with(str(model))
+    assert not list((tmp_path / "run").glob("q46-measure-*"))
+
+
+def test_serve_start_refuses_while_another_start_holds_the_claim(tmp_path: Path) -> None:
+    """Codex P2: the pid file is claimed atomically; an empty one is a start in
+    progress, never overwritten."""
+    model = _gguf(tmp_path)
+    port = _free_port()
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / f"q46-measure-{port}.pid").write_text("", encoding="utf-8")
+    result = _serve(tmp_path, "start", str(model), str(port), **_llama_env(tmp_path))
+    assert result.returncode != 0
+    assert f"stop {port}" in result.stderr
+    assert not _running_with(str(model))
+    assert (run_dir / f"q46-measure-{port}.pid").read_text(encoding="utf-8") == ""
+
+
+def test_serve_start_replaces_a_stale_pid_file(tmp_path: Path) -> None:
+    model = _gguf(tmp_path)
+    port = _free_port()
+    gone = subprocess.Popen(["true"])
+    gone.wait()
+    argv = _expected_argv(tmp_path, model, port)
+    _claim_for(tmp_path / "run", port, gone.pid, "1", argv)
+    env = _llama_env(tmp_path)
+    result = _serve(tmp_path, "start", str(model), str(port), **env)
     try:
-        run_dir = tmp_path / "run"
-        run_dir.mkdir()
-        (run_dir / "q46-measure-18061.pid").write_text(
-            f"{other.pid}\n{tmp_path / 'bin' / 'llama-server'}\n", encoding="utf-8"
-        )
-        result = _serve(tmp_path, "stop", "18061", MEASURE_RUN_DIR=str(run_dir))
         assert result.returncode == 0, result.stderr
+    finally:
+        _serve(tmp_path, "stop", str(port), **env)
+
+
+def test_serve_start_stops_what_it_launched_when_recording_fails(tmp_path: Path) -> None:
+    """Codex P2: nothing may keep running when the pid file cannot be written."""
+    model = _gguf(tmp_path)
+    port = _free_port()
+    run_dir = tmp_path / "run"
+    (run_dir / f"q46-measure-{port}.pid.tmp").mkdir(parents=True)  # the write fails
+    result = _serve(tmp_path, "start", str(model), str(port), **_llama_env(tmp_path))
+    assert result.returncode != 0
+    deadline = time.time() + 10
+    while _running_with(str(model)) and time.time() < deadline:
+        time.sleep(0.1)
+    assert not _running_with(str(model))
+    assert not (run_dir / f"q46-measure-{port}.pid").exists()
+
+
+@pytest.mark.parametrize("impostor", ["other-port", "same-argv-other-start"])
+def test_serve_stop_never_kills_a_process_it_did_not_start(impostor: str, tmp_path: Path) -> None:
+    """Codex P1: a reused pid running the same binary is not the server this
+    helper started: identity is the exact recorded argv and start time."""
+    model = _gguf(tmp_path)
+    port = _free_port()
+    argv = _expected_argv(tmp_path, model, port)
+    other_argv = list(argv)
+    if impostor == "other-port":
+        other_argv[other_argv.index("--port") + 1] = str(_free_port())
+    other = _impostor(tmp_path, other_argv)
+    try:
+        starttime = _starttime(other.pid)
+        if impostor == "same-argv-other-start":
+            starttime = str(int(starttime) + 1)
+        _claim_for(tmp_path / "run", port, other.pid, starttime, argv)
+        result = _serve(tmp_path, "stop", str(port), MEASURE_RUN_DIR=str(tmp_path / "run"))
+        assert result.returncode == 0, result.stderr
+        time.sleep(0.3)
         assert other.poll() is None
-        assert not (run_dir / "q46-measure-18061.pid").exists()
+        assert not (tmp_path / "run" / f"q46-measure-{port}.pid").exists()
     finally:
         other.kill()
         other.wait()
 
 
-def test_serve_wait_prints_llama_servers_log_when_it_dies(tmp_path: Path) -> None:
+def test_serve_stop_never_kills_an_unrelated_pid(tmp_path: Path) -> None:
+    other = subprocess.Popen(["sleep", "30"])
+    try:
+        port = _free_port()
+        argv = _expected_argv(tmp_path, tmp_path / "m.gguf", port)
+        _claim_for(tmp_path / "run", port, other.pid, _starttime(other.pid), argv)
+        result = _serve(tmp_path, "stop", str(port), MEASURE_RUN_DIR=str(tmp_path / "run"))
+        assert result.returncode == 0, result.stderr
+        assert other.poll() is None
+    finally:
+        other.kill()
+        other.wait()
+
+
+def test_serve_wait_fails_when_llama_server_dies_even_if_the_port_answers(
+    tmp_path: Path,
+) -> None:
+    """Codex P1: a /v1/models answer listing the alias is not enough when the
+    child this helper started has died -- something else is answering."""
     model = _gguf(tmp_path)
-    run_dir = tmp_path / "run"
+    port = _free_port()
     full_log = tmp_path / "a1.serve.log"
-    env = {**_fake_llama_server(tmp_path), "MEASURE_RUN_DIR": str(run_dir), "FAKE_LLAMA_DIE": "1"}
-    started = _serve(tmp_path, "start", str(model), "18061", **env)
+    env = _llama_env(tmp_path, FAKE_LLAMA_DIE="1")
+    Path(env["LLAMA_MODELS"]).write_text('{"data": [{"id": "a1.q4_k_m"}]}\n', encoding="utf-8")
+    started = _serve(tmp_path, "start", str(model), str(port), **env)
     assert started.returncode == 0, started.stderr
+    [pid] = [int((tmp_path / "run" / f"q46-measure-{port}.pid").read_text().split()[0])]
+    assert _wait_gone(pid)
     result = _serve(
         tmp_path,
         "wait",
-        "18061",
+        str(port),
         str(full_log),
-        FAKE_CURL_STATUS="7",
         MEASURE_WAIT_SECONDS="10",
         MEASURE_POLL_SECONDS="0.2",
         **env,
     )
     assert result.returncode == 2
+    assert "is ready" not in result.stderr
     assert "fake-llama: the last log line" in result.stderr
     assert "stopped before it was ready" in result.stderr
     assert "fake-llama" in full_log.read_text(encoding="utf-8")
     assert not [c for c in _docker_calls(tmp_path) if c[0] == "logs"]
-    _serve(tmp_path, "stop", "18061", **env)
+    _serve(tmp_path, "stop", str(port), **env)
+
+
+def test_serve_wait_needs_its_own_alias_and_stops_the_server_on_a_timeout(
+    tmp_path: Path,
+) -> None:
+    """A /v1/models answer that does not list MEASURE_MODEL_NAME is not ready;
+    a standalone wait that times out stops the server it was waiting on."""
+    model = _gguf(tmp_path)
+    port = _free_port()
+    env = _llama_env(tmp_path)
+    started = _serve(tmp_path, "start", str(model), str(port), **env)
+    assert started.returncode == 0, started.stderr
+    pid = int((tmp_path / "run" / f"q46-measure-{port}.pid").read_text().split()[0])
+    other_models = tmp_path / "other-models.json"
+    other_models.write_text('{"data": [{"id": "some-other-model"}]}\n', encoding="utf-8")
+    try:
+        result = _serve(
+            tmp_path,
+            "wait",
+            str(port),
+            MEASURE_WAIT_SECONDS="1",
+            MEASURE_POLL_SECONDS="0.2",
+            **{**env, "LLAMA_MODELS": str(other_models)},
+        )
+        assert result.returncode == 2
+        assert "not ready after" in result.stderr
+        assert _wait_gone(pid)
+        assert not (tmp_path / "run" / f"q46-measure-{port}.pid").exists()
+    finally:
+        _serve(tmp_path, "stop", str(port), **env)
 
 
 def test_the_gguf_temperature_rule_is_documented() -> None:
@@ -1903,3 +2145,72 @@ def test_a_served_scorer_gguf_build_needs_its_base_runs_tokenizer(tmp_path: Path
     assert "runs/a1/merged" in result.stderr
     assert not pipe.calls("measure.py")
     assert not _llama_calls(tmp_path)
+
+
+def test_serve_wait_returns_as_soon_as_llama_server_is_ready(tmp_path: Path) -> None:
+    """Codex P2: a ready native server must not fall through into the vLLM
+    readiness loop, where a later failed probe turned it into exit 2."""
+    model = _gguf(tmp_path)
+    port = _free_port()
+    env = _llama_env(tmp_path, FAKE_CURL_ONCE=str(tmp_path / "curl-once"))
+    started = _serve(tmp_path, "start", str(model), str(port), **env)
+    try:
+        assert started.returncode == 0, started.stderr
+        waited = _serve(
+            tmp_path, "wait", str(port), MEASURE_WAIT_SECONDS="3", MEASURE_POLL_SECONDS="0.1", **env
+        )
+        assert waited.returncode == 0, waited.stderr
+        assert "is ready" in waited.stderr
+        assert not [c for c in _docker_calls(tmp_path) if c[0] == "inspect"]
+    finally:
+        _serve(tmp_path, "stop", str(port), **env)
+
+
+def test_serve_wait_needs_the_listener_to_belong_to_its_llama_server(tmp_path: Path) -> None:
+    """Codex P2: an answer listing the alias from a living child is not enough
+    when another process holds the port -- the listening socket must be the
+    child's (or its descendants')."""
+    model = _gguf(tmp_path)
+    port = _free_port()
+    env = _llama_env(tmp_path, FAKE_LLAMA_NO_LISTEN="1")
+    started = _serve(tmp_path, "start", str(model), str(port), **env)
+    assert started.returncode == 0, started.stderr
+    pid = int((tmp_path / "run" / f"q46-measure-{port}.pid").read_text().split()[0])
+    try:
+        with socket.socket() as squatter:
+            squatter.bind(("127.0.0.1", port))
+            squatter.listen()
+            result = _serve(
+                tmp_path,
+                "wait",
+                str(port),
+                MEASURE_WAIT_SECONDS="1",
+                MEASURE_POLL_SECONDS="0.2",
+                **env,
+            )
+        assert result.returncode == 2
+        assert "is ready" not in result.stderr
+        assert _wait_gone(pid)
+    finally:
+        _serve(tmp_path, "stop", str(port), **env)
+
+
+def test_serve_start_refuses_while_another_start_holds_the_lock(tmp_path: Path) -> None:
+    """Codex P2: the stale-file check, removal and claim run under one lock, so
+    a second start never removes a claim the first has just made."""
+    model = _gguf(tmp_path)
+    port = _free_port()
+    run_dir = tmp_path / "run"
+    gone = subprocess.Popen(["true"])
+    gone.wait()
+    _claim_for(run_dir, port, gone.pid, "1", _expected_argv(tmp_path, model, port))
+    (run_dir / f"q46-measure-{port}.lock").mkdir()
+    result = _serve(tmp_path, "start", str(model), str(port), **_llama_env(tmp_path))
+    assert result.returncode != 0
+    assert "lock" in result.stderr and f"stop {port}" in result.stderr
+    assert not _running_with(str(model))
+    assert (run_dir / f"q46-measure-{port}.pid").read_text(encoding="utf-8") == f"{gone.pid}\n1\n"
+    stopped = _serve(tmp_path, "stop", str(port), MEASURE_RUN_DIR=str(run_dir))
+    assert stopped.returncode == 0, stopped.stderr
+    assert not (run_dir / f"q46-measure-{port}.lock").exists()
+    assert not (run_dir / f"q46-measure-{port}.pid").exists()
