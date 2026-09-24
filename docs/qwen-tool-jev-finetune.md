@@ -26,7 +26,7 @@ are CC-BY-4.0 and are used as a test set only; nothing trained on them is
 published here. Training happens on development machines. **nvsh itself
 never trains and never uploads.**
 
-## Where the run stands (2026-09-24, about 09h00)
+## Where the run stands (2026-09-24, about 09h45)
 
 This section is a handoff: exactly what is done, what is running, what is
 next, and the exact commands, so the run can be picked up cold.
@@ -42,48 +42,45 @@ next, and the exact commands, so the run can be picked up cold.
 - t21, the stock baseline on validation, done (generative and exact
   scorer). t18-t21 numbers are in [Reproduce it, steps
   5-9](#5-re-review-with-reviewer-b).
-- **t22, Track A: done.** `a1`, `a2`, `a3`, `a4` all trained, merged
-  (verified, lapse l4) and measured on validation; `a3` also checked at 4K
-  (informational). **Chosen: `a3`** (0 wrong mutating, meets c33/c34 on
-  validation, holds up at 4K; recipe committed in
-  `pipeline-qwen.env.example`). See [Reproduce it, step
-  10](#10-train-track-a-on-spark-a1-a4-done-a3-chosen) and [Choosing a
-  configuration on
-  validation](#choosing-a-configuration-on-validation-track-a-and-track-b).
-- **t23, Track B: done.** `b1`, `b2`, `b3`, `b4` all trained, merged and
-  measured. **Chosen: `b1`** (3 epochs; wins the pre-registered rule on
-  abstention precision over `b4`, which ties on decisions but calibrates
-  better — reported as a separate finding, not a reason to switch; `b2` at
-  5 epochs overfits, `b3` at 2 epochs undertrains), recipe committed in
-  `pipeline-qwen.env.example`. See [Reproduce it, step
-  11](#11-train-track-b-on-spark2-b1-b4-done-b1-chosen).
+- t22, Track A, done: `a1`-`a4` trained, merged and measured on validation
+  (and `a3` checked at 4K). **Chosen: `a3`.**
+- t23, Track B, done: `b1`-`b4` trained, merged and measured. **Chosen:
+  `b1`.** See [Reproduce it, steps
+  10](#10-train-track-a-on-spark-a1-a4-done-a3-chosen)-[11](#11-train-track-b-on-spark2-b1-b4-done-b1-chosen)
+  and [Choosing a configuration on
+  validation](#choosing-a-configuration-on-validation-track-a-and-track-b)
+  for both recipe searches.
+- **t24, the single final run, done.** Stock, `a3` and `scorer-b1`, each
+  measured exactly once on the test side, the sealed held-out set and the
+  missing-candidate slice, plus Track A's exact calibration and Jetson
+  skills for `a3`. **Neither checkpoint clears every success bar yet** —
+  `a3` passes c33 and abstention precision but fails abstention recall,
+  false positives, 0-wrong-mutating and (at bf16) latency; `scorer-b1`
+  passes c33, abstention precision, 0-wrong-mutating and latency but fails
+  abstention recall, false positives and ECE. Full numbers, the pass/fail
+  table and the findings are in [Final results
+  (t24)](#final-results-t24), sourced from the committed
+  `docs/benchmarks/2026-09-24-lfm-{final,heldout}-*.md` and
+  `2026-09-24-skills-q46-*.md` pages (commit `db55ce4`).
 - Unused serving models on the training and measurement machines were
   stopped, with the operator's OK, to free GPU memory for training and
   measurement to run without an out-of-memory failure (ledger P64); they
   are restored once the run finishes.
 
-**Running.** Nothing. Both tracks' recipe searches are closed; the next
-work is the single final run.
+**Running.** Nothing.
 
-**Next, in order (see the run log's [~09:00
-entry](#2026-09-24-0900-t22-and-t23-both-close-out) for the full detail):**
+**Next, in order:**
 
-1. **t24, the single final run:** stock, `a3` and `scorer-b1`, each
-   measured exactly once — `scorer-b1` both served and exact
-   (`--scorer served`/`--scorer in-process`, for d15) — on the test side,
-   the sealed held-out set and the missing-candidate slice, at 2K, on a
-   quiet machine (`measure-final <name>`); Track A's exact calibration on
-   the final side (`track_a_calibration.py --final`); Jetson skills once
-   for `a3` (and for `b1` if the skills harness can attach to a scorer by
-   then) at `MEASURE_CTX=8192`, judged against the d12 margin (stock 42 of
-   104 overall; floor about 37 of 104 overall, about 25 of 70 not-named).
-2. **t25:** `Q4_K_M` and AWQ of the chosen checkpoint(s); heal only if a
-   build loses more than 3 points of right proposals or adds a new
-   wrong-mutating id (c42, c43).
-3. **t26:** the edge check on AGX Orin.
-4. **t27:** a private upload, only after asking the operator.
-5. **t28:** the report and this guide's final pass.
-6. **t29:** `/validate-delivery`, `/summarize-delivery`, a version bump, and
+1. **t25:** `Q4_K_M` and AWQ of `a3` and `scorer-b1`, measured on the test
+   side against the same bars; heal only if a build loses more than 3
+   points of right proposals or adds a new wrong-mutating id (c42, c43).
+   This is also where container memory (c36, not yet measured — both t24
+   runs were attach-mode against an already-running server) gets measured
+   for the first time.
+2. **t26:** the edge check on AGX Orin.
+3. **t27:** a private upload, only after asking the operator.
+4. **t28:** the report and this guide's final pass.
+5. **t29:** `/validate-delivery`, `/summarize-delivery`, a version bump, and
    the PR ("part of #46").
 
 **Obstacles hit along the way** are recorded as ledger entries P56-P66 and
@@ -124,6 +121,112 @@ there:
 **This is an experiment** (c26). It delivers checkpoints, measurements, a
 comparison table and a recommendation. nvsh's defaults and
 [`tier2.md`](tier2.md) do not change.
+
+## Final results (t24)
+
+**t24, the single final run, is done.** Every model — stock, `a3` and
+`scorer-b1` — was measured exactly once at 2K on a quiet machine (no
+retries), on the clean test side (64 entries: 32 operation, 15 escalate,
+17 explain), the sealed held-out set (69 entries: 41 operation, 13
+escalate, 15 explain) and the missing-candidate slice (the 32 operation
+entries of the test side, each with its gold operation removed from the
+candidates, expected answer escalate). Source of truth: the committed
+pages `docs/benchmarks/2026-09-24-lfm-final-{stock,a3,scorer-b1}.md` (and
+their `-exact`/`-missing-candidate` variants) and
+`docs/benchmarks/2026-09-24-lfm-heldout-{stock,a3,scorer-b1}.md` for the
+held-out set, `docs/benchmarks/2026-09-24-skills-q46-{stock,a3}.md` for
+Jetson skills — all from commit `db55ce4`. Numbers below are the "Issue 46
+metrics" tables in those pages (the `metrics.py`/`ISSUE46_MAPPING` figures
+the success bars are judged on), not bench's own per-source vote, which can
+differ slightly (see the pages themselves for both).
+
+**Stock.** Test: 2 of 32 right proposals, abstention recall 1 of 15,
+precision 33.3%, false-positive tool calls 3 of 32, wrong mutating 3, 36 of
+64 invalid, warm 803 ms. Held-out: 6 of 41 right proposals, abstention
+recall 1 of 13, wrong mutating 4. Exact scorer (used only as c35's
+comparison point, d15): test 20 of 32, abstention recall 0 of 15, ECE
+0.167, Brier 0.834; held-out ECE 0.169, Brier 0.803.
+
+**`a3` (Track A, chosen).** Test: 32 of 32 right proposals, abstention
+recall 11 of 15 (73.3%), precision 100%, false-positive tool calls 4 of 32
+(12.5%), wrong mutating 2 (both wrong operation), warm 442 ms / p95 716 ms.
+Held-out: 30 of 41 right proposals, abstention recall 11 of 13 (84.6%),
+precision 78.6%, false-positive tool calls 3 of 28, wrong mutating 3 (1
+wrong operation + 2 wrong arguments). Missing-candidate slice: abstention
+recall 5 of 32, false-positive tool calls 24 of 32, wrong mutating 5.
+Exact calibration (`track_a_calibration.py`, d6): test ECE 0.080, Brier
+0.156; held-out ECE 0.097, Brier 0.191. Jetson skills at 8K: 44 of 104
+(against the d12 floor of 37, stock's 42), not-named 34 of 70 (against the
+floor of 23, stock's 28) — **d12 PASS**.
+
+**`scorer-b1` (Track B, chosen).** The served run and the exact in-process
+run agree on every decision (only the calibration figures differ). Test:
+27 of 32 right proposals (84.4%), abstention recall 11 of 15, precision
+100%, false-positive tool calls 2 of 32 (6.3%), wrong mutating 0, 3 not
+grounded, warm 23 ms. Held-out: 27 of 41 right proposals, abstention recall
+11 of 13, precision 68.8%, false-positive tool calls 4 of 28, wrong
+mutating 1. Missing-candidate slice: abstention recall 7 of 32,
+false-positive tool calls 18 of 32, wrong mutating 0. Exact calibration:
+test ECE 0.132, Brier 0.268; held-out ECE 0.145, Brier 0.312; slice ECE
+0.547, Brier 1.198.
+
+**Success bars, on the clean test side, pass or fail with n/N:**
+
+| Bar | `a3` | `scorer-b1` |
+|---|---|---|
+| c33, right proposals (≥80% and ≥ stock+30pp) | **PASS** — 100% (32/32), stock+94pp | **PASS** — 84.4% (27/32), stock+78pp |
+| c34, abstention recall (≥80%) | FAIL — 73.3% (11/15) | FAIL — 73.3% (11/15) |
+| c34, abstention precision (≥80%, strict) | PASS — 100% | PASS — 100% |
+| c34, false-positive tool calls (≤5%) | FAIL — 12.5% (4/32) | FAIL — 6.3% (2/32) |
+| c34, 0 wrong mutating proposals | FAIL — 2 | **PASS** — 0 |
+| c35, Track B ECE (≤0.10) | — | FAIL — 0.132 |
+| c35, Track B Brier (< stock's 0.834) | — | PASS — 0.268 |
+| c36, warm median latency (≤250 ms) | FAIL — 442 ms (bf16) | **PASS** — 23 ms |
+| c36, container memory (≤6 GB) | not yet measured (attach mode) | not yet measured (attach mode) |
+
+Neither checkpoint clears every bar yet: both fail abstention recall and
+false-positive tool calls on the test side; `a3` also fails 0 wrong
+mutating and c36's latency at bf16 (quantization, t25, is the plan's answer
+to the latency bar); `scorer-b1` also fails c35's ECE bar despite beating
+stock's Brier score by a wide margin. Container memory for both is not yet
+measured, since both ran in attach mode against an already-running server;
+that measurement is t25's job alongside the quantized builds.
+
+**Findings worth stating plainly:**
+
+- **A 66-entry validation set cannot rule out rare errors.** `a3` had 0
+  wrong mutating proposals on validation but 2 on the (also small, 32-entry
+  operation) test side. This is not a regression introduced between
+  validation and test — it is what a small evaluation set can and cannot
+  tell you: a rate low enough to show as 0/32 on one 32-entry sample can
+  still show up as 2/32 on a different 32-entry sample from the same
+  distribution.
+- **The missing-candidate slice is the weakest area for both tracks.** With
+  the gold operation removed from the candidate list, the model is expected
+  to escalate; instead both tracks mostly pick a near-candidate operation
+  instead (`a3`: 24 of 32 false-positive tool calls, abstention recall only
+  5 of 32; `scorer-b1`: 18 of 32, abstention recall 7 of 32). This is the
+  single biggest gap between "successful" and today's checkpoints.
+- **`a3`'s exact calibration is better than `scorer-b1`'s**, on both the
+  test side (ECE 0.080 vs 0.132, Brier 0.156 vs 0.268) and the held-out set
+  (0.097 vs 0.145, 0.191 vs 0.312) — worth noting even though c35 is scored
+  for Track B only, since Track A's own exact-calibration tool (d6) makes
+  the comparison possible.
+- **Jetson skills improved specifically on not-named prompts:** `a3` beats
+  stock by 6 points not-named (34/70 vs 28/70) while scoring lower than
+  stock on skill-named prompts (10/34 vs 14/34) — the net overall gain
+  (44/104 vs 42/104) is smaller than the not-named gain alone, and both
+  clear the d12 regression-guard margin either way.
+
+**Process notes.** The pipeline gained `measure-heldout` and the
+`-missing-candidate`/`-exact` label suffixes, with an arguments allowlist,
+before this run (deviation d16, commits `6f9ab90`, `ff01844`). The skills
+step served at `MEASURE_GPU_FRACTION=0.12` (P65, to avoid the 4K-style
+Mamba-cache shortfall at the skills prompt's own long context). Stock's
+exact-scorer baseline ran after the 13 planned final-measurement steps,
+since c35 needs it only as a comparison point (deviation d15) — being last
+in the sequence does not mean it is less final; every model here was still
+measured exactly once.
 
 ## Design
 
@@ -818,7 +921,7 @@ $P --env qwen.env measure-val stock --scorer in-process
 21 of 32 right proposals, abstain recall 1 of 16, precision (strict) 100%,
 false-positive tool calls 31 of 34, ECE 0.164, Brier 0.765, warm 81 ms. This
 is the "stock (exact scorer)" row in the validation table under [Where the
-run stands](#where-the-run-stands-2026-09-24-about-09h00) and repeated in the
+run stands](#where-the-run-stands-2026-09-24-about-09h45) and repeated in the
 [run log](#2026-09-24-0530-0720-t22t23-first-runs-three-pipeline-bugs-lapse-l4).
 
 **A dead server fails the run** (P49). Before the first entry, `measure.py`
@@ -2850,3 +2953,48 @@ set and the missing-candidate slice, at 2K; Jetson skills at
 `MEASURE_CTX=8192` for `a3` and for `b1` if the skills harness can attach
 to a scorer by then; `track_a_calibration.py --final` for Track A's exact
 calibration on the final side.
+
+### 2026-09-24 ~09:45: t24 done — neither checkpoint clears every bar yet
+
+The single final run finished: stock, `a3` and `scorer-b1`, each measured
+exactly once at 2K on a quiet machine, on the test side (64 entries: 32
+operation, 15 escalate, 17 explain), the sealed held-out set (69 entries:
+41 operation, 13 escalate, 15 explain) and the missing-candidate slice (the
+test side's 32 operation entries with the gold operation removed).
+Committed as `docs/benchmarks/2026-09-24-lfm-{final,heldout}-*.md` and
+`2026-09-24-skills-q46-{stock,a3}.md` (commit `db55ce4`); full numbers,
+the pass/fail table against c33-c36 and the findings are written up in
+[Final results (t24)](#final-results-t24), which is now the source of
+truth for this run's headline numbers — this run-log entry only summarizes.
+
+In short: `a3` (Track A) passes c33 (100% right proposals, stock+94pp) and
+abstention precision (100%), but fails abstention recall (73.3%), the
+false-positive tool call bar (12.5%), 0-wrong-mutating (2 on test, though
+0 on validation) and c36's latency at bf16 (442 ms; quantization is next).
+`scorer-b1` (Track B) passes c33 (84.4%, stock+78pp), abstention precision
+(100%), 0-wrong-mutating and c36's latency (23 ms), but fails abstention
+recall (73.3%, same as `a3`) and the false-positive bar (6.3%), and misses
+c35's ECE bar (0.132 against a 0.10 ceiling) despite beating stock's Brier
+score by a wide margin (0.268 vs 0.834). Container memory (c36) is not yet
+measured for either, since both t24 runs were attach-mode against an
+already-running server; that lands in t25 alongside the quantized builds.
+
+The missing-candidate slice was the weakest area for both: with the gold
+operation removed, both mostly picked a near-candidate operation instead of
+escalating (`a3` 24 of 32 false-positive tool calls; `scorer-b1` 18 of 32).
+Jetson skills passed the d12 regression guard (44 of 104 against a floor of
+37, stock's own 42; not-named 34 of 70 against a floor of 23, stock's 28),
+with the gain concentrated in not-named prompts.
+
+Before the run, the pipeline gained a `measure-heldout` stage and the
+`-missing-candidate`/`-exact` label suffixes, with an arguments allowlist
+(deviation d16, commits `6f9ab90` and `ff01844`). The skills step served at
+`MEASURE_GPU_FRACTION=0.12` (P65). Stock's exact-scorer baseline (used only
+as c35's comparison point, d15) ran after the 13 planned final-measurement
+steps rather than before them — running last does not make it any less a
+single, final, no-retry measurement.
+
+**Next: t25**, quantizing `a3` and `scorer-b1` to `Q4_K_M` and AWQ,
+measured on the test side against the same bars, healing only if a build
+loses more than 3 points of right proposals or adds a new wrong-mutating id
+(c42, c43) — and where container memory finally gets measured.
