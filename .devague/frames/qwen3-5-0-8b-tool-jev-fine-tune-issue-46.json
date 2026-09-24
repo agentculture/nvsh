@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-09-23T06:56:50Z",
-  "updated": "2026-09-24T06:11:44Z",
+  "updated": "2026-09-24T08:42:46Z",
   "claims": [
     {
       "id": "c1",
@@ -1364,6 +1364,15 @@
       "id": "l5",
       "code": "instrument-changed-mid-series",
       "what": "b4 served measurement first run without --scorer: the Track B scorer was measured as a generative tool-caller (0/32); caught before any decision used it, quarantined, re-run in scorer mode; guard d39c5e3 (P66)",
+      "skipped_check": "",
+      "refs": [],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l6",
+      "code": "assumption-for-measurement",
+      "what": "d17 said scorer-b1.q4_k_m's calibration would come from llama-server's served distribution because the server has no top-k cap; measured: 0 of 64 lines have a distribution -- the served scorer itself asks for only len(labels)+TOP_MARGIN top log-probabilities (scorer.py), so r8 applies to any server. Neither quantized Track B build's calibration is measurable with the harness as designed; decisions/latency unaffected",
       "skipped_check": "",
       "refs": [],
       "origin": "llm",

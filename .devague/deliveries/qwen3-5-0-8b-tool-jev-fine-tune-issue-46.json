@@ -2,7 +2,7 @@
   "plan_slug": "qwen3-5-0-8b-tool-jev-fine-tune-issue-46",
   "schema_version": 2,
   "created": "2026-09-23T10:18:50Z",
-  "updated": "2026-09-24T06:24:36Z",
+  "updated": "2026-09-24T08:43:15Z",
   "deviations": [
     {
       "id": "d1",
@@ -218,6 +218,32 @@
       "status": "proposed",
       "classification": "acceptable",
       "seq": 16
+    },
+    {
+      "id": "d17",
+      "what": "t25: scorer-b1.awq's exact calibration (c35 on the AWQ build) is reported as not measurable, not measured: the in-process scorer cannot run the compressed-tensors AWQ export (training venv lacks compressed-tensors; with the AWQ venv's stack, transformers 5.17 + compressed-tensors 0.19 load it but the forward pass fails in _dequantize, size 0 vs 16 -- the export's model.language_model.* layout vs the text-only class), and vLLM's served scorer returns only top-22 log-probabilities (risk r8). scorer-b1.awq's decisions and latency come from its one valid served run; scorer-b1.q4_k_m's calibration is taken from llama-server's served distribution, which has no top-k cap. No test-side measurement was scored by the failed attempts (start-up failure; 64/64 tier_error, no results page)",
+      "task_ref": "t25",
+      "reason": "c43 applies c33-c36 to each quantized build, but no available serving or in-process stack gives an exact distribution for the AWQ export; patching a third-party loader to get one is out of proportion for one number",
+      "affects": [
+        "t25"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "classification": "acceptable",
+      "seq": 17
+    },
+    {
+      "id": "d18",
+      "what": "t25 heal of a3 (both a3.awq and a3.q4_k_m: right proposals 100% -> 96.875%, 3.125 > 3-point margin; no new wrong-mutating id): run as pipeline.sh heal a3-heal a3 -- a SHORT bf16 continuation from a3's merged checkpoint (1 epoch, lr 5e-5, same LoRA recipe, the frozen train set), not quantization-aware training; then quantize a3-heal and measure a3-heal bf16, .awq and .q4_k_m once each on the test side as a new checkpoint (t25 instruction)",
+      "task_ref": "t25",
+      "reason": "c42 names a 'short quantization-aware fine-tune'; the heal stage built for c42/c43 is a plain continued fine-tune, and no QAT path exists for this architecture in the stack. Following the confirmed trigger rather than discounting a one-entry drop as noise",
+      "affects": [
+        "t25"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "classification": "risky",
+      "seq": 18
     }
   ],
   "evidence": [],
