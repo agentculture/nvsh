@@ -82,6 +82,16 @@ next, and the exact commands, so the run can be picked up cold.
   bar (defined for the training machine) is not met there, while Track B's
   scorer stays fast everywhere; every build fits well under 6 GB. See
   [Edge check (t26)](#edge-check-t26).
+- **t28 (the comparison report), done, ahead of t27.** One dated page,
+  [`docs/benchmarks/2026-09-24-qwen-tool-jev-comparison.md`](benchmarks/2026-09-24-qwen-tool-jev-comparison.md),
+  holds the full comparison (stock, both tracks, every quantized and
+  healed build, 2K vs 4K, the edge check) with a run id per number, the
+  c33-c36 pass/fail table for the two shipped builds, the c43 quantization
+  deltas for every build, issue 39's `final-r8` figures quoted as an upper
+  bound (lapse l5), and six grounded data-set recommendations for the next
+  iteration plus an overall pick (`scorer-b1.q4_k_m` as the safer Tier 2
+  decider; `a3-heal.q4_k_m` as the generative option pending its
+  wrong-mutating fix; neither is a full bar-clearing replacement yet).
 
 **Running.** Nothing.
 
@@ -91,8 +101,7 @@ next, and the exact commands, so the run can be picked up cold.
    the operator; before bundling, fix or at least flag the merged
    checkpoint's config still declaring an MTP head it has no weights for
    (ledger P67's follow-up).
-2. **t28:** the report and this guide's final pass.
-3. **t29:** `/validate-delivery`, `/summarize-delivery`, a version bump, and
+2. **t29:** `/validate-delivery`, `/summarize-delivery`, a version bump, and
    the PR ("part of #46").
 
 **Obstacles hit along the way** are recorded as ledger entries P56-P72 and
@@ -3488,3 +3497,41 @@ asking the operator, and only after fixing or at least flagging the merged
 checkpoint's config still declaring an MTP head it has no weights for
 (P67's follow-up) — then t28 (the report) and t29
 (validate/summarize/version/PR).
+
+### 2026-09-24: t28, the comparison report, done ahead of t27
+
+One dated page,
+[`docs/benchmarks/2026-09-24-qwen-tool-jev-comparison.md`](benchmarks/2026-09-24-qwen-tool-jev-comparison.md),
+collects every number from this run — stock, `a3` and `scorer-b1` at bf16,
+every quantized and healed build, the 2K-vs-4K validation-only check, and
+the edge check on an AGX Orin — into one set of tables, each row citing the
+committed benchmark page it came from by file name. It also states the
+c33-c36 pass/fail table for both shipped builds (`a3-heal.q4_k_m`,
+`scorer-b1.q4_k_m`; neither clears every bar) and the c43 quantization
+delta for every build, healed or not.
+
+Issue 39's tuned `LFM2.5-350M` figures are quoted from
+`docs/benchmarks/2026-09-23-lfm-final-r8.md`, explicitly marked as an upper
+bound (lapse l5: 4 of that run's 64 test entries had reached its training
+by exact wording) and shown only for scale, not as a like-for-like
+comparison — different base model, different split seed, different harness
+generation.
+
+The page closes with the operator's requested data-set recommendations for
+the next iteration, each grounded to what evidence actually allows
+(validation supports per-entry examples; test and held-out support only
+aggregate counts): missing-candidate training examples (built
+deterministically with `eval_slices.py`, no teacher needed); missing-
+argument requests that should escalate rather than invent an argument;
+the diagnosis-vs-explanation boundary; over-caution on clear mutating
+requests; ambiguous operation names; and hard negatives for the
+false-positive rate. It flags that this run's test side is now spent for
+any future final-run claim, so the next iteration needs a fresh sealed
+held-out set and test side, and that validation should grow to about
+150-200 entries — this run's 66-entry validation set never surfaced the
+rare wrong-mutating proposals that only showed up on the (also small)
+32-entry test side. The overall recommendation: adopt `scorer-b1.q4_k_m`
+as the safer Tier 2 decider (0 wrong mutating, fastest everywhere
+measured); keep `a3-heal.q4_k_m` as the generative option pending a fix
+for its recurring wrong-mutating proposals; neither yet replaces a
+human-reviewed decision.
