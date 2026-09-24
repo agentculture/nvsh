@@ -28,7 +28,8 @@ def test_the_prompts_show_the_table_and_nothing_from_the_corpus() -> None:
     corpus = (Path(__file__).resolve().parents[1] / "nvsh/tiers/corpus/dev.json").read_text()
     for _, prompt in _module().prompts(table):
         assert "Operations:" in prompt
-        assert '"expect"' not in prompt and "dev-" not in prompt
+        assert '"expect"' not in prompt
+        assert "dev-" not in prompt
     assert '"expect"' in corpus  # the check above would notice a corpus leak
 
 

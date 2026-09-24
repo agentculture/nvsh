@@ -293,5 +293,6 @@ def test_null_token_ids_in_config_json_are_left_out(tmp_path):
     module.write(tmp_path)
 
     payload = json.loads((tmp_path / "generation_config.json").read_text(encoding="utf-8"))
-    assert "bos_token_id" not in payload and "pad_token_id" not in payload
+    assert "bos_token_id" not in payload
+    assert "pad_token_id" not in payload
     assert payload["eos_token_id"] == 248044

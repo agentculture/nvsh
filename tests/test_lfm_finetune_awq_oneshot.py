@@ -275,11 +275,17 @@ def test_main_sanitizes_the_generation_config_between_oneshot_and_save(
         calls.append(("oneshot",))
 
     _install_fake_transformers(monkeypatch)
-    sys.modules["transformers"].AutoModelForCausalLM = types.SimpleNamespace(
-        from_pretrained=lambda *a, **k: _FakeModel()
+    monkeypatch.setattr(
+        sys.modules["transformers"],
+        "AutoModelForCausalLM",
+        types.SimpleNamespace(from_pretrained=lambda *a, **k: _FakeModel()),
+        raising=False,  # the fake module starts without it
     )
-    sys.modules["transformers"].AutoTokenizer = types.SimpleNamespace(
-        from_pretrained=lambda *a, **k: _FakeTokenizer()
+    monkeypatch.setattr(
+        sys.modules["transformers"],
+        "AutoTokenizer",
+        types.SimpleNamespace(from_pretrained=lambda *a, **k: _FakeTokenizer()),
+        raising=False,  # the fake module starts without it
     )
 
     fake_llmcompressor = types.ModuleType("llmcompressor")

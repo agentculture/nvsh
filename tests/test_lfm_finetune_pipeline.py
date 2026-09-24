@@ -378,7 +378,8 @@ def test_the_memory_settings_in_the_env_file_reach_a_child_process(tmp_path: Pat
 def test_both_env_examples_name_the_memory_floor_and_gpu_budget() -> None:
     for example in (_LFM_ENV, _QWEN_ENV):
         text = example.read_text(encoding="utf-8")
-        assert "TRAIN_MEMORY_FLOOR=" in text and "NVSH_TRAIN_GPU_MEMORY_GB=" in text
+        assert "TRAIN_MEMORY_FLOOR=" in text
+        assert "NVSH_TRAIN_GPU_MEMORY_GB=" in text
 
 
 # ---------------------------------------------------------------------------
@@ -454,7 +455,8 @@ def test_run_capped_restores_the_callers_traps(tmp_path: Path) -> None:
     result = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=60)
     assert result.returncode == 0, result.stderr
     assert "trap -- 'echo caller-term' SIGTERM" in result.stdout
-    assert "SIGINT" not in result.stdout and "SIGHUP" not in result.stdout
+    assert "SIGINT" not in result.stdout
+    assert "SIGHUP" not in result.stdout
     assert result.stdout.rstrip().endswith("caller-exit")
 
 
@@ -652,7 +654,8 @@ def test_a_measure_stage_refuses_without_the_stock_copy(stage: str, tmp_path: Pa
     result = pipe.run(stage, "stock")
     assert result.returncode == 1
     assert "stock-copy" in result.stderr
-    assert not pipe.calls("measure.py") and not pipe.calls("measure_skills.py")
+    assert not pipe.calls("measure.py")
+    assert not pipe.calls("measure_skills.py")
     assert not [c for c in _docker_calls(tmp_path) if c[0] == "run"]
 
 
@@ -669,7 +672,8 @@ def test_a_measure_stage_refuses_a_model_without_greedy_decoding(
     result = pipe.run(stage, name, *(["--margin", "+15"] if stage == "measure-skills" else []))
     assert result.returncode != 0
     assert "generation_config.json" in result.stderr
-    assert not pipe.calls("measure.py") and not pipe.calls("measure_skills.py")
+    assert not pipe.calls("measure.py")
+    assert not pipe.calls("measure_skills.py")
     assert not [c for c in _docker_calls(tmp_path) if c[0] == "run"]
 
 
@@ -766,15 +770,18 @@ def test_measure_skills_measures_one_served_model_with_thinking_off(
     assert _option(argv, "--url") == ["http://127.0.0.1:18060/v1"]
     assert _option(argv, "--model") == [name]
     assert _option(argv, "--enable-thinking") == ["false"]
-    assert "--launch" not in argv and "--config" not in argv
+    assert "--launch" not in argv
+    assert "--config" not in argv
     assert "--ground-snapshot" not in argv
     assert _option(argv, "--label") == [name]
     if name == "stock":
         assert _option(argv, "--model-revision") == [_QWEN_BASE_REV]
-        assert "--margin" not in argv and "--tuned" not in argv
+        assert "--margin" not in argv
+        assert "--tuned" not in argv
     else:
         assert _option(argv, "--model-revision") == ["abc123"]
-        assert _option(argv, "--margin") == ["+15"] and "--tuned" in argv
+        assert _option(argv, "--margin") == ["+15"]
+        assert "--tuned" in argv
 
 
 @pytest.mark.parametrize(
@@ -1043,14 +1050,17 @@ def test_serve_wait_prints_the_last_log_lines_on_a_timeout(tmp_path: Path) -> No
     assert result.returncode != 0
     assert "fake-vllm: the last log line" in result.stderr
     logs = [c for c in _docker_calls(tmp_path) if c[0] == "logs"]
-    assert logs and logs[0][-1] == "q46-measure-18060"
+    assert logs
+    assert logs[0][-1] == "q46-measure-18060"
     assert "--tail" in logs[0]
 
 
 def test_serve_rejects_an_unknown_command(tmp_path: Path) -> None:
     result = _serve(tmp_path, "restart", "18060")
     assert result.returncode != 0
-    assert "start" in result.stderr and "stop" in result.stderr and "wait" in result.stderr
+    assert "start" in result.stderr
+    assert "stop" in result.stderr
+    assert "wait" in result.stderr
     assert not _docker_calls(tmp_path)
 
 
@@ -1141,7 +1151,8 @@ def test_measure_heldout_scores_the_sealed_file_with_acceptance(tmp_path: Path) 
     assert result.returncode == 0, result.stderr
     [(_, argv)] = pipe.calls("measure.py")
     assert _option(argv, "--split") == [str(held_out)]
-    assert "--acceptance" in argv and "--final" not in argv
+    assert "--acceptance" in argv
+    assert "--final" not in argv
     assert "--details" not in argv
     assert _option(argv, "--label") == ["heldout-a1"]
     [out] = _option(argv, "--predictions")
@@ -1425,7 +1436,8 @@ def test_serve_wait_saves_the_full_log_when_the_server_fails(tmp_path: Path) -> 
     assert "fake-vllm" in log.read_text(encoding="utf-8")
     assert str(log) in result.stderr
     full = [c for c in _docker_calls(tmp_path) if c[0] == "logs" and "--tail" not in c]
-    assert full and full[0][-1] == "q46-measure-18060"
+    assert full
+    assert full[0][-1] == "q46-measure-18060"
 
 
 # ---------------------------------------------------------------------------
@@ -1599,7 +1611,8 @@ def test_measure_final_of_a_gguf_build_serves_it_with_llama_server(tmp_path: Pat
     assert lfm["base_url"] == f"http://127.0.0.1:{port}/v1"
     assert lfm["model"] == "a1.q4_k_m"
     # The run record's image field names the native serving stack and version.
-    assert "llama-server" in lfm["image"] and "9999 (deadbeef)" in lfm["image"]
+    assert "llama-server" in lfm["image"]
+    assert "9999 (deadbeef)" in lfm["image"]
     assert _IMAGE not in lfm["image"]
     assert load_config(Path(config_path)).tiers["lfm"]["engine"] == "llama-server"
     record = json.loads((pipe.work / "measure" / "final-a1.q4_k_m.serve.json").read_text())
@@ -1659,7 +1672,8 @@ def test_a_build_that_was_never_quantized_is_refused_with_a_hint(
     result = pipe.run(stage, build, *args, **_fake_llama_server(tmp_path))
     assert result.returncode == 1
     assert "quantize a1" in result.stderr
-    assert not pipe.calls("measure.py") and not pipe.calls("measure_skills.py")
+    assert not pipe.calls("measure.py")
+    assert not pipe.calls("measure_skills.py")
     assert not [c for c in _docker_calls(tmp_path) if c[0] == "run"]
     assert not _llama_calls(tmp_path)
 
@@ -1672,7 +1686,8 @@ def test_a_build_without_its_quantize_record_is_refused(build: str, tmp_path: Pa
     (quant / "quantize-run.json").unlink()
     result = pipe.run("measure-final", build, **_fake_llama_server(tmp_path))
     assert result.returncode == 1
-    assert "quantize-run.json" in result.stderr and "quantize a1" in result.stderr
+    assert "quantize-run.json" in result.stderr
+    assert "quantize a1" in result.stderr
     assert not pipe.calls("measure.py")
     assert not _llama_calls(tmp_path)
 
@@ -1808,7 +1823,8 @@ def test_a_gguf_build_refuses_the_in_process_scorer(stage: str, mode: list, tmp_
     _mark_scorer_run(pipe)
     result = pipe.run(stage, "a1.q4_k_m", *mode, **_fake_llama_server(tmp_path))
     assert result.returncode == 1
-    assert "in-process" in result.stderr and "GGUF" in result.stderr
+    assert "in-process" in result.stderr
+    assert "GGUF" in result.stderr
     assert not pipe.calls("measure.py")
     assert not _llama_calls(tmp_path)
 
@@ -2148,11 +2164,13 @@ def test_the_gguf_temperature_rule_is_documented() -> None:
     """Deviation d3 is applied by flags for a GGUF (no generation_config.json)."""
     text = _SERVE.read_text(encoding="utf-8")
     header = text[: text.index("set -euo pipefail")]
-    assert "llama-server" in header and "--temp 0 --top-k 1" in header
+    assert "llama-server" in header
+    assert "--temp 0 --top-k 1" in header
     assert "LLAMA_SERVER" in header
     usage = _PIPELINE.read_text(encoding="utf-8")
     usage = usage[: usage.index("set -euo pipefail")]
-    assert "<run>.awq" in usage and "<run>.q4_k_m" in usage
+    assert "<run>.awq" in usage
+    assert "<run>.q4_k_m" in usage
 
 
 def test_a_served_scorer_gguf_build_needs_its_base_runs_tokenizer(tmp_path: Path) -> None:
@@ -2233,7 +2251,8 @@ def test_serve_start_refuses_while_another_start_holds_the_lock(tmp_path: Path) 
     (run_dir / f"q46-measure-{port}.lock").mkdir()
     result = _serve(tmp_path, "start", str(model), str(port), **_llama_env(tmp_path))
     assert result.returncode != 0
-    assert "lock" in result.stderr and f"stop {port}" in result.stderr
+    assert "lock" in result.stderr
+    assert f"stop {port}" in result.stderr
     assert not _running_with(str(model))
     assert (run_dir / f"q46-measure-{port}.pid").read_text(encoding="utf-8") == f"{gone.pid}\n1\n"
     stopped = _serve(tmp_path, "stop", str(port), MEASURE_RUN_DIR=str(run_dir))
@@ -2352,7 +2371,8 @@ def test_bundle_bf16_builds_scans_and_records_the_bundle(tmp_path: Path) -> None
     assert _option(argv, "--train-augmented") == [str(pipe.work / "data" / "train-augmented.json")]
     assert _option(argv, "--data-summary") == ["n-records"]
     assert _option(argv, "--out") == [str(out)]
-    assert "--scorer" not in argv and "--quantized-from" not in argv
+    assert "--scorer" not in argv
+    assert "--quantized-from" not in argv
     ((_, scan_argv),) = pipe.calls("scan_bundle.py")
     assert scan_argv[-2:] == ["scan", str(out)]
     meta = json.loads((pipe.work / "bundles" / "tool-jev.json").read_text(encoding="utf-8"))
@@ -2462,7 +2482,8 @@ def test_bundle_dataset_builds_the_apache_only_data_set(tmp_path: Path) -> None:
     ((_, scan_argv),) = pipe.calls("scan_bundle.py")
     assert scan_argv[-2:] == ["scan", str(out)]
     meta = json.loads((pipe.work / "bundles" / "tool-jev-dataset.json").read_text())
-    assert meta["kind"] == "dataset" and meta["repo_type"] == "dataset"
+    assert meta["kind"] == "dataset"
+    assert meta["repo_type"] == "dataset"
     assert meta["repo"] == _PREFIX + "tool-jev-dataset"
 
 
@@ -2625,7 +2646,8 @@ def test_the_qwen_env_example_documents_teacher_models() -> None:
     text = _QWEN_ENV.read_text(encoding="utf-8")
     assert "\nTEACHER_MODELS=" in text
     assert "\nBUNDLE_DATA_SUMMARY=" in text
-    assert "bundle-dataset" in text and "upload-bundle" in text
+    assert "bundle-dataset" in text
+    assert "upload-bundle" in text
 
 
 def _safetensors_file(path: Path, names: list[str]) -> None:
@@ -2697,7 +2719,8 @@ def test_bundle_then_upload_bundle_end_to_end_with_the_real_scripts(tmp_path: Pa
     assert json.loads((merged / "config.json").read_text())["mtp_num_hidden_layers"] == 1
     card = (bundle / "README.md").read_text()
     assert "| Right proposals (metrics.py) | 31 of 32 |" in card
-    assert "Gemma 4 26B-A4B" in card and "Nemotron" not in card
+    assert "Gemma 4 26B-A4B" in card
+    assert "Nemotron" not in card
 
     result = pipe.run("upload-bundle", "tool-jev", **_upload_env(tmp_path))
     assert result.returncode == 0, result.stderr

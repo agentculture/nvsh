@@ -80,7 +80,8 @@ def test_probe_is_deterministic_and_labels_every_wrong_pair_bad() -> None:
         assert item["label"] == "bad"
     for item in by_kind["bad-change-for-read"]:
         operation = module.get_operation(item["expect"]["operation"])
-        assert operation is not None and not operation.read_only  # a mutating change
+        assert operation is not None
+        assert not operation.read_only  # a mutating change
         assert set(item["expect"]["args"]) == {arg.name for arg in operation.args}
     assert all(i["label"] == "bad" for k, v in by_kind.items() if k.startswith("bad") for i in v)
     assert [i["id"] for i in by_kind["bad-asks-for-handoff"]] == ["h1~v1"]

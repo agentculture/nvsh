@@ -171,8 +171,9 @@ def test_without_markers_rendering_switches_thinking_off() -> None:
 
 
 def test_without_markers_an_example_over_max_length_is_refused() -> None:
+    module, tokenizer, example = _module(), _NoMarkerTokenizer(), _single_turn()
     with pytest.raises(ValueError, match="over 5"):
-        _module().tokenize_example(_NoMarkerTokenizer(), _single_turn(), max_length=5)
+        module.tokenize_example(tokenizer, example, max_length=5)
 
 
 def test_with_markers_the_assistant_mask_is_still_used() -> None:
@@ -257,7 +258,8 @@ def test_real_qwen_mask_is_answer_only(tool: str) -> None:
     answer = tokenizer.decode(kept)
     assert answer.startswith("<tool_call>\n<function=" + tool + ">")
     assert answer.endswith("</tool_call><|im_end|>")
-    assert "<think>" not in answer and "<|im_start|>" not in answer
+    assert "<think>" not in answer
+    assert "<|im_start|>" not in answer
     # Masked tokens form one contiguous run at the end of the answer turn.
     first = row["labels"].index(kept[0])
     assert row["labels"][first : first + len(kept)] == kept
@@ -419,7 +421,8 @@ def test_merge_only_needs_no_training_file() -> None:
     # so the merge-only path (and train-scorer's merge, t23) could not parse.
     module = _module()
     args = module._parser().parse_args(["--merge-only", "adapter", "--out", "o"])
-    assert args.train is None and str(args.merge_only) == "adapter"
+    assert args.train is None
+    assert str(args.merge_only) == "adapter"
 
 
 def test_training_without_a_training_file_is_refused(capsys) -> None:

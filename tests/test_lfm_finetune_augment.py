@@ -2639,8 +2639,9 @@ def test_temperature_defaults_to_0_7_and_is_overridable_per_role() -> None:
 
 @pytest.mark.parametrize("raw", ["hot", "-0.1", "2.5"])
 def test_temperature_rejects_non_numbers_and_out_of_range(raw) -> None:
+    env = _role_env(NVSH_AUG_REVIEWER_B_TEMPERATURE=raw)
     with pytest.raises(aug.ConfigError, match="NVSH_AUG_REVIEWER_B_TEMPERATURE"):
-        aug.load_role_config("REVIEWER_B", _role_env(NVSH_AUG_REVIEWER_B_TEMPERATURE=raw))
+        aug.load_role_config("REVIEWER_B", env)
 
 
 def test_temperature_is_sent_and_recorded(tmp_path, monkeypatch, fake_server):
@@ -2769,8 +2770,9 @@ def test_reasoning_effort_is_unset_by_default_and_overridable() -> None:
 
 
 def test_reasoning_effort_rejects_an_unknown_level() -> None:
+    env = _role_env(NVSH_AUG_REVIEWER_B_REASONING_EFFORT="max")
     with pytest.raises(aug.ConfigError, match="NVSH_AUG_REVIEWER_B_REASONING_EFFORT"):
-        aug.load_role_config("REVIEWER_B", _role_env(NVSH_AUG_REVIEWER_B_REASONING_EFFORT="max"))
+        aug.load_role_config("REVIEWER_B", env)
 
 
 def test_reasoning_effort_is_sent_with_disable_thinking_and_recorded(
@@ -2984,9 +2986,10 @@ def test_decide_by_both_is_the_default_and_unchanged(tmp_path, monkeypatch, fake
 
 
 def test_decide_by_rejects_an_unknown_rule(tmp_path) -> None:
+    seed_files = [_split_seed_file(tmp_path)]
     with pytest.raises(ValueError, match="decide_by"):
         aug.run_pipeline(
-            seed_files=[_split_seed_file(tmp_path)],
+            seed_files=seed_files,
             roles={},
             accepted_out=tmp_path / "a.jsonl",
             rejected_out=tmp_path / "r.jsonl",

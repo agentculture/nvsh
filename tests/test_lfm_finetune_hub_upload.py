@@ -173,7 +173,8 @@ def test_upload_is_private_and_the_fetch_back_is_byte_identical(tmp_path, capsys
         "repo_info",
     ]
     assert hub.calls[0] == ("HfApi", True)  # the token came from the named variable
-    assert hub.calls[1][2]["private"] is True and hub.calls[1][2]["exist_ok"] is True
+    assert hub.calls[1][2]["private"] is True
+    assert hub.calls[1][2]["exist_ok"] is True
     assert hub.calls[2][2]["private"] is True
     assert hub.calls[4][2]["revision"] == "c0ffee"  # exactly the commit just made
     for call in hub.calls[1:]:

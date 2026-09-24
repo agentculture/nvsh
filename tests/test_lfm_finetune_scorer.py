@@ -102,8 +102,9 @@ def test_a_label_stays_with_its_candidate_when_others_are_not_offered() -> None:
 
 
 def test_an_unknown_candidate_is_refused() -> None:
+    module = _module()
     with pytest.raises(ValueError, match="not a candidate"):
-        _module().labels_for(("no_such_operation",))
+        module.labels_for(("no_such_operation",))
 
 
 # -- the distribution --
@@ -146,7 +147,8 @@ def test_score_returns_a_normalised_distribution_and_its_argmax() -> None:
     assert math.isclose(sum(scored.distribution.values()), 1.0, rel_tol=1e-9)
     assert scored.choice == "explain"
     assert scored.confidence == max(scored.distribution.values())
-    assert scored.arguments is None and scored.grounding is None
+    assert scored.arguments is None
+    assert scored.grounding is None
     assert fake.prompts == ["prompt text"]
     assert fake.tops[0] >= len(module.candidates())
 
@@ -225,7 +227,8 @@ def test_candidates_use_bench_labels_for_the_two_controls() -> None:
         set(ops_table.names()) | {bench.ESCALATE_LABEL, bench.EXPLAIN_LABEL}
     )
     assert scored.candidates[bench.ESCALATE_LABEL] == scored.distribution["escalate"]
-    assert "escalate" not in scored.candidates and "explain" not in scored.candidates
+    assert "escalate" not in scored.candidates
+    assert "explain" not in scored.candidates
 
 
 def test_a_confident_correct_escalate_calibrates_perfectly_through_metrics() -> None:
@@ -236,7 +239,8 @@ def test_a_confident_correct_escalate_calibrates_perfectly_through_metrics() -> 
     scored = module.score(
         fake, "p", "x", offered=("explain", "escalate"), runner=world_runner(_WORLD)
     )
-    assert scored.choice == "escalate" and scored.confidence == 1.0
+    assert scored.choice == "escalate"
+    assert scored.confidence == 1.0
     line = _prediction_line(scored, {"escalate": True})
     result = metrics.compute([metrics.Prediction.from_dict(json.loads(json.dumps(line)))])
     assert result["calibration"]["n"] == 1
@@ -256,7 +260,8 @@ def test_a_served_result_missing_labels_is_marked_incomplete_not_renormalised() 
     scored = module.score(fake, "p", "x", runner=world_runner(_WORLD))
     assert scored.candidates is None
     assert scored.distribution == {}
-    assert scored.incomplete and "missing" in scored.incomplete
+    assert scored.incomplete
+    assert "missing" in scored.incomplete
     assert set(scored.missing) == set(module.candidates()) - {first}
     assert scored.choice == first
     assert scored.confidence == pytest.approx(0.01)  # the raw probability, not 1.0
@@ -339,7 +344,8 @@ def test_two_grounded_values_are_ambiguous_not_a_pick() -> None:
     module = _module()
     operation = ops_table.get(_operation_with_arg("str", "service"))
     result = module.ground_arguments(operation, "restart nginx or docker", world_runner(_WORLD))
-    assert isinstance(result, str) and "ambiguous" in result
+    assert isinstance(result, str)
+    assert "ambiguous" in result
 
 
 def test_an_operation_with_no_arguments_grounds_to_empty_without_a_lookup() -> None:
@@ -404,8 +410,9 @@ class _OneTokenPerChar:
 
 def test_label_token_ids_refuses_a_label_that_is_not_a_single_token() -> None:
     module = _module()
+    tokenizer = _OneTokenPerChar()
     with pytest.raises(ValueError, match="single token"):
-        module.label_token_ids(_OneTokenPerChar(), {"a": "AB"})
+        module.label_token_ids(tokenizer, {"a": "AB"})
 
 
 def test_label_token_ids_refuses_two_labels_sharing_a_token() -> None:
@@ -415,8 +422,9 @@ def test_label_token_ids_refuses_two_labels_sharing_a_token() -> None:
         def encode(self, text, add_special_tokens=False):
             return [1]
 
+    tokenizer = _Same()
     with pytest.raises(ValueError, match="share"):
-        module.label_token_ids(_Same(), {"a": "A", "b": "B"})
+        module.label_token_ids(tokenizer, {"a": "A", "b": "B"})
 
 
 def _qwen_tokenizer():
@@ -482,5 +490,6 @@ def test_the_in_process_scorer_returns_label_logprobs_that_normalise() -> None:
     distribution, _ = module.distribution(logprobs, labels)
     assert math.isclose(sum(distribution.values()), 1.0, rel_tol=1e-6)
     scored = module.score(scorer, "anything", "x", runner=world_runner(_WORLD))
-    assert scored.incomplete is None and scored.missing == ()
+    assert scored.incomplete is None
+    assert scored.missing == ()
     assert math.isclose(sum(scored.candidates.values()), 1.0, rel_tol=1e-6)
