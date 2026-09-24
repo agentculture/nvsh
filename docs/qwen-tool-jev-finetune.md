@@ -790,6 +790,23 @@ for debugging). `--allow-tier-errors N` accepts up to N and prints the count
 at the top of the page. A scorer's normal "incomplete" top-k result is not an
 error.
 
+**Never measure on a Spark while a training job holds its GPU** (ledger
+P64, machine safety). On GB10's unified memory, training sinks *free*
+memory to about 2.5 GiB while *available* stays near 40 GiB (page cache
+from reading weights and data); a GPU allocation there fails outright
+instead of evicting that page cache, rather than slowing down the way a
+discrete-VRAM box would. A `serve_for_measure.sh`-started vLLM can die
+mid-run this way (`NVRM: ... Out of memory [NV_ERR_NO_MEMORY] ...
+_memdescAllocInternal` in the kernel log), and `measure.py`'s tier-error
+gate above is what turns that into a clean, refused run instead of a
+scored partial one. The training memory watchdog (P34, step 11) does not
+catch this: it watches *available* memory, which stays high throughout, not
+*free*. Schedule every `measure-val`/`measure-final` call on a machine only
+when no `train`/`train-scorer` run is using that machine's GPU — on spark,
+that means training one checkpoint at a time when a measurement is also
+queued, not overlapping the next recipe's training with the previous one's
+measurement.
+
 ### 10. Train Track A on spark (a1, a2 done; a3, a4 running)
 
 ```bash
@@ -1285,6 +1302,26 @@ and the commit on `spec/qwen-tool-jev-issue-46`.
   with return code 3, no Python process left on the GPU, and the serving
   containers' restart counts unchanged. *Commit:* `67bb9e7` (merge
   `686e1c8`).
+- **P64. A GPU allocation can fail beside a training job because unified
+  memory does not evict the page cache.** `a3` trained fine (549 steps, 372
+  adapter tensors merged and verified) but its own validation measurement
+  lost its vLLM server mid-run with 1 `tier_error` while `a4` trained on the
+  same GPU — the same failure mode as `b2`'s served run and the two earlier
+  "Engine core initialization failed" start-ups (P63). *Found:* the lead,
+  reading spark's kernel log after the failed measurement: at 08:10:36,
+  `NVRM: ... Out of memory [NV_ERR_NO_MEMORY] ... _memdescAllocInternal`.
+  *Root cause:* during training, spark's *free* memory sinks to about
+  2.5 GiB while *available* stays about 40 GiB (page cache built up from
+  reading weights and data). On GB10's unified memory, a GPU allocation
+  fails outright instead of evicting that page cache, so a vLLM server
+  started — or already running — beside a training job can die. The
+  training memory watchdog (P34) was unaffected by this: it watches
+  *available* memory, which stayed high throughout, not *free*. *Fix
+  (rule, not code):* measure on spark only when no training run holds
+  spark's GPU (`a3` and `a4` are both re-measured after `a4` finishes). Not
+  yet tried: dropping the page cache before a measurement (needs root,
+  `sync; echo 3 > /proc/sys/vm/drop_caches`) or a cgroup limit on the
+  trainer's page cache, either of which might allow overlap.
 
 ### Found by reading code against the run log
 
@@ -2340,3 +2377,30 @@ with lr 1e-4 (3 epochs), sequentially on spark2.
 GPU when possible. A served run under load can lose its server mid-run; the
 tier-error gate is what catches that rather than silently writing a
 partial-run results page.
+
+### 2026-09-24 ~08:15: a3's measurement loses its server too — root cause found
+
+`a3` (`a2`'s recipe, 5 epochs) trained fine on spark at 08:03: 549 steps,
+372 adapter tensors merged and verified by the lapse-l4 fix (revision
+`d0303706...`). Its own validation measurement then lost its vLLM server
+mid-run — 1 `tier_error`, the gate refused to write a results page — while
+`a4` trained on spark's GPU at the same time. Same failure shape as `b2`'s
+served run and the two earlier "Engine core initialization failed"
+start-ups (P63).
+
+The lead read spark's kernel log and found the cause at 08:10:36: `NVRM:
+... Out of memory [NV_ERR_NO_MEMORY] ... _memdescAllocInternal`. During
+training, spark's *free* memory sinks to about 2.5 GiB while *available*
+stays about 40 GiB — the difference is page cache built up from reading
+weights and data. On GB10's unified memory a GPU allocation fails outright
+instead of evicting that page cache, so a vLLM server started (or already
+running) beside a training job can die (ledger P64). The training memory
+watchdog was unaffected: it watches available memory, not free, and
+available stayed high throughout.
+
+**Rule adopted:** measure on spark only when no training run holds spark's
+GPU. `a3` and `a4` are both measured after `a4` finishes, not concurrently
+with it. Idea forward, not yet tried: dropping the page cache before a
+measurement (needs root: `sync; echo 3 > /proc/sys/vm/drop_caches`), or a
+cgroup limit on the trainer's page cache, either of which might allow
+measuring and training to overlap safely.
