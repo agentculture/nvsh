@@ -1925,3 +1925,38 @@ def test_served_ctx_defaults_to_what_the_report_shows(measure) -> None:
     # Codex review of lapse l3: no ctx in the config must still be checked.
     assert measure._served_ctx({}) == measure.DEFAULT_CTX
     assert measure._served_ctx({"ctx": 2048}) == 2048
+
+
+# ---------------------------------------------------------------------------
+# Track B failures surface; the tokenizer comes from a path (issue 46, t23)
+# ---------------------------------------------------------------------------
+
+
+def test_scorer_failure_reason_reaches_stderr(measure, tmp_path, capsys):
+    split = _small_split(tmp_path)
+    fake = _FakeScorer(lambda prompt: {})
+    built: list = []
+    harness = Harness(measure, tmp_path, FakeDocker(), lfm={"engine": "vllm", "mode": "attach"})
+    _scorer_seams(measure, harness, fake, built)
+
+    def failing(spec):
+        raise ImportError("No module named 'transformers'")
+
+    harness.seams.build_scorer = failing
+    argv = _argv(split, tmp_path / "r.md", "--scorer", "in-process", models=(STOCK,))
+    assert measure.main(argv, seams=harness.seams) == 2
+    err = capsys.readouterr().err
+    assert "scorer start-up failed" in err and "transformers" in err
+
+
+def test_tokenizer_option_reaches_the_scorer_spec(measure, tmp_path):
+    split = _small_split(tmp_path)
+    full = _label_logprobs(measure, "escalate")
+    fake = _FakeScorer(lambda prompt: full)
+    built: list = []
+    harness = Harness(measure, tmp_path, FakeDocker(), lfm={"engine": "vllm", "mode": "attach"})
+    _scorer_seams(measure, harness, fake, built)
+    argv = _argv(split, tmp_path / "r.md", "--scorer", "in-process", models=(STOCK,))
+    argv += ["--tokenizer", "/models/merged"]
+    measure.main(argv, seams=harness.seams)
+    assert built and built[0].tokenizer == "/models/merged"

@@ -167,6 +167,30 @@ measure_model_dir() {
   echo "$WORK/runs/$name/merged"
 }
 
+scorer_measure_args() {
+  # Track B (--scorer): measure.py's scorer loads a tokenizer (transformers,
+  # the training environment's) from a path, not from the served name (issue
+  # 46, t23). Prints the extra measure.py args; the caller sets PYTHONPATH.
+  local arg
+  for arg in "$@"; do
+    if [ "$arg" = --scorer ] || [[ $arg == --scorer=* ]]; then
+      printf '%s\n' --tokenizer "$(measure_model_dir "$1")"
+      return 0
+    fi
+  done
+}
+
+measure_pythonpath() {
+  # The training site-packages for a --scorer run, else nothing.
+  local arg
+  for arg in "$@"; do
+    if [ "$arg" = --scorer ] || [[ $arg == --scorer=* ]]; then
+      train_site_packages
+      return 0
+    fi
+  done
+}
+
 refuse_extra_ctx() {
   # An extra --ctx relabels the report without changing the server (lapse l3).
   local arg
@@ -348,23 +372,33 @@ case "$STAGE" in
     snapshot=$(ground_snapshot); rev=$(measure_revision "$name")
     label="$name-val"
     if [ "$MEASURE_CTX" != 2048 ]; then label="$name-val-ctx$MEASURE_CTX"; fi
+    mapfile -t scorer_args < <(scorer_measure_args "$name" "$@")
+    site=$(measure_pythonpath "$@")
+    if [ -n "$site" ]; then pythonpath="$site${PYTHONPATH:+:$PYTHONPATH}"; else pythonpath="${PYTHONPATH:-}"; fi
     serve_for_measure "$name" "$label"
-    py scripts/lfm-finetune/measure.py --split "$WORK/splits/val.json" --model "$name" \
+    PYTHONPATH="$pythonpath" \
+      py scripts/lfm-finetune/measure.py --split "$WORK/splits/val.json" --model "$name" \
       --revision "$rev" --label "$label" --config "$measure_config" --ctx "$MEASURE_CTX" \
       --ground-snapshot "$snapshot" --enable-thinking "${ENABLE_THINKING:-false}" \
       --max-logprobs "$MEASURE_MAX_LOGPROBS" \
-      --out "$WORK/measure/$label.md" --details "$WORK/measure/$label.jsonl" --force "$@"
+      --out "$WORK/measure/$label.md" --details "$WORK/measure/$label.jsonl" --force \
+      "${scorer_args[@]}" "$@"
     ;;
   measure-final)
     name=${1:?measure-final <name> [measure.py args]}; shift
     refuse_extra_ctx "$@"
     snapshot=$(ground_snapshot); rev=$(measure_revision "$name")
+    mapfile -t scorer_args < <(scorer_measure_args "$name" "$@")
+    site=$(measure_pythonpath "$@")
+    if [ -n "$site" ]; then pythonpath="$site${PYTHONPATH:+:$PYTHONPATH}"; else pythonpath="${PYTHONPATH:-}"; fi
     serve_for_measure "$name" "final-$name"
-    py scripts/lfm-finetune/measure.py --split "$WORK/splits/test.json" --final \
+    PYTHONPATH="$pythonpath" \
+      py scripts/lfm-finetune/measure.py --split "$WORK/splits/test.json" --final \
       --model "$name" --revision "$rev" --label "final-$name" --config "$measure_config" \
       --ctx "$MEASURE_CTX" \
       --ground-snapshot "$snapshot" --enable-thinking "${ENABLE_THINKING:-false}" \
-      --max-logprobs "$MEASURE_MAX_LOGPROBS" --predictions "$WORK/final/$name" "$@"
+      --max-logprobs "$MEASURE_MAX_LOGPROBS" --predictions "$WORK/final/$name" \
+      "${scorer_args[@]}" "$@"
     ;;
   measure-skills)
     # measure_skills.py grounds nothing, so it takes no --ground-snapshot, and it

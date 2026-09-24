@@ -1178,3 +1178,33 @@ def test_train_scorer_merges_and_stages_like_train() -> None:
     assert 'gen_config.py write "$run/merged"' in block
     assert '--repo "$REPO-scorer"' in block
     assert '> "$run/revision"' in block
+
+
+@pytest.mark.parametrize("stage", ["measure-val", "measure-final"])
+def test_scorer_measure_stages_get_the_training_stack_and_a_tokenizer_path(
+    stage: str, tmp_path: Path
+) -> None:
+    """Issue 46 t23: the served scorer needs transformers (the training
+    environment's) and a loadable tokenizer path, not the served name."""
+    site = tmp_path / "train-site-packages"
+    site.mkdir()
+    train_py = tmp_path / "train-python"
+    train_py.write_text(f'#!/usr/bin/env bash\necho "{site}"\n', encoding="utf-8")
+    train_py.chmod(0o755)
+    pipe = _Pipeline(tmp_path, f"TRAIN_PY={train_py}\n")
+    pipe.ready()
+    result = pipe.run(stage, "a1", "--scorer", "served")
+    assert result.returncode == 0, result.stderr
+    [(pythonpath, argv)] = pipe.calls("measure.py")
+    assert pythonpath == str(site)
+    assert _option(argv, "--tokenizer") == [str(pipe.work / "runs" / "a1" / "merged")]
+
+
+def test_generative_measure_stages_keep_the_repo_environment(tmp_path: Path) -> None:
+    pipe = _Pipeline(tmp_path)
+    pipe.ready()
+    result = pipe.run("measure-val", "a1")
+    assert result.returncode == 0, result.stderr
+    [(pythonpath, argv)] = pipe.calls("measure.py")
+    assert pythonpath == ""
+    assert "--tokenizer" not in argv

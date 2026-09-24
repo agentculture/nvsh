@@ -1386,6 +1386,10 @@ class ScorerSpec:
     lfm_settings: Mapping[str, object]
     runtime_platform: Platform
     memory_floor_mb: int
+    #: Where to load the tokenizer (and the in-process model) from; ``None`` is
+    #: *model*. A served model's name is not loadable (issue 46, t23), so the
+    #: pipeline passes the served model's local directory.
+    tokenizer: str | None = None
 
 
 @dataclass(frozen=True)
@@ -1415,7 +1419,8 @@ def build_scorer(spec: ScorerSpec) -> ScorerHandle:  # pragma: no cover - a mode
     """
     from transformers import AutoTokenizer
 
-    tokenizer = AutoTokenizer.from_pretrained(spec.model, revision=spec.revision)
+    source = spec.tokenizer or spec.model
+    tokenizer = AutoTokenizer.from_pretrained(source, revision=spec.revision)
 
     def render(messages: list[dict]) -> str:
         return scorer.render_prompt(tokenizer, messages)
@@ -1436,7 +1441,7 @@ def build_scorer(spec: ScorerSpec) -> ScorerHandle:  # pragma: no cover - a mode
     from transformers import AutoModelForCausalLM
 
     model = AutoModelForCausalLM.from_pretrained(
-        spec.model, revision=spec.revision, torch_dtype=torch.bfloat16
+        source, revision=spec.revision, torch_dtype=torch.bfloat16
     )
     if torch.cuda.is_available():
         model = model.to("cuda")
@@ -1693,6 +1698,8 @@ class RunPlan:
     request_options: RequestOptions = RequestOptions()
     #: ``""`` for a generative run, else :data:`SCORER_SERVED` / :data:`SCORER_IN_PROCESS`.
     scorer_kind: str = ""
+    #: ``--tokenizer``: where a scorer loads its tokenizer; ``None`` is the model.
+    tokenizer: str | None = None
 
 
 def _offered_by_request(plan: RunPlan) -> dict[tuple, tuple[str, ...]]:
@@ -1791,6 +1798,7 @@ def score_one(plan: RunPlan, model: str, revision: str, seams: Seams) -> RunReco
         lfm_settings={**plan.lfm_settings, "model": model},
         runtime_platform=plan.runtime_platform,
         memory_floor_mb=int(plan.tiers.get("memory_floor_mb", 1024)),  # type: ignore[arg-type]
+        tokenizer=plan.tokenizer,
     )
     started = seams.clock()
     try:
@@ -2328,6 +2336,12 @@ def _parser() -> argparse.ArgumentParser:
         default=None,
         help="Track B: score candidate labels with scorer.py instead of generating",
     )
+    parser.add_argument(
+        "--tokenizer",
+        default=None,
+        help="with --scorer: load the tokenizer (and an in-process model) from this path "
+        "instead of --model, which for a served model is only its served name",
+    )
     return parser
 
 
@@ -2562,6 +2576,7 @@ def _run(
             enable_thinking=args.enable_thinking, top_logprobs=args.top_logprobs
         ),
         scorer_kind=args.scorer or "",
+        tokenizer=args.tokenizer,
     )
     for model, revision in zip(args.model, args.revision):  # refuse before any run starts
         if args.scorer:
@@ -2663,7 +2678,12 @@ def _run(
         )
         print("hint: serve with thinking off (--enable-thinking false)", file=sys.stderr)
         return EXIT_ENV
-    return EXIT_ENV if any(record.failure for record in records) else EXIT_OK
+    failed = [record for record in records if record.failure]
+    for record in failed:
+        # A scorer report has no start-up row, so without this a failed Track B
+        # run exited 2 with no reason anywhere (issue 46, t23).
+        print(f"error: {record.model}: {record.failure}", file=sys.stderr)
+    return EXIT_ENV if failed else EXIT_OK
 
 
 def main(argv: Sequence[str] | None = None, *, seams: Seams | None = None) -> int:
