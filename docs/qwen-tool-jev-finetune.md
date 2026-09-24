@@ -26,7 +26,7 @@ are CC-BY-4.0 and are used as a test set only; nothing trained on them is
 published here. Training happens on development machines. **nvsh itself
 never trains and never uploads.**
 
-## Where the run stands (2026-09-24, about 07h30)
+## Where the run stands (2026-09-24, about 08h00)
 
 - **Done:** the tooling is complete and live-checked. The sealed held-out
   set is done: 69 entries, sha256 `5eb650f9...`. t18, the clean-slate
@@ -38,14 +38,17 @@ never trains and never uploads.**
   5-9](#5-re-review-with-reviewer-b).
 - **Also done:** t22 (Track A `--targets attn-mlp-gdn` LoRA-target option)
   and t23 (Track B measurement, merge and staging) have both trained and
-  measured at least one checkpoint each on validation: Track A's `a1`
+  measured at least two checkpoints each on validation: Track A's `a1`
   (attn-mlp) and `a2` (attn-mlp-gdn) on spark, Track B's `b1` (all-linear
-  LoRA) on spark2, plus Track B's exact in-process calibration (d15). See
-  [Reproduce it, steps 10-11](#10-train-track-a-on-spark-a1-a2-done-a3-a4-running).
-- **Running:** t22/t23 continue with three more runs: `a3` (a2 + 5 epochs)
-  and `a4` (a2 + rank 32/alpha 64) on spark, `b2` (b1 + 5 epochs) on spark2.
-  Selection is on validation only, in this order: no wrong mutating
-  proposals first, then abstention, then right proposals (r9).
+  LoRA, 3 epochs, the current pick) and `b2` (`b1` + 5 epochs, worse on
+  every axis — more epochs overfit Track B) on spark2, plus Track B's exact
+  in-process calibration (d15). See [Reproduce it, steps
+  10-11](#10-train-track-a-on-spark-a1-a2-done-a3-a4-running).
+- **Running:** t22/t23 continue: `a3` (a2 + 5 epochs) and `a4` (a2 + rank
+  32/alpha 64) on spark; `b3` (`b1` + 2 epochs) and `b4` (`b1`, lr 1e-4, 3
+  epochs) next on spark2. Selection is on validation only, in this order:
+  no wrong mutating proposals first, then abstention, then right proposals
+  (r9).
 - **Not yet started:** t24, the single final run (test side, held-out set,
   missing-candidate slice, once per checkpoint, stock included); t25,
   quantize and heal; the edge check on AGX Orin; a private upload (with the
@@ -776,7 +779,7 @@ $P --env qwen.env measure-val stock --scorer in-process
 21 of 32 right proposals, abstain recall 1 of 16, precision (strict) 100%,
 false-positive tool calls 31 of 34, ECE 0.164, Brier 0.765, warm 81 ms. This
 is the "stock (exact scorer)" row in the validation table under [Where the
-run stands](#where-the-run-stands-2026-09-24-about-07h30) and repeated in the
+run stands](#where-the-run-stands-2026-09-24-about-08h00) and repeated in the
 [run log](#2026-09-24-0530-0720-t22t23-first-runs-three-pipeline-bugs-lapse-l4).
 
 **A dead server fails the run** (P49). Before the first entry, `measure.py`
@@ -867,7 +870,7 @@ class correctly but wrote doubled key prefixes
 latency comparison between them (see [Not verified
 yet](#not-verified-yet)).
 
-### 11. Train Track B on spark2 (b1 done, b2 running)
+### 11. Train Track B on spark2 (b1, b2 done; b3, b4 next)
 
 spark2 needs its own env file: its own work-directory paths, its own private
 `HF_HOME` (step 1: the shared cache is root-owned), `HF_HUB_OFFLINE=1`, and
@@ -913,7 +916,28 @@ The real run, `b1` (all-linear LoRA, same recipe as `a1`/`a2`: 3 epochs, lr
 2e-4, rank 16/alpha 32, batch 8, seed 46): 26 minutes on spark2, trainer's own
 validation 60 of 66 (90.9%), mean confidence 0.957; spark2 kept about 25 GB
 available throughout and the serving containers (model-gear) were untouched.
-`b2` = `b1` + 5 epochs (in progress).
+
+**`b2` = `b1` + 5 epochs: worse on every axis (more epochs overfit Track
+B).** 43 minutes; trainer's own validation 56 of 66 (84.8%), loss 0.67, mean
+confidence 0.947 (against `b1`'s 90.9% and 0.29 loss). spark2's checkout was
+still on the pre-f23 merge when `b2` trained; its merge is text-only and
+every adapter key matched (0 missing-key warnings, the lapse-l4 fix already
+covered Track B correctly), and the lead verified the merged weights
+actually differ from the base (attention, GDN and MLP weights all changed)
+before measuring — spark2 was re-synced to the guide's current commit
+afterward. `b2`'s exact in-process scorer on validation: 30 of 32 right
+proposals, abstain recall 7 of 16 (43.8%), precision 100%, false-positive
+tool calls 2 of 34, wrong mutating 1, invalid 7 (not grounded), ECE 0.106,
+Brier 0.217, warm 164 ms in-process. Its served run hit 1 `tier_error` (the
+server became unreachable mid-run while Track A's `a4` trained on the same
+GPU) and the tier-error gate (P49) refused to write a results page at all,
+as designed — a lesson for the tutorial: **measure while nothing else trains
+on the same GPU when possible**; a served run under load can lose the
+server mid-measurement, and the gate is what catches that rather than
+silently scoring a partial run.
+
+Track B selection so far: **`b1`**. Next: `b3` = `b1` with 2 epochs, `b4` =
+`b1` with lr 1e-4 (3 epochs), run sequentially on spark2.
 
 **Measuring a served Track B run needs the training stack, not the repo's
 own venv.** The first served-scorer measurement runs exited 2 with every
@@ -2265,6 +2289,11 @@ failures after the f10 merge.
 | `a1` | 32/32 | 12/16 (75%) | 100% | 3/34 | 2 | 18/18 | 420 ms |
 | `a2` | 32/32 | 13/16 (81%) | 100% | 2/34 | 1 | 18/18 | 419 ms |
 | `b1` (served / exact) | 28/32 (4 not grounded) | 12/16 (75%) | 92.3% | 0/34 | 0 | — | 76 ms served; exact ECE 0.097, Brier 0.162 |
+| `b2` (exact, in-process only — served run lost its server mid-run) | 30/32 (7 invalid, not grounded) | 7/16 (43.8%) | 100% | 2/34 | 1 | — | 164 ms in-process; ECE 0.106, Brier 0.217 |
+
+`b2` is worse than `b1` on every axis (abstain recall, ECE, Brier, trainer
+validation and loss): 5 epochs overfits Track B. Track B selection stays
+`b1`; `b3` (2 epochs) and `b4` (lr 1e-4, 3 epochs) are next.
 
 r9 on validation: the GDN targets (`a2`) beat `attn-mlp` (`a1`). `a2`'s
 errors: "Set the power mode" (no mode given) proposed `power_set
@@ -2276,6 +2305,38 @@ balanced mode" and "nvpmodel low power" were escalated instead of
 plan expected (quantization is t25's job).
 
 At about 07:30, `a3` (`a2` + 5 epochs) and `a4` (`a2` + rank 32/alpha 64)
-are training on spark, and `b2` (`b1` + 5 epochs) on spark2. Selection stays
+were training on spark, and `b2` (`b1` + 5 epochs) on spark2. Selection stays
 validation-only: no wrong mutating proposals first, then abstention, then
 right proposals.
+
+### 2026-09-24 ~08:00: b2 done — more epochs overfit Track B
+
+`b2` (`b1`'s recipe, 5 epochs instead of 3) finished on spark2: 43 minutes,
+trainer's own validation 56 of 66 (84.8%, against `b1`'s 90.9%), loss 0.67
+(against `b1`'s 0.29), mean confidence 0.947 (against `b1`'s 0.957).
+spark2's checkout was still on the pre-f23 merge when `b2` trained; its
+merge is text-only and every adapter key matched with 0 missing-key
+warnings (the lapse-l4 merge bug was Track A-specific — Track B's merge
+path was already correct), and the lead verified the merged weights
+actually changed from the base (attention, GDN and MLP weights all
+differed) before measuring, rather than repeat lapse l4's mistake of
+measuring an unverified merge. spark2 was re-synced to this guide's current
+commit right after.
+
+`b2` validation, exact in-process scorer: 30 of 32 right proposals, abstain
+recall 7 of 16 (43.8%), precision 100%, false-positive tool calls 2 of 34,
+wrong mutating 1 (1 of 1 mutating expectations, 0 of the rest), invalid 7
+(not grounded), ECE 0.106, Brier 0.217, warm 164 ms in-process. The served
+run hit 1 `tier_error`: the server became unreachable mid-run while Track
+A's `a4` trained on the same GPU, and the tier-error gate (P49) refused to
+write a results page at all, exactly as designed, rather than score a
+partial run. `b2` is worse than `b1` on every axis measured — more epochs
+overfit Track B.
+
+Track B selection stays `b1`. Next: `b3` = `b1` with 2 epochs, `b4` = `b1`
+with lr 1e-4 (3 epochs), sequentially on spark2.
+
+**Lesson for the tutorial:** measure while nothing else trains on the same
+GPU when possible. A served run under load can lose its server mid-run; the
+tier-error gate is what catches that rather than silently writing a
+partial-run results page.
