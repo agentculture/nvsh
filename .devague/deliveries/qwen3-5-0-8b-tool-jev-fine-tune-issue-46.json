@@ -2,7 +2,7 @@
   "plan_slug": "qwen3-5-0-8b-tool-jev-fine-tune-issue-46",
   "schema_version": 2,
   "created": "2026-09-23T10:18:50Z",
-  "updated": "2026-09-24T03:48:26Z",
+  "updated": "2026-09-24T06:24:36Z",
   "deviations": [
     {
       "id": "d1",
@@ -204,6 +204,20 @@
       "status": "proposed",
       "classification": "acceptable",
       "seq": 15
+    },
+    {
+      "id": "d16",
+      "what": "t24 tooling gap closed inside t24: pipeline.sh gains measure-heldout (sealed held-out via HELDOUT_SPLIT, measure.py --acceptance, no per-entry details, label heldout-<name>) and gives --slice missing-candidate runs their own label (final-/heldout-<name>-missing-candidate) so each of the three final sets is one distinct, non-overwriting run",
+      "task_ref": "t24",
+      "reason": "measure-final only measured test.json under one fixed label: the missing-candidate slice would collide with the full run's label, and no stage could score the sealed held-out file; t24 cannot run as specified without it. TDD-gated, Codex-reviewed, done before any test-side measurement",
+      "affects": [
+        "t24",
+        "t9"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "classification": "acceptable",
+      "seq": 16
     }
   ],
   "evidence": [],

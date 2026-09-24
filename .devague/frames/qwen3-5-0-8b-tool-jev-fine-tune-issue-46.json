@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-09-23T06:56:50Z",
-  "updated": "2026-09-24T04:02:38Z",
+  "updated": "2026-09-24T06:11:44Z",
   "claims": [
     {
       "id": "c1",
@@ -1357,6 +1357,15 @@
       "refs": [
         "t22"
       ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l5",
+      "code": "instrument-changed-mid-series",
+      "what": "b4 served measurement first run without --scorer: the Track B scorer was measured as a generative tool-caller (0/32); caught before any decision used it, quarantined, re-run in scorer mode; guard d39c5e3 (P66)",
+      "skipped_check": "",
+      "refs": [],
       "origin": "llm",
       "status": "proposed"
     }
