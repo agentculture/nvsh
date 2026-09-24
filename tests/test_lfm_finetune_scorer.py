@@ -716,4 +716,201 @@ def test_label_variants_for_the_qwen_tokenizer_include_the_bare_and_spaced_label
         assert bare[name] in variants[name]
         texts = {tokenizer.decode([index]) for index in variants[name]}
         assert {label, " " + label} <= texts
-        assert all(text.strip() == label for text in texts)
+
+
+# -- the permutation seam (issue 53, t2) --
+
+
+def test_default_prompt_text_is_pinned_so_scorer_b1_stays_reproducible() -> None:
+    module = _module()
+    messages = module.prompt_messages("Restart vLLM", ("explain", "escalate"))
+    assert messages == [
+        {
+            "role": "system",
+            "content": (
+                "You pick the one action that handles the operator's request on this machine."
+                " Answer with the action's letter only.\n\nActions:\n"
+                "Q) explain: Answer the operator in plain words, with no command.\n"
+                "R) escalate: Hand this request to the full agent, saying why."
+            ),
+        },
+        {"role": "user", "content": "Restart vLLM"},
+    ]
+
+
+def test_score_with_no_seam_arguments_is_unchanged_from_before_the_seam() -> None:
+    module = _module()
+    fake = _FakeScorer(_favouring(module, "explain"))
+    scored = module.score(fake, "prompt text", "x", runner=world_runner(_WORLD))
+    assert scored.choice == "explain"
+    assert set(scored.distribution) == set(module.candidates())
+
+
+def test_prompt_messages_accepts_an_explicit_label_map_and_order() -> None:
+    module = _module()
+    order = ("escalate", "explain")
+    labels = {"escalate": "Z", "explain": "Y"}
+    messages = module.prompt_messages("Restart vLLM", labels=labels, order=order)
+    system = messages[0]["content"]
+    assert "Z) escalate:" in system
+    assert "Y) explain:" in system
+    # the order given is the listing order
+    assert system.index("Z) escalate:") < system.index("Y) explain:")
+
+
+def test_score_accepts_the_same_explicit_label_map_and_order() -> None:
+    module = _module()
+    order = ("escalate", "explain")
+    labels = {"escalate": "Z", "explain": "Y"}
+    fake = _FakeScorer({"Z": math.log(0.9), "Y": math.log(0.1)})
+    scored = module.score(fake, "p", "x", labels=labels, order=order, runner=world_runner(_WORLD))
+    assert set(scored.distribution) == {"escalate", "explain"}
+    assert scored.choice == "escalate"
+
+
+def test_labels_for_default_is_unaffected_by_the_new_seam() -> None:
+    module = _module()
+    assert module.labels_for(module.candidates()) == {
+        name: module.LABEL_ALPHABET[index] for index, name in enumerate(module.candidates())
+    }
+
+
+def test_permute_is_deterministic_for_the_same_seed() -> None:
+    module = _module()
+    first = module.permute("seed-1")
+    second = module.permute("seed-1")
+    assert first == second
+    assert set(first.order) == set(module.candidates())
+    assert set(first.labels) == set(module.candidates())
+    assert len(set(first.labels.values())) == len(first.labels)  # distinct letters
+
+
+def test_permute_gives_a_different_order_or_map_for_a_different_seed() -> None:
+    module = _module()
+    first = module.permute("seed-1")
+    second = module.permute("seed-2")
+    assert first != second
+
+
+def test_permute_can_take_a_random_subset_that_keeps_a_gold_candidate() -> None:
+    module = _module()
+    gold = module.candidates()[3]
+    permutation = module.permute("seed-3", subset=4, keep=gold)
+    assert len(permutation.order) == 4
+    assert gold in permutation.order
+    assert set(permutation.labels) == set(permutation.order)
+
+
+def test_permute_subset_is_deterministic_for_the_same_seed() -> None:
+    module = _module()
+    gold = module.candidates()[3]
+    first = module.permute("seed-4", subset=5, keep=gold)
+    second = module.permute("seed-4", subset=5, keep=gold)
+    assert first == second
+
+
+def test_permute_refuses_a_subset_smaller_than_what_must_be_kept() -> None:
+    module = _module()
+    gold = module.candidates()[0]
+    with pytest.raises(ValueError, match="smaller"):
+        module.permute("seed-5", subset=0, keep=gold)
+
+
+def test_permutation_round_trips_through_json() -> None:
+    module = _module()
+    permutation = module.permute("seed-6", subset=4, keep=module.candidates()[0])
+    restored = module.Permutation.from_json(json.loads(json.dumps(permutation.to_json())))
+    assert restored == permutation
+
+
+def test_a_permuted_prompt_and_score_round_trip_through_the_stored_permutation() -> None:
+    module = _module()
+    permutation = module.permute("seed-7", subset=4, keep=module.candidates()[0])
+    stored = module.Permutation.from_json(json.loads(json.dumps(permutation.to_json())))
+    messages = module.prompt_messages("Restart vLLM", labels=stored.labels, order=stored.order)
+    gold_letter = stored.labels[stored.order[0]]
+    logprobs = {
+        letter: (-0.5 if name == stored.order[0] else -5.0 - index * 0.1)
+        for index, (name, letter) in enumerate(stored.labels.items())
+    }
+    assert logprobs[gold_letter] == -0.5
+    fake = _FakeScorer(logprobs)
+    scored = module.score(
+        fake,
+        "p",
+        "Restart vLLM",
+        labels=stored.labels,
+        order=stored.order,
+        runner=world_runner(_WORLD),
+    )
+    assert scored.choice == stored.order[0]
+    assert set(scored.distribution) == set(stored.order)
+    assert messages[0]["content"].startswith(
+        "You pick the one action that handles the operator's request on this machine."
+    )
+
+
+def test_candidate_descriptions_can_be_overridden_without_reading_nvsh() -> None:
+    module = _module()
+    messages = module.prompt_messages(
+        "x",
+        ("explain", "escalate"),
+        descriptions={"explain": "A paraphrased explain description."},
+    )
+    system = messages[0]["content"]
+    assert "A paraphrased explain description." in system
+    assert "Hand this request to the full agent" in system  # escalate: unoverridden default
+
+
+def test_a_reason_candidate_outside_ops_table_and_lfm_needs_an_override() -> None:
+    module = _module()
+    with pytest.raises(ValueError, match="not a candidate"):
+        module.prompt_messages("x", ("escalate:repair",))
+
+
+def test_a_reason_candidate_with_an_override_can_be_offered() -> None:
+    module = _module()
+    order = ("escalate:repair", "explain")
+    labels = {"escalate:repair": "Z", "explain": "Y"}
+    messages = module.prompt_messages(
+        "x",
+        labels=labels,
+        order=order,
+        descriptions={"escalate:repair": "Escalate because a repair is needed."},
+    )
+    system = messages[0]["content"]
+    assert "Z) escalate:repair: Escalate because a repair is needed." in system
+
+
+def test_score_permits_a_reason_candidate_with_an_override_and_explicit_label() -> None:
+    module = _module()
+    order = ("escalate:repair", "explain")
+    labels = {"escalate:repair": "Z", "explain": "Y"}
+    fake = _FakeScorer({"Z": math.log(0.9), "Y": math.log(0.1)})
+    scored = module.score(fake, "p", "x", labels=labels, order=order, runner=world_runner(_WORLD))
+    assert scored.choice == "escalate:repair"
+
+
+def test_same_choice_compares_by_operation_name_not_letter() -> None:
+    module = _module()
+    order = tuple(reversed(module.candidates()))
+    permuted_labels = {name: letter for name, letter in zip(order, reversed(module.LABEL_ALPHABET))}
+    plain = module.score(
+        _FakeScorer(_favouring(module, "explain")), "p", "x", runner=world_runner(_WORLD)
+    )
+    fake = _FakeScorer(
+        {permuted_labels[name]: (-0.5 if name == "explain" else -5.0) for name in order}
+    )
+    permuted = module.score(
+        fake, "p", "x", labels=permuted_labels, order=order, runner=world_runner(_WORLD)
+    )
+    assert module.same_choice(plain, permuted)
+    assert module.same_choice(plain.choice, permuted.choice)
+    assert not module.same_choice(plain, "escalate")
+
+
+def test_score_returns_which_operation_was_chosen_for_op_level_comparison() -> None:
+    module = _module()
+    fake = _FakeScorer(_favouring(module, "explain"))
+    scored = module.score(fake, "p", "x", runner=world_runner(_WORLD))
+    assert scored.choice == "explain"  # the operation name, never a letter

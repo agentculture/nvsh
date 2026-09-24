@@ -68,6 +68,7 @@ helpers work without a training environment.
 from __future__ import annotations
 
 import math
+import random
 import re
 import string
 import sys
@@ -182,6 +183,90 @@ def labels_for(offered: Sequence[str]) -> dict[str, str]:
     return labels
 
 
+@dataclass(frozen=True)
+class Permutation:
+    """A seeded order + letter map (:func:`permute`): one round-trippable, serialisable value.
+
+    ``order`` is the candidates to offer, in listing order (so it also
+    carries the offered subset); ``labels`` maps each of them to its
+    letter. Both a permutation probe (t7) and training/dataset build
+    (t14/t16) store this per example and must render exactly the same
+    prompt from it later, hence :meth:`to_json`/:meth:`from_json`.
+    """
+
+    order: tuple[str, ...]
+    labels: dict[str, str]
+
+    def to_json(self) -> dict:
+        """A plain JSON-safe value: ``{"order": [...], "labels": {...}}``."""
+        return {"order": list(self.order), "labels": dict(self.labels)}
+
+    @classmethod
+    def from_json(cls, data: Mapping) -> "Permutation":
+        """The inverse of :meth:`to_json`."""
+        return cls(order=tuple(data["order"]), labels=dict(data["labels"]))
+
+
+def permute(
+    seed,
+    pool: Sequence[str] | None = None,
+    *,
+    subset: int | None = None,
+    keep: str | Sequence[str] | None = None,
+) -> Permutation:
+    """A seeded random order + letter permutation (optionally a random subset) of *pool*.
+
+    *pool* defaults to :func:`candidates`. The same *seed* (any hashable
+    accepted by :class:`random.Random`, typically an ``int`` or ``str`)
+    always gives the same :class:`Permutation`, independent of process or
+    machine (``random.Random`` seeds deterministically from an int or str).
+
+    *subset*, when given, keeps only that many candidates (drawn from the
+    seeded order); *keep* names one candidate, or several, that the subset
+    must include regardless of where the seeded order put them -- the gold
+    answer, for a subset probe. Letters are drawn from :data:`LABEL_ALPHABET`
+    without replacement, so at most ``len(LABEL_ALPHABET)`` candidates can be
+    offered at once, exactly as :func:`labels_for` already requires.
+    """
+    names = list(candidates() if pool is None else pool)
+    if len(names) > len(LABEL_ALPHABET):
+        raise ValueError(f"{len(names)} candidates but only {len(LABEL_ALPHABET)} labels")
+    rng = random.Random(seed)
+    order = list(names)
+    rng.shuffle(order)
+    if subset is not None:
+        keep_names = (keep,) if isinstance(keep, str) else tuple(keep or ())
+        for name in keep_names:
+            if name not in order:
+                raise ValueError(f"{name!r} to keep is not in the candidate pool")
+        if subset < len(keep_names):
+            raise ValueError(f"subset {subset} is smaller than the {len(keep_names)} to keep")
+        if subset > len(order):
+            raise ValueError(f"subset {subset} is larger than the {len(order)}-candidate pool")
+        kept = [name for name in order if name in keep_names]
+        rest = [name for name in order if name not in keep_names]
+        order = sorted(kept + rest[: subset - len(kept)], key=order.index)
+    letters = list(LABEL_ALPHABET)
+    rng.shuffle(letters)
+    labels = {name: letters[index] for index, name in enumerate(order)}
+    return Permutation(order=tuple(order), labels=labels)
+
+
+def same_choice(a, b) -> bool:
+    """True when *a* and *b* chose the same candidate, compared by name only.
+
+    Each of *a*, *b* is a :class:`Scored` result or a bare choice name (what
+    ``Scored.choice`` already is). Comparing by name, never by letter, is
+    what lets a permutation probe (t7) re-score the same request under many
+    seeded label/order permutations and count only real, op-level answer
+    changes -- a candidate permuted onto a different letter but still chosen
+    is not a change.
+    """
+    left = a.choice if isinstance(a, Scored) else a
+    right = b.choice if isinstance(b, Scored) else b
+    return left == right
+
+
 def calibration_label(name: str) -> str:
     """*name*'s label in a predictions file: bench's label for a control, else the name."""
     return CALIBRATION_LABELS.get(name, name)
@@ -247,7 +332,17 @@ def label_logits_from_vocab(logits, variant_ids: Sequence[Sequence[int]]):
     return torch.stack(columns, dim=-1)
 
 
-def _description(name: str) -> str:
+def _description(name: str, descriptions: Mapping[str, str] | None = None) -> str:
+    """*name*'s prompt description: *descriptions*' entry for it, else the default lookup.
+
+    An override in *descriptions* is used verbatim and never reads
+    ``nvsh/``, so it also covers a candidate that is not in
+    ``ops_table``/``lfm`` at all -- a paraphrase probe's reworded text, or a
+    reason candidate such as ``"escalate:repair"`` -- as long as its text is
+    supplied. Without an override, an unknown name still raises.
+    """
+    if descriptions is not None and name in descriptions:
+        return descriptions[name]
     operation = ops_table.get(name)
     if operation is not None:
         return operation.description
@@ -257,13 +352,56 @@ def _description(name: str) -> str:
     raise ValueError(f"{name!r} is not a candidate")
 
 
+def _label_map(
+    offered: Sequence[str] | None,
+    labels: Mapping[str, str] | None,
+    order: Sequence[str] | None,
+) -> dict[str, str]:
+    """Candidate -> label for one request: *labels*/*order* if given, else today's default.
+
+    *order* names the candidates to offer, in listing order (also carrying
+    the offered subset); default order is *offered* (or every candidate).
+    *labels* is used verbatim when given, keyed exactly by that order --
+    including names :func:`labels_for` would refuse, such as a reason
+    candidate with no table/lfm entry. With no *labels*, :func:`labels_for`
+    keeps assigning today's fixed alphabetical map, so the no-argument
+    default stays byte-identical to before this seam existed.
+    """
+    names = list(order) if order is not None else list(candidates() if offered is None else offered)
+    if labels is None:
+        return labels_for(names)
+    missing = [name for name in names if name not in labels]
+    if missing:
+        raise ValueError(f"no label given for: {', '.join(missing)}")
+    return {name: labels[name] for name in names}
+
+
 # -- the prompt --
 
 
-def prompt_messages(request_text: str, offered: Sequence[str] | None = None) -> list[dict]:
-    """System message listing the offered candidates under their labels, then the request."""
-    labels = labels_for(candidates() if offered is None else offered)
-    lines = [f"{label}) {name}: {_description(name)}" for name, label in labels.items()]
+def prompt_messages(
+    request_text: str,
+    offered: Sequence[str] | None = None,
+    *,
+    labels: Mapping[str, str] | None = None,
+    order: Sequence[str] | None = None,
+    descriptions: Mapping[str, str] | None = None,
+) -> list[dict]:
+    """System message listing the offered candidates under their labels, then the request.
+
+    With no *labels*/*order*/*descriptions*, this is exactly today's prompt
+    (labels from :func:`labels_for`, descriptions from the default lookup),
+    kept byte-identical so scorer-b1 stays reproducible. *labels* is an
+    explicit candidate -> letter map (e.g. from :func:`permute`) and *order*
+    the listing order (also the offered subset) it was drawn for; give
+    either without the other and the missing one is filled in the usual way.
+    *descriptions* overrides a candidate's description text (paraphrase
+    probes, reason candidates) without reading ``nvsh/``; a name with no
+    override falls back to the default lookup.
+    """
+    resolved = _label_map(offered, labels, order)
+    names = list(order) if order is not None else list(resolved)
+    lines = [f"{resolved[name]}) {name}: {_description(name, descriptions)}" for name in names]
     return [
         {"role": "system", "content": _INSTRUCTION + "\n".join(lines)},
         {"role": "user", "content": request_text},
@@ -421,6 +559,8 @@ def score(
     request_text: str,
     *,
     offered: Sequence[str] | None = None,
+    labels: Mapping[str, str] | None = None,
+    order: Sequence[str] | None = None,
     runner: ops_ground.Runner = ops_ground.default_runner,
 ) -> Scored:
     """Score every offered candidate for one request. Never raises.
@@ -428,8 +568,15 @@ def score(
     *prompt* is the rendered prompt (:func:`render_prompt` of
     :func:`prompt_messages`) and *request_text* the request those messages
     carry, which grounding reads. Ties go to the earlier candidate.
+
+    *labels* and *order* are :func:`prompt_messages`' seam: pass the same
+    ones used to render *prompt* (e.g. from a stored :class:`Permutation`)
+    so the readout sums the letters the prompt actually offered. With
+    neither, this reads today's fixed label map, unchanged. ``Scored.choice``
+    is always the candidate's name, never its letter, so op-level comparison
+    (:func:`same_choice`) needs nothing extra even under a permuted map.
     """
-    labels = labels_for(candidates() if offered is None else offered)
+    labels = _label_map(offered, labels, order)
     try:
         logprobs = scorer.score_next_token(prompt, top=READOUT_TOP)
     except Exception:  # noqa: BLE001 -- a scorer that fails makes no choice
