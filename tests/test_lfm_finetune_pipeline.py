@@ -729,7 +729,7 @@ def test_measure_stages_pass_the_snapshot_thinking_and_extra_args(
     assert _option(argv, "--enable-thinking") == ["false"]
     assert _option(argv, "--ctx") == ["2048"]  # from MEASURE_CTX, never an extra arg
     assert _option(argv, "--slice") == ["missing-candidate"]
-    assert _option(argv, "--max-logprobs") == ["22"]
+    assert _option(argv, "--max-logprobs") == ["5000"]
 
 
 def test_enable_thinking_comes_from_the_env_file(tmp_path: Path) -> None:
@@ -897,7 +897,7 @@ def _serve(tmp_path: Path, *args: str, **env: str) -> subprocess.CompletedProces
         "TOOL_CALL_PARSER": "qwen3_coder",
         "MEASURE_CTX": "2048",
         "MEASURE_GPU_FRACTION": "0.08",
-        "MEASURE_MAX_LOGPROBS": "22",
+        "MEASURE_MAX_LOGPROBS": "5000",
     }
     return subprocess.run(
         ["bash", str(_SERVE), *args],
@@ -941,7 +941,7 @@ def test_serve_start_builds_exactly_the_pinned_flags(tmp_path: Path) -> None:
         "--tool-call-parser",
         "qwen3_coder",
         "--max-logprobs",
-        "22",
+        "5000",
         "--limit-mm-per-prompt",
         '{"image": 0, "video": 0}',
     ]
@@ -1077,7 +1077,7 @@ def test_both_env_examples_name_the_measure_server_settings() -> None:
         assert "\nMEASURE_PORT=18060\n" in text
         assert "\nMEASURE_CTX=2048\n" in text
         assert "\nMEASURE_GPU_FRACTION=0.08\n" in text
-        assert "\nMEASURE_MAX_LOGPROBS=22\n" in text
+        assert "\nMEASURE_MAX_LOGPROBS=5000\n" in text
         assert f"\nTOOL_CALL_PARSER={parser}\n" in text
 
 
