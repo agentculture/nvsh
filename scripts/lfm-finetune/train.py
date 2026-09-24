@@ -234,17 +234,28 @@ def save_valid_generation_config(model) -> None:
         config.temperature = None
 
 
-def adapter_model_class(adapter_keys: list[str]) -> str:
-    """The transformers auto class the adapter was trained on, from its keys.
+def text_adapter_key(key: str) -> str:
+    """*key* as the text-only causal LM names it.
 
-    unsloth trains Qwen3.5 as the vision-language model (keys under
-    ``model.language_model.``); train_scorer.py trains the text-only causal LM
-    (keys under ``model.layers.``). Merging into the other class matches no
-    key at all (issue 46, lapse l4).
+    unsloth trains Qwen3.5 as the vision-language class, so its adapter keys
+    sit under ``model.language_model.``; the text-only model has the same
+    modules under ``model.``. Merging into the vision-language class instead
+    saved doubled prefixes (``model.language_model.language_model.*``) that
+    vLLM cannot load (issue 46, lapse l4), while the text-only save uses the
+    base checkpoint's own names -- the path Track B's scorer already serves.
     """
-    if any(".language_model." in key for key in adapter_keys):
-        return "AutoModelForImageTextToText"
-    return "AutoModelForCausalLM"
+    return key.replace(".model.language_model.", ".model.", 1)
+
+
+def adapter_leaf_modules(keys: list[str]) -> list[str]:
+    """The adapted modules' own names (``q_proj``, ``in_proj_qkv``, ...), for an
+    explicit ``target_modules`` in place of unsloth's regex, which names the
+    vision-language paths and misses ``linear_attn`` in the text model."""
+    leaves = set()
+    for key in keys:
+        head = key.split(".lora_", 1)[0]
+        leaves.add(head.rsplit(".", 1)[-1])
+    return sorted(leaves)
 
 
 def check_adapter_loaded(file_keys: list[str], loaded_keys: list[str]) -> None:
@@ -275,24 +286,30 @@ def merge_adapter(base: str, revision: str, adapter: Path, out: Path) -> None:  
     Uses plain transformers + peft rather than unsloth's merged saver, which
     copies the base weights out of the Hugging Face cache with their
     read-only permissions and then fails to overwrite them (run log, t14).
-    The base is loaded with the class the adapter was trained on, every
-    adapter tensor must load, and a merged weight must differ from the base
-    (issue 46, lapse l4). The tokenizer (and, for a vision-language base, the
-    processor), and so the chat template, is saved from the base unchanged;
+    Every adapter is merged into the text-only causal LM (a vision-language
+    adapter's keys are mapped onto it first), every adapter tensor must load,
+    and a merged weight must differ from the base (issue 46, lapse l4). The
+    tokenizer, and so the chat template, is saved from the base unchanged;
     stage_cache.py checks that byte for byte.
     """
+    import tempfile
+
     import torch
-    import transformers
     from peft import PeftModel
     from safetensors import safe_open
-    from transformers import AutoProcessor, AutoTokenizer
+    from safetensors.torch import save_file
+    from transformers import AutoModelForCausalLM, AutoTokenizer
 
     with safe_open(str(adapter / "adapter_model.safetensors"), "pt") as handle:
-        file_keys = list(handle.keys())
-    class_name = adapter_model_class(file_keys)
-    auto = getattr(transformers, class_name)
-    model = auto.from_pretrained(base, revision=revision, dtype=torch.bfloat16)
-    peft_model = PeftModel.from_pretrained(model, str(adapter))
+        tensors = {text_adapter_key(key): handle.get_tensor(key) for key in handle.keys()}
+    file_keys = list(tensors)
+    config = json.loads((adapter / "adapter_config.json").read_text(encoding="utf-8"))
+    config["target_modules"] = adapter_leaf_modules(file_keys)
+    model = AutoModelForCausalLM.from_pretrained(base, revision=revision, dtype=torch.bfloat16)
+    with tempfile.TemporaryDirectory() as tmp:
+        save_file(tensors, str(Path(tmp) / "adapter_model.safetensors"))
+        (Path(tmp) / "adapter_config.json").write_text(json.dumps(config), encoding="utf-8")
+        peft_model = PeftModel.from_pretrained(model, tmp)
     check_adapter_loaded(file_keys, [k for k in peft_model.state_dict() if "lora_" in k])
     probe_name, probe = next(
         (name, module) for name, module in peft_model.named_modules() if hasattr(module, "lora_A")
@@ -305,10 +322,8 @@ def merge_adapter(base: str, revision: str, adapter: Path, out: Path) -> None:  
     out.mkdir(parents=True, exist_ok=True)
     save_valid_generation_config(merged)
     merged.save_pretrained(str(out))
-    if class_name == "AutoModelForImageTextToText":
-        AutoProcessor.from_pretrained(base, revision=revision).save_pretrained(str(out))
     AutoTokenizer.from_pretrained(base, revision=revision).save_pretrained(str(out))
-    print(f"merged {len(file_keys)} adapter tensors into {class_name} ({probe_name} changed)")
+    print(f"merged {len(file_keys)} adapter tensors ({probe_name} changed)")
 
 
 #: LoRA target module sets. ``attn-mlp`` is Unsloth's own default list
