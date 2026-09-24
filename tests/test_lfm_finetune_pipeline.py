@@ -1128,6 +1128,53 @@ def test_measure_stages_refuse_an_extra_ctx(stage: str, tmp_path: Path) -> None:
     assert not [c for c in _docker_calls(tmp_path) if c[0] == "run"]
 
 
+def _mark_scorer_run(pipe: "_Pipeline", run: str = "a1") -> None:
+    (pipe.work / "runs" / run / "train-log.json").write_text(
+        '{"objective": "cross-entropy over the candidate label tokens"}\n', encoding="utf-8"
+    )
+
+
+@pytest.mark.parametrize("stage", ["measure-val", "measure-final"])
+def test_a_measure_stage_refuses_a_scorer_run_without_a_scorer_mode(
+    stage: str, tmp_path: Path
+) -> None:
+    """Issue 46, P66: a Track B scorer measured without --scorer is scored as a
+    generative tool-caller (0 of 32 on validation) instead of as a scorer."""
+    pipe = _Pipeline(tmp_path)
+    pipe.ready()
+    _mark_scorer_run(pipe)
+    result = pipe.run(stage, "a1")
+    assert result.returncode == 1
+    assert "--scorer" in result.stderr
+    assert not pipe.calls("measure.py")
+    assert not [c for c in _docker_calls(tmp_path) if c[0] == "run"]
+
+
+@pytest.mark.parametrize("stage", ["measure-val", "measure-final"])
+@pytest.mark.parametrize("mode", [["--scorer", "served"], ["--scorer=in-process"]])
+def test_a_scorer_run_measures_with_a_scorer_mode(stage: str, mode: list, tmp_path: Path) -> None:
+    site = tmp_path / "train-site-packages"
+    site.mkdir()
+    train_py = tmp_path / "train-python"
+    train_py.write_text(f'#!/usr/bin/env bash\necho "{site}"\n', encoding="utf-8")
+    train_py.chmod(0o755)
+    pipe = _Pipeline(tmp_path, f"TRAIN_PY={train_py}\n")
+    pipe.ready()
+    _mark_scorer_run(pipe)
+    result = pipe.run(stage, "a1", *mode)
+    assert result.returncode == 0, result.stderr
+    [(_, argv)] = pipe.calls("measure.py")
+    assert mode[-1] in argv
+
+
+def test_a_generative_run_needs_no_scorer_mode(tmp_path: Path) -> None:
+    pipe = _Pipeline(tmp_path)
+    pipe.ready()
+    (pipe.work / "runs" / "a1" / "train-log.json").write_text('{"epochs": 5}\n', encoding="utf-8")
+    result = pipe.run("measure-val", "a1")
+    assert result.returncode == 0, result.stderr
+
+
 def test_assemble_filters_to_the_split_and_checks_leakage(tmp_path: Path) -> None:
     """Issue 46 t19: variations of sources that left the train side are dropped
     (--filter-to-split), extra sides are excluded, and the merged set passes

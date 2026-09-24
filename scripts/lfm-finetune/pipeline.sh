@@ -201,6 +201,19 @@ refuse_extra_ctx() {
   done
 }
 
+refuse_scorer_without_mode() {
+  # A Track B scorer run (train_scorer.py writes "objective" into its
+  # train-log.json) measured without --scorer is scored as a generative
+  # tool-caller, a meaningless 0 of 32 (issue 46, P66).
+  local name=$1 arg
+  shift
+  grep -q '"objective"' "$WORK/runs/$name/train-log.json" 2>/dev/null || return 0
+  for arg in "$@"; do
+    if [ "$arg" = --scorer ] || [[ $arg == --scorer=* ]]; then return 0; fi
+  done
+  die "$name is a Track B scorer; pass --scorer served (decisions, latency) or --scorer in-process (exact calibration)"
+}
+
 measure_revision() {
   # The revision recorded for <name> (attach mode records it as operator-supplied).
   if [ "$1" = stock ]; then echo "$BASE_REV"; return; fi
@@ -369,6 +382,7 @@ case "$STAGE" in
   measure-val)
     name=${1:?measure-val <name> [measure.py args]}; shift
     refuse_extra_ctx "$@"
+    refuse_scorer_without_mode "$name" "$@"
     snapshot=$(ground_snapshot); rev=$(measure_revision "$name")
     label="$name-val"
     if [ "$MEASURE_CTX" != 2048 ]; then label="$name-val-ctx$MEASURE_CTX"; fi
@@ -387,6 +401,7 @@ case "$STAGE" in
   measure-final)
     name=${1:?measure-final <name> [measure.py args]}; shift
     refuse_extra_ctx "$@"
+    refuse_scorer_without_mode "$name" "$@"
     snapshot=$(ground_snapshot); rev=$(measure_revision "$name")
     mapfile -t scorer_args < <(scorer_measure_args "$name" "$@")
     site=$(measure_pythonpath "$@")
