@@ -442,3 +442,33 @@ def test_text_tokenizer_unwraps_a_multimodal_processor() -> None:
     tok = Tok()
     assert module.text_tokenizer(tok) is tok
     assert module.text_tokenizer(Processor()) is Processor.tokenizer
+
+
+# ---------------------------------------------------------------------------
+# merge safety (issue 46, lapse l4: a1/a2 merged into base-identical models)
+# ---------------------------------------------------------------------------
+
+
+def test_adapter_model_class_follows_the_adapter_keys() -> None:
+    module = _module()
+    vl = ["base_model.model.model.language_model.layers.0.mlp.down_proj.lora_A.weight"]
+    text = ["base_model.model.model.layers.0.linear_attn.in_proj_a.lora_A.weight"]
+    assert module.adapter_model_class(vl) == "AutoModelForImageTextToText"
+    assert module.adapter_model_class(text) == "AutoModelForCausalLM"
+
+
+def test_every_adapter_tensor_must_load() -> None:
+    module = _module()
+    file_keys = [
+        "base_model.model.model.layers.0.mlp.down_proj.lora_A.weight",
+        "base_model.model.model.layers.0.mlp.down_proj.lora_B.weight",
+    ]
+    loaded = [
+        "base_model.model.model.layers.0.mlp.down_proj.lora_A.default.weight",
+        "base_model.model.model.layers.0.mlp.down_proj.lora_B.default.weight",
+    ]
+    module.check_adapter_loaded(file_keys, loaded)  # does not raise
+    with pytest.raises(ValueError, match="1 of 2"):
+        module.check_adapter_loaded(file_keys, loaded[:1])
+    with pytest.raises(ValueError, match="none"):
+        module.check_adapter_loaded(file_keys, [])
