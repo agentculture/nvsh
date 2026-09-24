@@ -155,15 +155,15 @@ def upload(
     reason = _scan_bundle().verify(bundle)
     if reason is not None:
         raise UploadError(f"scan_bundle.py verify failed for {bundle}: {reason}")
-    token = environ.get(token_env)
-    if not token:
+    hub_token = environ.get(token_env)
+    if not hub_token:
         raise UploadError(
             f"{token_env} is not set (e.g. grant run --inject {token_env}=<secret name> -- ...)"
         )
     if hub is None:
         hub = importlib.import_module("huggingface_hub")
 
-    api = hub.HfApi(token=token)
+    api = hub.HfApi(token=hub_token)
     api.create_repo(repo, repo_type=repo_type, private=True, exist_ok=True)
     api.update_repo_visibility(repo, private=True, repo_type=repo_type)
     commit = api.upload_folder(
@@ -177,7 +177,7 @@ def upload(
 
     with tempfile.TemporaryDirectory(prefix=".fetch-", dir=bundle.parent) as fetched:
         hub.snapshot_download(
-            repo, repo_type=repo_type, revision=revision, token=token, local_dir=fetched
+            repo, repo_type=repo_type, revision=revision, token=hub_token, local_dir=fetched
         )
         problems = compare(bundle, Path(fetched))
         problems += check_inventory(
@@ -221,9 +221,9 @@ def main(argv: list[str] | None = None) -> int:
         )
     except Exception as exc:  # noqa: BLE001 -- every failure is reported, never the token
         message = str(exc)
-        token = os.environ.get(args.token_env)
-        if token:
-            message = message.replace(token, "<token>")
+        hub_token = os.environ.get(args.token_env)
+        if hub_token:
+            message = message.replace(hub_token, "<token>")
         print(f"hub_upload: {message}", file=sys.stderr)
         return 1
     return 0
