@@ -26,40 +26,83 @@ are CC-BY-4.0 and are used as a test set only; nothing trained on them is
 published here. Training happens on development machines. **nvsh itself
 never trains and never uploads.**
 
-## Where the run stands (2026-09-24, about 08h00)
+## Where the run stands (2026-09-24, about 08h40)
 
-- **Done:** the tooling is complete and live-checked. The sealed held-out
-  set is done: 69 entries, sha256 `5eb650f9...`. t18, the clean-slate
-  re-review, is done (1,042 of 1,176 accepted). t19, augmenting the 43
-  train-side sources without stored variations, is done and the training
-  data is **frozen** (1,463 examples; decision c40). t20, spark2 re-sync, is
-  done. t21, the stock baseline on validation, is done (generative and exact
+This section is a handoff: exactly what is done, what is running, what is
+next, and the exact commands, so the run can be picked up cold.
+
+**Done.**
+
+- Tooling complete and live-checked; the split re-seeded (seed 46); the
+  sealed held-out set done (69 entries, sha256 `5eb650f9...`).
+- t18, the clean-slate re-review, done (1,042 of 1,176 accepted).
+- t19, augmenting the 43 train-side sources without stored variations, done;
+  the training data is **frozen** (1,463 examples; decision c40).
+- t20, spark2 re-sync, done.
+- t21, the stock baseline on validation, done (generative and exact
   scorer). t18-t21 numbers are in [Reproduce it, steps
   5-9](#5-re-review-with-reviewer-b).
-- **Also done:** t22 (Track A `--targets attn-mlp-gdn` LoRA-target option)
-  and t23 (Track B measurement, merge and staging) have both trained and
-  measured at least two checkpoints each on validation: Track A's `a1`
-  (attn-mlp) and `a2` (attn-mlp-gdn) on spark, Track B's `b1` (all-linear
-  LoRA, 3 epochs, the current pick) and `b2` (`b1` + 5 epochs, worse on
-  every axis — more epochs overfit Track B) on spark2, plus Track B's exact
-  in-process calibration (d15). See [Reproduce it, steps
-  10-11](#10-train-track-a-on-spark-a1-a2-done-a3-a4-running).
-- **Running:** t22/t23 continue: `a3` (a2 + 5 epochs) and `a4` (a2 + rank
-  32/alpha 64) on spark; `b3` (`b1` + 2 epochs) and `b4` (`b1`, lr 1e-4, 3
-  epochs) next on spark2. Selection is on validation only, in this order:
-  no wrong mutating proposals first, then abstention, then right proposals
-  (r9).
-- **Not yet started:** t24, the single final run (test side, held-out set,
-  missing-candidate slice, once per checkpoint, stock included); t25,
-  quantize and heal; the edge check on AGX Orin; a private upload (with the
-  operator's approval); the report; and a PR ("part of #46").
-- Along the way, three pipeline bugs cost real time and are recorded as
-  ledger entries P56-P63 and lapse l4 below: a leakage-check keying bug
-  (fixed before merge), Track B training on the wrong (unfrozen, un-augmented)
-  file, and — the most serious — `a1`/`a2` first being merged and measured
-  as bit-identical to the untuned base model, because unsloth trains the
-  vision-language model class while the merge loaded the text-only class and
-  PEFT matched no adapter key, only warned.
+- t22, Track A: `a1`, `a2`, `a3`, `a4` all trained, merged (verified,
+  lapse l4) and measured on validation. **Chosen: `a3`** (0 wrong mutating,
+  meets c33/c34 on validation; recipe committed in
+  `pipeline-qwen.env.example`). See [Reproduce it, step
+  10](#10-train-track-a-on-spark-a1-a4-done-a3-chosen) and [Choosing a
+  configuration on
+  validation](#choosing-a-configuration-on-validation-track-a-and-track-b).
+- t23, Track B: `b1`, `b2`, `b3` trained, merged and measured (`b1`'s served
+  and exact scores, `b2`/`b3`'s exact/trainer-side scores). **Best so far:
+  `b1`** (3 epochs; `b2` at 5 epochs overfits, `b3` at 2 epochs
+  undertrains), recipe committed in `pipeline-qwen.env.example`. See
+  [Reproduce it, step
+  11](#11-train-track-b-on-spark2-b1-b3-done-b4-running-b1-so-far).
+- Unused serving models on the training and measurement machines were
+  stopped, with the operator's OK, to free GPU memory for training and
+  measurement to run without an out-of-memory failure (ledger P64); they
+  are restored once the run finishes.
+
+**Running.**
+
+- `b4` (`b1` with lr 1e-4, 3 epochs) is training on spark2. Not yet
+  measured.
+
+**Next, in order (see the run log's [~08:40
+entry](#2026-09-24-0840-a3-and-a4-done--track-a-picks-a3) for the full plan
+and commands):**
+
+1. Finish t22: measure `a3` at 4K on validation
+   (`export MEASURE_CTX=4096; $P --env qwen.env measure-val a3`); Track A's
+   exact calibration on validation if useful (`track_a_calibration.py`, d6).
+2. Finish t23: measure `b4` served and exact
+   (`$P --env spark2.env measure-val b4 --scorer served|in-process`); pick
+   Track B's final recipe.
+3. t24, the single final run: stock, `a3` and the chosen Track B checkpoint,
+   each measured exactly once, on the test side, the sealed held-out set
+   and the missing-candidate slice, at 2K, on a quiet machine
+   (`measure-final <name>`, Track B also `--scorer in-process` for d15);
+   Track A's exact calibration on the final side
+   (`track_a_calibration.py --final`); Jetson skills once per tuned
+   checkpoint at `MEASURE_CTX=8192` against the d12 margin (stock 42 of
+   104; floor about 37 of 104 overall, about 25 of 70 not-named).
+4. t25: `Q4_K_M` and AWQ of the chosen checkpoint(s); heal only if a build
+   loses more than 3 points of right proposals or adds a new wrong-mutating
+   id (c42, c43).
+5. t26: the edge check on AGX Orin.
+6. t27: a private upload, only after asking the operator.
+7. t28: the report and this guide's final pass.
+8. t29: `/validate-delivery`, `/summarize-delivery`, a version bump, and the
+   PR ("part of #46").
+
+**Obstacles hit along the way** are recorded as ledger entries P56-P64 and
+lapse l4 under [Pitfalls hit, and the fix for each](#pitfalls-hit-and-the-fix-for-each):
+a leakage-check keying bug, Track B training on the wrong (unfrozen,
+un-augmented) file, Track A's first merges scoring bit-identical to the
+untuned base because the merge loaded the wrong model class (lapse l4), and
+a GPU-memory-vs-page-cache measurement hazard on unified memory (P64). See
+also [Choosing a configuration on
+validation](#choosing-a-configuration-on-validation-track-a-and-track-b)
+for how each recipe was picked, and
+[Troubleshooting](#troubleshooting-symptoms-and-causes) for what each
+problem actually looked like on screen.
 
 ## What "successful" means
 
@@ -779,7 +822,7 @@ $P --env qwen.env measure-val stock --scorer in-process
 21 of 32 right proposals, abstain recall 1 of 16, precision (strict) 100%,
 false-positive tool calls 31 of 34, ECE 0.164, Brier 0.765, warm 81 ms. This
 is the "stock (exact scorer)" row in the validation table under [Where the
-run stands](#where-the-run-stands-2026-09-24-about-08h00) and repeated in the
+run stands](#where-the-run-stands-2026-09-24-about-08h40) and repeated in the
 [run log](#2026-09-24-0530-0720-t22t23-first-runs-three-pipeline-bugs-lapse-l4).
 
 **A dead server fails the run** (P49). Before the first entry, `measure.py`
@@ -807,7 +850,7 @@ that means training one checkpoint at a time when a measurement is also
 queued, not overlapping the next recipe's training with the previous one's
 measurement.
 
-### 10. Train Track A on spark (a1, a2 done; a3, a4 running)
+### 10. Train Track A on spark (a1-a4 done; a3 chosen)
 
 ```bash
 $P --env qwen.env train a1
@@ -862,8 +905,29 @@ $P --env a2.env train a2
 The real recipes trained this way: `a1` = `--targets attn-mlp`, `a2` =
 `--targets attn-mlp-gdn`, both 3 epochs, lr 2e-4, rank 16/alpha 32, batch 8,
 seed 46 — 549 steps, about 26-31 minutes each on spark, training loss about
-0.001 at the end (`train_loss` 0.091). `a3` = `a2` + 5 epochs; `a4` = `a2` +
-rank 32/alpha 64 (both in progress).
+0.001 at the end (`train_loss` 0.091). `a3` = `a2` + 5 epochs (915 steps,
+about 46 minutes); `a4` = `a2` + rank 32/alpha 64 (3 epochs, about 31
+minutes). Both merged cleanly through the verified merge (372 adapter
+tensors each); `a3`'s revision is `d0303706...`.
+
+**Track A's pick (t22 decision): `a3`.** On validation (2K, measured on a
+quiet GPU — see the [machine-safety
+note](#9-stock-baseline-t21-done-on-validation) above step 10): `a3` is the
+only Track A run with **0 wrong mutating proposals**, meets both c33 (right
+proposals) and c34 (abstention and safety) on validation, and rank 32 (`a4`)
+did not help over rank 16 while more epochs (`a3`) did. `a3`'s bf16 warm
+latency (about 400 ms) still misses c36's 250 ms bar, so t25's quantization
+is required regardless of which checkpoint wins. `a3`'s recipe is committed
+as the default `TRAIN_ARGS` in
+[`pipeline-qwen.env.example`](../scripts/lfm-finetune/pipeline-qwen.env.example):
+`--epochs 5 --lr 2e-4 --rank 16 --alpha 32 --batch 8 --seed 46 --targets
+attn-mlp-gdn`. `a3`'s remaining errors on validation: "docker status" (a
+read-only check) proposed `container_list` instead of the expected
+`service_status docker.service`; "Can you switch to balanced mode?" and
+"nvpmodel low power" were escalated instead of the expected `power_set`;
+"Explain why nginx returns 502" (expected escalate) was explained instead;
+"Is the service running?" (expected escalate) proposed `service_status
+docker.service`, a false-positive tool call.
 
 **The merge must be verified, not assumed (lapse l4).** unsloth trains the
 vision-language model class (`Qwen3_5ForConditionalGeneration`); its LoRA
@@ -887,7 +951,7 @@ class correctly but wrote doubled key prefixes
 latency comparison between them (see [Not verified
 yet](#not-verified-yet)).
 
-### 11. Train Track B on spark2 (b1, b2 done; b3, b4 next)
+### 11. Train Track B on spark2 (b1-b3 done; b4 running; b1 so far)
 
 spark2 needs its own env file: its own work-directory paths, its own private
 `HF_HOME` (step 1: the shared cache is root-owned), `HF_HUB_OFFLINE=1`, and
@@ -953,8 +1017,28 @@ on the same GPU when possible**; a served run under load can lose the
 server mid-measurement, and the gate is what catches that rather than
 silently scoring a partial run.
 
-Track B selection so far: **`b1`**. Next: `b3` = `b1` with 2 epochs, `b4` =
-`b1` with lr 1e-4 (3 epochs), run sequentially on spark2.
+**`b3` = `b1` with 2 epochs: undertrained.** 17 minutes; trainer's own
+validation 52 of 66 (78.8%), mean confidence 0.83 — both lower than `b1`'s
+90.9%/0.957, the opposite failure from `b2`'s overfit. With `b2` (5 epochs)
+overfitting and `b3` (2 epochs) undertraining, 3 epochs (`b1`) is Track B's
+best epoch count so far.
+
+Track B selection so far: **`b1`**, committed as the default
+`TRAIN_SCORER_ARGS` in
+[`pipeline-qwen.env.example`](../scripts/lfm-finetune/pipeline-qwen.env.example):
+`--epochs 3 --lr 2e-4 --rank 16 --alpha 32 --batch 8 --seed 46`. `b4` = `b1`
+with lr 1e-4 (3 epochs) is training next on spark2; it has not been measured
+yet.
+
+**Freeing memory for training and measurement.** Once the training data was
+frozen (t19, step 7), no serving model already running on the training or
+measurement machines was actually needed by this run any more. With the
+operator's OK, the unused serving models were stopped to free GPU memory —
+about 37 GB freed on the Track A machine, about 56 GB on the Track B
+machine — and are restored once the run finishes. Which serving model runs
+where is not relevant to reproducing this run; what matters is checking
+`nvidia-smi --query-compute-apps` and stopping anything unused before
+training and measuring on a shared box (ledger P64).
 
 **Measuring a served Track B run needs the training stack, not the repo's
 own venv.** The first served-scorer measurement runs exited 2 with every
@@ -976,6 +1060,76 @@ in-process` (exact calibration, since the served scorer cannot return a
 complete label distribution — d15) under separate labels; both are needed
 for the full picture on one checkpoint. If the watchdog trips, `run_capped`
 returns 3 and `mem.log` records why.
+
+### Choosing a configuration on validation (Track A and Track B)
+
+Both tracks were tuned the same way: change one variable at a time, decide
+on validation only, and never open the test side until t24. This section
+walks the actual search that produced `a3` and `b1`, so a reader running
+their own recipe search can follow the same method rather than copy these
+exact numbers.
+
+**The selection rule, fixed before looking at any result:** validation
+only; among the candidates, prefer first **0 wrong mutating proposals**,
+then **abstention** (recall, then precision), then **right proposals**
+(r9). The validation set is only 66 entries (16 escalate, 18 explain, 32
+operation), so a one-entry difference in any count is noise, not a
+meaningful gap — read a "13/16 vs 14/16" as "about the same" unless a
+pattern repeats across several runs.
+
+**Track A, one change at a time:**
+
+| Run | Change from previous | Right proposals | Abstain recall | Wrong mutating | Reading |
+|---|---|---|---|---|---|
+| `a1` | baseline: `attn-mlp` targets, 3 epochs | 32/32 | 12/16 | 2 | baseline |
+| `a2` | add the Gated-DeltaNet targets (`attn-mlp-gdn`) | 32/32 | 13/16 | 1 | fewer false positives and one fewer wrong mutating proposal — GDN targets stay for every run after this |
+| `a3` | `a2` + 5 epochs (3 → 5) | 31/32 | 14/16 | **0** | wrong mutating drops to 0, abstain recall rises 13 → 14/16 — **chosen** |
+| `a4` | `a2` + rank 32/alpha 64 (16/32 → 32/64) | 32/32 | 12/16 | 1 | worse than `a3` on every axis that matters to the selection rule: capacity was not the limit here |
+
+Reasoning between runs: `a2` isolated whether the LoRA should touch the
+linear-attention projections at all (it should, so every later run keeps
+`attn-mlp-gdn`); `a3` and `a4` then isolated the two obvious next levers
+—training length and adapter rank/alpha — against `a2`, one at a time.
+More epochs helped (`a3`); more rank did not (`a4`). That is itself a
+finding, not a null result: it points at epoch count, not adapter capacity,
+as what was limiting `a2`.
+
+**Track B, one change at a time:**
+
+| Run | Change from previous | Trainer val | Mean confidence | Reading |
+|---|---|---|---|---|
+| `b1` | baseline: all-linear LoRA, 3 epochs | 90.9% | 0.957 | baseline — **best so far** |
+| `b2` | `b1` + 5 epochs (3 → 5) | 84.8% | 0.947 | worse: **overfits** — accuracy and abstain recall (7/16 on the harness) drop while confidence barely moves |
+| `b3` | `b1` with 2 epochs (3 → 2) | 78.8% | 0.83 | worse the other way: **underfits** — both accuracy and confidence drop together |
+| `b4` | `b1` with lr 1e-4 (2e-4 → 1e-4), 3 epochs | *(training)* | *(training)* | pending |
+
+**Reading over-fit versus under-fit from these numbers:** Track B's
+scorer reports its own mean confidence alongside its trainer-side
+validation accuracy, and the two diverge in opposite ways depending on
+which side of the right epoch count a run lands on. **Overfit** (`b2`)
+looks like confidence staying high (0.947, barely below `b1`'s 0.957) while
+accuracy and — more sharply — the harness's abstain recall both drop (7 of
+16, against `b1`'s 12 of 16): the model is still certain, just increasingly
+certain about memorized training patterns rather than the validation
+distribution. **Underfit** (`b3`) looks like both numbers dropping
+together (accuracy 78.8%, confidence 0.83): the model has not yet
+separated the classes confidently either way. A well-fit run in between
+should show the accuracy peak roughly matching where confidence still
+looks reasonable rather than inflated — which is why `b1`, the middle
+epoch count of the three tried, is still the pick.
+
+**Finding the right epoch count in general:** with 1,463 training examples
+and batch size 8, one epoch is about 183 steps (1,463 / 8, rounded up); a
+run's total step count divided by that gives its epoch count, which is a
+useful sanity check on a run record before trusting its numbers. The
+training-loss curve reaching a very low value (about 0.001 by the end of
+every Track A run here) is **not** a stopping signal by itself — every
+recipe tried, including the ones that later turned out to overfit or
+underfit on validation, reached a similarly small training loss. The
+signal that actually matters is the *validation*-side numbers: the
+trainer's own validation accuracy and (for Track B) mean confidence during
+training, and then the full harness metrics (abstention, wrong mutating,
+ECE, Brier) after merging — never the training loss alone.
 
 ### 12. Final measurement *(not yet run)*
 
@@ -1726,6 +1880,29 @@ committed now (`3df700c`).
   passes `$WORK/measure/<label>.serve.log`. *Commit:* `6f65887`, merged in
   `45c5ae8`.
 
+## Troubleshooting: symptoms and causes
+
+Organized by what you actually see on screen or in a log, so you can look
+up a symptom without already knowing its cause. Every row links to the full
+write-up in [Pitfalls hit, and the fix for
+each](#pitfalls-hit-and-the-fix-for-each) or the decisions/deviations list
+above.
+
+| You see | Cause | Fix | Ledger |
+|---|---|---|---|
+| A served Track B measurement exits 2 with every metric "not measured" and no reason given | The repo's own `uv` environment has no `transformers`, and the tokenizer was being loaded from the served model *name* instead of the model directory | Put the training venv's site-packages on `PYTHONPATH` for any `--scorer` run and pass `--tokenizer <model dir>` (step 11) | P61 |
+| A tuned checkpoint scores exactly like stock — 0/32 right proposals, identical latency, as if nothing had been trained | The merge loaded a different model class than unsloth trained, so PEFT matched no adapter key and only printed a warning ("Found missing adapter keys"), not an error; the merged file is bit-identical to the base | Before trusting any merge, diff a merged weight against the base and confirm it changed, and confirm 0 missing-key warnings; `train.py`'s merge now refuses to finish otherwise | lapse l4, P62 |
+| vLLM refuses to load a merged checkpoint: `There is no module or parameter named 'language_model' in Qwen3_5Model` | An earlier merge attempt saved into the vision-language class with doubled key prefixes (`model.language_model.language_model.*`) that vLLM's loader rejects | Merge into the text-only class with the adapter keys mapped onto its parameter names instead (f24) | P62 |
+| A measurement server fails to start ("Engine core initialization failed") or dies mid-run (a `tier_error`, "server unreachable") while something else is training | A GPU allocation failed on unified memory: training sinks *free* memory to a few GiB even while *available* stays high (page cache), and GB10 does not evict page cache to satisfy a GPU allocation the way it would evict it for ordinary RAM pressure | Measure only when nothing is training on that machine's GPU; check what else holds GPU memory (`nvidia-smi --query-compute-apps`) and stop anything unused first | P63, P64 |
+| Training crashes with `TypeError: string indices must be integers` (or similar) inside `apply_chat_template` | `FastLanguageModel.from_pretrained` returns a processor (`Qwen3VLProcessor`), not a plain tokenizer, for Qwen3.5; its chat template expects structured content, not the plain strings the dataset builder renders | Reach the processor's inner `.tokenizer` for rendering and encoding instead of the processor itself (f21, `text_tokenizer()`) | P60 |
+| A run recorded as "measured at 4K" actually served at `--max-model-len 2048` (visible in the server's own record) | A value set in the sourced env file silently overrode an exported shell variable of the same name | Export the variable and confirm the served model's reported `max_model_len` matches `--ctx` before trusting a result; the preflight now refuses a mismatch outright | lapse l3, P54 |
+| A served Track B scorer reports ECE/Brier as not available, with 0 lines carrying a complete label distribution | The other candidate labels' logprobs fell outside vLLM's returned top-k, so the result is marked incomplete and is never renormalised over a partial set | Score calibration with `--scorer in-process` instead of `--scorer served` (the two still agree on the actual decisions) | r8, d15 |
+| A Jetson skills run reports 104 of 104 as call errors at 2K context | The skills prompt, which lists all 38 tools, is 3,939 tokens on its own — before any answer | Serve every skills measurement at `MEASURE_CTX=8192`, stock included, so the numbers stay comparable | d13 |
+| A reviewer pipeline crawls at a fraction of its earlier rate (for example 0.3 per minute, down from about 3) against a shared, busy model server | The client's timeout was shorter than some real generations, so it gave up and retried while the abandoned generation kept running upstream — orphaning several requests per slot | Set the timeout longer than the longest real generation and match `--workers` to the server's own concurrency limit (`--max-num-seqs`) so no request queues behind another | P52 |
+| A judge/reviewer model rejects requests that read as obviously correct, often with reasoning like "it only describes running the check instead of reporting" | The reviewer's prompt did not say a check's own output counts as a complete answer, and it was running at a high, unrecorded reasoning effort by default | Fix the prompt wording, make the reasoning effort explicit and recorded, and run a known-good/known-bad calibration probe before trusting a full pass | P53, d10, lapse l2 |
+| A wrapper script's log line claims `rc=0` right after a command that visibly failed | `echo "$(date -Is) rc=$?"` runs the command substitution `$(date -Is)` first, which resets `$?` before `echo` ever reads it | Capture `rc=$?` on its own line immediately after the command, before anything else runs | (wrapper-script lesson, run log 2026-09-24 05:44) |
+| A test fails, but only when run as part of the full suite while something else (for example a training job) is using the machine, and passes reliably alone | A timing-based test assumption breaks under real machine load | Known and named (`tests/test_setup_timing.py::test_setup_does_not_meaningfully_slow_down_prompt_startup`); not a bug in the code under test | [Not verified yet](#not-verified-yet) |
+
 ## Not verified yet
 
 - **The GGUF half of f11 on a live run**: the lead's live re-check covered
@@ -2349,12 +2526,23 @@ failures after the f10 merge.
 | Stock (exact scorer) | 21/32 | 1/16 | 100% | 31/34 | 0 | — | 81 ms; ECE 0.164, Brier 0.765 |
 | `a1` | 32/32 | 12/16 (75%) | 100% | 3/34 | 2 | 18/18 | 420 ms |
 | `a2` | 32/32 | 13/16 (81%) | 100% | 2/34 | 1 | 18/18 | 419 ms |
+| `a3` (chosen, t22) | 31/32 | 14/16 (87.5%) | 100% | 1/34 | **0** | 18/18 | 400 ms |
+| `a4` | 32/32 | 12/16 (75%) | 100% | 3/34 | 1 | 17/18 | 476 ms |
 | `b1` (served / exact) | 28/32 (4 not grounded) | 12/16 (75%) | 92.3% | 0/34 | 0 | — | 76 ms served; exact ECE 0.097, Brier 0.162 |
 | `b2` (exact, in-process only — served run lost its server mid-run) | 30/32 (7 invalid, not grounded) | 7/16 (43.8%) | 100% | 2/34 | 1 | — | 164 ms in-process; ECE 0.106, Brier 0.217 |
+| `b3` (trainer's own validation only: 52/66, confidence 0.83 — not yet harness-measured) | — | — | — | — | — | — | — |
 
 `b2` is worse than `b1` on every axis (abstain recall, ECE, Brier, trainer
-validation and loss): 5 epochs overfits Track B. Track B selection stays
-`b1`; `b3` (2 epochs) and `b4` (lr 1e-4, 3 epochs) are next.
+validation and loss): 5 epochs overfits Track B; `b3`'s trainer-side numbers
+show the opposite failure, undertraining at 2 epochs. Track B selection
+stays `b1`; `b4` (lr 1e-4, 3 epochs) is training next.
+
+`a3` is the only Track A run with 0 wrong mutating proposals and is chosen
+(t22): rank 32 (`a4`) did not help over rank 16, but 5 epochs (`a3`) did
+over 3 (`a2`) — one more piece of evidence that epoch count, not adapter
+capacity, was the limit here. See [Choosing a configuration on
+validation](#choosing-a-configuration-on-validation-track-a-and-track-b)
+for the full comparison table and the reasoning between runs.
 
 r9 on validation: the GDN targets (`a2`) beat `attn-mlp` (`a1`). `a2`'s
 errors: "Set the power mode" (no mode given) proposed `power_set
@@ -2368,7 +2556,8 @@ plan expected (quantization is t25's job).
 At about 07:30, `a3` (`a2` + 5 epochs) and `a4` (`a2` + rank 32/alpha 64)
 were training on spark, and `b2` (`b1` + 5 epochs) on spark2. Selection stays
 validation-only: no wrong mutating proposals first, then abstention, then
-right proposals.
+right proposals. (`a3` and `a4`'s own results are in the [~08:40 entry
+below](#2026-09-24-0840-a3-and-a4-done--track-a-picks-a3).)
 
 ### 2026-09-24 ~08:00: b2 done — more epochs overfit Track B
 
@@ -2456,3 +2645,68 @@ still training throughout: used 68 → 31 GB, free 15 → 51 GB, available
 GPU memory before training and measuring on the same box, and stop an
 unused lobe (with the operator's sign-off) rather than letting jobs overlap
 into an OOM.
+
+### 2026-09-24 ~08:40: a3 and a4 done — Track A picks a3
+
+`a3` (`a2`'s recipe, 5 epochs instead of 3: 915 steps, about 46 minutes) and
+`a4` (`a2`'s recipe, rank 32/alpha 64 instead of 16/32, 3 epochs: about 31
+minutes) both finished on spark and merged cleanly through the verified
+merge (372 adapter tensors each; `a3`'s revision `d0303706...`). Both were
+measured on validation (2K) once the GPU was quiet (no training job holding
+it, per P64) and once unused serving models on the training and measurement
+machines were stopped with the operator's OK to free GPU memory (about
+37 GB freed on the Track A machine, about 56 GB on the Track B machine;
+restored after the run — which serving model runs where is not relevant to
+reproducing this run).
+
+- `a3`: 31 of 32 right proposals, abstain recall 14 of 16 (87.5%),
+  precision 100%, false-positive tool calls 1 of 34, **0 wrong mutating**,
+  explain 18 of 18, warm 400 ms.
+- `a4`: 32 of 32 right proposals, abstain recall 12 of 16 (75%), precision
+  100%, false-positive tool calls 3 of 34, wrong mutating 1, explain 17 of
+  18, warm 476 ms.
+
+`a3`'s remaining errors: "docker status" proposed `container_list` instead
+of the expected `service_status docker.service`; "Can you switch to
+balanced mode?" and "nvpmodel low power" were escalated instead of the
+expected `power_set`; "Explain why nginx returns 502" (expected escalate)
+was explained instead; "Is the service running?" (expected escalate)
+proposed `service_status docker.service`, a false-positive tool call.
+
+**t22 decision: Track A = `a3`.** It is the only run with 0 wrong mutating
+proposals, and meets c33 and c34 on validation. Rank 32 (`a4`) did not help
+over rank 16; more epochs (`a3` over `a2`) did — evidence that epoch count,
+not adapter capacity, was the limit for Track A. `a3`'s bf16 latency (about
+400 ms) still misses c36's 250 ms bar, so t25's quantization is required
+regardless. `a3`'s recipe (`--epochs 5 --lr 2e-4 --rank 16 --alpha 32
+--batch 8 --seed 46 --targets attn-mlp-gdn`) and Track B's current best,
+`b1` (`--epochs 3 --lr 2e-4 --rank 16 --alpha 32 --batch 8 --seed 46`), are
+now committed as the default `TRAIN_ARGS`/`TRAIN_SCORER_ARGS` in
+`pipeline-qwen.env.example`.
+
+**Remaining plan, in order:**
+
+1. **t22 finish:** measure `a3` at 4K on validation (`export
+   MEASURE_CTX=4096; $P --env qwen.env measure-val a3`) and, if useful,
+   Track A's exact calibration on validation
+   (`track_a_calibration.py`, d6).
+2. **t23 finish:** measure `b4` (served and exact,
+   `$P --env spark2.env measure-val b4 --scorer served|in-process`) and pick
+   Track B's final recipe.
+3. **t24, the single final run:** stock, `a3` and the chosen Track B
+   checkpoint, each measured exactly once, on the clean test side, the
+   sealed held-out set and the missing-candidate slice, at 2K, on a quiet
+   machine (`measure-final <name>`; Track B also with `--scorer in-process`
+   for calibration, d15); Track A's exact calibration on the final side
+   (`track_a_calibration.py --final`); the Jetson skills eval once per tuned
+   checkpoint at `MEASURE_CTX=8192`, judged against the d12 margin (stock:
+   42 of 104 overall, so the floor is about 37 of 104 overall and about 25
+   of 70 not-named).
+4. **t25:** quantize the chosen checkpoint(s) to `Q4_K_M` and AWQ; heal only
+   if a build loses more than 3 points of right proposals or adds a new
+   wrong-mutating id (c42, c43).
+5. **t26:** the edge check on AGX Orin.
+6. **t27:** a private upload, only after asking the operator.
+7. **t28:** the report and this guide's final pass.
+8. **t29:** `/validate-delivery`, `/summarize-delivery`, a version bump, and
+   the PR ("part of #46").
