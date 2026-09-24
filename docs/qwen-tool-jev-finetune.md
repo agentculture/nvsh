@@ -26,7 +26,7 @@ are CC-BY-4.0 and are used as a test set only; nothing trained on them is
 published here. Training happens on development machines. **nvsh itself
 never trains and never uploads.**
 
-## Where the run stands (2026-09-24, about 11h45)
+## Where the run stands (2026-09-24, about 12h15)
 
 This section is a handoff: exactly what is done, what is running, what is
 next, and the exact commands, so the run can be picked up cold.
@@ -67,26 +67,32 @@ next, and the exact commands, so the run can be picked up cold.
   measurement to run without an out-of-memory failure (ledger P64); they
   are restored once the run finishes.
 
-**Running.** t25: `a3`'s heal (a short 1-epoch, lr 5e-5 bf16 continuation,
-not QAT — d18) is running, triggered because both of `a3`'s quantized
-builds lost just over c43's 3-point ceiling with no new wrong-mutating id.
-`scorer-b1`'s quantized builds needed no heal. See [step
-13](#13-quantize-and-heal-both-built-and-measured-a3-healing) and ledger
-P67a/P67-P72.
+- **t25, quantize and heal, done.** `a3`'s AWQ and GGUF builds both needed
+  healing (c43, one entry of 32 over the ceiling, no new wrong-mutating
+  id); a short bf16 continuation (d18) cleared it for the GGUF build but
+  not AWQ, which is not shipped (c42 allows one heal round). `scorer-b1`'s
+  quantized builds needed no heal. **d19: Track A ships `a3-heal.q4_k_m`;
+  Track B keeps `scorer-b1`.** See [step
+  13](#13-quantize-and-heal-done-ships-a3-healq4_k_m-and-scorer-b1).
+- **t26, the edge check, done.** Both shipped checkpoints were checked on
+  an AGX Orin (validation side, not test — the test side is never
+  re-exposed): decisions match GPU and CPU-only alike, and match the same
+  checkpoints' validation-side behaviour measured earlier; the device is
+  about 2x slower than the training machine for Track A, so c36's 250 ms
+  bar (defined for the training machine) is not met there, while Track B's
+  scorer stays fast everywhere; every build fits well under 6 GB. See
+  [Edge check (t26)](#edge-check-t26).
+
+**Running.** Nothing.
 
 **Next, in order:**
 
-1. **t25 (continuing):** re-quantize `a3` once its heal finishes, and
-   re-measure the healed builds against the same bars. Container memory
-   (c36) is now measured for `a3.q4_k_m` (about 0.65-0.80 GB resident + 0.83
-   GB GPU, well inside the 6 GB ceiling — c36 memory **PASS**); the AWQ
-   build's container memory is still not measured (attach mode).
-2. **t26:** the edge check on AGX Orin.
-3. **t27:** a private upload, only after asking the operator — and a check
-   on the release bundle for the still-open MTP-head config mismatch
+1. **t27:** private upload of the shipped checkpoints, only after asking
+   the operator; before bundling, fix or at least flag the merged
+   checkpoint's config still declaring an MTP head it has no weights for
    (ledger P67's follow-up).
-4. **t28:** the report and this guide's final pass.
-5. **t29:** `/validate-delivery`, `/summarize-delivery`, a version bump, and
+2. **t28:** the report and this guide's final pass.
+3. **t29:** `/validate-delivery`, `/summarize-delivery`, a version bump, and
    the PR ("part of #46").
 
 **Obstacles hit along the way** are recorded as ledger entries P56-P72 and
@@ -238,6 +244,44 @@ exact-scorer baseline ran after the 13 planned final-measurement steps,
 since c35 needs it only as a comparison point (deviation d15) — being last
 in the sequence does not mean it is less final; every model here was still
 measured exactly once.
+
+## Edge check (t26)
+
+The shipped quantized checkpoints — Track A's `a3-heal.q4_k_m` and Track
+B's `scorer-b1.q4_k_m` — were checked on **an AGX Orin** (JetPack R39),
+standing in for an Orin Nano per assumption c23. This runs on the
+**validation** side, not the test side — the test side is never re-exposed
+after t24 — so these numbers are not final-run figures and are not judged
+against the test-side bars; they check whether the checkpoints behave the
+same way, and fast enough, on the target edge device. Source: the committed
+`docs/benchmarks/2026-09-24-lfm-edge-orin-*.md` pages.
+
+**Setup.** A pinned Jetson llama.cpp container
+(`ghcr.io/nvidia-ai-iot/llama_cpp@sha256:f7c67c10...`, llama.cpp build
+10373, commit `38406d5`) served each build with the same flags used on the
+training machine (`--jinja --temp 0 --top-k 1`, context 2048). The same
+`measure.py` harness ran on the device itself, from a repository snapshot
+plus a per-user venv for the tokenizer — nothing installed system-wide. The
+device's own resident serving model was stopped, with the operator's
+approval, for about 8 minutes (its memory was nearly full) and restarted
+healthy afterward.
+
+**Results.**
+
+| Build | Mode | Right proposals | Abstain recall | Wrong mutating | Warm latency | Peak memory |
+|---|---|---|---|---|---|---|
+| `a3-heal.q4_k_m` | GPU | 32/32 | 13/16 (81.2%) | 1 | 539 ms / p95 956 ms, cold 902 ms | about 1.75 GiB |
+| `scorer-b1.q4_k_m` (served) | GPU | 28/32 | 12/16 (75.0%) | 0 (4 not grounded) | 109 ms / p95 111 ms | about 1.58 GiB |
+| `a3-heal.q4_k_m` | CPU-only (4 CPUs, 4 GB, `-ngl 0`) | 32/32 | 13/16 (81.2%) | 1 | 2,852 ms / p95 4,177 ms | about 1.12 GiB |
+
+**Findings.** The decisions are identical between the GPU and CPU-only
+runs, and match the checkpoints' own validation-side behaviour measured
+earlier on the training machine — quantization and the device change
+neither. The device is about 2x slower than the training machine for Track
+A (539 ms here against about 245-295 ms there), so **c36's 250 ms bar — a
+bar defined for the training machine — is not met on this device**, though
+Track B's scorer stays fast everywhere (109 ms here). Every build measured
+here fits well under the 6 GB memory ceiling, GPU and CPU-only alike.
 
 ## Design
 
@@ -446,6 +490,12 @@ decision.
   checkpoint on the same frozen training set — a small corrective
   fine-tune before re-quantizing, not quantization-aware training. The heal
   stage was never intended to be QAT.
+- **d19, Track A ships `a3-heal.q4_k_m`; Track B keeps `scorer-b1`.** The
+  heal cleared c43 for the GGUF build (`a3-heal.q4_k_m`: 0 points lost,
+  same wrong-mutating ids) but not for AWQ (`a3-heal.awq`: 30 of 32, still
+  over the 3-point ceiling); c42 names one heal round, so AWQ is not
+  shipped and gets no second attempt. Track B's `scorer-b1` needed no heal
+  at all — both its quantized builds already passed c43 unhealed.
 
 ### Quantization plan
 
@@ -953,7 +1003,7 @@ $P --env qwen.env measure-val stock --scorer in-process
 21 of 32 right proposals, abstain recall 1 of 16, precision (strict) 100%,
 false-positive tool calls 31 of 34, ECE 0.164, Brier 0.765, warm 81 ms. This
 is the "stock (exact scorer)" row in the validation table under [Where the
-run stands](#where-the-run-stands-2026-09-24-about-11h45) and repeated in the
+run stands](#where-the-run-stands-2026-09-24-about-12h15) and repeated in the
 [run log](#2026-09-24-0530-0720-t22t23-first-runs-three-pipeline-bugs-lapse-l4).
 
 **A dead server fails the run** (P49). Before the first entry, `measure.py`
@@ -1350,7 +1400,7 @@ distribution and writes a sidecar `<out>.provenance.json`. `metrics.py` then
 scores the filled file. Its input is the predictions file `measure-final`
 kept in `$WORK/final/<name>` (P50).
 
-### 13. Quantize and heal (both built and measured; `a3` healing)
+### 13. Quantize and heal (done; ships `a3-heal.q4_k_m` and `scorer-b1`)
 
 Build llama.cpp (the spike used master
 `633733d0aeedd721868bf5f1b935fa3f39f9164e`, configured with
@@ -1479,8 +1529,32 @@ so neither needs healing. The trigger was logged before any heal ran, per
 c42. **d18, decided:** `a3`'s heal is a short bf16 continuation — 1 epoch,
 lr 5e-5, starting from `a3`'s own merged checkpoint, on the same frozen
 training set — not quantization-aware training; the heal stage was never
-meant to be QAT, only a small corrective nudge before re-quantizing. Heal
-of `a3` is running.
+meant to be QAT, only a small corrective nudge before re-quantizing.
+
+**Heal outcome (`a3-heal`, `docs/benchmarks/2026-09-24-lfm-final-a3-heal{,.awq,.q4_k_m}.md`):**
+the heal's own training loss stayed around 1e-4 throughout — `a3` had
+already fit the training set closely, so a short continuation at a small
+learning rate mostly holds it in place rather than moving it much. The
+merge was verified the same way every other merge in this run is (lapse
+l4's fix): 192 adapter tensors, and a probe weight confirmed changed from
+the base. On the test side: `a3-heal` bf16 32 of 32 right proposals,
+abstention recall 11 of 15, wrong mutating 2 (the same ids as `a3`), warm
+430 ms — behaviour equal to plain `a3`. `a3-heal.q4_k_m`: 32 of 32, wrong
+mutating 2 (same ids), warm 245 ms / p95 405 ms — **`heal_needed()` is now
+false** (0 points lost against `a3-heal`'s own bf16), clearing c43, and it
+still clears c36's latency and memory bars. `a3-heal.awq`: 30 of 32
+(93.75%) — **still fails c43** (more than 3 points lost) and is not
+shipped; c42 names one heal round, so there is no second attempt at AWQ.
+Stated plainly: 30 of 32 versus `a3-heal.q4_k_m`'s 32 of 32 is a one-entry
+difference on a 32-entry side — within the same noise band already
+discussed for validation-to-test moves, not necessarily a real gap between
+the two quantization methods, but it still fails the bar as measured and
+is treated that way.
+
+**d19, decided: Track A ships `a3-heal.q4_k_m`; Track B keeps `scorer-b1`.**
+Both of `scorer-b1`'s quantized builds already passed c43 unhealed (one of
+them, `scorer-b1.awq`, actually *gained* points against bf16), so Track B
+needs no heal and no AWQ-vs-GGUF pick beyond what t23 already decided.
 
 **Calibration of the quantized scorer is not measurable, either way
 (d17, corrected by lapse l6).** Exact in-process scoring of a quantized
@@ -2303,7 +2377,7 @@ committed now (`3df700c`).
   d17 is superseded; there is no working route to a quantized scorer's
   calibration figures yet (exact in-process scoring of a quantized scorer
   fails for its own, separate reasons — see [step
-  13](#13-quantize-and-heal-both-built-and-measured-a3-healing)).
+  13](#13-quantize-and-heal-done-ships-a3-healq4_k_m-and-scorer-b1)).
 
 ## Troubleshooting: symptoms and causes
 
@@ -3348,4 +3422,69 @@ unless run with `< /dev/null` — an operational lesson, not a code fix).
 **Next:** re-quantize `a3` once its heal finishes and re-measure; then t26
 (AGX Orin), t27 (private upload, plus a check on the still-open MTP-head
 config mismatch before the release bundle), t28 (report), t29
+(validate/summarize/version/PR).
+
+### 2026-09-24 ~12:00: t25 finishes — d19, Track A ships `a3-heal.q4_k_m`
+
+`a3`'s heal finished: training loss stayed around 1e-4 throughout (`a3` had
+already fit the training set closely, so a short, small-learning-rate
+continuation mostly holds it in place). The merge was verified the usual
+way (192 adapter tensors, a probe weight confirmed changed from the base).
+Committed as `docs/benchmarks/2026-09-24-lfm-final-a3-heal{,.awq,.q4_k_m}.md`:
+
+- `a3-heal` (bf16): 32 of 32 right proposals, abstention recall 11 of 15,
+  wrong mutating 2 (same ids as plain `a3`), warm 430 ms — behaviour equal
+  to `a3` itself.
+- `a3-heal.q4_k_m`: 32 of 32, wrong mutating 2 (same ids), warm 245 ms /
+  p95 405 ms — `heal_needed()` now false, clearing c43, and it still clears
+  c36's latency and memory bars.
+- `a3-heal.awq`: 30 of 32 (93.75%) — still fails c43. c42 names one heal
+  round, so AWQ gets no second attempt and is not shipped. Stated plainly:
+  30 of 32 against `a3-heal.q4_k_m`'s 32 of 32 is a one-entry difference on
+  a 32-entry side, the same noise band already seen moving from validation
+  to test — but it still fails the bar as measured, and is treated that
+  way rather than excused.
+
+**d19, decided:** Track A ships `a3-heal.q4_k_m`; Track B keeps
+`scorer-b1` (both of its quantized builds already passed c43 unhealed, one
+of them, `scorer-b1.awq`, by actually gaining points).
+
+### 2026-09-24 ~12:15: t26, the edge check on an AGX Orin
+
+The two shipped checkpoints (`a3-heal.q4_k_m`, `scorer-b1.q4_k_m`) were
+checked on an AGX Orin (JetPack R39), standing in for an Orin Nano per
+assumption c23. This is the **validation** side, not test — the test side
+is never re-exposed after t24 — so it checks behaviour and speed on the
+target device, not a bar-judged result. Setup: a pinned Jetson llama.cpp
+container (`ghcr.io/nvidia-ai-iot/llama_cpp@sha256:f7c67c10...`, llama.cpp
+build 10373, commit `38406d5`), the same `measure.py` harness run on the
+device itself from a repository snapshot plus a per-user venv for the
+tokenizer (nothing installed system-wide), served with the same flags used
+on the training machine (`--jinja --temp 0 --top-k 1`, context 2048). The
+device's own resident serving model was stopped, with the operator's
+approval, for about 8 minutes (memory was nearly full) and came back up
+healthy afterward. Committed as `docs/benchmarks/2026-09-24-lfm-edge-orin-*.md`.
+
+- `a3-heal.q4_k_m`, GPU: 32 of 32 right proposals, abstention recall 13 of
+  16 (81.2%), wrong mutating 1, warm 539 ms / p95 956 ms, cold 902 ms, peak
+  memory about 1.75 GiB.
+- `scorer-b1.q4_k_m`, GPU, served scorer: 28 of 32, abstention recall 12 of
+  16 (75.0%), wrong mutating 0 (4 not grounded), warm 109 ms / p95 111 ms,
+  peak memory about 1.58 GiB.
+- `a3-heal.q4_k_m`, CPU-only (4 CPUs, 4 GB, `-ngl 0`): identical decisions
+  to the GPU run, warm 2,852 ms / p95 4,177 ms, peak memory about 1.12 GiB.
+
+**Findings:** decisions are identical between the GPU and CPU-only runs,
+and match the same checkpoints' own validation-side behaviour measured
+earlier on the training machine — quantization and the device change
+neither. The device is about 2x slower than the training machine for Track
+A (539 ms here against about 245-295 ms there), so c36's 250 ms bar — a
+bar defined for the training machine — is not met on this device, while
+Track B's scorer stays fast everywhere (109 ms here). Every build measured
+here fits well under the 6 GB ceiling, GPU and CPU-only alike.
+
+**Next: t27**, a private upload of the shipped checkpoints, only after
+asking the operator, and only after fixing or at least flagging the merged
+checkpoint's config still declaring an MTP head it has no weights for
+(P67's follow-up) — then t28 (the report) and t29
 (validate/summarize/version/PR).
