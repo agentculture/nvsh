@@ -37,11 +37,23 @@
 #
 # A GGUF has no generation_config.json, so deviation d3's temperature-0 rule
 # is applied by flags instead (--temp 0 --top-k 1: greedy), and the record
-# says so. The server's pid goes to MEASURE_RUN_DIR/q46-measure-PORT.pid and
-# its output to q46-measure-PORT.log there (MEASURE_RUN_DIR defaults to
-# XDG_RUNTIME_DIR, else /tmp). MEASURE_IMAGE, TOOL_CALL_PARSER,
-# MEASURE_GPU_FRACTION and MEASURE_MAX_LOGPROBS do not apply to it
-# (llama-server has no log-probability cap to raise).
+# says so. `start` refuses a port anything already listens on, claims
+# MEASURE_RUN_DIR/q46-measure-PORT.pid atomically (noclobber: a concurrent
+# start fails cleanly), records the exact argv (NUL-separated) in
+# q46-measure-PORT.argv, launches, waits (up to MEASURE_START_SECONDS,
+# default 10) until the child runs that argv, then writes its pid and start
+# time (/proc/<pid>/stat field 22) into the pid file. If anything fails
+# after the launch, the child it launched is stopped and `start` exits
+# non-zero. The server's output goes to q46-measure-PORT.log there
+# (MEASURE_RUN_DIR defaults to XDG_RUNTIME_DIR, else /tmp). MEASURE_IMAGE,
+# TOOL_CALL_PARSER, MEASURE_GPU_FRACTION and MEASURE_MAX_LOGPROBS do not
+# apply to it (llama-server has no log-probability cap to raise).
+#
+# A llama-server is "the one this helper started" only while its pid still
+# has the recorded start time and its /proc/<pid>/cmdline is exactly the
+# recorded argv (or that argv behind the interpreter a script binary runs
+# under): a reused pid, or another invocation of the same binary, never
+# qualifies. Every signal is sent only after that check.
 #
 # With RECORD_JSON, `start` writes the backend ("vllm" or "llama-server") and
 # the full argv there, next to the run's results, and for llama-server also
@@ -49,13 +61,16 @@
 # serving stack and version.
 #
 # `wait` polls /v1/models until it answers, for up to MEASURE_WAIT_SECONDS
-# (default 900) every MEASURE_POLL_SECONDS (default 2); on a timeout, or a
-# server that has stopped, it prints the server's last log lines (and with
-# FULL_LOG keeps the whole log there) and exits 2. `stop` stops the
-# llama-server this helper started on PORT -- only a process whose pid file
-# it wrote and whose command line still names the recorded binary -- and
-# removes the container. Nothing here ever touches a container not named
-# q46-measure-*.
+# (default 900) every MEASURE_POLL_SECONDS (default 2); for llama-server it
+# is ready only while the child it started is still that child and
+# /v1/models lists its --alias, so a stale server answering on the port is
+# never taken for it. On a timeout, or a server that has stopped, it prints
+# the server's last log lines (and with FULL_LOG keeps the whole log there)
+# and exits 2; for llama-server it also stops the server it waited on
+# (identity checked), so a standalone `wait` never leaves one behind.
+# `stop` stops the llama-server this helper started on PORT (identity
+# checked before TERM and again before KILL) and removes the container.
+# Nothing here ever touches a container not named q46-measure-*.
 set -euo pipefail
 
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -83,21 +98,71 @@ container() { echo "$NAME_PREFIX$1"; }
 
 run_dir() { echo "${MEASURE_RUN_DIR:-${XDG_RUNTIME_DIR:-/tmp}}"; }
 pid_file() { echo "$(run_dir)/$NAME_PREFIX$1.pid"; }
+argv_file() { echo "$(run_dir)/$NAME_PREFIX$1.argv"; }
 llama_log() { echo "$(run_dir)/$NAME_PREFIX$1.log"; }
+
+proc_starttime() {
+  # proc_starttime PID: /proc/PID/stat field 22 (start time in clock ticks),
+  # or nothing for a pid that is gone or a zombie.
+  local stat rest fields
+  stat=$(cat "/proc/$1/stat" 2>/dev/null) || return 0
+  rest=${stat##*) }
+  read -r -a fields <<<"$rest"
+  if [ "${fields[0]:-}" = Z ]; then return 0; fi
+  echo "${fields[19]:-}"
+}
+
+hex_of() { od -An -v -tx1 | tr -d ' \n'; }
+
+is_our_llama() {
+  # is_our_llama PID STARTTIME ARGV_FILE: whether PID is still the process
+  # `start` launched -- the same start time, and a command line that is
+  # exactly the recorded argv (or ends with it at an argument boundary, the
+  # interpreter a script binary runs under in front).
+  local pid=$1 starttime=$2 file=$3 now actual expected
+  now=$(proc_starttime "$pid")
+  if [ -z "$now" ] || [ "$now" != "$starttime" ]; then return 1; fi
+  expected=$(hex_of <"$file") || return 1
+  actual=$(hex_of <"/proc/$pid/cmdline" 2>/dev/null) || return 1
+  if [ -z "$expected" ]; then return 1; fi
+  [ "$actual" = "$expected" ] || [[ $actual == *"00$expected" ]]
+}
 
 own_llama_pid() {
   # own_llama_pid PORT: the pid of the llama-server this helper started on
-  # PORT, while it still runs, else nothing. A pid file whose process has
-  # gone, or whose command line no longer names the recorded binary (a
-  # reused pid), is never trusted.
-  local file pid='' binary='' cmdline
+  # PORT, while it is still that process (is_our_llama), else nothing.
+  local file pid='' starttime=''
   file=$(pid_file "$1")
-  [ -f "$file" ] || return 0
-  { read -r pid; read -r binary; } <"$file" || true
-  if ! [[ $pid =~ ^[0-9]+$ ]] || [ -z "$binary" ]; then return 0; fi
-  cmdline=$(tr '\0' '\n' <"/proc/$pid/cmdline" 2>/dev/null) || return 0
-  grep -qxF -- "$binary" <<<"$cmdline" || return 0
-  echo "$pid"
+  [ -s "$file" ] || return 0
+  { read -r pid; read -r starttime; } <"$file" || true
+  if ! [[ $pid =~ ^[0-9]+$ ]] || ! [[ $starttime =~ ^[0-9]+$ ]]; then return 0; fi
+  if is_our_llama "$pid" "$starttime" "$(argv_file "$1")"; then echo "$pid"; fi
+}
+
+port_busy() {
+  # Whether anything accepts a connection on 127.0.0.1:PORT.
+  (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null
+}
+
+recorded_alias() {
+  # The --alias in PORT's recorded argv.
+  local args i
+  mapfile -d '' -t args <"$(argv_file "$1")" 2>/dev/null || return 0
+  for ((i = 0; i + 1 < ${#args[@]}; i++)); do
+    if [ "${args[i]}" = --alias ]; then echo "${args[i + 1]}"; return 0; fi
+  done
+}
+
+lists_model() {
+  # lists_model JSON NAME: whether a /v1/models answer lists NAME.
+  python3 -c '
+import json, sys
+try:
+    data = json.loads(sys.argv[1]).get("data") or []
+except (ValueError, AttributeError):
+    sys.exit(1)
+sys.exit(0 if any(isinstance(m, dict) and m.get("id") == sys.argv[2] for m in data) else 1)
+' "$1" "$2"
 }
 
 check_ctx() {
@@ -177,6 +242,43 @@ with open(record, "w", encoding="utf-8") as handle:
 PYEOF
 }
 
+claim_port() {
+  # claim_port PORT: create PORT's pid file atomically (noclobber), after
+  # removing a stale one whose process is gone or no longer ours. An empty
+  # pid file is another start in progress and is never taken over.
+  local port=$1 pidf
+  pidf=$(pid_file "$port")
+  if [ -e "$pidf" ]; then
+    if [ -s "$pidf" ] && [ -z "$(own_llama_pid "$port")" ]; then
+      rm -f "$pidf" "$(argv_file "$port")"
+    else
+      die "a llama-server this helper started runs (or is starting) on port $port;" \
+        "run '$0 stop $port' first"
+    fi
+  fi
+  (set -C; : >"$pidf") 2>/dev/null \
+    || die "another start claimed port $port first; run '$0 stop $port' first"
+}
+
+# Set while `start` owns a claim or a just-launched child; see rollback_start.
+CLAIMED_PORT=''
+LAUNCHED_PID=''
+
+# shellcheck disable=SC2317  # invoked by start_llama's EXIT trap
+rollback_start() {
+  # A start that failed after claiming or launching: stop the child it
+  # launched (by the pid `$!` gave it) and release the claim.
+  if [ -n "$LAUNCHED_PID" ]; then
+    kill -TERM "$LAUNCHED_PID" 2>/dev/null || true
+    sleep 0.5
+    kill -KILL "$LAUNCHED_PID" 2>/dev/null || true
+    echo "serve_for_measure: stopped the llama-server it had just launched (pid $LAUNCHED_PID)" >&2
+  fi
+  if [ -n "$CLAIMED_PORT" ]; then
+    rm -f "$(pid_file "$CLAIMED_PORT")" "$(argv_file "$CLAIMED_PORT")"
+  fi
+}
+
 start_llama() {
   # start_llama GGUF PORT [RECORD_JSON]: the native llama-server backend.
   local model=$1 port=$2 record=$3 binary version
@@ -188,20 +290,43 @@ start_llama() {
   fi
   binary=$(cd "$(dirname "$binary")" && pwd -P)/$(basename "$binary")
   model=$(cd "$(dirname "$model")" && pwd -P)/$(basename "$model")
-  if [ -n "$(own_llama_pid "$port")" ]; then
-    die "a llama-server this helper started already runs on port $port; run '$0 stop $port' first"
-  fi
   version=$("$binary" --version 2>&1) || die "'$binary --version' failed: $version"
-  local name=${MEASURE_MODEL_NAME:-$(basename "$model" .gguf)}
+  local name=${MEASURE_MODEL_NAME:-$(basename "$model" .gguf)} pidf
   mkdir -p "$(run_dir)"
+  pidf=$(pid_file "$port")
+  claim_port "$port"
+  CLAIMED_PORT=$port
+  trap rollback_start EXIT
+  if port_busy "$port"; then
+    die "something already listens on 127.0.0.1:$port; it would answer /v1/models in place of" \
+      "$model -- stop it or pick another MEASURE_PORT"
+  fi
   local argv=("$binary" --model "$model" --host 127.0.0.1 --port "$port"
     --ctx-size "$MEASURE_CTX" --jinja --n-gpu-layers 999 --temp 0 --top-k 1 --alias "$name")
   [ -z "$record" ] \
     || write_llama_record "$record" "$model" "$name" "$port" "$binary" "$version" "${argv[@]}"
+  printf '%s\0' "${argv[@]}" >"$(argv_file "$port")" || die "cannot write $(argv_file "$port")"
   nohup "${argv[@]}" </dev/null >"$(llama_log "$port")" 2>&1 &
-  printf '%s\n%s\n' "$!" "$binary" >"$(pid_file "$port")"
-  echo "serve_for_measure: started llama-server (pid $!) serving $model as '$name'" \
-    "on 127.0.0.1:$port" >&2
+  LAUNCHED_PID=$!
+  # The child runs the binary once it has exec'd; until then its command
+  # line is still this shell's.
+  local starttime='' tries=0
+  while :; do
+    starttime=$(proc_starttime "$LAUNCHED_PID")
+    [ -n "$starttime" ] || die "llama-server exited at once; see $(llama_log "$port")"
+    if is_our_llama "$LAUNCHED_PID" "$starttime" "$(argv_file "$port")"; then break; fi
+    [ "$tries" -lt $((${MEASURE_START_SECONDS:-10} * 20)) ] \
+      || die "the launched process never ran $binary with the recorded argv"
+    sleep 0.05
+    tries=$((tries + 1))
+  done
+  { printf '%s\n%s\n' "$LAUNCHED_PID" "$starttime" >"$pidf.tmp" && mv -f "$pidf.tmp" "$pidf"; } \
+    2>/dev/null || die "cannot write $pidf"
+  echo "serve_for_measure: started llama-server (pid $LAUNCHED_PID) serving $model as" \
+    "'$name' on 127.0.0.1:$port" >&2
+  LAUNCHED_PID=''
+  CLAIMED_PORT=''
+  trap - EXIT
 }
 
 start() {
@@ -244,16 +369,51 @@ start() {
   echo "serve_for_measure: started $own serving $model_dir as '$name' on 127.0.0.1:$port" >&2
 }
 
+wait_llama() {
+  # wait_llama PORT FULL_LOG: the llama-server half of wait_ready.
+  local port=$1 full_log=$2 own url deadline alias models timed_out=''
+  own="llama-server on port $port"
+  url="http://127.0.0.1:$port/v1/models"
+  alias=$(recorded_alias "$port")
+  deadline=$(($(date +%s) + ${MEASURE_WAIT_SECONDS:-900}))
+  while :; do
+    if [ -z "$(own_llama_pid "$port")" ]; then
+      echo "serve_for_measure: $own stopped before it was ready; its last log lines:" >&2
+      break
+    fi
+    # Ready only when the answer lists this child's own alias and the child
+    # is still the one started: anything else on the port is not it.
+    if models=$(curl -fsS --max-time 5 "$url" 2>/dev/null) && [ -n "$alias" ] \
+      && lists_model "$models" "$alias" && [ -n "$(own_llama_pid "$port")" ]; then
+      echo "serve_for_measure: $own is ready" >&2
+      return 0
+    fi
+    if [ "$(date +%s)" -ge "$deadline" ]; then
+      echo "serve_for_measure: $own not ready after ${MEASURE_WAIT_SECONDS:-900}s; its last log lines:" >&2
+      timed_out=1
+      break
+    fi
+    sleep "${MEASURE_POLL_SECONDS:-2}"
+  done
+  tail -n "${MEASURE_LOG_LINES:-40}" "$(llama_log "$port")" >&2 2>/dev/null || true
+  if [ -n "$full_log" ]; then
+    cp "$(llama_log "$port")" "$full_log" 2>/dev/null || true
+    echo "serve_for_measure: the full server log is in $full_log" >&2
+  fi
+  # Never leave a server behind a failed wait (a standalone wait has no
+  # caller to stop it); stop_llama signals it only if it is still ours.
+  stop_llama "$port"
+  if [ -n "$timed_out" ]; then echo "serve_for_measure: stopped $own" >&2; fi
+  exit 2
+}
+
 wait_ready() {
   local port=${1:-} full_log=${2:-}
   check_port "$port"
-  local own url deadline native=''
-  own=$(container "$port")
   # A pid file means `start` launched the native llama-server on this port.
-  if [ -f "$(pid_file "$port")" ]; then
-    native=1
-    own="llama-server on port $port"
-  fi
+  if [ -f "$(pid_file "$port")" ]; then wait_llama "$port" "$full_log"; fi
+  local own url deadline
+  own=$(container "$port")
   url="http://127.0.0.1:$port/v1/models"
   deadline=$(($(date +%s) + ${MEASURE_WAIT_SECONDS:-900}))
   while :; do
@@ -261,12 +421,7 @@ wait_ready() {
       echo "serve_for_measure: $own is ready" >&2
       return 0
     fi
-    if [ -n "$native" ]; then
-      if [ -z "$(own_llama_pid "$port")" ]; then
-        echo "serve_for_measure: $own stopped before it was ready; its last log lines:" >&2
-        break
-      fi
-    elif [ "$(docker inspect -f '{{.State.Running}}' "$own" 2>/dev/null || true)" = false ]; then
+    if [ "$(docker inspect -f '{{.State.Running}}' "$own" 2>/dev/null || true)" = false ]; then
       echo "serve_for_measure: $own stopped before it was ready; its last log lines:" >&2
       break
     fi
@@ -276,14 +431,6 @@ wait_ready() {
     fi
     sleep "${MEASURE_POLL_SECONDS:-2}"
   done
-  if [ -n "$native" ]; then
-    tail -n "${MEASURE_LOG_LINES:-40}" "$(llama_log "$port")" >&2 2>/dev/null || true
-    if [ -n "$full_log" ]; then
-      cp "$(llama_log "$port")" "$full_log" 2>/dev/null || true
-      echo "serve_for_measure: the full server log is in $full_log" >&2
-    fi
-    exit 2
-  fi
   docker logs --tail "${MEASURE_LOG_LINES:-40}" "$own" >&2 2>&1 || true
   if [ -n "$full_log" ]; then
     # The last lines rarely reach vLLM's root cause (issue 46): keep it all.
@@ -294,21 +441,23 @@ wait_ready() {
 }
 
 stop_llama() {
-  # stop_llama PORT: TERM the llama-server this helper started on PORT (see
-  # own_llama_pid), KILL it after MEASURE_STOP_SECONDS (default 10), and
-  # remove its pid file; a stale pid file is removed without signalling
-  # anything.
+  # stop_llama PORT: TERM the llama-server this helper started on PORT,
+  # KILL it if it is still that process after MEASURE_STOP_SECONDS (default
+  # 10), and remove its pid and argv files. Identity (own_llama_pid) is
+  # checked right before each signal; a pid that is no longer ours is never
+  # signalled, only its stale files removed.
   local port=$1 pid tries=0
   pid=$(own_llama_pid "$port")
   if [ -n "$pid" ]; then
     kill -TERM "$pid" 2>/dev/null || true
-    while kill -0 "$pid" 2>/dev/null && [ "$tries" -lt $((${MEASURE_STOP_SECONDS:-10} * 10)) ]; do
+    while [ -n "$(own_llama_pid "$port")" ] && [ "$tries" -lt $((${MEASURE_STOP_SECONDS:-10} * 10)) ]; do
       sleep 0.1
       tries=$((tries + 1))
     done
-    kill -KILL "$pid" 2>/dev/null || true
+    pid=$(own_llama_pid "$port")
+    if [ -n "$pid" ]; then kill -KILL "$pid" 2>/dev/null || true; fi
   fi
-  rm -f "$(pid_file "$port")"
+  rm -f "$(pid_file "$port")" "$(argv_file "$port")"
 }
 
 stop() {
