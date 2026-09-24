@@ -1178,6 +1178,33 @@ def test_final_stages_take_only_slice_and_scorer(stage: str, args: list, tmp_pat
     assert not [c for c in _docker_calls(tmp_path) if c[0] == "run"]
 
 
+@pytest.mark.parametrize(
+    ("args", "label"),
+    [
+        (["--scorer", "served"], "final-a1"),
+        (["--scorer=in-process"], "final-a1-exact"),
+        (
+            ["--slice", "missing-candidate", "--scorer", "in-process"],
+            "final-a1-missing-candidate-exact",
+        ),
+    ],
+)
+def test_the_exact_scorer_run_is_labelled_apart(args: list, label: str, tmp_path: Path) -> None:
+    """d15: Track B's exact in-process run is a second run of the same set."""
+    site = tmp_path / "train-site-packages"
+    site.mkdir()
+    train_py = tmp_path / "train-python"
+    train_py.write_text(f'#!/usr/bin/env bash\necho "{site}"\n', encoding="utf-8")
+    train_py.chmod(0o755)
+    pipe = _Pipeline(tmp_path, f"TRAIN_PY={train_py}\n")
+    pipe.ready()
+    _mark_scorer_run(pipe)
+    result = pipe.run("measure-final", "a1", *args)
+    assert result.returncode == 0, result.stderr
+    [(_, argv)] = pipe.calls("measure.py")
+    assert _option(argv, "--label") == [label]
+
+
 @pytest.mark.parametrize("args", [["--slice", "full"], ["--slice=full"]])
 def test_an_explicit_full_slice_keeps_the_plain_label(args: list, tmp_path: Path) -> None:
     pipe = _Pipeline(tmp_path)

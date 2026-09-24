@@ -31,10 +31,11 @@
 #   measure-val <name> [args]    validation run with per-entry details (iterate on
 #                         this)
 #   measure-final <name> [--slice S] [--scorer M]   a final run on the test
-#                         side, labelled final-<name>[-missing-candidate]
+#                         side, labelled final-<name>[-missing-candidate][-exact]
 #   measure-heldout <name> [--slice S] [--scorer M]   the one run on the sealed
 #                         held-out file (HELDOUT_SPLIT, measure.py --acceptance),
-#                         labelled heldout-<name>[-missing-candidate]. Both take
+#                         labelled heldout-<name>[-missing-candidate][-exact]
+#                         (-exact: --scorer in-process). Both take
 #                         nothing else (d16): S is full|missing-candidate, M is
 #                         served|in-process
 #   measure-skills <name> [--margin "<margin>"]   the 104 skill evals; a tuned
@@ -225,7 +226,8 @@ check_final_args() {
   # once, spelled out, with a known value: measure.py's argparse keeps the last
   # value and accepts abbreviations, so anything else could relabel the run,
   # swap the split or overwrite another run's predictions (issue 46, t24, d16).
-  # Prints the label suffix: "-missing-candidate" for that slice, else nothing.
+  # Prints the label suffix: "-missing-candidate" for that slice, then
+  # "-exact" for --scorer in-process, else nothing.
   local stage=$1 arg value slice='' scorer='' expect=''
   shift
   for arg in "$@"; do
@@ -250,7 +252,11 @@ check_final_args() {
     expect=
   done
   [ -z "$expect" ] || die "$stage: $expect needs a value"
-  if [ "$slice" = missing-candidate ]; then echo -missing-candidate; fi
+  local suffix=''
+  if [ "$slice" = missing-candidate ]; then suffix=-missing-candidate; fi
+  # The exact in-process scorer is a second run of the same set (d15).
+  if [ "$scorer" = in-process ]; then suffix=$suffix-exact; fi
+  echo "$suffix"
 }
 
 measure_revision() {
