@@ -5,7 +5,7 @@
   "schema_version": 5,
   "status": "exported",
   "created": "2026-09-24T23:13:14Z",
-  "updated": "2026-09-24T23:40:00Z",
+  "updated": "2026-09-24T23:40:27Z",
   "targets": [
     {
       "id": "c1",
@@ -913,9 +913,9 @@
       "id": "t22",
       "summary": "Cycle report: comparison against scorer-b1 and OpenJev, before/after, follow-up links",
       "origin": "llm",
-      "status": "confirmed",
+      "status": "proposed",
       "acceptance_criteria": [
-        "docs/benchmarks/<date>-tool-jev-calibration-cycle.md: every announcement clause with its measured number, CI and n, before (scorer-b1, sourced) vs after, per-slice reliability tables, OpenJev comparison limited to what OpenJev publishes",
+        "A new benchmark file `docs/benchmarks/<date>-tool-jev-calibration-cycle.md`: every announcement clause with its measured number, CI and n, before (scorer-b1, sourced) vs after, per-slice reliability tables, OpenJev comparison limited to what OpenJev publishes",
         "Names the artifact, thresholds and slices so a reader without #46 context can use it (#54's input); links #54-#60"
       ],
       "deps": [
