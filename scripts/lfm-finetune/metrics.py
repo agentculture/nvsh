@@ -75,6 +75,37 @@ The metrics
   highest probability, a tie going to the label that sorts first; it is right
   when its label is the expected one (operation name, or the escalate/explain
   label) -- arguments are not part of calibration.
+* **Per-slice calibration** (issue 53): the same ECE/Brier/reliability bins,
+  broken down by the *gold* label's slice -- ``read_only`` and ``mutating``
+  (the operation table's ``read_only`` flag; never an operation name in this
+  module's own code), with escalate/explain-expected entries forming their
+  own ``escalate_or_explain`` slice. Each slice also reports its own offered
+  candidate count (mean/median of ``len(candidates)``) and its own
+  missing-candidate rate -- a line is missing-candidate when its id ends in
+  ``-nocand`` (see ``eval_slices.py``) or its gold label isn't in the offered
+  candidate set. :func:`reliability_markdown` renders one reliability-bin
+  table per slice; ``measure.py``'s report page is the one that calls it.
+* **Escalation reason roll-up**: a candidate label of the form
+  ``escalate:<reason>`` (e.g. ``escalate:low_confidence``, a gate's specific
+  decline reason) is folded into bench's bare ``(escalate)`` label wherever
+  metrics group by outcome -- top-1 accuracy, Brier attribution, missing-
+  candidate detection, per-slice calibration. The reason itself is preserved
+  separately, as a tally of the top candidate's reason suffix, in
+  ``escalation_reasons``.
+* **abstain_uncertain**: a distinct prediction outcome (a confidence gate
+  declining because it wasn't sure of the scorer, as opposed to a semantic
+  escalate decision). It counts toward escalation recall/precision and the
+  escalation bars exactly like ``escalate`` (``fp``/``fn``/``tp`` are the
+  union of the two), but is tallied separately in ``escalation.
+  abstain_uncertain`` and in the top-level ``outcome_counts`` so a report can
+  still tell the two apart.
+* **Bootstrap confidence intervals**: every rate (right proposals, escalation
+  recall/precision/precision_strict, false-positive tool calls, invalid) and
+  every ECE/Brier figure (top-level and per slice) carries its ``n`` and a
+  seeded, percentile 95% bootstrap CI (``{"n", "value", "ci_low",
+  "ci_high"}``), resampling the underlying lines with replacement. The seed
+  and resample count are fixed defaults, both parameterised on
+  :func:`compute`, and reported back under ``bootstrap``.
 * **Tokens generated** per decision (total, mean, median) and **time to first
   decision** / **latency** as bench reports latency: the first line cold, the
   rest warm (median and nearest-rank p95).
@@ -85,10 +116,11 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import random
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping, Sequence
+from typing import Callable, Mapping, Sequence
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # runnable from any directory
 
@@ -106,7 +138,7 @@ FIELDS = (
     "ttfd_ms",
     "latency_ms",
 )
-OUTCOMES = ("propose", "explain", "escalate", "invalid")
+OUTCOMES = ("propose", "explain", "escalate", "abstain_uncertain", "invalid")
 
 #: Equal-width confidence bins for ECE.
 ECE_BINS = 10
@@ -114,6 +146,16 @@ ECE_BINS = 10
 SUM_TOLERANCE = 1e-4
 #: ``invalid_reason`` when an invalid line gives none.
 DEFAULT_INVALID_REASON = "unparseable"
+
+#: A candidate label ``escalate:<reason>`` rolls up to bench's bare escalate
+#: label everywhere metrics group by outcome (see module docstring).
+ESCALATE_REASON_PREFIX = "escalate:"
+#: Bootstrap defaults for every rate/ECE/Brier confidence interval; both are
+#: parameters on :func:`compute` too.
+DEFAULT_BOOTSTRAP_SEED = 0
+DEFAULT_BOOTSTRAP_RESAMPLES = 1000
+#: The per-slice breakdown of :func:`compute_slices`, in report order.
+SLICE_NAMES = ("read_only", "mutating", "escalate_or_explain")
 
 #: nvsh outcome -> issue 46's decision JSON, for the report only (decision c25:
 #: models are trained and scored on nvsh's own tools; abstain is escalate).
@@ -124,6 +166,7 @@ ISSUE46_MAPPING = (
     },
     {"nvsh": "explain", "issue46": '{"action": "no_action"}'},
     {"nvsh": "escalate", "issue46": '{"action": "abstain"}'},
+    {"nvsh": "abstain_uncertain", "issue46": '{"action": "abstain"}'},
     {"nvsh": "invalid", "issue46": '{"action": "invalid"}'},
 )
 ISSUE46_NOTE = (
@@ -132,7 +175,10 @@ ISSUE46_NOTE = (
     "recall and abstention precision the strict escalation precision (an escalation on an "
     "explain entry counts against it). Explain (answer in words, no tool) has no counterpart in "
     "issue 46's tool|abstain pair; it is shown as the no_action label issue 46 uses for "
-    "Track B and is never counted as an abstention. An invalid output is not a decision."
+    "Track B and is never counted as an abstention. abstain_uncertain (issue 53: a confidence "
+    "gate, not a semantic escalate decision) maps to the same issue-46 abstain action as "
+    "escalate, and counts the same way in every escalation bar, but is tallied separately in "
+    "nvsh's own escalation/outcome_counts. An invalid output is not a decision."
 )
 
 
@@ -294,6 +340,17 @@ def _proposed(prediction: Prediction) -> bool:
     return prediction.outcome == "propose" and invalid_reason(prediction) is None
 
 
+def _escalated(prediction: Prediction) -> bool:
+    """True for either escalation outcome.
+
+    ``escalate`` (a semantic decision) and ``abstain_uncertain`` (a confidence
+    gate declining because it wasn't sure of the scorer) both count toward
+    every escalation bar (tp/fn/fp, recall, precision); :func:`compute` also
+    tallies ``abstain_uncertain`` on its own.
+    """
+    return prediction.outcome in ("escalate", "abstain_uncertain")
+
+
 def _is_mutating_proposal(prediction: Prediction) -> bool:
     if not _proposed(prediction):
         return False
@@ -324,6 +381,138 @@ def _wrong_arguments_mutating(prediction: Prediction) -> bool:
         and prediction.operation == prediction.expected.get("operation")
         and not _right_proposal(prediction)
     )
+
+
+# ---------------------------------------------------------------------------
+# Escalation-reason roll-up (issue 53)
+# ---------------------------------------------------------------------------
+
+
+def _is_escalate_label(label: str) -> bool:
+    """True for bench's bare ``(escalate)`` label or an ``escalate:<reason>`` one."""
+    return label == tier_bench.ESCALATE_LABEL or label.startswith(ESCALATE_REASON_PREFIX)
+
+
+def canonical_label(label: str) -> str:
+    """*label*, or bench's bare escalate label when *label* is escalate-family."""
+    return tier_bench.ESCALATE_LABEL if _is_escalate_label(label) else label
+
+
+def escalate_reason(label: str) -> str | None:
+    """The ``<reason>`` of an ``escalate:<reason>`` label, or ``None``."""
+    if label.startswith(ESCALATE_REASON_PREFIX):
+        return label[len(ESCALATE_REASON_PREFIX) :] or None
+    return None
+
+
+def rollup_escalate_candidates(candidates: Mapping[str, float]) -> dict[str, float]:
+    """*candidates* with every escalate-family label's mass summed into one entry.
+
+    A scorer that splits its escalate mass across several ``escalate:<reason>``
+    labels should not be penalised (nor rewarded) relative to one that reports
+    a single bare ``(escalate)``; every calibration figure compares against
+    this rolled-up distribution.
+    """
+    rolled: dict[str, float] = {}
+    for label, value in candidates.items():
+        key = canonical_label(label)
+        rolled[key] = rolled.get(key, 0.0) + value
+    return rolled
+
+
+def escalation_reason_counts(predictions: Sequence[Prediction]) -> dict[str, int]:
+    """How often each ``escalate:<reason>`` label was a line's (raw) top candidate."""
+    counts: dict[str, int] = {}
+    for prediction in predictions:
+        if prediction.candidates is None:
+            continue
+        label, _ = top_candidate(prediction.candidates)
+        reason = escalate_reason(label)
+        if reason is not None:
+            counts[reason] = counts.get(reason, 0) + 1
+    return dict(sorted(counts.items()))
+
+
+# ---------------------------------------------------------------------------
+# Bootstrap confidence intervals
+# ---------------------------------------------------------------------------
+
+
+def _resample(items: Sequence, rng: random.Random) -> list:
+    n = len(items)
+    return [items[rng.randrange(n)] for _ in range(n)]
+
+
+def _mean_stat(values: Sequence[float]) -> float | None:
+    return (math.fsum(values) / len(values)) if values else None
+
+
+def bootstrap_ci(
+    items: Sequence,
+    stat_fn: Callable[[Sequence], float | None],
+    seed: int = DEFAULT_BOOTSTRAP_SEED,
+    resamples: int = DEFAULT_BOOTSTRAP_RESAMPLES,
+) -> dict:
+    """Percentile 95% CI of ``stat_fn(items)``, resampling *items* with replacement.
+
+    ``n`` is ``len(items)``; a ``stat_fn`` that cannot be computed on a given
+    resample (e.g. a ratio with a zero denominator) may return ``None`` and
+    that resample is skipped. Seeded (``random.Random(seed)``) so a report is
+    reproducible.
+    """
+    n = len(items)
+    if n == 0:
+        return {"n": 0, "value": None, "ci_low": None, "ci_high": None}
+    value = stat_fn(items)
+    if n == 1:
+        return {"n": 1, "value": value, "ci_low": value, "ci_high": value}
+    rng = random.Random(seed)  # nosec B311 - bootstrap resampling, not security
+    stats = []
+    for _ in range(resamples):
+        sample_stat = stat_fn(_resample(items, rng))
+        if sample_stat is not None:
+            stats.append(sample_stat)
+    if not stats:
+        return {"n": n, "value": value, "ci_low": None, "ci_high": None}
+    stats.sort()
+    lo = stats[int(round(0.025 * (len(stats) - 1)))]
+    hi = stats[int(round(0.975 * (len(stats) - 1)))]
+    return {"n": n, "value": value, "ci_low": lo, "ci_high": hi}
+
+
+def _stratified_bootstrap_ci(
+    strata: Mapping[str, Sequence],
+    stat_fn: Callable[[Mapping[str, Sequence]], float | None],
+    seed: int = DEFAULT_BOOTSTRAP_SEED,
+    resamples: int = DEFAULT_BOOTSTRAP_RESAMPLES,
+) -> dict:
+    """Like :func:`bootstrap_ci`, but for a ratio drawn from more than one group.
+
+    Each named stratum (e.g. escalate-expected vs operation-expected lines) is
+    resampled independently, at its own size, every iteration; *stat_fn* sees
+    the resampled strata and recomputes the ratio from them.
+    """
+    total_n = sum(len(items) for items in strata.values())
+    value = stat_fn(strata)
+    if total_n == 0:
+        return {"n": 0, "value": value, "ci_low": None, "ci_high": None}
+    if total_n == 1:
+        return {"n": 1, "value": value, "ci_low": value, "ci_high": value}
+    rng = random.Random(seed)  # nosec B311 - bootstrap resampling, not security
+    stats = []
+    for _ in range(resamples):
+        sample = {name: _resample(items, rng) for name, items in strata.items() if items}
+        for name in strata:
+            sample.setdefault(name, [])
+        sample_stat = stat_fn(sample)
+        if sample_stat is not None:
+            stats.append(sample_stat)
+    if not stats:
+        return {"n": total_n, "value": value, "ci_low": None, "ci_high": None}
+    stats.sort()
+    lo = stats[int(round(0.025 * (len(stats) - 1)))]
+    hi = stats[int(round(0.975 * (len(stats) - 1)))]
+    return {"n": total_n, "value": value, "ci_low": lo, "ci_high": hi}
 
 
 # ---------------------------------------------------------------------------
@@ -384,22 +573,148 @@ def brier_one(candidates: Mapping[str, float], gold: str) -> float:
     )
 
 
-def compute_calibration(predictions: Sequence[Prediction]) -> dict:
+def compute_calibration(
+    predictions: Sequence[Prediction],
+    *,
+    seed: int = DEFAULT_BOOTSTRAP_SEED,
+    resamples: int = DEFAULT_BOOTSTRAP_RESAMPLES,
+) -> dict:
+    """ECE/Brier/bins over *predictions*, each carrying a seeded bootstrap CI.
+
+    The top candidate is taken from :func:`rollup_escalate_candidates`'
+    output, so an ``escalate:<reason>`` split doesn't change accuracy or
+    Brier relative to a bare ``(escalate)``.
+    """
     with_distribution = [p for p in predictions if p.candidates is not None]
     pairs = []
     briers = []
     for prediction in with_distribution:
         gold = expected_label(prediction.expected)
-        label, confidence = top_candidate(prediction.candidates)  # type: ignore[arg-type]
+        rolled = rollup_escalate_candidates(prediction.candidates)  # type: ignore[arg-type]
+        label, confidence = top_candidate(rolled)
         pairs.append((confidence, label == gold))
-        briers.append(brier_one(prediction.candidates, gold))  # type: ignore[arg-type]
+        briers.append(brier_one(rolled, gold))
     return {
         "n": len(with_distribution),
         "without_distribution": len(predictions) - len(with_distribution),
         "ece": ece(pairs),
+        "ece_ci": bootstrap_ci(pairs, ece, seed, resamples),
         "brier": (math.fsum(briers) / len(briers)) if briers else None,
+        "brier_ci": bootstrap_ci(briers, _mean_stat, seed, resamples),
         "bins": ece_bins(pairs),
     }
+
+
+# ---------------------------------------------------------------------------
+# Slices (issue 53): read-only vs mutating vs escalate/explain
+# ---------------------------------------------------------------------------
+
+
+def slice_name(prediction: Prediction) -> str:
+    """Which of :data:`SLICE_NAMES` a prediction's GOLD label belongs to.
+
+    Decided from the operation table's ``read_only`` flag, never a name;
+    an escalate- or explain-expected entry forms its own slice regardless of
+    what was predicted. A gold operation absent from the table (should not
+    happen for a real corpus) is conservatively bucketed as ``mutating``.
+    """
+    if expect_kind(prediction.expected) != "operation":
+        return "escalate_or_explain"
+    operation = ops_table.get(str(prediction.expected["operation"]))
+    if operation is None:
+        return "mutating"
+    return "read_only" if operation.read_only else "mutating"
+
+
+def is_missing_candidate(prediction: Prediction) -> bool:
+    """A missing-candidate line: id ends ``-nocand``, or gold isn't offered.
+
+    ``eval_slices.py`` builds explicit ``-nocand`` entries (candidates =
+    every operation but the gold one, ``expect`` rewritten to escalate); this
+    also catches any other line whose offered candidates never include the
+    gold label, after the escalate-reason roll-up.
+    """
+    if prediction.id.endswith("-nocand"):
+        return True
+    if prediction.candidates is None:
+        return False
+    gold = canonical_label(expected_label(prediction.expected))
+    offered = {canonical_label(label) for label in prediction.candidates}
+    return gold not in offered
+
+
+def _candidate_count_stats(predictions: Sequence[Prediction]) -> dict:
+    counts = [len(p.candidates) for p in predictions if p.candidates is not None]
+    return {
+        "n": len(counts),
+        "mean": (sum(counts) / len(counts)) if counts else None,
+        "median": _median(counts),
+    }
+
+
+def compute_slice(
+    predictions: Sequence[Prediction],
+    *,
+    seed: int = DEFAULT_BOOTSTRAP_SEED,
+    resamples: int = DEFAULT_BOOTSTRAP_RESAMPLES,
+) -> dict:
+    """One slice's calibration, offered-candidate count and missing-candidate rate."""
+    missing = [1 if is_missing_candidate(p) else 0 for p in predictions]
+    return {
+        "n": len(predictions),
+        "calibration": compute_calibration(predictions, seed=seed, resamples=resamples),
+        "candidate_count": _candidate_count_stats(predictions),
+        "missing_candidate": {
+            "n": sum(missing),
+            "N": len(predictions),
+            "rate": bootstrap_ci(missing, _mean_stat, seed, resamples),
+        },
+    }
+
+
+def compute_slices(
+    predictions: Sequence[Prediction],
+    *,
+    seed: int = DEFAULT_BOOTSTRAP_SEED,
+    resamples: int = DEFAULT_BOOTSTRAP_RESAMPLES,
+) -> dict:
+    """:data:`SLICE_NAMES` -> :func:`compute_slice`, bucketed by :func:`slice_name`."""
+    buckets: dict[str, list[Prediction]] = {name: [] for name in SLICE_NAMES}
+    for prediction in predictions:
+        buckets[slice_name(prediction)].append(prediction)
+    return {
+        name: compute_slice(items, seed=seed, resamples=resamples)
+        for name, items in buckets.items()
+    }
+
+
+def reliability_markdown(slices: Mapping[str, dict]) -> str:
+    """One markdown reliability-bin table per slice, from :func:`compute_slices`'s output.
+
+    Not called anywhere in this module -- ``measure.py``'s report page is the
+    caller (issue 53, task t8).
+    """
+    tables = []
+    for name in SLICE_NAMES:
+        data = slices.get(name)
+        if data is None:
+            continue
+        bins = data["calibration"]["bins"]
+        lines = [
+            f"### {name}",
+            "",
+            "| bin | n | confidence | accuracy |",
+            "| --- | --- | --- | --- |",
+        ]
+        for row in bins:
+            confidence = "-" if row["confidence"] is None else f"{row['confidence']:.3f}"
+            accuracy = "-" if row["accuracy"] is None else f"{row['accuracy']:.3f}"
+            lines.append(
+                f"| [{row['lower']:.1f}, {row['upper']:.1f}) | {row['n']} | "
+                f"{confidence} | {accuracy} |"
+            )
+        tables.append("\n".join(lines))
+    return "\n\n".join(tables)
 
 
 # ---------------------------------------------------------------------------
@@ -427,19 +742,30 @@ def _median(values: Sequence[float]) -> float | None:
     return tier_bench._median(values) if values else None
 
 
-def compute(predictions: Sequence[Prediction]) -> dict:
-    """Every issue-46 metric for one predictions file, plus the issue-46 mapping."""
+def compute(
+    predictions: Sequence[Prediction],
+    *,
+    bootstrap_seed: int = DEFAULT_BOOTSTRAP_SEED,
+    bootstrap_resamples: int = DEFAULT_BOOTSTRAP_RESAMPLES,
+) -> dict:
+    """Every issue-46 metric for one predictions file, plus the issue-46 mapping.
+
+    ``bootstrap_seed``/``bootstrap_resamples`` (issue 53) control every rate
+    and ECE/Brier confidence interval in the result; both default to fixed
+    constants so a report is reproducible without passing them.
+    """
+    seed, resamples = bootstrap_seed, bootstrap_resamples
     kinds: dict[str, list[Prediction]] = {"operation": [], "escalate": [], "explain": []}
     for prediction in predictions:
         kinds[expect_kind(prediction.expected)].append(prediction)
 
-    tp = sum(1 for p in kinds["escalate"] if p.outcome == "escalate")
+    tp = sum(1 for p in kinds["escalate"] if _escalated(p))
     fn = len(kinds["escalate"]) - tp
-    fp = sum(1 for p in kinds["operation"] if p.outcome == "escalate")
+    fp = sum(1 for p in kinds["operation"] if _escalated(p))
     recall = _ratio(tp, tp + fn)
     precision = _ratio(tp, tp + fp)
     # Deviation d2: an escalation on an explain entry is a false abstention too.
-    on_explain = sum(1 for p in kinds["explain"] if p.outcome == "escalate")
+    on_explain = sum(1 for p in kinds["explain"] if _escalated(p))
     precision_strict = _ratio(tp, tp + fp + on_explain)
 
     declines = kinds["explain"] + kinds["escalate"]
@@ -458,26 +784,82 @@ def compute(predictions: Sequence[Prediction]) -> dict:
 
     tokens = [p.tokens for p in predictions]
     right_ratio = _ratio(right, len(kinds["operation"]))
+
+    def _precision_stat(strata: Mapping[str, Sequence[Prediction]]) -> float | None:
+        t = sum(1 for p in strata["escalate"] if _escalated(p))
+        f = sum(1 for p in strata["operation"] if _escalated(p))
+        denom = t + f
+        return (t / denom) if denom else None
+
+    def _precision_strict_stat(strata: Mapping[str, Sequence[Prediction]]) -> float | None:
+        t = sum(1 for p in strata["escalate"] if _escalated(p))
+        f = sum(1 for p in strata["operation"] if _escalated(p))
+        e = sum(1 for p in strata["explain"] if _escalated(p))
+        denom = t + f + e
+        return (t / denom) if denom else None
+
+    abstain_uncertain = {
+        "tp": sum(1 for p in kinds["escalate"] if p.outcome == "abstain_uncertain"),
+        "fp": sum(1 for p in kinds["operation"] if p.outcome == "abstain_uncertain"),
+        "escalated_on_explain": sum(
+            1 for p in kinds["explain"] if p.outcome == "abstain_uncertain"
+        ),
+    }
+    outcome_counts = {
+        outcome: sum(1 for p in predictions if p.outcome == outcome) for outcome in OUTCOMES
+    }
+
     return {
         "right_proposals": {
             "n": right,
             "N": len(kinds["operation"]),
             "percent": None if right_ratio is None else 100 * right_ratio,
+            "ci": bootstrap_ci(
+                [1 if _right_proposal(p) else 0 for p in kinds["operation"]],
+                _mean_stat,
+                seed,
+                resamples,
+            ),
         },
         "escalation": {
             "tp": tp,
             "fn": fn,
             "fp": fp,
             "recall": recall,
+            "recall_ci": bootstrap_ci(
+                [1 if _escalated(p) else 0 for p in kinds["escalate"]], _mean_stat, seed, resamples
+            ),
             "precision": precision,
+            "precision_ci": _stratified_bootstrap_ci(
+                {"escalate": kinds["escalate"], "operation": kinds["operation"]},
+                _precision_stat,
+                seed,
+                resamples,
+            ),
             "precision_strict": precision_strict,
+            "precision_strict_ci": _stratified_bootstrap_ci(
+                {
+                    "escalate": kinds["escalate"],
+                    "operation": kinds["operation"],
+                    "explain": kinds["explain"],
+                },
+                _precision_strict_stat,
+                seed,
+                resamples,
+            ),
             "escalated_on_explain": on_explain,
+            # abstain_uncertain (issue 53) counts toward tp/fn/fp above like escalate,
+            # but is broken out here so a report can tell the two decisions apart.
+            "abstain_uncertain": abstain_uncertain,
         },
         "abstention": {"recall": recall, "precision": precision_strict},
         "false_positive_tool_calls": {
             "n": false_calls,
             "N": len(declines),
             "rate": _ratio(false_calls, len(declines)),
+            "ci": bootstrap_ci(
+                [1 if _proposed(p) else 0 for p in declines], _mean_stat, seed, resamples
+            ),
         },
         "wrong_mutating": {
             "wrong_operation": wrong_operation,
@@ -488,9 +870,19 @@ def compute(predictions: Sequence[Prediction]) -> dict:
             "n": invalid,
             "N": len(predictions),
             "rate": _ratio(invalid, len(predictions)),
+            "ci": bootstrap_ci(
+                [1 if invalid_reason(p) is not None else 0 for p in predictions],
+                _mean_stat,
+                seed,
+                resamples,
+            ),
             "by_reason": dict(sorted(reasons.items())),
         },
-        "calibration": compute_calibration(predictions),
+        "calibration": compute_calibration(predictions, seed=seed, resamples=resamples),
+        "outcome_counts": outcome_counts,
+        "escalation_reasons": escalation_reason_counts(predictions),
+        "slices": compute_slices(predictions, seed=seed, resamples=resamples),
+        "bootstrap": {"seed": seed, "resamples": resamples},
         "tokens": {
             "total": sum(tokens),
             "mean": (sum(tokens) / len(tokens)) if tokens else None,
@@ -517,7 +909,7 @@ def issue46_json(prediction: Prediction) -> dict:
             "tool": prediction.operation,
             "arguments": dict(prediction.arguments or {}),
         }
-    if prediction.outcome == "escalate":
+    if _escalated(prediction):
         return {"action": "abstain"}
     return {"action": "no_action"}
 
