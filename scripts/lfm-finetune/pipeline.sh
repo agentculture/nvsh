@@ -89,10 +89,47 @@
 #                         (deviation d3: no served model ships without greedy decoding
 #                         pinned); the token comes only from the env var HF_TOKEN_ENV
 #                         names, injected by the operator.
+#   bundle <kind> <build-name> <repo-suffix> <report.md>...   the upload folder
+#                         for one build of the Qwen3.5 run (issue 46, t27), written
+#                         to WORK/bundles/<repo-suffix>/ for the repository
+#                         jetson-ai-lab/qwen3.5-0.8b-nvsh-<repo-suffix>, then scanned
+#                         (scan_bundle.py scan). <kind>/<build-name> is one of
+#                           bf16 <run>          WORK/runs/<run>/merged
+#                           gguf <run>.q4_k_m   WORK/quant/<run>/model-q4_k_m.gguf, with
+#                                               the run's tokenizer and chat template
+#                           awq  <run>.awq      WORK/quant/<run>/awq (compressed-tensors)
+#                         release_bundle.py writes LICENSE, NOTICE and the card
+#                         (--licence-kind apache: only Apache-2.0 teachers, named from
+#                         TEACHER_MODELS, BUNDLE_ACCEPTED and data/train-augmented.json;
+#                         BUNDLE_DATA_SUMMARY describes the data). Every <report.md>
+#                         (bf16 test, quantized test, edge) is quoted by its "Issue 46
+#                         metrics" table. A Track B run gets --scorer; a gguf/awq
+#                         bundle whose suffix ends in -gguf/-awq names the repo
+#                         without that ending as the bf16 it was quantized from. A
+#                         record of what was built goes to WORK/bundles/<suffix>.json.
+#                         e.g. bundle bf16 a3-heal tool-jev, bundle gguf a3-heal.q4_k_m
+#                         tool-jev-gguf, bundle awq scorer-b1.awq tool-jev-scorer-awq
+#   bundle-dataset <repo-suffix>   the data set folder (dataset_bundle.py --apache-only
+#                         --issue 46): splits/, the frozen data/train-augmented.json,
+#                         BUNDLE_ACCEPTED, BUNDLE_REJECTED (space-separated), nvsh's
+#                         LICENSE and TEACHER_MODELS; DATASET_MODEL_REPOS (space-
+#                         separated repo suffixes) names the models it trained. Scanned
+#                         like a model bundle; uploaded as a dataset repository.
+#   upload-bundle <repo-suffix>   upload WORK/bundles/<repo-suffix> PRIVATE to
+#                         jetson-ai-lab/qwen3.5-0.8b-nvsh-<repo-suffix> (hub_upload.py,
+#                         with the training environment's huggingface_hub). Refuses
+#                         without FINAL=1, a scan_bundle.py verify pass, and (bf16/awq)
+#                         a gen_config.py check pass; creates the repo private, sets it
+#                         private again, uploads, fetches that commit back and compares
+#                         the sha256 of every file (any difference fails), then prints
+#                         the repo's private flag. The token comes only from the env var
+#                         HF_TOKEN_ENV names. Nothing here ever makes a repo public:
+#                         that waits for the operator's approval, repo by repo.
 #   status                what exists so far
 #
-# Nothing here uploads anything except the guarded `upload` stage above, and
-# nvsh itself never runs any of it. The gateway key is read from the variable
+# Nothing here uploads anything except the guarded `upload` and `upload-bundle`
+# stages above -- ask the operator before running either -- and nvsh itself
+# never runs any of it. The gateway key is read from the variable
 # AUG_KEY_ENV names (set it with `grant run --inject VAR=NAME -- ...`), never
 # from this file or the env file; the same is true of the Hub token and
 # HF_TOKEN_ENV.
@@ -103,7 +140,7 @@ set -euo pipefail
 #: case statement silently.
 STAGES="split skills stock-copy augment-nvsh augment-skills rereview filter-variations \
 assemble train train-scorer measure-val measure-final measure-heldout measure-skills scan \
-quantize heal upload status"
+quantize heal upload bundle bundle-dataset upload-bundle status"
 
 # Everything runs inside main(), called on the last line, so bash parses the
 # whole file before executing any of it: a stage that runs for hours is not
@@ -420,6 +457,50 @@ train_site_packages() {
 }
 
 
+#: Every bundle stage's repository id is this plus a repo suffix (issue 46,
+#: t27); hub_upload.py refuses any other.
+BUNDLE_REPO_PREFIX=jetson-ai-lab/qwen3.5-0.8b-nvsh-
+
+check_suffix() {
+  # A repo suffix: lower-case letters and digits in '-'-separated words.
+  [[ $1 =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]] \
+    || die "'$1' is not a repo suffix (lower-case letters, digits and '-', e.g. tool-jev-gguf)"
+}
+
+require_qwen_base() {
+  # The bundle stages ship the Apache-2.0 Qwen3.5 run only (issue 46).
+  [[ $BASE == Qwen/* ]] \
+    || die "bundle stages ship the Apache-2.0 Qwen3.5 run only; BASE=$BASE (use the Qwen env file)"
+}
+
+require_teacher_models() {
+  [ -n "${TEACHER_MODELS:-}" ] \
+    || die "TEACHER_MODELS is not set; name the run's alias -> {name, licence} JSON in the env file"
+  [ -s "$TEACHER_MODELS" ] || die "TEACHER_MODELS=$TEACHER_MODELS does not exist or is empty"
+}
+
+write_bundle_record() {
+  # write_bundle_record SUFFIX KIND BUILD REPO_TYPE: WORK/bundles/SUFFIX.json,
+  # next to (not inside) the bundle, so upload-bundle knows what it holds.
+  python3 -c '
+import json, sys
+suffix, kind, build, repo_type, prefix, path = sys.argv[1:]
+record = {"kind": kind, "build": build, "repo": prefix + suffix, "repo_type": repo_type}
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump(record, handle)
+    handle.write("\n")
+' "$1" "$2" "$3" "$4" "$BUNDLE_REPO_PREFIX" "$WORK/bundles/$1.json"
+}
+
+read_bundle_record() {
+  # read_bundle_record SUFFIX: prints "<kind> <repo_type> <repo>".
+  python3 -c '
+import json, sys
+record = json.load(open(sys.argv[1], encoding="utf-8"))
+print(record["kind"], record["repo_type"], record["repo"])
+' "$WORK/bundles/$1.json"
+}
+
 # shellcheck source=scripts/lfm-finetune/capped.sh
 source "$(dirname "${BASH_SOURCE[0]}")/capped.sh"
 
@@ -669,6 +750,100 @@ api.update_repo_visibility(repo, private=True)
 api.upload_folder(folder_path=os.environ["BUNDLE"], repo_id=repo, repo_type="model")
 print(f"uploaded {os.environ['BUNDLE']} to {repo} (private)")
 PYEOF
+    ;;
+  bundle)
+    usage="bundle <bf16|gguf|awq> <build-name> <repo-suffix> <report.md>..."
+    kind=${1:?$usage}; build=${2:?$usage}; suffix=${3:?$usage}; shift 3
+    require_qwen_base
+    check_suffix "$suffix"
+    extra=()
+    case $kind in
+      bf16)
+        [ "$(build_base "$build")" = "$build" ] \
+          || die "bundle bf16 takes a run name, not the quantized build '$build'" ;;
+      gguf)
+        [[ $build == *.q4_k_m ]] || die "bundle gguf takes <run>.q4_k_m (e.g. $build.q4_k_m), not '$build'"
+        extra=(--gguf "$(quant_build "$build")") ;;
+      awq)
+        [[ $build == *.awq ]] || die "bundle awq takes <run>.awq (e.g. ${build%.*}.awq), not '$build'"
+        extra=(--awq-dir "$(quant_build "$build")") ;;
+      *) die "bundle: kind is bf16|gguf|awq, not '$kind'" ;;
+    esac
+    [ $# -gt 0 ] || die "bundle needs at least one measure report (<report.md>) after the repo suffix"
+    results=()
+    for report in "$@"; do
+      [ -s "$report" ] || die "no measure report $report"
+      results+=(--results "$report")
+    done
+    require_teacher_models
+    [ -n "${BUNDLE_DATA_SUMMARY:-}" ] || die "BUNDLE_DATA_SUMMARY is not set; describe the training data in the env file"
+    run=$(build_base "$build")
+    merged="$WORK/runs/$run/merged"
+    [ -d "$merged" ] || die "no $merged; run train $run first"
+    if grep -q '"objective"' "$WORK/runs/$run/train-log.json" 2>/dev/null; then extra+=(--scorer); fi
+    if [ "$kind" != bf16 ] && [[ $suffix == *-$kind ]]; then
+      extra+=(--quantized-from "$BUNDLE_REPO_PREFIX${suffix%-"$kind"}")
+    fi
+    out="$WORK/bundles/$suffix"
+    mkdir -p "$WORK/bundles"
+    py scripts/lfm-finetune/release_bundle.py --kind "$kind" "${extra[@]}" --merged "$merged" \
+      --base-snapshot "$(base_snapshot)" --repo "$BUNDLE_REPO_PREFIX$suffix" --run "$run" \
+      "${results[@]}" --data-summary "$BUNDLE_DATA_SUMMARY" --licence-kind apache \
+      --tool-call-parser "$TOOL_CALL_PARSER" --teacher-models "$TEACHER_MODELS" \
+      --accepted "${BUNDLE_ACCEPTED:-$WORK/aug/nvsh-accepted.jsonl}" \
+      --train-augmented "$WORK/data/train-augmented.json" --out "$out"
+    write_bundle_record "$suffix" "$kind" "$build" model
+    py scripts/lfm-finetune/scan_bundle.py scan "$out"
+    ;;
+  bundle-dataset)
+    suffix=${1:?bundle-dataset <repo-suffix>}
+    require_qwen_base
+    check_suffix "$suffix"
+    require_teacher_models
+    train="$WORK/data/train-augmented.json"
+    [ -s "$train" ] || die "no $train; run assemble first (the frozen training set)"
+    read -r -a rejected <<<"${BUNDLE_REJECTED:-$WORK/aug/nvsh-rejected.jsonl}"
+    read -r -a model_suffixes <<<"${DATASET_MODEL_REPOS:-}"
+    model_repos=()
+    for model in "${model_suffixes[@]}"; do
+      check_suffix "$model"
+      model_repos+=(--model-repo "$BUNDLE_REPO_PREFIX$model")
+    done
+    out="$WORK/bundles/$suffix"
+    mkdir -p "$WORK/bundles"
+    py scripts/lfm-finetune/dataset_bundle.py --splits "$WORK/splits" --train-augmented "$train" \
+      --accepted "${BUNDLE_ACCEPTED:-$WORK/aug/nvsh-accepted.jsonl}" --rejected "${rejected[@]}" \
+      --licence "$REPO_ROOT/LICENSE" --teacher-models "$TEACHER_MODELS" --apache-only \
+      --issue 46 "${model_repos[@]}" --out "$out"
+    write_bundle_record "$suffix" dataset "$suffix" dataset
+    py scripts/lfm-finetune/scan_bundle.py scan "$out"
+    ;;
+  upload-bundle)
+    suffix=${1:?upload-bundle <repo-suffix>}
+    check_suffix "$suffix"
+    [ "${FINAL:-0}" = 1 ] || die "upload-bundle refuses without FINAL=1 set (ask the operator first)"
+    bundle="$WORK/bundles/$suffix"
+    [ -d "$bundle" ] || die "no $bundle; run bundle (or bundle-dataset) for $suffix first"
+    [ -s "$bundle.json" ] || die "no $bundle.json; run bundle (or bundle-dataset) for $suffix again"
+    read -r kind repo_type repo < <(read_bundle_record "$suffix")
+    [ "$repo" = "$BUNDLE_REPO_PREFIX$suffix" ] \
+      || die "$bundle.json names $repo, not $BUNDLE_REPO_PREFIX$suffix; run bundle again"
+    py scripts/lfm-finetune/scan_bundle.py verify "$bundle" \
+      || die "scan_bundle.py verify failed for $bundle; run bundle again (it scans the new folder)"
+    case $kind in
+      bf16 | awq)
+        py scripts/lfm-finetune/gen_config.py check "$bundle" \
+          || die "gen_config.py check failed for $bundle: no greedy generation_config.json (deviation d3)" ;;
+    esac
+    : "${HF_TOKEN_ENV:?}"
+    [ -n "${!HF_TOKEN_ENV:-}" ] \
+      || die "$HF_TOKEN_ENV is not set (e.g. grant run --inject $HF_TOKEN_ENV=<secret name> -- $0 ...)"
+    # huggingface_hub is the training environment's (the repo env has no
+    # third-party packages), as for the scorer's transformers.
+    site=$(train_site_packages)
+    FINAL=1 PYTHONPATH="$site${PYTHONPATH:+:$PYTHONPATH}" \
+      py scripts/lfm-finetune/hub_upload.py --bundle "$bundle" --repo "$repo" \
+      --repo-type "$repo_type" --token-env "$HF_TOKEN_ENV"
     ;;
   status)
     for f in splits/train.json splits/val.json splits/test.json skills/tools.json skills/test.jsonl \
