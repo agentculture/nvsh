@@ -1544,11 +1544,13 @@ def test_measure_final_of_a_gguf_build_serves_it_with_llama_server(tmp_path: Pat
     assert "version: 9999 (deadbeef)" in record["version"]
     assert record["argv"] == [llama["LLAMA_SERVER"], *served]
     events = _events(tmp_path)
-    start_at = events.index("llama-server start")
+    # The fake logs its own start asynchronously, so only the readiness poll
+    # is ordered against it by the helper, not by this log.
     ready_at = events.index("curl http://127.0.0.1:18060/v1/models")
     measure_at = events.index("uv measure.py")
     stop_at = events.index("llama-server stop")
-    assert start_at < ready_at < measure_at < stop_at
+    assert events.index("llama-server start") < measure_at
+    assert ready_at < measure_at < stop_at
 
 
 @pytest.mark.parametrize("stage", ["measure-val", "measure-final", "measure-skills"])
@@ -1569,7 +1571,9 @@ def test_measure_skills_of_a_gguf_build_uses_the_llama_server_url(tmp_path: Path
     pipe = _Pipeline(tmp_path)
     pipe.ready(stock=False)
     quant = _quantized(pipe)
-    result = pipe.run("measure-skills", "a1.q4_k_m", "--margin", "+15", **_fake_llama_server(tmp_path))
+    result = pipe.run(
+        "measure-skills", "a1.q4_k_m", "--margin", "+15", **_fake_llama_server(tmp_path)
+    )
     assert result.returncode == 0, result.stderr
     [(_, argv)] = pipe.calls("measure_skills.py")
     assert _option(argv, "--url") == ["http://127.0.0.1:18060/v1"]
@@ -1726,9 +1730,7 @@ def test_a_served_scorer_build_gets_a_tokenizer_dir(
         ("measure-heldout", ["--scorer=in-process"]),
     ],
 )
-def test_a_gguf_build_refuses_the_in_process_scorer(
-    stage: str, mode: list, tmp_path: Path
-) -> None:
+def test_a_gguf_build_refuses_the_in_process_scorer(stage: str, mode: list, tmp_path: Path) -> None:
     """transformers never loads the GGUF: an in-process run would measure the
     bf16 base run under the quant's name."""
     train_py, _ = _train_py(tmp_path)
@@ -1883,3 +1885,21 @@ def test_the_gguf_temperature_rule_is_documented() -> None:
     usage = _PIPELINE.read_text(encoding="utf-8")
     usage = usage[: usage.index("set -euo pipefail")]
     assert "<run>.awq" in usage and "<run>.q4_k_m" in usage
+
+
+def test_a_served_scorer_gguf_build_needs_its_base_runs_tokenizer(tmp_path: Path) -> None:
+    """The GGUF's tokenizer comes from the base run's merged dir; without it
+    the run must stop, not reach measure.py without --tokenizer."""
+    train_py, _ = _train_py(tmp_path)
+    pipe = _Pipeline(tmp_path, f"TRAIN_PY={train_py}\n")
+    pipe.ready(stock=False)
+    _quantized(pipe)
+    _mark_scorer_run(pipe)
+    shutil.rmtree(pipe.work / "runs" / "a1" / "merged")
+    result = pipe.run(
+        "measure-final", "a1.q4_k_m", "--scorer", "served", **_fake_llama_server(tmp_path)
+    )
+    assert result.returncode == 1
+    assert "runs/a1/merged" in result.stderr
+    assert not pipe.calls("measure.py")
+    assert not _llama_calls(tmp_path)

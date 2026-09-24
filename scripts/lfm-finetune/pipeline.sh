@@ -42,13 +42,27 @@
 #                         <name> needs --margin, which stock never gets
 #                         Each measure stage measures ONE model per call (deviation d7):
 #                         <name> is "stock" (the stock copy, WORK/stock -- stock-copy
-#                         first) or a run name (WORK/runs/<name>/merged). The stage
-#                         serves it with serve_for_measure.sh (MEASURE_IMAGE, pinned by
-#                         digest, on 127.0.0.1:MEASURE_PORT; the model dir must pass
-#                         gen_config.py check), writes a per-run nvsh config attaching
-#                         to it ([tiers.lfm] mode = "attach"), measures, and stops the
-#                         server again, on failure too. The served docker argv is kept
-#                         in WORK/measure/<label>.serve.json. Every call passes
+#                         first), a run name (WORK/runs/<name>/merged), or a quantized
+#                         build of a run (`quantize <run>` first; t25):
+#                           <run>.awq     WORK/quant/<run>/awq, served by vLLM like any
+#                                         model dir (it must pass gen_config.py check)
+#                           <run>.q4_k_m  WORK/quant/<run>/model-q4_k_m.gguf, served by
+#                                         the native llama-server LLAMA_SERVER names
+#                                         (required for it), greedy by --temp 0 --top-k 1
+#                         A build's revision is sha256:<16 hex> of its
+#                         quantize-run.json; a build of a Track B scorer run still
+#                         needs --scorer (its tokenizer: the AWQ dir, or the run's
+#                         merged dir for a GGUF), and a GGUF build refuses
+#                         --scorer in-process. Labels keep the build name
+#                         (final-a3.awq, heldout-a3.q4_k_m-missing-candidate). The
+#                         stage serves the model with serve_for_measure.sh (vLLM:
+#                         MEASURE_IMAGE, pinned by digest; either way on
+#                         127.0.0.1:MEASURE_PORT), writes a per-run nvsh config
+#                         attaching to it ([tiers.lfm] mode = "attach", engine "vllm"
+#                         or "llama-server"), measures, and stops the server again, on
+#                         failure too. The served argv, backend and (llama-server)
+#                         binary version are kept in WORK/measure/<label>.serve.json.
+#                         Every call passes
 #                         --enable-thinking ENABLE_THINKING (default false);
 #                         measure.py also gets --ground-snapshot GROUND_SNAPSHOT
 #                         (required; see `measure.py snapshot`) and --max-logprobs
@@ -164,24 +178,68 @@ ground_snapshot() {
   echo "$GROUND_SNAPSHOT"
 }
 
+build_base() {
+  # The run a measured <name> belongs to: <run> for a quantized build
+  # (<run>.awq, <run>.q4_k_m -- what `quantize <run>` wrote), else <name>.
+  case $1 in
+    *.awq | *.q4_k_m) echo "${1%.*}" ;;
+    *) echo "$1" ;;
+  esac
+}
+
+is_gguf_build() { [[ $1 == *.q4_k_m ]]; }
+
+quant_build() {
+  # quant_build NAME: the served path of a quantized build (the AWQ dir or the
+  # GGUF file), after checking `quantize <run>` finished for it.
+  local name=$1 base kind path
+  base=$(build_base "$name"); kind=${name##*.}
+  if [ "$kind" = awq ]; then path="$WORK/quant/$base/awq"; else path="$WORK/quant/$base/model-q4_k_m.gguf"; fi
+  if [ "$kind" = awq ]; then
+    [ -d "$path" ] || die "no $path; run quantize $base first"
+  else
+    [ -s "$path" ] || die "no $path; run quantize $base first"
+  fi
+  [ -s "$WORK/quant/$base/quantize-run.json" ] \
+    || die "no $WORK/quant/$base/quantize-run.json; run quantize $base first (it finishes by writing it)"
+  echo "$path"
+}
+
 measure_model_dir() {
-  # The directory a measure stage serves for <name>: the stock copy, or a
-  # trained run's merged checkpoint.
+  # What a measure stage serves for <name>: the stock copy, a trained run's
+  # merged checkpoint, or a quantized build of a run -- <run>.awq (the AWQ
+  # dir, served by vLLM like any model dir) or <run>.q4_k_m (the GGUF file,
+  # served by a native llama-server).
   local name=$1
   [[ $name =~ ^[A-Za-z0-9._-]+$ ]] || die "measure: '$name' is not a run name (letters, digits, . _ -)"
   if [ "$name" = stock ]; then stock_dir; return; fi
+  if [ "$(build_base "$name")" != "$name" ]; then quant_build "$name"; return; fi
   [ -d "$WORK/runs/$name/merged" ] || die "no $WORK/runs/$name/merged; run train $name first"
   echo "$WORK/runs/$name/merged"
+}
+
+tokenizer_dir() {
+  # A directory transformers can load <name>'s tokenizer from: the AWQ dir
+  # for <run>.awq, the base run's merged dir for <run>.q4_k_m (a GGUF file
+  # is no tokenizer dir), else the model dir itself.
+  local name=$1
+  if is_gguf_build "$name"; then
+    quant_build "$name" >/dev/null
+    measure_model_dir "$(build_base "$name")"
+  else
+    measure_model_dir "$name"
+  fi
 }
 
 scorer_measure_args() {
   # Track B (--scorer): measure.py's scorer loads a tokenizer (transformers,
   # the training environment's) from a path, not from the served name (issue
   # 46, t23). Prints the extra measure.py args; the caller sets PYTHONPATH.
-  local arg
+  local arg dir
   for arg in "$@"; do
     if [ "$arg" = --scorer ] || [[ $arg == --scorer=* ]]; then
-      printf '%s\n' --tokenizer "$(measure_model_dir "$1")"
+      dir=$(tokenizer_dir "$1")
+      printf '%s\n' --tokenizer "$dir"
       return 0
     fi
   done
@@ -212,13 +270,31 @@ refuse_scorer_without_mode() {
   # A Track B scorer run (train_scorer.py writes "objective" into its
   # train-log.json) measured without --scorer is scored as a generative
   # tool-caller, a meaningless 0 of 32 (issue 46, P66).
+  # A quantized build is a scorer when its base run is.
   local name=$1 arg
   shift
-  grep -q '"objective"' "$WORK/runs/$name/train-log.json" 2>/dev/null || return 0
+  grep -q '"objective"' "$WORK/runs/$(build_base "$name")/train-log.json" 2>/dev/null || return 0
   for arg in "$@"; do
     if [ "$arg" = --scorer ] || [[ $arg == --scorer=* ]]; then return 0; fi
   done
   die "$name is a Track B scorer; pass --scorer served (decisions, latency) or --scorer in-process (exact calibration)"
+}
+
+refuse_gguf_in_process() {
+  # The in-process scorer loads the model with transformers, which never
+  # reads the GGUF: it would measure the bf16 base run under the quant's
+  # name. A GGUF build is scored only by --scorer served (llama-server's
+  # /v1/completions returns the top next-token log-probabilities it needs).
+  local name=$1 arg previous=''
+  shift
+  is_gguf_build "$name" || return 0
+  for arg in "$@"; do
+    if [ "$arg" = --scorer=in-process ] || { [ "$previous" = --scorer ] && [ "$arg" = in-process ]; }; then
+      die "$name is a GGUF build: --scorer in-process cannot load a GGUF (transformers would" \
+        "measure the bf16 run instead); use --scorer served, or measure $(build_base "$name").awq in-process"
+    fi
+    previous=$arg
+  done
 }
 
 check_final_args() {
@@ -261,7 +337,17 @@ check_final_args() {
 
 measure_revision() {
   # The revision recorded for <name> (attach mode records it as operator-supplied).
+  # A quantized build has no Hub revision: it is named by the first 16 hex
+  # digits of the sha256 of its quantize-run.json, which quantize.py rewrites
+  # on every export, so a re-export is never mistaken for the one measured.
   if [ "$1" = stock ]; then echo "$BASE_REV"; return; fi
+  if [ "$(build_base "$1")" != "$1" ]; then
+    quant_build "$1" >/dev/null
+    local digest
+    digest=$(sha256sum "$WORK/quant/$(build_base "$1")/quantize-run.json")
+    echo "sha256:${digest:0:16}"
+    return
+  fi
   [ -d "$WORK/runs/$1/merged" ] || die "no $WORK/runs/$1/merged; run train $1 first"
   [ -s "$WORK/runs/$1/revision" ] || die "no $WORK/runs/$1/revision; run train $1 first"
   cat "$WORK/runs/$1/revision"
@@ -276,20 +362,37 @@ serve_for_measure() {
   # serve_for_measure NAME LABEL: serve NAME's model dir with the committed
   # helper, stop it whenever this script exits, and write the per-run attach
   # config $measure_config for it (deviation d7).
-  local name=$1 label=$2 model_dir
+  local name=$1 label=$2 model_dir engine=vllm image
   model_dir=$(measure_model_dir "$name")
   MEASURE_PORT=${MEASURE_PORT:-18060}
   MEASURE_CTX=${MEASURE_CTX:-2048}
   MEASURE_GPU_FRACTION=${MEASURE_GPU_FRACTION:-0.08}
   MEASURE_MAX_LOGPROBS=${MEASURE_MAX_LOGPROBS:-22}
   MEASURE_MODEL_NAME=$name
+  # A GGUF build's native llama-server keeps its pid file and log here.
+  MEASURE_RUN_DIR="$WORK/measure"
   export MEASURE_IMAGE TOOL_CALL_PARSER MEASURE_CTX MEASURE_GPU_FRACTION MEASURE_MAX_LOGPROBS \
-    MEASURE_MODEL_NAME MEASURE_WAIT_SECONDS MEASURE_POLL_SECONDS MEASURE_GPU_ARGS
+    MEASURE_MODEL_NAME MEASURE_WAIT_SECONDS MEASURE_POLL_SECONDS MEASURE_GPU_ARGS MEASURE_RUN_DIR \
+    LLAMA_SERVER
   trap stop_measure_server EXIT
   trap 'exit 130' INT
   trap 'exit 143' TERM
   bash "$HERE/serve_for_measure.sh" start "$model_dir" "$MEASURE_PORT" "$WORK/measure/$label.serve.json"
   bash "$HERE/serve_for_measure.sh" wait "$MEASURE_PORT" "$WORK/measure/$label.serve.log"
+  # The run record's image field names what served the run: the vLLM image,
+  # or for a GGUF build the native llama-server's path and --version output
+  # (from the serve record; JSON's string escapes are valid TOML).
+  image=$(printf '%s' "$MEASURE_IMAGE" | python3 -c 'import json, sys; print(json.dumps(sys.stdin.read()))')
+  if is_gguf_build "$name"; then
+    engine=llama-server
+    image=$(python3 -c '
+import json, sys
+record = json.load(open(sys.argv[1], encoding="utf-8"))
+version = " ".join(record["version"].split())
+binary = record["binary"]
+print(json.dumps(f"native llama-server {binary} ({version})"))
+' "$WORK/measure/$label.serve.json")
+  fi
   measure_config="$WORK/measure/$label.nvsh.toml"
   cat > "$measure_config" <<EOF
 # Written by pipeline.sh for one measure run: attach to serve_for_measure.sh's
@@ -298,13 +401,13 @@ serve_for_measure() {
 enabled = true
 
 [tiers.lfm]
-engine = "vllm"
+engine = "$engine"
 mode = "attach"
 base_url = "http://127.0.0.1:$MEASURE_PORT/v1"
 model = "$name"
 ctx = $MEASURE_CTX
 tool_call_parser = "$TOOL_CALL_PARSER"
-image = "$MEASURE_IMAGE"
+image = $image
 EOF
 }
 
@@ -428,9 +531,14 @@ case "$STAGE" in
     name=${1:?measure-val <name> [measure.py args]}; shift
     refuse_extra_ctx "$@"
     refuse_scorer_without_mode "$name" "$@"
+    refuse_gguf_in_process "$name" "$@"
     snapshot=$(ground_snapshot); rev=$(measure_revision "$name")
     label="$name-val"
     if [ "$MEASURE_CTX" != 2048 ]; then label="$name-val-ctx$MEASURE_CTX"; fi
+    # Run once in this shell first: a die inside the process substitution
+    # below would not stop the stage (a GGUF build's tokenizer is its base
+    # run's merged dir, which nothing else checks).
+    scorer_measure_args "$name" "$@" >/dev/null
     mapfile -t scorer_args < <(scorer_measure_args "$name" "$@")
     site=$(measure_pythonpath "$@")
     if [ -n "$site" ]; then pythonpath="$site${PYTHONPATH:+:$PYTHONPATH}"; else pythonpath="${PYTHONPATH:-}"; fi
@@ -448,7 +556,9 @@ case "$STAGE" in
     refuse_extra_ctx "$@"
     suffix=$(check_final_args measure-final "$@")
     refuse_scorer_without_mode "$name" "$@"
+    refuse_gguf_in_process "$name" "$@"
     snapshot=$(ground_snapshot); rev=$(measure_revision "$name")
+    scorer_measure_args "$name" "$@" >/dev/null  # see measure-val
     mapfile -t scorer_args < <(scorer_measure_args "$name" "$@")
     site=$(measure_pythonpath "$@")
     if [ -n "$site" ]; then pythonpath="$site${PYTHONPATH:+:$PYTHONPATH}"; else pythonpath="${PYTHONPATH:-}"; fi
@@ -469,7 +579,9 @@ case "$STAGE" in
     refuse_extra_ctx "$@"
     suffix=$(check_final_args measure-heldout "$@")
     refuse_scorer_without_mode "$name" "$@"
+    refuse_gguf_in_process "$name" "$@"
     snapshot=$(ground_snapshot); rev=$(measure_revision "$name")
+    scorer_measure_args "$name" "$@" >/dev/null  # see measure-val
     mapfile -t scorer_args < <(scorer_measure_args "$name" "$@")
     site=$(measure_pythonpath "$@")
     if [ -n "$site" ]; then pythonpath="$site${PYTHONPATH:+:$PYTHONPATH}"; else pythonpath="${PYTHONPATH:-}"; fi
