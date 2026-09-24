@@ -1,4 +1,4 @@
-"""Build the upload folder for a tuned LFM2.5 checkpoint (issue 39, task t15).
+"""Build the upload folder for a tuned LFM2.5 or Qwen3.5 checkpoint (issues 39 and 46).
 
 A fine-tune of LFM2.5 is a Derivative Work under the LFM Open License v1.0
 (docs/lfm-license-notes.md). Before anything is uploaded, even to a private
@@ -11,29 +11,72 @@ repository, the folder must carry what Section 4 of the licence asks for:
   base model, stating the modification, the per-user commercial threshold,
   the data and the teacher models that generated and reviewed it (spec c45).
 
-The script copies the merged checkpoint, refuses a chat template that differs
-from the base's (spec c33), writes the three files and checks them. It never
-uploads: publishing is an operator action (``grant run --inject
-HF_TOKEN=HF_TOKEN -- hf upload --private ...``).
+When ``--licence-kind=apache`` the base is assumed to carry the Apache License
+2.0; the notice and card are rewritten without the LFM-specific terms and
+without naming Liquid AI as the licensor. An Apache bundle names the run's own
+teachers: ``--teacher-models`` (the same alias -> {name, licence} JSON
+``dataset_bundle.py`` reads) with ``--accepted`` and ``--train-augmented``; the
+role each alias played and how acceptance was decided are derived from the
+accepted records exactly as ``dataset_bundle.py`` derives them, and every
+teacher of an Apache bundle must itself be Apache-2.0.
+
+``--kind`` picks what is shipped (issue 46, t27):
+
+- ``bf16`` (default): the merged checkpoint folder, as trained;
+- ``gguf``: ``--gguf FILE`` (a llama.cpp build) with the merged checkpoint's
+  tokenizer files and chat template, for ``llama-server --jinja``;
+- ``awq``: ``--awq-dir DIR``, a compressed-tensors export, whose vLLM serve
+  arguments come from the ``quantize-run.json`` next to it.
+
+A checkpoint whose ``config.json`` declares a multi-token-prediction head
+(``mtp_num_hidden_layers`` > 0) but whose weights hold no ``mtp.*`` tensor
+(issue 46's text-only Qwen3.5 merges, ledger P67) gets
+``mtp_num_hidden_layers`` set to 0 in the bundle's copy of ``config.json``
+only, and the card and notice say so; the run's own folder is never edited.
+``--scorer`` marks a Track B candidate scorer, whose card describes how it is
+read instead of a tool-calling setup. ``--results`` may be given several
+times (bf16 test, quantized test, edge): an Apache card quotes each report's
+"Issue 46 metrics" table as written.
+
+The script copies the checkpoint, refuses a chat template that differs from
+the base's (spec c33), writes the three files and checks them. It never
+uploads: publishing is an operator action (``pipeline.sh upload-bundle``, the
+token injected with ``grant run --inject``).
 
     python scripts/lfm-finetune/release_bundle.py --merged runs/r7/merged \
         --base-snapshot <cache>/hub/models--LiquidAI--LFM2.5-350M/snapshots/<commit> \
         --repo jetson-ai-lab/lfm2.5-350m-nvsh-triage --run r7 \
         --results measure/r7-val.md --data-summary "945 examples: ..." --out bundle/
+
+    python scripts/lfm-finetune/release_bundle.py --kind gguf \
+        --gguf quant/a3-heal/model-q4_k_m.gguf --merged runs/a3-heal/merged \
+        --base-snapshot <snapshot> --repo jetson-ai-lab/qwen3.5-0.8b-nvsh-tool-jev-gguf \
+        --quantized-from jetson-ai-lab/qwen3.5-0.8b-nvsh-tool-jev --run a3-heal \
+        --results final-a3-heal.q4_k_m.md --results edge.md --data-summary "..." \
+        --licence-kind apache --tool-call-parser qwen3_coder \
+        --teacher-models teacher-models.json --accepted aug/nvsh-accepted.jsonl \
+        --train-augmented data/train-augmented.json --out bundles/tool-jev-gguf
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.util
+import json
+import shlex
 import shutil
+import struct
 import sys
 from pathlib import Path
+from typing import Sequence
 
 _HERE = Path(__file__).resolve().parent
 
 #: The first line of the licence file LiquidAI ships with LFM2.5.
 LICENSE_FIRST_LINE = "LFM Open License v1.0"
+
+APACHE_LICENCE = "Apache-2.0"
 
 #: Phrases the model card must contain; checked after it is written.
 REQUIRED_CARD_PHRASES = (
@@ -46,9 +89,38 @@ REQUIRED_CARD_PHRASES = (
     "Reviewed by",
 )
 
-#: Who wrote and checked the synthetic training requests (spec c45), as the
-#: operator's local gateway serves them. Their outputs are the data; their
-#: licences do not carry over to it.
+#: Required phrases for an Apache-2.0 model card.
+APACHE_REQUIRED_CARD_PHRASES = ("license: apache-2.0",)
+
+#: Further phrases each kind's card must contain.
+KIND_REQUIRED_CARD_PHRASES = {
+    "bf16": (),
+    "gguf": ("llama-server", "--jinja", "mmproj", "text-only"),
+    "awq": ("vLLM", "compressed-tensors"),
+}
+
+KINDS = ("bf16", "gguf", "awq")
+
+#: The tokenizer and template files a GGUF bundle carries from the merged run.
+TOKENIZER_FILES = (
+    "chat_template.jinja",
+    "tokenizer.json",
+    "tokenizer_config.json",
+    "special_tokens_map.json",
+    "vocab.json",
+    "merges.txt",
+)
+
+#: The measure.py report section an Apache card quotes.
+RESULTS_HEADING = "## Issue 46 metrics"
+
+#: A served Track B scorer needs this many next-token log-probabilities (18
+#: labels plus 4, risk r8), as the measure stages serve it.
+SCORER_MAX_LOGPROBS = 22
+
+#: Who wrote and checked the synthetic training requests of issue 39's LFM2.5
+#: run (spec c45), as the operator's local gateway served them. An Apache
+#: bundle never uses this: it names its own run's teachers (``run_teachers``).
 TEACHERS = (
     ("Qwen 3.6 35B-A3B", "Apache-2.0", "Generated by: wrote request variations"),
     ("Qwen 3.8 27B", "Apache-2.0", "Generated by: copyedited each variation"),
@@ -56,28 +128,199 @@ TEACHERS = (
     ("Nemotron 3.5 Lightning", "OpenMDW-1.1", "Reviewed by: reviewer B, accepts or rejects"),
 )
 
+_LFM_DECISION = (
+    "A variation was kept only when both\n"
+    "reviewers accepted it and deterministic guards found no operation identifier\n"
+    "or copied answer wording in it."
+)
 
-def _stage_cache():
-    spec = importlib.util.spec_from_file_location("stage_cache", _HERE / "stage_cache.py")
+_APACHE_TEACHERS_NEEDED = (
+    "an Apache bundle names its own run's teachers: pass --teacher-models"
+    " with --accepted and --train-augmented"
+)
+
+
+def _sibling(name: str):
+    spec = importlib.util.spec_from_file_location(f"release_{name}", _HERE / f"{name}.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
 
 
+def _stage_cache():
+    return _sibling("stage_cache")
+
+
+class RunTeachers:
+    """One run's teacher table: ``rows`` of (name, licence, role), the sentence
+    saying how acceptance was decided, and every model that was both
+    corrector and reviewer B of one variation."""
+
+    def __init__(
+        self, rows: list[tuple[str, str, str]], decision: str, shared: Sequence[str] = ()
+    ) -> None:
+        self.rows = list(rows)
+        self.decision = decision
+        self.shared = list(shared)
+
+
+def run_teachers(
+    teacher_models: Path, accepted: Path, train_augmented: Path, *, apache_only: bool = False
+) -> RunTeachers:
+    """The teachers of the variations in *train_augmented*, derived as
+
+    ``dataset_bundle.py`` derives them: each variation's accepted record names
+    the alias per role, *teacher_models* resolves an alias to a name and
+    licence, and the records say which reviewer decided.
+    """
+    dataset_bundle = _sibling("dataset_bundle")
+    role_models = dataset_bundle.load_role_models(teacher_models)
+    train = dataset_bundle._entries(train_augmented)  # noqa: SLF001 -- refuses held-out.json
+    rows = {row["id"]: row for row in dataset_bundle._jsonl(accepted)}  # noqa: SLF001
+    summary = dataset_bundle.teacher_summary(train, rows, role_models, apache_only=apache_only)
+    return RunTeachers(
+        dataset_bundle.teacher_rows(summary),
+        dataset_bundle.decision_sentence(summary.decisions),
+        summary.shared_corrector_reviewer_names,
+    )
+
+
 def results_table(results: Path) -> str:
     """The measurement's metric table (the first markdown table in *results*)."""
-    lines: list[str] = []
-    for line in results.read_text(encoding="utf-8").splitlines():
+    return _first_table(results.read_text(encoding="utf-8").splitlines(), results)
+
+
+def _first_table(lines: list[str], source: Path) -> str:
+    table: list[str] = []
+    for line in lines:
         if line.startswith("|"):
-            lines.append(line)
-        elif lines:
+            table.append(line)
+        elif table:
             break
-    if not lines:
-        raise ValueError(f"{results} holds no metric table")
-    return "\n".join(lines)
+    if not table:
+        raise ValueError(f"{source} holds no metric table")
+    return "\n".join(table)
 
 
-def notice(base_repo: str, base_revision: str, repo: str) -> str:
+def results_section(results: Path, *, issue46: bool) -> tuple[str, str]:
+    """``(caption, table)`` for one measure.py report.
+
+    The caption is the report's title without its ``#``. With *issue46* the
+    table is the first one under ``## Issue 46 metrics`` (required); without
+    it, the first table in the file.
+    """
+    lines = results.read_text(encoding="utf-8").splitlines()
+    title = next((line[2:].strip() for line in lines if line.startswith("# ")), results.stem)
+    if not issue46:
+        return title, _first_table(lines, results)
+    if RESULTS_HEADING not in lines:
+        raise ValueError(f"{results} has no '{RESULTS_HEADING[3:]}' section to quote")
+    section: list[str] = []
+    for line in lines[lines.index(RESULTS_HEADING) + 1 :]:
+        if line.startswith("## "):
+            break
+        section.append(line)
+    return title, _first_table(section, results)
+
+
+def _tensor_names(folder: Path) -> list[str]:
+    """Every tensor name in *folder*'s safetensors weights, read from the headers."""
+    index = folder / "model.safetensors.index.json"
+    if index.is_file():
+        return list(json.loads(index.read_text(encoding="utf-8")).get("weight_map", {}))
+    names: list[str] = []
+    for path in sorted(folder.glob("*.safetensors")):
+        with open(path, "rb") as handle:
+            (length,) = struct.unpack("<Q", handle.read(8))
+            header = json.loads(handle.read(length))
+        names.extend(name for name in header if name != "__metadata__")
+    return names
+
+
+def drop_undeclared_mtp(folder: Path) -> int | None:
+    """Zero a declared MTP head that *folder*'s weights do not hold.
+
+    When ``config.json`` (top level or ``text_config``) sets
+    ``mtp_num_hidden_layers`` above 0 and no tensor is named ``mtp.*``, the
+    value is set to 0 in *folder*'s ``config.json`` (written as a new file,
+    never through a link) and the old value is returned; otherwise nothing
+    changes and ``None`` is returned. Call it on a bundle copy only.
+    """
+    path = folder / "config.json"
+    if not path.is_file():
+        return None
+    config = json.loads(path.read_text(encoding="utf-8"))
+    holders = [config]
+    if isinstance(config.get("text_config"), dict):
+        holders.append(config["text_config"])
+    declared = [h for h in holders if int(h.get("mtp_num_hidden_layers") or 0) > 0]
+    if not declared:
+        return None
+    if any(name.startswith("mtp.") or ".mtp." in name for name in _tensor_names(folder)):
+        return None
+    old = int(declared[0]["mtp_num_hidden_layers"])
+    for holder in declared:
+        holder["mtp_num_hidden_layers"] = 0
+    path.unlink()
+    path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
+    return old
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for block in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def notice(
+    base_repo: str,
+    base_revision: str,
+    repo: str,
+    licence_kind: str = "lfm",
+    *,
+    kind: str = "bf16",
+    scorer: bool = False,
+    mtp_from: int | None = None,
+) -> str:
+    if licence_kind == "apache":
+        if scorer:
+            taught = (
+                "to\nteach the model to score nvsh's Tier 2 candidates (each operation in nvsh's\n"
+                "table, explain and escalate) with one next-token read over their labels."
+            )
+        else:
+            taught = (
+                "to\nteach the model the nvsh Tier 2 control tools (propose, explain,"
+                " escalate) and\n"
+                "the operations in nvsh's table."
+            )
+        unchanged = " The tokenizer and chat template are unchanged."
+        extra = ""
+        if kind == "gguf":
+            extra += (
+                "\nThis upload is a Q4_K_M GGUF quantization of that fine-tune, made with\n"
+                "llama.cpp; the tokenizer files are the fine-tune's.\n"
+            )
+        elif kind == "awq":
+            extra += (
+                "\nThis upload is an INT4 AWQ quantization of that fine-tune in the\n"
+                "compressed-tensors format, made with llm-compressor.\n"
+            )
+        if mtp_from is not None:
+            extra += (
+                f"\nconfig.json: mtp_num_hidden_layers was changed from {mtp_from} to 0, as the\n"
+                "weights hold no multi-token-prediction (mtp.*) tensor.\n"
+            )
+        return f"""{repo}
+
+This model is a derivative work based on {base_repo} (revision {base_revision}),
+licensed under the Apache License 2.0.
+
+Modifications: the weights were changed by LoRA fine-tuning, then merged, {taught}{unchanged}
+The fine-tune was made by the nvsh project (https://github.com/agentculture/nvsh).
+{extra}"""
     return f"""{repo}
 
 This model is a modified version of {base_repo} (revision {base_revision}),
@@ -94,97 +337,381 @@ describe the origin of the work.
 """
 
 
+def _nvsh_toml(repo: str, engine: str, tool_call_parser: str, attach: bool) -> str:
+    attach_lines = 'mode = "attach"\nbase_url = "http://127.0.0.1:8080/v1"\n' if attach else ""
+    return f"""```toml
+[tiers]
+enabled = true
+
+[tiers.lfm]
+model = "{repo}"
+engine = "{engine}"
+{attach_lines}tool_call_parser = "{tool_call_parser}"
+```"""
+
+
+_APPROVES = (
+    "nvsh only proposes; the operator approves every change. See nvsh's\n" "`docs/tier2.md`.\n"
+)
+
+
+def _server_block(
+    *,
+    repo: str,
+    kind: str,
+    scorer: bool,
+    tool_call_parser: str,
+    gguf_name: str | None,
+    awq_serve_args: Sequence[str],
+) -> str:
+    """How to start a server for a quantized build (empty for bf16)."""
+    if kind == "gguf":
+        serve = (
+            f"llama-server --model {gguf_name} --jinja --temp 0 --top-k 1 \\\n"
+            "  --host 127.0.0.1 --port 8080"
+        )
+        return (
+            "Serve the GGUF with llama.cpp's `llama-server`. It is **text-only**: there is\n"
+            "no vision projector, so pass no `--mmproj`. `--jinja` applies the chat\n"
+            "template the GGUF carries (the same as `chat_template.jinja` here), and\n"
+            "`--temp 0 --top-k 1` pins the greedy decoding it was measured with (a\n"
+            "GGUF carries no `generation_config.json`):\n\n"
+            f"```bash\n{serve}\n```\n"
+        )
+    if kind == "awq":
+        serve_args = shlex.join(awq_serve_args)
+        if scorer:
+            tail = f"--max-logprobs {SCORER_MAX_LOGPROBS}"
+        else:
+            tail = f"--enable-auto-tool-choice --tool-call-parser {tool_call_parser}"
+        serve = f"vllm serve {repo} {serve_args} \\\n  {tail}"
+        return (
+            "Serve the compressed-tensors folder with vLLM. The export keeps the base's\n"
+            "multimodal processor config, so vLLM needs the extra arguments the\n"
+            f"quantization record names (`awq_serve_args`): `{serve_args}`.\n\n"
+            f"```bash\n{serve}\n```\n"
+        )
+    return ""
+
+
+def _use_section(
+    *,
+    repo: str,
+    kind: str,
+    scorer: bool,
+    tool_call_parser: str,
+    gguf_name: str | None,
+    awq_serve_args: Sequence[str],
+) -> str:
+    """The card's "Use" section for an Apache bundle of one kind."""
+    server = _server_block(
+        repo=repo,
+        kind=kind,
+        scorer=scorer,
+        tool_call_parser=tool_call_parser,
+        gguf_name=gguf_name,
+        awq_serve_args=awq_serve_args,
+    )
+    if scorer:
+        reads = {
+            "gguf": (
+                "`llama-server`'s `/v1/completions` returns the top next-token" " log-probabilities"
+            ),
+            "awq": f"vLLM returns them with `--max-logprobs {SCORER_MAX_LOGPROBS}`",
+            "bf16": f"served by vLLM it needs `--max-logprobs {SCORER_MAX_LOGPROBS}`",
+        }[kind]
+        use = (
+            "## Use\n\n"
+            "nvsh's runtime does not load a candidate scorer. nvsh's\n"
+            "`scripts/lfm-finetune/scorer.py` reads it: one prompt lists every candidate\n"
+            "under a one-letter label and the next-token log-probabilities over those\n"
+            f"labels are read once ({reads}).\n"
+        )
+        return use + (f"\n{server}" if server else "")
+    if kind == "bf16":
+        return (
+            "## Use with nvsh\n\n"
+            f"{_nvsh_toml(repo, 'vllm', tool_call_parser, attach=False)}\n\n"
+            f"{_APPROVES}"
+        )
+    engine = "llama-server" if kind == "gguf" else "vllm"
+    why = (
+        "nvsh's Tier 2 launcher cannot pass these arguments, so start the server\n"
+        "yourself and let nvsh attach to it"
+        if kind == "awq"
+        else "nvsh attaches to the running server"
+    )
+    return (
+        "## Use with nvsh\n\n"
+        f"{server}\n"
+        f"{why}:\n\n"
+        f"{_nvsh_toml(repo, engine, tool_call_parser, attach=True)}\n\n"
+        f"{_APPROVES}"
+    )
+
+
 def model_card(
     *,
     repo: str,
     base_repo: str,
     base_revision: str,
     run: str,
-    table: str,
-    results_name: str,
+    table: str | None = None,
+    results_name: str | None = None,
     data_summary: str,
+    licence_kind: str = "lfm",
+    tool_call_parser: str = "lfm2",
+    results: Sequence[tuple[str, str, str]] | None = None,
+    teachers: RunTeachers | None = None,
+    kind: str = "bf16",
+    scorer: bool = False,
+    mtp_from: int | None = None,
+    gguf_name: str | None = None,
+    gguf_sha256: str | None = None,
+    awq_serve_args: Sequence[str] = (),
+    quantized_from: str | None = None,
 ) -> str:
-    teachers = "\n".join(f"| {name} | {licence} | {role} |" for name, licence, role in TEACHERS)
+    """The model card. *results* is ``(caption, file name, table)`` per report;
+
+    without it the single *table* / *results_name* pair is used (issue 39's
+    card). *teachers* is the run's own table (``run_teachers``); an LFM card
+    without one lists issue 39's ``TEACHERS``, and an Apache card needs one.
+    """
+    if kind not in KINDS:
+        raise ValueError(f"unknown bundle kind {kind!r} (one of {', '.join(KINDS)})")
+    if teachers is None:
+        if licence_kind == "apache":
+            raise ValueError(_APACHE_TEACHERS_NEEDED)
+        teacher_rows = "\n".join(
+            f"| {name} | {licence} | {role} |" for name, licence, role in TEACHERS
+        )
+        decision = _LFM_DECISION
+        disclosure = ""
+    else:
+        teacher_rows = "\n".join(
+            f"| {name} | {licence} | {role} |" for name, licence, role in teachers.rows
+        ) or ("| (none) | (none) | this run's training set holds no synthetic variations |")
+        decision = (
+            f"{teachers.decision} Deterministic guards also refused any variation naming\n"
+            "an operation identifier or copying answer wording."
+        )
+        disclosure = ""
+        if teachers.shared:
+            disclosure = (
+                "\n**Reviewer B is also the corrector** in this run"
+                f" ({', '.join(teachers.shared)}):"
+                " its\nverdict is not independent of the copyedit it made.\n"
+            )
+    if licence_kind == "apache":
+        family = base_repo.split("/")[0].lower()
+        library = "" if kind == "gguf" else "library_name: transformers\n"
+        licence_front = "license: apache-2.0\n"
+        base_tags = f"- {family}\n" + {"bf16": "", "gguf": "- gguf\n", "awq": "- awq\n"}[kind]
+        derivative = "**This is a derivative work based on the base model.**"
+        licence_section = (
+            "This model is a derivative of the base model under the Apache License 2.0.\n"
+            "The ``LICENSE`` file is included. The base model is\n"
+            f"[{base_repo}](https://huggingface.co/{base_repo})\n"
+            f"(revision `{base_revision}`).\n"
+        )
+    else:
+        library = "library_name: transformers\n"
+        licence_front = "license: other\nlicense_name: lfm1.0\nlicense_link: LICENSE\n"
+        base_tags = "- liquid\n- lfm2.5\n"
+        derivative = "**This is a modified version of LFM2.5-350M.**"
+        licence_section = (
+            "LFM Open License v1.0, the base model's licence, included as `LICENSE`.\n"
+            "Commercial use is licensed only to a user whose legal entity, including every\n"
+            "entity under common control, has annual revenue below USD 10,000,000. **This\n"
+            "threshold applies to every user of this model**, not only its publisher. A\n"
+            "user above it needs their own agreement with Liquid AI.\n"
+        )
+
+    if scorer:
+        what = (
+            "for [nvsh](https://github.com/agentculture/nvsh)'s Tier 2 as a **candidate\n"
+            "scorer** (Track B): every candidate -- each operation in nvsh's table, plus\n"
+            "`explain` and `escalate` -- is listed in the prompt under a one-letter label,\n"
+            "and the model's next-token log-probabilities over those labels are read\n"
+            "once. The highest-scoring label is the choice; an operation's arguments come\n"
+            "from nvsh's deterministic grounding, never from the model. It is not a\n"
+            "generative tool caller."
+        )
+        tags_tool = "- candidate-scoring\n"
+    else:
+        what = (
+            "for [nvsh](https://github.com/agentculture/nvsh)'s Tier 2:\n"
+            "given an operator's request at a Jetson or DGX Spark shell, answer with one\n"
+            "of three tools: `propose` (an operation from nvsh's table, for the operator\n"
+            "to approve), `explain` (a short answer) or `escalate` (hand the request to a\n"
+            "full agent)."
+        )
+        tags_tool = "- tool-calling\n"
+
+    build_note = ""
+    if kind == "gguf":
+        build_note = (
+            f"\nThis repository holds the **Q4_K_M GGUF** build (`{gguf_name}`, sha256\n"
+            f"`{gguf_sha256}`), quantized with llama.cpp, plus the fine-tune's tokenizer\n"
+            "files and chat template.\n"
+        )
+    elif kind == "awq":
+        build_note = (
+            "\nThis repository holds the **INT4 AWQ** build in the compressed-tensors\n"
+            "format, quantized with llm-compressor.\n"
+        )
+    if quantized_from:
+        build_note += f"The bf16 fine-tune it was quantized from is `{quantized_from}`.\n"
+    if mtp_from is not None:
+        build_note += (
+            f"\n`config.json`: `mtp_num_hidden_layers` is set from {mtp_from} to 0 in this"
+            " upload.\nThe checkpoint is text-only and its weights hold no `mtp.*` tensor, so"
+            " the\nmulti-token-prediction head the base's config declares does not exist here.\n"
+        )
+
+    if results is None:
+        results_text = (
+            "Measured with nvsh's `scripts/lfm-finetune/measure.py` through the real Tier 2\n"
+            f"launcher on a DGX Spark ({results_name}):\n\n{table}"
+        )
+    else:
+        quoted = "\n\n".join(
+            f"### {caption}\n\nFrom `{name}`:\n\n{section}" for caption, name, section in results
+        )
+        lead = "Measured with nvsh's `scripts/lfm-finetune/measure.py`."
+        if licence_kind == "apache":
+            lead += (
+                ' Each table is the\n"Issue 46 metrics" section of the named report, quoted as'
+                " written; the\ncolumn header is the name the model was served under."
+            )
+        results_text = f"{lead}\n\n{quoted}"
+
+    if licence_kind == "apache":
+        use = _use_section(
+            repo=repo,
+            kind=kind,
+            scorer=scorer,
+            tool_call_parser=tool_call_parser,
+            gguf_name=gguf_name,
+            awq_serve_args=awq_serve_args,
+        )
+    else:
+        use = (
+            "## Use with nvsh\n\n"
+            f"{_nvsh_toml(repo, 'vllm', tool_call_parser, attach=False)}\n\n"
+            f"{_APPROVES}"
+        )
+    recipe_docs = (
+        "`docs/lfm-finetune.md` and\n`docs/qwen-tool-jev-finetune.md`"
+        if licence_kind == "apache"
+        else "`docs/lfm-finetune.md`"
+    )
+    recipe_script = (
+        "`scripts/lfm-finetune/train_scorer.py` (label-restricted\ncross-entropy LoRA training)"
+        if scorer
+        else "assistant-only-loss LoRA training"
+    )
     return f"""---
-library_name: transformers
-license: other
-license_name: lfm1.0
-license_link: LICENSE
-base_model: {base_repo}
+{library}{licence_front}base_model: {base_repo}
 pipeline_tag: text-generation
 tags:
-- liquid
-- lfm2.5
-- nvsh
-- tool-calling
----
+{base_tags}- nvsh
+{tags_tool}---
 
 # {repo.split("/")[-1]}
 
 A fine-tune of [{base_repo}](https://huggingface.co/{base_repo}) (revision
-`{base_revision}`) for [nvsh](https://github.com/agentculture/nvsh)'s Tier 2:
-given an operator's request at a Jetson or DGX Spark shell, answer with one
-of three tools: `propose` (an operation from nvsh's table, for the operator
-to approve), `explain` (a short answer) or `escalate` (hand the request to a
-full agent). Training run `{run}`.
+`{base_revision}`) {what} Training run `{run}`.
 
-**This is a modified version of LFM2.5-350M.** The weights were changed by
+{derivative} The weights were changed by
 LoRA fine-tuning and merged; the tokenizer and chat template are the base
 model's, unchanged. See `NOTICE`.
-
+{build_note}
 ## Licence
 
-LFM Open License v1.0, the base model's licence, included as `LICENSE`.
-Commercial use is licensed only to a user whose legal entity, including every
-entity under common control, has annual revenue below USD 10,000,000. **This
-threshold applies to every user of this model**, not only its publisher. A
-user above it needs their own agreement with Liquid AI.
-
-## Use with nvsh
-
-```toml
-[tiers]
-enabled = true
-
-[tiers.lfm]
-model = "{repo}"
-engine = "vllm"
-tool_call_parser = "lfm2"
-```
-
-nvsh only proposes; the operator approves every change. See nvsh's
-`docs/tier2.md`.
-
+{licence_section}
+{use}
 ## Results
 
-Measured with nvsh's `scripts/lfm-finetune/measure.py` through the real Tier 2
-launcher on a DGX Spark ({results_name}):
-
-{table}
+{results_text}
 
 ## Training data
 
 {data_summary}
 
 Requests were rewritten into variations by a local pipeline
-(`scripts/lfm-finetune/augment.py`). A variation was kept only when both
-reviewers accepted it and deterministic guards found no operation identifier
-or copied answer wording in it. A training record that repeats a
+(`scripts/lfm-finetune/augment.py`). {decision} A training record that repeats a
 validation or test entry is dropped (`merge_variations.py --exclude`), and the
 test side is never used to choose a run.
 
 | Model | Licence | Role |
 |---|---|---|
-{teachers}
-
+{teacher_rows}
+{disclosure}
 The teachers' licences do not carry over to their outputs.
 
 ## Recipe
 
-`scripts/lfm-finetune/pipeline.sh` and `docs/lfm-finetune.md` in the nvsh
-repository: seeded split, augmentation, assistant-only-loss LoRA training,
+`scripts/lfm-finetune/pipeline.sh` and {recipe_docs} in the nvsh
+repository: seeded split, augmentation, {recipe_script},
 merge, and measurement against the stock model.
 """
+
+
+def _check_licence(licence: Path, licence_kind: str) -> None:
+    if licence_kind == "apache":
+        text = licence.read_text(encoding="utf-8")
+        non_empty = [line for line in text.splitlines() if line.strip()]
+        first5 = non_empty[:5]
+        if not any("Apache License" in line for line in first5):
+            raise ValueError(
+                f"{licence} does not appear to be the Apache License 2.0 (not Apache-2.0)"
+            )
+        if not any("Version 2.0" in line for line in first5):
+            raise ValueError(
+                f"{licence} does not appear to be the Apache License 2.0 (not Apache-2.0)"
+            )
+    elif not licence.read_text(encoding="utf-8").lstrip().startswith(LICENSE_FIRST_LINE):
+        raise ValueError(f"{licence} is not the {LICENSE_FIRST_LINE}")
+
+
+def _check_kind(kind: str, gguf: Path | None, awq_dir: Path | None) -> None:
+    if kind not in KINDS:
+        raise ValueError(f"unknown bundle kind {kind!r} (one of {', '.join(KINDS)})")
+    if kind == "gguf" and (gguf is None or not gguf.is_file()):
+        raise ValueError("--kind gguf needs --gguf, an existing .gguf file")
+    if kind == "awq" and (awq_dir is None or not awq_dir.is_dir()):
+        raise ValueError("--kind awq needs --awq-dir, an existing export folder")
+
+
+def _check_teachers(teachers: RunTeachers | None) -> None:
+    """An Apache bundle's teachers: present, and every one Apache-2.0."""
+    if teachers is None:
+        raise ValueError(_APACHE_TEACHERS_NEEDED)
+    for name, teacher_licence, _ in teachers.rows:
+        if teacher_licence != APACHE_LICENCE:
+            raise ValueError(
+                f"teacher {name!r} ({teacher_licence}) is not {APACHE_LICENCE}; an Apache"
+                " bundle names only Apache-2.0 teachers"
+            )
+
+
+def _copy_payload(
+    kind: str, merged: Path, out: Path, gguf: Path | None, awq_dir: Path | None
+) -> tuple[str | None, str | None]:
+    """Copy what *kind* ships into *out*; return the GGUF's (name, sha256) if any."""
+    if kind == "bf16":
+        shutil.copytree(merged, out)
+        return None, None
+    if kind == "awq":
+        shutil.copytree(awq_dir, out)
+        return None, None
+    out.mkdir(parents=True)
+    for name in TOKENIZER_FILES:
+        if (merged / name).is_file():
+            shutil.copyfile(merged / name, out / name)
+    shutil.copyfile(gguf, out / gguf.name)
+    return gguf.name, _sha256(out / gguf.name)
 
 
 def build(
@@ -193,39 +720,95 @@ def build(
     base_snapshot: Path,
     repo: str,
     run: str,
-    results: Path,
+    results: Path | Sequence[Path],
     data_summary: str,
     out: Path,
+    licence_kind: str = "lfm",
+    tool_call_parser: str = "lfm2",
+    kind: str = "bf16",
+    gguf: Path | None = None,
+    awq_dir: Path | None = None,
+    teachers: RunTeachers | None = None,
+    scorer: bool = False,
+    quantized_from: str | None = None,
 ) -> str:
-    """Write the upload folder to *out*; return the checkpoint's revision."""
+    """Write the upload folder to *out*; return the merged checkpoint's revision."""
+    _check_kind(kind, gguf, awq_dir)
+    reports = [results] if isinstance(results, Path) else list(results)
+    if not reports:
+        raise ValueError("pass at least one --results report")
     stage_cache = _stage_cache()
-    if stage_cache.chat_template(merged) != stage_cache.chat_template(base_snapshot):
+    base_template = stage_cache.chat_template(base_snapshot)
+    if stage_cache.chat_template(merged) != base_template:
         raise ValueError("the checkpoint's chat template differs from the base model's (c33)")
+    if kind == "awq" and stage_cache.chat_template(awq_dir) != base_template:
+        raise ValueError("the AWQ export's chat template differs from the base model's (c33)")
     licence = base_snapshot / "LICENSE"
     if not licence.is_file():
         raise ValueError(f"{base_snapshot} ships no LICENSE file")
-    if not licence.read_text(encoding="utf-8").lstrip().startswith(LICENSE_FIRST_LINE):
-        raise ValueError(f"{licence} is not the {LICENSE_FIRST_LINE}")
+    _check_licence(licence, licence_kind)
+    if licence_kind == "apache":
+        _check_teachers(teachers)
     if not data_summary.strip():
         raise ValueError("--data-summary must describe the training data")
+    issue46 = licence_kind == "apache"
+    quoted = None
+    table = results_name = None
+    if issue46 or len(reports) > 1:
+        quoted = []
+        for path in reports:
+            caption, section = results_section(path, issue46=issue46)
+            quoted.append((caption, path.name, section))
+    else:
+        table, results_name = results_table(reports[0]), reports[0].name
+    awq_serve_args: list[str] = []
+    if kind == "awq":
+        record = awq_dir.parent / "quantize-run.json"
+        if not record.is_file():
+            raise ValueError(f"no {record} next to the AWQ export; run quantize first")
+        awq_serve_args = list(json.loads(record.read_text(encoding="utf-8"))["awq_serve_args"])
     base_repo, base_revision = _base_identity(base_snapshot)
     if out.exists():
         if any(out.iterdir()):
             raise ValueError(f"{out} is not empty")
         out.rmdir()
-    shutil.copytree(merged, out)
+    gguf_name, gguf_sha256 = _copy_payload(kind, merged, out, gguf, awq_dir)
+    mtp_from = drop_undeclared_mtp(out) if kind != "gguf" else None
     shutil.copyfile(licence, out / "LICENSE")
-    (out / "NOTICE").write_text(notice(base_repo, base_revision, repo), encoding="utf-8")
+    (out / "NOTICE").write_text(
+        notice(
+            base_repo,
+            base_revision,
+            repo,
+            licence_kind=licence_kind,
+            kind=kind,
+            scorer=scorer,
+            mtp_from=mtp_from,
+        ),
+        encoding="utf-8",
+    )
     card = model_card(
         repo=repo,
         base_repo=base_repo,
         base_revision=base_revision,
         run=run,
-        table=results_table(results),
-        results_name=results.name,
+        table=table,
+        results_name=results_name,
+        results=quoted,
         data_summary=data_summary.strip(),
+        licence_kind=licence_kind,
+        tool_call_parser=tool_call_parser,
+        teachers=teachers,
+        kind=kind,
+        scorer=scorer,
+        mtp_from=mtp_from,
+        gguf_name=gguf_name,
+        gguf_sha256=gguf_sha256,
+        awq_serve_args=awq_serve_args,
+        quantized_from=quantized_from,
     )
-    missing = [phrase for phrase in REQUIRED_CARD_PHRASES if phrase not in card]
+    required = APACHE_REQUIRED_CARD_PHRASES if licence_kind == "apache" else REQUIRED_CARD_PHRASES
+    missing = [p for p in (*required, *KIND_REQUIRED_CARD_PHRASES[kind]) if p not in card]
     if missing:
         raise ValueError(f"model card is missing {missing}")
     (out / "README.md").write_text(card, encoding="utf-8")
@@ -242,17 +825,66 @@ def _base_identity(base_snapshot: Path) -> tuple[str, str]:
     return f"{owner}/{name}", revision
 
 
-def main(argv: list[str] | None = None) -> int:
+def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--kind", choices=KINDS, default="bf16", help="what the bundle ships")
     parser.add_argument("--merged", required=True, type=Path)
+    parser.add_argument("--gguf", type=Path, help="--kind gguf: the .gguf file to ship")
+    parser.add_argument("--awq-dir", type=Path, help="--kind awq: the compressed-tensors folder")
     parser.add_argument("--base-snapshot", required=True, type=Path)
     parser.add_argument("--repo", required=True)
     parser.add_argument("--run", required=True, help="training run name, e.g. r7")
-    parser.add_argument("--results", required=True, type=Path, help="measure.py report")
+    parser.add_argument(
+        "--results",
+        required=True,
+        type=Path,
+        action="append",
+        help="measure.py report (repeatable: bf16 test, quantized test, edge)",
+    )
     parser.add_argument("--data-summary", required=True)
     parser.add_argument("--out", required=True, type=Path)
+    parser.add_argument(
+        "--licence-kind",
+        choices=("lfm", "apache"),
+        default="lfm",
+        help="licence mode for the base model",
+    )
+    parser.add_argument(
+        "--tool-call-parser",
+        default="lfm2",
+        help="the vLLM tool-call parser the card's nvsh snippet names (default: lfm2)",
+    )
+    parser.add_argument(
+        "--teacher-models",
+        type=Path,
+        help="JSON file: alias -> {name, licence} for this run's teachers (as dataset_bundle.py)",
+    )
+    parser.add_argument("--accepted", type=Path, help="the run's accepted variations (jsonl)")
+    parser.add_argument(
+        "--train-augmented", type=Path, help="the frozen training set the run trained on"
+    )
+    parser.add_argument("--scorer", action="store_true", help="a Track B candidate scorer")
+    parser.add_argument(
+        "--quantized-from", help="a quantized bundle: the bf16 fine-tune's repository id"
+    )
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = _parser()
     args = parser.parse_args(argv)
+    teacher_args = (args.teacher_models, args.accepted, args.train_augmented)
+    if any(teacher_args) and not all(teacher_args):
+        parser.error("--teacher-models, --accepted and --train-augmented go together")
     try:
+        teachers = None
+        if args.teacher_models:
+            teachers = run_teachers(
+                args.teacher_models,
+                args.accepted,
+                args.train_augmented,
+                apache_only=args.licence_kind == "apache",
+            )
         revision = build(
             merged=args.merged,
             base_snapshot=args.base_snapshot,
@@ -261,10 +893,21 @@ def main(argv: list[str] | None = None) -> int:
             results=args.results,
             data_summary=args.data_summary,
             out=args.out,
+            licence_kind=args.licence_kind,
+            tool_call_parser=args.tool_call_parser,
+            kind=args.kind,
+            gguf=args.gguf,
+            awq_dir=args.awq_dir,
+            teachers=teachers,
+            scorer=args.scorer,
+            quantized_from=args.quantized_from,
         )
     except ValueError as exc:
         parser.error(str(exc))
-    print(f"bundle for {args.repo} ({args.run}, weights revision {revision}) in {args.out}")
+    print(
+        f"{args.kind} bundle for {args.repo} ({args.run}, weights revision {revision})"
+        f" in {args.out}"
+    )
     return 0
 
 

@@ -5,7 +5,13 @@ object per line with ``messages``, ``tools`` and ``source_id``. Each line is
 rendered and tokenized with the base model's own chat template
 (``apply_chat_template(..., return_assistant_tokens_mask=True)``) and the loss
 is masked to the assistant turn, so the model is trained on exactly the tool
-call Tier 2 must produce and nothing else. Tokenizing here, before a
+call Tier 2 must produce and nothing else. A template without Jinja
+generation-block markers (Qwen3.5, issue 46) cannot build that mask, so there
+the answer is located in the rendered ids instead: the prompt is rendered
+with the generation prompt and the answer is what the full rendering adds
+after it, up to and including the end-of-turn token. Where the template has
+an ``enable_thinking`` switch it is rendered with thinking off, which puts an
+empty think block before the answer, as at inference. Tokenizing here, before a
 ``datasets.Dataset`` is built, matters: ``Dataset.from_list`` merges every
 tool's schema and would add every other tool's parameters as ``null``
 (see docs/lfm-finetune.md, run log).
@@ -22,6 +28,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
+import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -30,8 +39,18 @@ from pathlib import Path
 DEFAULT_BASE = "LiquidAI/LFM2.5-350M"
 DEFAULT_REVISION = "9e6c6ccf47cd318696e137d381a7ded8fe4df09f"
 
+#: The environment variable that caps the trainer's GPU memory, in GiB.
+GPU_MEMORY_ENV = "NVSH_TRAIN_GPU_MEMORY_GB"
+
 #: The label value the loss ignores.
 IGNORE_INDEX = -100
+
+#: A Jinja generation-block tag, the marker return_assistant_tokens_mask needs.
+#: Matched as a tag so ``add_generation_prompt`` does not count.
+_GENERATION_TAG = re.compile(r"\{%-?\s*generation\s*-?%\}")
+
+#: The template variable that switches a base's thinking block on and off.
+_THINKING_SWITCH = re.compile(r"\benable_thinking\b")
 
 
 def read_examples(path: Path) -> list[dict]:
@@ -63,17 +82,86 @@ def labels_from_mask(input_ids: list[int], mask: list[int]) -> list[int]:
     return [token if keep else IGNORE_INDEX for token, keep in zip(input_ids, mask)]
 
 
+def has_generation_markers(template: str) -> bool:
+    """Whether a chat template marks the assistant turn with generation-block tags."""
+    return bool(_GENERATION_TAG.search(template))
+
+
+def thinking_off_kwargs(template: str) -> dict:
+    """Template arguments that switch thinking off, if the template has the switch."""
+    return {"enable_thinking": False} if _THINKING_SWITCH.search(template) else {}
+
+
+def answer_span(prompt_ids: list[int], full_ids: list[int], end_of_turn: int) -> tuple[int, int]:
+    """Start and end of the answer in *full_ids*: what follows the prompt, through end-of-turn.
+
+    *prompt_ids* is the rendering up to and including the generation prompt,
+    *full_ids* the rendering with the answer. Refuses a prompt that does not
+    tokenize as a prefix of the full rendering rather than guess the boundary.
+    """
+    start = len(prompt_ids)
+    if full_ids[:start] != prompt_ids:
+        raise ValueError(
+            "the prompt's rendering is not a prefix of the full rendering:"
+            " the answer cannot be located"
+        )
+    try:
+        end = full_ids.index(end_of_turn, start) + 1
+    except ValueError:
+        raise ValueError("the answer has no end-of-turn token") from None
+    if end - 1 == start:
+        raise ValueError("the answer is empty: nothing between the prompt and end-of-turn")
+    return start, end
+
+
+def _template_text(tokenizer) -> str | None:
+    template = getattr(tokenizer, "chat_template", None)
+    if isinstance(template, dict):
+        return "\n".join(str(text) for text in template.values())
+    return template if isinstance(template, str) else None
+
+
 def tokenize_example(tokenizer, example: dict, max_length: int) -> dict:
-    """input_ids, attention_mask and labels for one example, loss on the assistant turn."""
-    rendered = tokenizer.apply_chat_template(
-        example["messages"],
-        tools=example.get("tools"),
-        tokenize=True,
-        return_dict=True,
-        return_assistant_tokens_mask=True,
-    )
-    input_ids = list(rendered["input_ids"])
-    mask = list(rendered["assistant_masks"])
+    """input_ids, attention_mask and labels for one example, loss on the assistant turn.
+
+    A template with generation markers (LFM2.5) masks the assistant turn
+    itself. One without them (Qwen3.5) has the answer located by rendering
+    the prompt alone, and the labels cover exactly the answer and its
+    end-of-turn token. A tokenizer exposing no template text is taken to
+    have markers, the original path.
+    """
+    template = _template_text(tokenizer)
+    extra = thinking_off_kwargs(template) if template is not None else {}
+    if template is None or has_generation_markers(template):
+        rendered = tokenizer.apply_chat_template(
+            example["messages"],
+            tools=example.get("tools"),
+            tokenize=True,
+            return_dict=True,
+            return_assistant_tokens_mask=True,
+            **extra,
+        )
+        input_ids = list(rendered["input_ids"])
+        mask = list(rendered["assistant_masks"])
+    else:
+        prompt = tokenizer.apply_chat_template(
+            example["messages"][:-1],
+            tools=example.get("tools"),
+            tokenize=True,
+            return_dict=True,
+            add_generation_prompt=True,
+            **extra,
+        )
+        rendered = tokenizer.apply_chat_template(
+            example["messages"],
+            tools=example.get("tools"),
+            tokenize=True,
+            return_dict=True,
+            **extra,
+        )
+        input_ids = list(rendered["input_ids"])
+        start, end = answer_span(list(prompt["input_ids"]), input_ids, tokenizer.eos_token_id)
+        mask = [int(start <= index < end) for index in range(len(input_ids))]
     if len(input_ids) > max_length:
         raise ValueError(
             f"example {example.get('source_id')!r} is {len(input_ids)} tokens, over {max_length};"
@@ -86,29 +174,206 @@ def tokenize_example(tokenizer, example: dict, max_length: int) -> dict:
     }
 
 
+def gpu_memory_fraction(gb: str, total_bytes: int) -> float:
+    """The share of a device of *total_bytes* that a budget of *gb* GiB is.
+
+    capped.sh's MemoryMax does not see CUDA allocations, and on unified memory
+    (GB10, Jetson) they come out of the same pool the serving stack uses, so
+    the trainer caps itself (issue 46, c49). Refuses a budget that is not a
+    positive number or is larger than the device.
+    """
+    try:
+        value = float(gb)
+    except ValueError:
+        value = math.nan
+    if not math.isfinite(value) or value <= 0:
+        raise ValueError(f"{GPU_MEMORY_ENV}={gb!r} is not a positive number of GiB")
+    budget = value * 2**30
+    if budget > total_bytes:
+        raise ValueError(
+            f"{GPU_MEMORY_ENV}={gb!r} exceeds the device's {total_bytes / 2**30:.1f} GiB"
+        )
+    return budget / total_bytes
+
+
+def cap_gpu_memory(torch, environ=os.environ) -> float | None:
+    """Apply $NVSH_TRAIN_GPU_MEMORY_GB to CUDA device 0 before a model loads.
+
+    Returns the fraction set, or None when the variable is unset, empty, or
+    whitespace-only (pipeline.sh exports it empty, and the shipped env
+    examples ship it empty too; both mean "no cap", the same as unset), or
+    there is no CUDA device. Raises ValueError for a budget
+    gpu_memory_fraction refuses.
+    """
+    gb = environ.get(GPU_MEMORY_ENV)
+    if gb is None or not gb.strip():
+        return None
+    if not torch.cuda.is_available():
+        print(f"{GPU_MEMORY_ENV} set but no CUDA device; no GPU cap applied", file=sys.stderr)
+        return None
+    fraction = gpu_memory_fraction(gb, torch.cuda.get_device_properties(0).total_memory)
+    torch.cuda.set_per_process_memory_fraction(fraction, 0)
+    print(f"{GPU_MEMORY_ENV}={gb.strip()}: GPU memory fraction {fraction:.4f}", file=sys.stderr)
+    return fraction
+
+
+def save_valid_generation_config(model) -> None:
+    """Clear a greedy temperature so transformers will save the model.
+
+    The served generation_config.json says temperature 0 with do_sample False
+    (deviation d3: vLLM reads temperature, and Qwen ships no file of its own),
+    and transformers 5.5 and 5.17 both refuse to save that combination. A heal
+    run merges from a checkpoint that carries the file, so clear the
+    temperature before the save; pipeline.sh runs gen_config.py write on the
+    merged dir afterwards, which puts it back for serving.
+    """
+    config = getattr(model, "generation_config", None)
+    if config is None:
+        return
+    if getattr(config, "do_sample", None) is False and getattr(config, "temperature", None) == 0:
+        config.temperature = None
+
+
+def text_adapter_key(key: str) -> str:
+    """*key* as the text-only causal LM names it.
+
+    unsloth trains Qwen3.5 as the vision-language class, so its adapter keys
+    sit under ``model.language_model.``; the text-only model has the same
+    modules under ``model.``. Merging into the vision-language class instead
+    saved doubled prefixes (``model.language_model.language_model.*``) that
+    vLLM cannot load (issue 46, lapse l4), while the text-only save uses the
+    base checkpoint's own names -- the path Track B's scorer already serves.
+    """
+    return key.replace(".model.language_model.", ".model.", 1)
+
+
+def adapter_leaf_modules(keys: list[str]) -> list[str]:
+    """The adapted modules' own names (``q_proj``, ``in_proj_qkv``, ...), for an
+    explicit ``target_modules`` in place of unsloth's regex, which names the
+    vision-language paths and misses ``linear_attn`` in the text model."""
+    leaves = set()
+    for key in keys:
+        head = key.split(".lora_", 1)[0]
+        leaves.add(head.rsplit(".", 1)[-1])
+    return sorted(leaves)
+
+
+def check_adapter_loaded(file_keys: list[str], loaded_keys: list[str]) -> None:
+    """Refuse a merge unless every tensor in the adapter file was loaded.
+
+    PEFT only warns about missing adapter keys and then merges zero-initialised
+    LoRA weights, which silently returns the base model (issue 46, lapse l4).
+    *loaded_keys* are the model's LoRA parameter names (with PEFT's adapter
+    name, ``.default``, which the file's names do not carry)."""
+    loaded = {key.replace(".default.", ".") for key in loaded_keys}
+    missing = [key for key in file_keys if key not in loaded]
+    if not missing:
+        return
+    found = len(file_keys) - len(missing)
+    if found == 0:
+        raise ValueError(
+            f"none of the adapter's {len(file_keys)} tensors loaded into the base "
+            f"(first missing: {missing[0]}); the merge would return the base unchanged"
+        )
+    raise ValueError(
+        f"only {found} of {len(file_keys)} adapter tensors loaded (first missing: {missing[0]})"
+    )
+
+
 def merge_adapter(base: str, revision: str, adapter: Path, out: Path) -> None:  # pragma: no cover
     """Merge a saved LoRA adapter into a fresh copy of the base and save it to *out*.
 
     Uses plain transformers + peft rather than unsloth's merged saver, which
     copies the base weights out of the Hugging Face cache with their
     read-only permissions and then fails to overwrite them (run log, t14).
-    The tokenizer, and so the chat template, is saved from the base
-    unchanged; stage_cache.py checks that byte for byte.
+    Every adapter is merged into the text-only causal LM (a vision-language
+    adapter's keys are mapped onto it first), every adapter tensor must load,
+    and a merged weight must differ from the base (issue 46, lapse l4). The
+    tokenizer, and so the chat template, is saved from the base unchanged;
+    stage_cache.py checks that byte for byte.
     """
+    import tempfile
+
     import torch
     from peft import PeftModel
+    from safetensors import safe_open
+    from safetensors.torch import save_file
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
+    with safe_open(str(adapter / "adapter_model.safetensors"), "pt") as handle:
+        tensors = {text_adapter_key(key): handle.get_tensor(key) for key in handle.keys()}
+    file_keys = list(tensors)
+    config = json.loads((adapter / "adapter_config.json").read_text(encoding="utf-8"))
+    config["target_modules"] = adapter_leaf_modules(file_keys)
     model = AutoModelForCausalLM.from_pretrained(base, revision=revision, dtype=torch.bfloat16)
-    merged = PeftModel.from_pretrained(model, str(adapter)).merge_and_unload()
+    with tempfile.TemporaryDirectory() as tmp:
+        save_file(tensors, str(Path(tmp) / "adapter_model.safetensors"))
+        (Path(tmp) / "adapter_config.json").write_text(json.dumps(config), encoding="utf-8")
+        peft_model = PeftModel.from_pretrained(model, tmp)
+    check_adapter_loaded(file_keys, [k for k in peft_model.state_dict() if "lora_" in k])
+    probe_name, probe = next(
+        (name, module) for name, module in peft_model.named_modules() if hasattr(module, "lora_A")
+    )
+    before = probe.base_layer.weight.detach().clone()
+    merged = peft_model.merge_and_unload()
+    after = merged.get_submodule(probe_name.replace("base_model.model.", "", 1)).weight
+    if torch.equal(before, after.detach()):
+        raise ValueError(f"merging changed nothing in {probe_name}; refusing to save the base")
     out.mkdir(parents=True, exist_ok=True)
+    save_valid_generation_config(merged)
     merged.save_pretrained(str(out))
     AutoTokenizer.from_pretrained(base, revision=revision).save_pretrained(str(out))
+    print(f"merged {len(file_keys)} adapter tensors ({probe_name} changed)")
+
+
+#: LoRA target module sets. ``attn-mlp`` is Unsloth's own default list
+#: (attention and MLP projections), passed explicitly so the recipe records
+#: it. ``attn-mlp-gdn`` adds Qwen3.5's Gated-DeltaNet projections: 18 of its
+#: 24 layers are linear attention (``linear_attn.in_proj_*``/``out_proj``),
+#: which the default list never adapts (issue 46, risk r9). Those names occur
+#: only in the language model, never in the vision tower or the MTP head.
+LORA_TARGETS = {
+    "attn-mlp": ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
+    "attn-mlp-gdn": [
+        "q_proj",
+        "k_proj",
+        "v_proj",
+        "o_proj",
+        "gate_proj",
+        "up_proj",
+        "down_proj",
+        "in_proj_qkv",
+        "in_proj_z",
+        "in_proj_a",
+        "in_proj_b",
+        "out_proj",
+    ],
+}
+
+
+def text_tokenizer(loaded):
+    """The text tokenizer inside whatever the loader returned.
+
+    For Qwen3.5 (a vision-language model) unsloth returns the multimodal
+    processor, whose chat template expects content as a list of parts and
+    crashes on plain strings (issue 46, t22). Its ``tokenizer`` attribute is
+    the text tokenizer, with the same chat template.
+    """
+    inner = getattr(loaded, "tokenizer", None)
+    return inner if inner is not None else loaded
+
+
+def lora_targets(name: str) -> list[str]:
+    if name not in LORA_TARGETS:
+        raise ValueError(f"unknown LoRA targets {name!r}; one of {', '.join(LORA_TARGETS)}")
+    return list(LORA_TARGETS[name])
 
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--train", required=True, type=Path)
+    parser.add_argument(
+        "--train", type=Path, help="training examples (required unless --merge-only)"
+    )
     parser.add_argument("--val", type=Path, help="validation examples (loss only)")
     parser.add_argument("--out", required=True, type=Path)
     parser.add_argument("--base", default=DEFAULT_BASE)
@@ -119,6 +384,13 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--alpha", type=int, default=32)
     parser.add_argument("--batch", type=int, default=8)
     parser.add_argument("--seed", type=int, default=7)
+    parser.add_argument(
+        "--targets",
+        choices=sorted(LORA_TARGETS),
+        default="attn-mlp",
+        help="LoRA target modules: attn-mlp (Unsloth's default) or attn-mlp-gdn (adds the "
+        "Gated-DeltaNet projections, issue 46 r9)",
+    )
     parser.add_argument("--max-length", type=int, default=4096)
     parser.add_argument("--no-merge", action="store_true", help="save the adapter only")
     parser.add_argument(
@@ -136,6 +408,9 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - needs a GP
         merge_adapter(args.base, args.revision, args.merge_only, args.out / "merged")
         print(f"merged {args.merge_only} into {args.out / 'merged'}")
         return 0
+    if args.train is None:
+        print("train.py: --train is required unless --merge-only is given", file=sys.stderr)
+        return 2
 
     # Imported here so the helpers above work without a training environment.
     # unsloth must come first: importing it patches transformers.
@@ -147,12 +422,23 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - needs a GP
 
     # isort: on
 
-    model, tokenizer = FastLanguageModel.from_pretrained(
+    try:
+        cap_gpu_memory(torch)
+    except ValueError as exc:
+        print(f"train.py: {exc}", file=sys.stderr)
+        return 2
+    model, loaded = FastLanguageModel.from_pretrained(
         args.base, revision=args.revision, max_seq_length=args.max_length, load_in_4bit=False
     )
+    tokenizer = text_tokenizer(loaded)
     model = FastLanguageModel.get_peft_model(
-        model, r=args.rank, lora_alpha=args.alpha, random_state=args.seed
+        model,
+        r=args.rank,
+        lora_alpha=args.alpha,
+        random_state=args.seed,
+        target_modules=lora_targets(args.targets),
     )
+    print(f"train.py: LoRA targets {args.targets}: {', '.join(lora_targets(args.targets))}")
 
     def dataset(path: Path) -> Dataset:
         rows = [tokenize_example(tokenizer, ex, args.max_length) for ex in read_examples(path)]

@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import ast
 import importlib.util
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -15,7 +17,9 @@ from nvsh.tiers.bench import (
     dev_corpus_path,
     held_out_corpus_path,
     load_corpus,
+    load_world,
     request_for,
+    world_platform,
 )
 
 _SCRIPT = Path(__file__).resolve().parents[1] / "scripts/lfm-finetune/build_dataset.py"
@@ -23,12 +27,75 @@ _SCRIPT = Path(__file__).resolve().parents[1] / "scripts/lfm-finetune/build_data
 #: The set of assistant tool calls a corpus can ask for (task t4, part of #39).
 _CLOSED_TOOL_NAMES = {lfm.PROPOSE_TOOL, lfm.ESCALATE_TOOL, lfm.EXPLAIN_TOOL}
 
+#: The Qwen3.5-0.8B tokenizer + chat template (no weights); revision pinned so a
+#: cache refresh can't silently change what these tests measure (task t3, c7/h9).
+_QWEN_BASE = "Qwen/Qwen3.5-0.8B"
+_QWEN_REVISION = "2fc06364715b967f1860aea9cf38778875588b17"
+
+#: The LFM2.5-350M tokenizer, same pinning reasoning (docs/lfm-finetune.md's own base+commit).
+_LFM_BASE = "LiquidAI/LFM2.5-350M"
+_LFM_REVISION = "9e6c6ccf47cd318696e137d381a7ded8fe4df09f"
+
 
 def _module():
     spec = importlib.util.spec_from_file_location("lfm_build_dataset", _SCRIPT)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def _cached_tokenizer(repo_id: str, revision: str):
+    """*repo_id*'s tokenizer at *revision*, or a clean skip.
+
+    ``local_files_only`` so this never touches the network; a cache miss (no
+    training stack, or the model just isn't cached on this box) is a skip,
+    never a failure (rule 4: real-tokenizer checks skip cleanly)."""
+    transformers = pytest.importorskip("transformers")
+    try:
+        return transformers.AutoTokenizer.from_pretrained(
+            repo_id, revision=revision, local_files_only=True
+        )
+    except OSError:
+        pytest.skip(f"{repo_id}@{revision} tokenizer not in the local Hugging Face cache")
+
+
+#: A small, test-side reader for Qwen3.5's XML function/parameter tool-call
+#: form (``<tool_call><function=NAME><parameter=ARG>VALUE</parameter>...``).
+#: This is NOT the served vLLM parser (that round-trip is the serving smoke
+#: task) -- just enough to check that build_dataset.py's rendered example
+#: carries the tool name and arguments object it meant to write.
+_QWEN_FUNCTION_RE = re.compile(r"<function=(?P<name>[^>]+)>(?P<body>.*?)</function>", re.DOTALL)
+_QWEN_PARAMETER_RE = re.compile(
+    r"<parameter=(?P<name>[^>]+)>\n(?P<value>.*?)\n</parameter>", re.DOTALL
+)
+
+
+def _parse_qwen_call(rendered: str) -> tuple[str, dict]:
+    match = _QWEN_FUNCTION_RE.search(rendered)
+    if not match:
+        raise ValueError(f"no <function=...> block in rendered text: {rendered!r}")
+    arguments: dict = {}
+    for param in _QWEN_PARAMETER_RE.finditer(match.group("body")):
+        raw = param.group("value")
+        try:
+            arguments[param.group("name")] = json.loads(raw)
+        except json.JSONDecodeError:
+            arguments[param.group("name")] = raw
+    return match.group("name"), arguments
+
+
+def _parse_pythonic_call(rendered: str) -> tuple[str, dict]:
+    """A small, test-side reader for LFM2.5's Pythonic tool-call form
+    (``<|tool_call_start|>[name(kw=val, ...)]<|tool_call_end|>``): the body
+    between the markers is a valid Python call expression, so ``ast`` reads
+    it directly rather than hand-rolling a second parser."""
+    match = re.search(r"<\|tool_call_start\|>(?P<body>.*?)<\|tool_call_end\|>", rendered, re.DOTALL)
+    if not match:
+        raise ValueError(f"no tool-call markers in rendered text: {rendered!r}")
+    expr = ast.parse(match.group("body"), mode="eval").body
+    (call,) = expr.elts
+    arguments = {kw.arg: ast.literal_eval(kw.value) for kw in call.keywords}
+    return call.func.id, arguments
 
 
 def _calls(example: dict) -> dict:
@@ -162,7 +229,10 @@ def test_arguments_as_string_is_valid_json_of_the_object_form():
 
 def test_main_writes_one_json_object_per_line(tmp_path):
     out = tmp_path / "train.jsonl"
-    _module().main(["--out", str(out)])
+    # --no-verify-render: this checks the written shape, not the round-trip
+    # guard (tested separately below), and the default venv has no
+    # training stack to verify against (rule 4).
+    _module().main(["--out", str(out), "--no-verify-render"])
     lines = out.read_text(encoding="utf-8").splitlines()
     assert all("messages" in json.loads(line) for line in lines)
 
@@ -230,7 +300,7 @@ def test_cli_split_never_reads_dev_json_whole(tmp_path, monkeypatch):
         return real_open(path, *args, **kwargs)
 
     monkeypatch.setattr("builtins.open", _guarded_open)
-    _module().main(["--split", str(split), "--out", str(out)])
+    _module().main(["--split", str(split), "--out", str(out), "--no-verify-render"])
     lines = out.read_text(encoding="utf-8").splitlines()
     assert len(lines) == 1
     assert json.loads(lines[0])["source_id"] == "op01"
@@ -406,8 +476,289 @@ def test_a_written_proposal_names_the_operation_before_its_arguments(tmp_path):
     # stored. Sorted keys put "arguments" before "operation", which taught
     # r4 to write the arguments and then stop without choosing an operation.
     out = tmp_path / "train.jsonl"
-    _module().main(["--corpus", str(dev_corpus_path()), "--out", str(out)])
+    _module().main(["--corpus", str(dev_corpus_path()), "--out", str(out), "--no-verify-render"])
     for line in out.read_text(encoding="utf-8").splitlines():
         call = json.loads(line)["messages"][-1]["tool_calls"][0]["function"]
         if call["name"] == lfm.PROPOSE_TOOL:
             assert list(call["arguments"]) == ["operation", "arguments"]
+
+
+# ---------------------------------------------------------------------------
+# t3 (c7/h9): render one example per outcome with the base tokenizer and
+# parse the assistant span back to the same tool name and arguments object.
+# ---------------------------------------------------------------------------
+
+
+class _FakeTemplateTokenizer:
+    """Stands in for apply_chat_template without any real chat template.
+
+    Renders each message as ``<role>content`` and, for a trailing assistant
+    tool-call message, appends ``<assistant>name|json-arguments``. Enough to
+    exercise ``render_assistant_text``'s prefix-diff logic (and
+    ``verify_round_trip``'s pass/fail paths) without the training stack, so
+    that logic is covered even when no real tokenizer is cached."""
+
+    def apply_chat_template(
+        self, messages, tools=None, tokenize=False, add_generation_prompt=False
+    ):
+        trailing_assistant = messages and messages[-1]["role"] == "assistant"
+        leading = messages[:-1] if trailing_assistant and not add_generation_prompt else messages
+        rendered = "".join(f"<{m['role']}>{m.get('content', '')}" for m in leading)
+        if add_generation_prompt:
+            return rendered + "<assistant>"
+        if trailing_assistant:
+            call = messages[-1]["tool_calls"][0]["function"]
+            rendered += f"<assistant>{call['name']}|{json.dumps(call['arguments'])}"
+        return rendered
+
+
+def _parse_fake_call(rendered: str) -> tuple[str, dict]:
+    name, _, raw_arguments = rendered.partition("|")
+    return name, json.loads(raw_arguments)
+
+
+def _outcome_examples(module) -> dict[str, dict]:
+    """One example each for propose (with args), escalate and explain."""
+    entries = load_corpus(dev_corpus_path()).entries
+    platform = world_platform(load_world(dev_corpus_path()))
+    propose_entry = next(e for e in entries if e.expect.get("args"))
+    escalate_entry = next(e for e in entries if e.expect.get("escalate"))
+    explain_entry = next(e for e in entries if e.expect.get("explain"))
+    return {
+        "propose": module.example_from_entry(propose_entry, platform),
+        "escalate": module.example_from_entry(escalate_entry, platform),
+        "explain": module.example_from_entry(explain_entry, platform),
+    }
+
+
+def test_render_assistant_text_isolates_the_assistant_span_fake_tokenizer():
+    module = _module()
+    example = _outcome_examples(module)["escalate"]
+    span = module.render_assistant_text(_FakeTemplateTokenizer(), example)
+    name, arguments = _parse_fake_call(span)
+    assert name == lfm.ESCALATE_TOOL
+    assert arguments == {"reason": module.ESCALATE_REASON}
+
+
+def test_verify_round_trip_passes_for_a_correct_render_fake_tokenizer():
+    module = _module()
+    for example in _outcome_examples(module).values():
+        module.verify_round_trip(example, _FakeTemplateTokenizer(), _parse_fake_call)
+
+
+def test_verify_round_trip_raises_on_a_mismatched_parse():
+    module = _module()
+    example = _outcome_examples(module)["escalate"]
+
+    def _wrong_parse(rendered: str) -> tuple[str, dict]:
+        return "not-escalate", {}
+
+    tokenizer = _FakeTemplateTokenizer()
+    with pytest.raises(ValueError, match="round-trip"):
+        module.verify_round_trip(example, tokenizer, _wrong_parse)
+
+
+@pytest.mark.parametrize("outcome", ["propose", "escalate", "explain"])
+def test_qwen_tokenizer_round_trips_each_outcome(outcome):
+    """c7/h9: one rendered example per outcome, real Qwen tokenizer, parsed
+    back through the small XML reader to the same tool name and arguments."""
+    module = _module()
+    tokenizer = _cached_tokenizer(_QWEN_BASE, _QWEN_REVISION)
+    example = _outcome_examples(module)[outcome]
+    module.verify_round_trip(example, tokenizer, _parse_qwen_call)
+
+
+@pytest.mark.parametrize("outcome", ["propose", "escalate", "explain"])
+def test_lfm_tokenizer_round_trips_each_outcome(outcome):
+    """LFM's own workarounds (object arguments, operation before arguments)
+    are verified against the real tokenizer here too, not just assumed."""
+    module = _module()
+    tokenizer = _cached_tokenizer(_LFM_BASE, _LFM_REVISION)
+    example = _outcome_examples(module)[outcome]
+    module.verify_round_trip(example, tokenizer, _parse_pythonic_call)
+
+
+def test_qwen_tokenizer_refuses_string_arguments_like_lfm():
+    """The 'object arguments' workaround is LFM-only by assumption today;
+    verify (not assume) Qwen's own template needs it too -- a mapping to
+    iterate as named <parameter> tags, not a JSON-encoded string."""
+    module = _module()
+    tokenizer = _cached_tokenizer(_QWEN_BASE, _QWEN_REVISION)
+    entries = load_corpus(dev_corpus_path()).entries
+    platform = world_platform(load_world(dev_corpus_path()))
+    propose_entry = next(e for e in entries if e.expect.get("args"))
+    example = module.example_from_entry(propose_entry, platform, module.ARGUMENTS_AS_STRING)
+    messages, tools = example["messages"], example["tools"]
+    with pytest.raises(TypeError, match="mapping"):
+        tokenizer.apply_chat_template(messages, tools=tools, tokenize=False)
+
+
+def test_lfm_tokenizer_refuses_string_arguments():
+    """The existing LFM restriction (docs/lfm-finetune.md), verified live
+    against the real tokenizer rather than only documented."""
+    module = _module()
+    tokenizer = _cached_tokenizer(_LFM_BASE, _LFM_REVISION)
+    entries = load_corpus(dev_corpus_path()).entries
+    platform = world_platform(load_world(dev_corpus_path()))
+    propose_entry = next(e for e in entries if e.expect.get("args"))
+    example = module.example_from_entry(propose_entry, platform, module.ARGUMENTS_AS_STRING)
+    jinja2 = pytest.importorskip("jinja2")
+    messages, tools = example["messages"], example["tools"]
+    with pytest.raises(jinja2.exceptions.TemplateError, match="must be a mapping"):
+        tokenizer.apply_chat_template(messages, tools=tools, tokenize=False)
+
+
+def test_qwen_tokenizer_operation_before_arguments_default_order_round_trips():
+    """The 'operation before arguments' workaround (dict insertion order) is
+    verified for Qwen too: its named <parameter> tags render in dict order,
+    and the round trip still recovers the same operation and arguments even
+    though a named XML parameter (unlike LFM's positional Pythonic call)
+    does not actually depend on that order to parse correctly."""
+    module = _module()
+    tokenizer = _cached_tokenizer(_QWEN_BASE, _QWEN_REVISION)
+    entries = load_corpus(dev_corpus_path()).entries
+    platform = world_platform(load_world(dev_corpus_path()))
+    propose_entry = next(e for e in entries if e.expect.get("args"))
+    example = module.example_from_entry(propose_entry, platform)
+    call = example["messages"][-1]["tool_calls"][0]["function"]
+    assert list(call["arguments"]) == ["operation", "arguments"]
+    module.verify_round_trip(example, tokenizer, _parse_qwen_call)
+
+
+# ---------------------------------------------------------------------------
+# Codex review finding #6: verify_round_trip must guard build() itself, not
+# only be callable by tests.
+# ---------------------------------------------------------------------------
+
+
+class _MismatchingPythonicTokenizer:
+    """Renders a fixed, wrong Pythonic call for every example's assistant
+    turn -- a round-trip mismatch build()'s own verification must catch."""
+
+    def apply_chat_template(
+        self, messages, tools=None, tokenize=False, add_generation_prompt=False
+    ):
+        trailing_assistant = messages and messages[-1]["role"] == "assistant"
+        leading = messages[:-1] if trailing_assistant and not add_generation_prompt else messages
+        rendered = "".join(f"<{m['role']}>{m.get('content', '')}" for m in leading)
+        if add_generation_prompt:
+            return rendered + "<assistant>"
+        if trailing_assistant:
+            rendered += "<assistant><|tool_call_start|>[not_the_right_tool()]<|tool_call_end|>"
+        return rendered
+
+
+def test_build_fails_when_the_tokenizer_render_mismatches():
+    """Reproduces finding #6: before this fix, verify_round_trip was never
+    called from build() at all, so this mismatch shipped silently."""
+    module = _module()
+    corpus = dev_corpus_path()
+    tokenizer = _MismatchingPythonicTokenizer()
+    with pytest.raises(ValueError, match="round-trip"):
+        module.build(corpus, verify_render=True, tokenizer=tokenizer)
+
+
+def test_build_does_not_verify_by_default():
+    """build()'s own default stays verification-off, so plain library calls
+    (most of this file's other tests) never need a tokenizer -- the CLI
+    turns verification on by default instead (tested below)."""
+    module = _module()
+    examples = module.build(dev_corpus_path())
+    assert len(examples) == len(load_corpus(dev_corpus_path()).entries)
+
+
+def test_build_verifies_against_the_default_base_with_a_real_tokenizer():
+    """The passing counterpart: build()'s own default base (LFM2.5, matching
+    train.py's DEFAULT_BASE/DEFAULT_REVISION) round-trips a normal build."""
+    module = _module()
+    assert module.DEFAULT_BASE == _LFM_BASE
+    assert module.DEFAULT_REVISION == _LFM_REVISION
+    tokenizer = _cached_tokenizer(_LFM_BASE, _LFM_REVISION)
+    examples = module.build(dev_corpus_path(), verify_render=True, tokenizer=tokenizer)
+    assert len(examples) == len(load_corpus(dev_corpus_path()).entries)
+
+
+def test_qwen_build_with_string_arguments_fails_the_round_trip_guard():
+    """Finding #6's own trigger: build with --arguments-as string for Qwen
+    must fail, not just the standalone apply_chat_template call that
+    test_qwen_tokenizer_refuses_string_arguments_like_lfm already shows."""
+    module = _module()
+    tokenizer = _cached_tokenizer(_QWEN_BASE, _QWEN_REVISION)
+    corpus = dev_corpus_path()
+    with pytest.raises(TypeError, match="mapping"):
+        module.build(
+            corpus,
+            module.ARGUMENTS_AS_STRING,
+            verify_render=True,
+            base=_QWEN_BASE,
+            revision=_QWEN_REVISION,
+            tokenizer=tokenizer,
+        )
+
+
+def test_parse_rendered_call_detects_qwen_form():
+    module = _module()
+    rendered = '<tool_call><function=escalate><parameter=reason>\n"x"\n</parameter></function>'
+    name, arguments = module.parse_rendered_call(rendered)
+    assert name == "escalate"
+    assert arguments == {"reason": "x"}
+
+
+def test_parse_rendered_call_detects_pythonic_form():
+    module = _module()
+    rendered = "<|tool_call_start|>[escalate(reason='x')]<|tool_call_end|>"
+    name, arguments = module.parse_rendered_call(rendered)
+    assert name == "escalate"
+    assert arguments == {"reason": "x"}
+
+
+def test_parse_rendered_call_refuses_an_unrecognized_form():
+    module = _module()
+    with pytest.raises(ValueError, match="unrecognized"):
+        module.parse_rendered_call("<assistant>escalate|{}")
+
+
+def test_cli_verifies_render_by_default(tmp_path, monkeypatch):
+    """The CLI wires verify_render=True into build() unless told not to."""
+    module = _module()
+    captured = {}
+
+    def _fake_build(source, arguments_as=module.ARGUMENTS_AS_OBJECT, is_split=False, **kwargs):
+        captured.update(kwargs)
+        return []
+
+    monkeypatch.setattr(module, "build", _fake_build)
+    out = tmp_path / "train.jsonl"
+    module.main(["--out", str(out)])
+    assert captured["verify_render"] is True
+    assert captured["base"] == module.DEFAULT_BASE
+    assert captured["revision"] == module.DEFAULT_REVISION
+
+
+def test_cli_no_verify_render_flag_turns_verification_off(tmp_path, monkeypatch):
+    module = _module()
+    captured = {}
+
+    def _fake_build(source, arguments_as=module.ARGUMENTS_AS_OBJECT, is_split=False, **kwargs):
+        captured.update(kwargs)
+        return []
+
+    monkeypatch.setattr(module, "build", _fake_build)
+    out = tmp_path / "train.jsonl"
+    module.main(["--out", str(out), "--no-verify-render"])
+    assert captured["verify_render"] is False
+
+
+def test_cli_base_and_revision_flags_pass_through(tmp_path, monkeypatch):
+    module = _module()
+    captured = {}
+
+    def _fake_build(source, arguments_as=module.ARGUMENTS_AS_OBJECT, is_split=False, **kwargs):
+        captured.update(kwargs)
+        return []
+
+    monkeypatch.setattr(module, "build", _fake_build)
+    out = tmp_path / "train.jsonl"
+    module.main(["--out", str(out), "--base", _QWEN_BASE, "--revision", _QWEN_REVISION])
+    assert captured["base"] == _QWEN_BASE
+    assert captured["revision"] == _QWEN_REVISION

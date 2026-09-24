@@ -46,20 +46,33 @@ def excluded_texts(sides: list[dict]) -> frozenset[str]:
 
 
 def merge(
-    split: dict, variations: list[dict], exclude: frozenset[str] = frozenset()
+    split: dict,
+    variations: list[dict],
+    exclude: frozenset[str] = frozenset(),
+    filter_to_split: bool = False,
 ) -> tuple[dict, dict[str, int]]:
     """The split with *variations* appended, and counts of what was kept and dropped."""
     if not _TRAIN_HEADER.search(str(split.get("header", ""))):
         raise ValueError("the split's header does not name the train side")
     sources = {entry["id"]: entry for entry in split["entries"]}
     seen = {_normal(entry["text"]) for entry in split["entries"]}
+    ids_seen = set(sources)
     kept: list[dict] = []
-    counts = {"kept": 0, "duplicate": 0, "leaked": 0}
+    counts = {"kept": 0, "duplicate": 0, "leaked": 0, "off_split": 0}
     for variation in variations:
+        vid = variation.get("id")
+        if vid in ids_seen:
+            raise ValueError(
+                f"{vid!r}: variation id is already used by the split or another variation"
+            )
+        ids_seen.add(vid)
         if variation.get("side") != "train":
             raise ValueError(f"{variation.get('id')}: side {variation.get('side')!r} is not train")
         source = sources.get(variation.get("source_id"))
         if source is None:
+            if filter_to_split:
+                counts["off_split"] += 1
+                continue
             raise ValueError(
                 f"{variation.get('id')}: source {variation.get('source_id')!r} is not in the split"
             )
@@ -119,6 +132,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--exclude", type=Path, nargs="*", default=[], help="val.json and test.json from split.py"
     )
+    parser.add_argument(
+        "--filter-to-split",
+        action="store_true",
+        help="skip variations whose source_id is not in the split (count them)",
+    )
     args = parser.parse_args(argv)
     split = json.loads(args.split.read_text(encoding="utf-8"))
     exclude = excluded_texts(
@@ -140,13 +158,14 @@ def main(argv: list[str] | None = None) -> int:
         if line.strip()
     ]
     try:
-        merged, counts = merge(split, variations, exclude)
+        merged, counts = merge(split, variations, exclude, filter_to_split=args.filter_to_split)
     except ValueError as exc:
         parser.error(str(exc))
     args.out.write_text(json.dumps(merged, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     print(
         f"sources={len(split['entries'])} supplement={supplemented}"
         f" kept={counts['kept']} duplicate={counts['duplicate']} leaked={counts['leaked']}"
+        f" off_split={counts['off_split']}"
     )
     return 0
 

@@ -122,3 +122,561 @@ def test_results_without_a_table_are_refused(tmp_path) -> None:
     results.write_text("# nothing\n")
     with pytest.raises(ValueError, match="no metric table"):
         _build(tmp_path, results=results)
+
+
+# ---------------------------------------------------------------------------
+# Apache-2.0 mode (issue 39, t46)
+# ---------------------------------------------------------------------------
+
+_FAKE_APACHE_LICENSE = "Apache License\n" "Version 2.0\n" "\n" "TERMS AND CONDITIONS\n"
+
+
+def _issue46_results(tmp_path: Path) -> Path:
+    """An Apache card quotes a report's "Issue 46 metrics" table (t27)."""
+    path = tmp_path / "final.md"
+    path.write_text(_ISSUE46_RESULTS)
+    return path
+
+
+def _apache_teachers():
+    """An Apache run's own teacher table (issue 46, t27: never the LFM constant)."""
+    return _module().RunTeachers(
+        [("Qwen 3.6 35B-A3B", "Apache-2.0", "wrote the variation")], "Kept when B said yes."
+    )
+
+
+def _apache(tmp_path: Path) -> Path:
+    snapshot = tmp_path / "hub" / "models--FakeOrg--FakeModel" / "snapshots" / ("b" * 40)
+    snapshot.mkdir(parents=True)
+    (snapshot / "chat_template.jinja").write_text("T")
+    (snapshot / "LICENSE").write_text(_FAKE_APACHE_LICENSE)
+    return snapshot
+
+
+class TestApacheLicenceKind:
+    """Apache-2.0 licence-path through release_bundle."""
+
+    def test_apache_bundle_refuses_a_non_apache_licence(self, tmp_path: Path) -> None:
+        module = _module()
+        base_snapshot = _base(tmp_path)  # LFM licence by default
+        results = tmp_path / "r7-val.md"
+        results.write_text(_RESULTS)
+        merged = _merged(tmp_path)
+        out = tmp_path / "bundle"
+        with pytest.raises(ValueError, match="not Apache-2.0"):
+            module.build(
+                merged=merged,
+                base_snapshot=base_snapshot,
+                repo="jetson-ai-lab/lfm2.5-350m-nvsh-triage",
+                run="r7",
+                results=results,
+                data_summary="945 examples from nvsh's train split.",
+                out=out,
+                licence_kind="apache",
+            )
+
+    def test_apache_card_has_apache_front_matter_and_no_lfm_terms(self, tmp_path: Path) -> None:
+        _module()  # ensure module is available
+        base_snapshot = _apache(tmp_path)
+        revision = _build(
+            tmp_path,
+            base_snapshot=base_snapshot,
+            licence_kind="apache",
+            teachers=_apache_teachers(),
+            results=_issue46_results(tmp_path),
+        )
+        assert revision is not None  # build succeeded
+        out = tmp_path / "bundle"
+        assert (out / "LICENSE").read_text() == _FAKE_APACHE_LICENSE
+        card = (out / "README.md").read_text()
+        assert "license: apache-2.0" in card
+        assert "lfm1.0" not in card
+        assert "10,000,000" not in card
+
+    def test_apache_notice_does_not_mention_liquid_ai(self, tmp_path: Path) -> None:
+        _module()  # ensure module is available
+        base_snapshot = _apache(tmp_path)
+        _build(
+            tmp_path,
+            base_snapshot=base_snapshot,
+            licence_kind="apache",
+            teachers=_apache_teachers(),
+            results=_issue46_results(tmp_path),
+        )
+        notice = (tmp_path / "bundle" / "NOTICE").read_text()
+        assert "Liquid AI" not in notice
+
+    def test_lfm_outputs_are_unchanged_by_default(self, tmp_path: Path) -> None:
+        rb = _module()  # ensure module is available
+        # calling without licence_kind gives same text as licence_kind="lfm"
+        _base(tmp_path)  # base for completeness; not needed for model_card/notice
+        results = tmp_path / "r7-val.md"
+        results.write_text(_RESULTS)
+        card_default = rb.model_card(
+            repo="jetson-ai-lab/lfm2.5-350m-nvsh-triage",
+            base_repo="LiquidAI/LFM2.5-350M",
+            base_revision="a" * 40,
+            run="r7",
+            table=rb.results_table(results),
+            results_name="r7-val.md",
+            data_summary="945 examples from nvsh's train split.",
+        )
+        card_explicit_lfm = rb.model_card(
+            repo="jetson-ai-lab/lfm2.5-350m-nvsh-triage",
+            base_repo="LiquidAI/LFM2.5-350M",
+            base_revision="a" * 40,
+            run="r7",
+            table=rb.results_table(results),
+            results_name="r7-val.md",
+            data_summary="945 examples from nvsh's train split.",
+            licence_kind="lfm",
+        )
+        assert card_default == card_explicit_lfm
+        notice_default = rb.notice(
+            "LiquidAI/LFM2.5-350M", "a" * 40, "jetson-ai-lab/lfm2.5-350m-nvsh-triage"
+        )
+        notice_explicit_lfm = rb.notice(
+            "LiquidAI/LFM2.5-350M",
+            "a" * 40,
+            "jetson-ai-lab/lfm2.5-350m-nvsh-triage",
+            licence_kind="lfm",
+        )
+        assert notice_default == notice_explicit_lfm
+
+
+def test_apache_card_names_the_base_family_and_the_given_parser() -> None:
+    """A Qwen card must not carry LFM tags or LFM's vLLM tool-call parser."""
+    module = _module()
+    card = module.model_card(
+        repo="jetson-ai-lab/qwen3.5-0.8b-nvsh-tool-jev",
+        base_repo="Qwen/Qwen3.5-0.8B",
+        base_revision="2fc06364",
+        run="a1",
+        table="| x |",
+        results_name="res.md",
+        data_summary="n examples",
+        licence_kind="apache",
+        tool_call_parser="qwen3_coder",
+        teachers=_apache_teachers(),
+    )
+    front = card.split("---")[1]
+    assert "- liquid" not in front
+    assert "- lfm2.5" not in front
+    assert "- qwen" in front
+    assert 'tool_call_parser = "qwen3_coder"' in card
+    assert "lfm2" not in card.split("## Use with nvsh")[1].split("##")[0]
+
+
+def test_lfm_card_keeps_its_tags_and_parser_by_default() -> None:
+    module = _module()
+    card = module.model_card(
+        repo="r",
+        base_repo="LiquidAI/LFM2.5-350M",
+        base_revision="9e6c",
+        run="r8",
+        table="| x |",
+        results_name="res.md",
+        data_summary="n",
+    )
+    assert "- liquid\n- lfm2.5\n" in card
+    assert 'tool_call_parser = "lfm2"' in card
+
+
+# ---------------------------------------------------------------------------
+# Issue 46, t27: teachers from the run, bundle kinds, the MTP config fix and
+# several results files.
+# ---------------------------------------------------------------------------
+
+import json  # noqa: E402
+import struct  # noqa: E402
+
+_QWEN_REPO = "jetson-ai-lab/qwen3.5-0.8b-nvsh-tool-jev"
+
+_ISSUE46_RESULTS = """# Tier 2 measurement, 2026-09-24: final-a3-heal
+
+- Command: `measure.py --split $HOME/work/splits/test.json`
+- Final run: yes
+
+| Metric | `a3-heal` |
+|---|---|
+| Right operation and arguments proposed, per source | 30 of 32 |
+
+## Issue 46 metrics
+
+metrics.py over each model's predictions file (one line per entry).
+
+| Metric | `a3-heal` |
+|---|---|
+| Right proposals (metrics.py) | 31 of 32 |
+| Wrong mutating, total (wrong operation + wrong arguments) | 0 (0 + 0) |
+
+- `a3-heal`: a note line
+
+## Background before each run
+"""
+
+_TEACHER_TABLE = {
+    "worker": {"name": "Qwen 3.6 35B-A3B", "licence": "Apache-2.0"},
+    "cortex": {"name": "Qwen 3.8 27B", "licence": "Apache-2.0"},
+    "senses": {"name": "Gemma 4 26B-A4B", "licence": "Apache-2.0"},
+}
+_ROLE_ALIASES = {
+    "GENERATOR": "worker",
+    "CORRECTOR": "cortex",
+    "REVIEWER_A": "senses",
+    "REVIEWER_B": "cortex",
+}
+
+
+def _safetensors(path: Path, names: list[str]) -> None:
+    """A minimal safetensors file: its JSON header names *names*, no real data."""
+    header = {"__metadata__": {"format": "pt"}}
+    for index, name in enumerate(names):
+        header[name] = {"dtype": "BF16", "shape": [1], "data_offsets": [2 * index, 2 * index + 2]}
+    blob = json.dumps(header).encode()
+    path.write_bytes(struct.pack("<Q", len(blob)) + blob + b"\0\0" * len(names))
+
+
+def _qwen_config(mtp: int = 1) -> dict:
+    return {
+        "architectures": ["Qwen3_5ForCausalLM"],
+        "model_type": "qwen3_5_text",
+        "mtp_num_hidden_layers": mtp,
+        "mtp_use_dedicated_embeddings": False,
+    }
+
+
+def _qwen_merged(tmp_path: Path, *, tensors=("model.layers.0.w",), config=None) -> Path:
+    merged = tmp_path / "runs" / "a3-heal" / "merged"
+    merged.mkdir(parents=True)
+    (merged / "chat_template.jinja").write_text("T")
+    (merged / "tokenizer.json").write_text('{"tok": 1}')
+    (merged / "tokenizer_config.json").write_text('{"eos_token": "x"}')
+    (merged / "generation_config.json").write_text('{"temperature": 0}')
+    (merged / "config.json").write_text(json.dumps(config or _qwen_config(), indent=2))
+    _safetensors(merged / "model.safetensors", list(tensors))
+    return merged
+
+
+def _teachers(tmp_path: Path, table: dict | None = None, row: dict | None = None):
+    """(teacher-models file, accepted file, train-augmented file) for one variation."""
+    teacher_file = tmp_path / "teacher-models.json"
+    teacher_file.write_text(json.dumps(table or _TEACHER_TABLE))
+    accepted = tmp_path / "accepted.jsonl"
+    accepted.write_text(
+        json.dumps(
+            row
+            or {
+                "id": "dev-a~v1",
+                "models": _ROLE_ALIASES,
+                "decided_by": "reviewer_b",
+                "verdicts": {"reviewer_a": {"accept": False}, "reviewer_b": {"accept": True}},
+            }
+        )
+        + "\n"
+    )
+    train = tmp_path / "train-augmented.json"
+    train.write_text(json.dumps({"entries": [{"id": "dev-a"}, {"id": "dev-a~v1"}]}))
+    return teacher_file, accepted, train
+
+
+def _qwen_build(tmp_path: Path, **overrides):
+    module = _module()
+    results = tmp_path / "final-a3-heal.md"
+    results.write_text(_ISSUE46_RESULTS)
+    teacher_file, accepted, train = _teachers(tmp_path)
+    kwargs = dict(
+        merged=overrides.pop("merged", None) or _qwen_merged(tmp_path),
+        base_snapshot=_apache(tmp_path),
+        repo=_QWEN_REPO,
+        run="a3-heal",
+        results=[results],
+        data_summary="1,563 train records.",
+        out=tmp_path / "bundle",
+        licence_kind="apache",
+        tool_call_parser="qwen3_coder",
+        teachers=module.run_teachers(teacher_file, accepted, train, apache_only=True),
+    )
+    kwargs.update(overrides)
+    return module.build(**kwargs)
+
+
+def test_an_apache_bundle_needs_the_runs_teachers(tmp_path) -> None:
+    with pytest.raises(ValueError, match="--teacher-models"):
+        _qwen_build(tmp_path, teachers=None)
+
+
+def test_the_card_lists_the_runs_own_teachers_and_their_roles(tmp_path) -> None:
+    _qwen_build(tmp_path)
+    card = (tmp_path / "bundle" / "README.md").read_text()
+    assert "| Qwen 3.6 35B-A3B | Apache-2.0 | wrote the variation |" in card
+    assert "| Qwen 3.8 27B | Apache-2.0 | copyedited it |" in card
+    assert "| Gemma 4 26B-A4B | Apache-2.0 | reviewer A, advisory" in card
+    assert "| Qwen 3.8 27B | Apache-2.0 | accepted it (reviewer B, deciding) |" in card
+    assert "Nemotron" not in card
+    assert "OpenMDW" not in card
+    assert "both reviewers accepted it" not in card
+    assert "reviewer B's verdict alone decided" in card
+
+
+def test_run_teachers_refuses_a_non_apache_teacher(tmp_path) -> None:
+    table = dict(_TEACHER_TABLE)
+    table["senses"] = {"name": "Nemotron 3.5 Lightning", "licence": "OpenMDW-1.1"}
+    teacher_file, accepted, train = _teachers(tmp_path, table=table)
+    module = _module()
+    with pytest.raises(ValueError, match="Apache"):
+        module.run_teachers(teacher_file, accepted, train, apache_only=True)
+
+
+def test_an_apache_build_refuses_teachers_not_checked_for_apache(tmp_path) -> None:
+    table = dict(_TEACHER_TABLE)
+    table["senses"] = {"name": "Nemotron 3.5 Lightning", "licence": "OpenMDW-1.1"}
+    teacher_file, accepted, train = _teachers(tmp_path, table=table)
+    teachers = _module().run_teachers(teacher_file, accepted, train)
+    with pytest.raises(ValueError, match="Apache"):
+        _qwen_build(tmp_path, teachers=teachers)
+
+
+def test_the_lfm_card_keeps_its_constant_teachers_without_a_teacher_file(tmp_path) -> None:
+    _build(tmp_path)
+    card = (tmp_path / "bundle" / "README.md").read_text()
+    assert "Nemotron 3.5 Lightning" in card
+
+
+def test_a_declared_mtp_head_without_mtp_weights_is_zeroed_in_the_bundle_only(tmp_path) -> None:
+    merged = _qwen_merged(tmp_path)
+    before = (merged / "config.json").read_bytes()
+    _qwen_build(tmp_path, merged=merged)
+    assert (merged / "config.json").read_bytes() == before  # the run's folder is untouched
+    config = json.loads((tmp_path / "bundle" / "config.json").read_text())
+    assert config["mtp_num_hidden_layers"] == 0
+    assert config["architectures"] == ["Qwen3_5ForCausalLM"]
+    card = (tmp_path / "bundle" / "README.md").read_text()
+    assert "mtp_num_hidden_layers" in card
+    assert "no `mtp.*` tensor" in card
+
+
+def test_an_mtp_head_that_ships_its_weights_is_left_alone(tmp_path) -> None:
+    merged = _qwen_merged(tmp_path, tensors=("model.layers.0.w", "mtp.layers.0.w"))
+    _qwen_build(tmp_path, merged=merged)
+    config = json.loads((tmp_path / "bundle" / "config.json").read_text())
+    assert config["mtp_num_hidden_layers"] == 1
+    assert "mtp_num_hidden_layers" not in (tmp_path / "bundle" / "README.md").read_text()
+
+
+def test_a_sharded_checkpoint_is_read_through_its_index(tmp_path) -> None:
+    merged = _qwen_merged(tmp_path)
+    (merged / "model.safetensors").unlink()
+    _safetensors(merged / "model-00001-of-00001.safetensors", ["mtp.fc.weight"])
+    (merged / "model.safetensors.index.json").write_text(
+        json.dumps({"weight_map": {"mtp.fc.weight": "model-00001-of-00001.safetensors"}})
+    )
+    _qwen_build(tmp_path, merged=merged)
+    config = json.loads((tmp_path / "bundle" / "config.json").read_text())
+    assert config["mtp_num_hidden_layers"] == 1
+
+
+def test_each_results_file_contributes_its_issue_46_table(tmp_path) -> None:
+    edge = tmp_path / "edge-orin.md"
+    edge.write_text(
+        _ISSUE46_RESULTS.replace("final-a3-heal", "edge-orin-a3-heal.q4_k_m").replace(
+            "31 of 32", "32 of 32"
+        )
+    )
+    first = tmp_path / "final-a3-heal.md"
+    first.write_text(_ISSUE46_RESULTS)
+    _qwen_build(tmp_path, results=[first, edge])
+    card = (tmp_path / "bundle" / "README.md").read_text()
+    assert "| Right proposals (metrics.py) | 31 of 32 |" in card
+    assert "| Right proposals (metrics.py) | 32 of 32 |" in card
+    assert "final-a3-heal" in card
+    assert "edge-orin-a3-heal.q4_k_m" in card
+    assert "`edge-orin.md`" in card
+    # the bench table, the note lines and the paths are not quoted
+    assert "per source | 30 of 32" not in card
+    assert "a note line" not in card
+    assert "$HOME" not in card
+
+
+def test_an_apache_results_file_without_the_issue_46_table_is_refused(tmp_path) -> None:
+    results = tmp_path / "old.md"
+    results.write_text(_RESULTS)
+    with pytest.raises(ValueError, match="Issue 46 metrics"):
+        _qwen_build(tmp_path, results=[results])
+
+
+def test_no_results_file_is_refused(tmp_path) -> None:
+    with pytest.raises(ValueError, match="--results"):
+        _qwen_build(tmp_path, results=[])
+
+
+def _gguf(tmp_path: Path) -> Path:
+    quant = tmp_path / "quant" / "a3-heal"
+    quant.mkdir(parents=True)
+    gguf = quant / "model-q4_k_m.gguf"
+    gguf.write_bytes(b"GGUF\x03\x00\x00\x00weights")
+    return gguf
+
+
+def test_a_gguf_bundle_holds_the_gguf_tokenizer_template_and_licence(tmp_path) -> None:
+    gguf = _gguf(tmp_path)
+    _qwen_build(
+        tmp_path, kind="gguf", gguf=gguf, repo=_QWEN_REPO + "-gguf", quantized_from=_QWEN_REPO
+    )
+    out = tmp_path / "bundle"
+    names = sorted(p.name for p in out.iterdir())
+    assert names == [
+        "LICENSE",
+        "NOTICE",
+        "README.md",
+        "chat_template.jinja",
+        "model-q4_k_m.gguf",
+        "tokenizer.json",
+        "tokenizer_config.json",
+    ]
+    assert (out / "model-q4_k_m.gguf").read_bytes() == gguf.read_bytes()
+    card = (out / "README.md").read_text()
+    assert "llama-server" in card
+    assert "--jinja" in card
+    assert "mmproj" in card
+    assert "text-only" in card
+    assert "--temp 0 --top-k 1" in card
+    assert f"`{_QWEN_REPO}`" in card
+    assert "Q4_K_M" in (out / "NOTICE").read_text()
+
+
+def test_a_gguf_bundle_needs_its_gguf_file(tmp_path) -> None:
+    with pytest.raises(ValueError, match="--gguf"):
+        _qwen_build(tmp_path, kind="gguf")
+
+
+def _awq(tmp_path: Path, *, serve_args=None, tensors=("model.layers.0.w_packed",)) -> Path:
+    quant = tmp_path / "quant" / "scorer-b1"
+    awq = quant / "awq"
+    awq.mkdir(parents=True)
+    (awq / "chat_template.jinja").write_text("T")
+    (awq / "tokenizer.json").write_text("{}")
+    (awq / "recipe.yaml").write_text("recipe: awq\n")
+    (awq / "generation_config.json").write_text('{"temperature": 0}')
+    config = _qwen_config()
+    config["quantization_config"] = {"format": "pack-quantized"}
+    (awq / "config.json").write_text(json.dumps(config))
+    _safetensors(awq / "model.safetensors", list(tensors))
+    record = {"awq_serve_args": ["--limit-mm-per-prompt", '{"image": 0, "video": 0}']}
+    if serve_args is not None:
+        record["awq_serve_args"] = serve_args
+    (quant / "quantize-run.json").write_text(json.dumps(record))
+    return awq
+
+
+def test_an_awq_bundle_copies_the_compressed_folder_and_names_its_vllm_args(tmp_path) -> None:
+    awq = _awq(tmp_path)
+    _qwen_build(tmp_path, kind="awq", awq_dir=awq, repo=_QWEN_REPO + "-scorer-awq")
+    out = tmp_path / "bundle"
+    assert (out / "recipe.yaml").is_file()
+    assert (out / "model.safetensors").read_bytes() == (awq / "model.safetensors").read_bytes()
+    config = json.loads((out / "config.json").read_text())
+    assert config["mtp_num_hidden_layers"] == 0
+    assert config["quantization_config"] == {"format": "pack-quantized"}
+    assert json.loads((awq / "config.json").read_text())["mtp_num_hidden_layers"] == 1
+    card = (out / "README.md").read_text()
+    assert "vLLM" in card
+    assert """--limit-mm-per-prompt '{"image": 0, "video": 0}'""" in card
+    assert "compressed-tensors" in card
+
+
+def test_an_awq_bundle_needs_its_quantize_record(tmp_path) -> None:
+    awq = _awq(tmp_path)
+    (awq.parent / "quantize-run.json").unlink()
+    with pytest.raises(ValueError, match="quantize-run.json"):
+        _qwen_build(tmp_path, kind="awq", awq_dir=awq)
+
+
+def test_an_awq_folder_with_another_chat_template_is_refused(tmp_path) -> None:
+    awq = _awq(tmp_path)
+    (awq / "chat_template.jinja").write_text("other")
+    with pytest.raises(ValueError, match="chat template"):
+        _qwen_build(tmp_path, kind="awq", awq_dir=awq)
+
+
+def test_a_scorer_card_describes_a_candidate_scorer_not_a_tool_caller(tmp_path) -> None:
+    _qwen_build(tmp_path, scorer=True, repo=_QWEN_REPO + "-scorer", run="scorer-b1")
+    card = (tmp_path / "bundle" / "README.md").read_text()
+    assert "candidate scorer" in card
+    assert "log-probabilities" in card
+    assert "tool_call_parser" not in card
+    assert "train_scorer.py" in card
+
+
+def test_main_builds_a_gguf_bundle_from_the_command_line(tmp_path, capsys) -> None:
+    merged = _qwen_merged(tmp_path)
+    gguf = _gguf(tmp_path)
+    teacher_file, accepted, train = _teachers(tmp_path)
+    results = tmp_path / "final-a3-heal.md"
+    results.write_text(_ISSUE46_RESULTS)
+    edge = tmp_path / "edge.md"
+    edge.write_text(_ISSUE46_RESULTS)
+    argv = [
+        "--kind",
+        "gguf",
+        "--gguf",
+        str(gguf),
+        "--merged",
+        str(merged),
+        "--base-snapshot",
+        str(_apache(tmp_path)),
+        "--repo",
+        _QWEN_REPO + "-gguf",
+        "--quantized-from",
+        _QWEN_REPO,
+        "--run",
+        "a3-heal",
+        "--results",
+        str(results),
+        "--results",
+        str(edge),
+        "--data-summary",
+        "n records",
+        "--licence-kind",
+        "apache",
+        "--tool-call-parser",
+        "qwen3_coder",
+        "--teacher-models",
+        str(teacher_file),
+        "--accepted",
+        str(accepted),
+        "--train-augmented",
+        str(train),
+        "--out",
+        str(tmp_path / "bundle"),
+    ]
+    assert _module().main(argv) == 0
+    assert (tmp_path / "bundle" / "model-q4_k_m.gguf").is_file()
+    assert "gguf" in capsys.readouterr().out
+
+
+def test_main_needs_the_accepted_and_train_files_with_teacher_models(tmp_path) -> None:
+    teacher_file, _, _ = _teachers(tmp_path)
+    argv = [
+        "--merged",
+        str(_qwen_merged(tmp_path)),
+        "--base-snapshot",
+        str(_apache(tmp_path)),
+        "--repo",
+        _QWEN_REPO,
+        "--run",
+        "a3-heal",
+        "--results",
+        str(tmp_path / "x.md"),
+        "--data-summary",
+        "n",
+        "--licence-kind",
+        "apache",
+        "--teacher-models",
+        str(teacher_file),
+        "--out",
+        str(tmp_path / "bundle"),
+    ]
+    module = _module()
+    with pytest.raises(SystemExit):
+        module.main(argv)

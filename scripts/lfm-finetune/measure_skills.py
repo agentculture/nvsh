@@ -46,6 +46,14 @@ container named ``nvsh-tier2-<uid>`` is already running, and it never stops
 one it did not start. Without ``--launch``, behaviour is unchanged: an
 endpoint from the environment, localhost only.
 
+``--enable-thinking false`` (issue 46) sends ``chat_template_kwargs:
+{"enable_thinking": false}`` with every request, the way a Qwen3.5 model is
+served with thinking off; without the flag no ``chat_template_kwargs`` are
+sent at all. Every reply is checked for a non-empty think block (a
+``<think>`` block with text in it, text before a closing ``</think>``, or a
+non-empty ``reasoning_content`` field) and the count is reported -- with
+thinking off it must be 0.
+
 Neither the endpoint URL nor the raw command line is ever written into the
 results file: only the fact that a local endpoint was used, and the command
 line with any ``--url`` value replaced by ``<local endpoint>``. Recorded
@@ -82,6 +90,7 @@ import argparse
 import json
 import math
 import os
+import re
 import statistics
 import subprocess  # nosec B404 - fixed argv lists, never a shell
 import sys
@@ -121,6 +130,12 @@ DEFAULT_URL = "http://127.0.0.1:8000/v1"
 _HOST_ACCEPT: frozenset[str] = frozenset({"127.0.0.1", "localhost", "::1"})
 
 DEFAULT_TIMEOUT = 30.0
+#: ``GET <base_url>/models`` timeout: short, since it only checks the server is up.
+PREFLIGHT_TIMEOUT = 5.0
+#: Issue 46 finding: a stopped/missing server exits 0 with a plausible-looking
+#: results page (every eval a call error). Shared with measure.py's own
+#: predictions-file vocabulary, kept as a literal string here.
+CALL_ERROR = "call_error"
 
 EXIT_OK = 0
 EXIT_USER = 1
@@ -148,7 +163,16 @@ OUTCOME_CORRECT = "correct"
 OUTCOME_NO_CALL = "no_call"
 OUTCOME_WRONG_SKILL = "wrong_skill"
 OUTCOME_SEVERAL_CALLS = "several_calls"
-OUTCOMES = (OUTCOME_CORRECT, OUTCOME_WRONG_SKILL, OUTCOME_NO_CALL, OUTCOME_SEVERAL_CALLS)
+#: The endpoint call itself failed (transport error, non-200, unparseable reply) --
+#: not a scored routing decision, and never counted as correct.
+OUTCOME_CALL_ERROR = CALL_ERROR
+OUTCOMES = (
+    OUTCOME_CORRECT,
+    OUTCOME_WRONG_SKILL,
+    OUTCOME_NO_CALL,
+    OUTCOME_SEVERAL_CALLS,
+    OUTCOME_CALL_ERROR,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -170,6 +194,147 @@ def require_localhost(base_url: str) -> None:
         raise ValueError("URL must not contain credentials (userinfo)")
     if parsed.hostname not in _HOST_ACCEPT:
         raise ValueError(f"host must be 127.0.0.1, ::1 or localhost (got {parsed.hostname!r})")
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Refuse every redirect: the answer must come from the localhost server asked."""
+
+    def redirect_request(self, *_args, **_kwargs):  # noqa: D102
+        return None
+
+
+def _llama_server_ctx(base_url: str, timeout: float) -> int | None:
+    """llama-server's served context: ``GET /props`` at the server root,
+    ``default_generation_settings.n_ctx`` (issue 46, t25). Its ``/v1/models``
+    carries no ``max_model_len``. ``None`` when the answer does not say."""
+    root = base_url.rstrip("/")
+    if root.endswith("/v1"):
+        root = root[: -len("/v1")]
+    require_localhost(root)
+    request = urllib.request.Request(root + "/props", method="GET")
+    opener = urllib.request.build_opener(_NoRedirect)  # a redirect could leave localhost
+    try:
+        with opener.open(request, timeout=timeout) as response:  # nosec B310
+            payload = json.loads(response.read())
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError):
+        return None
+    settings = payload.get("default_generation_settings") if isinstance(payload, dict) else None
+    n_ctx = settings.get("n_ctx") if isinstance(settings, dict) else None
+    return n_ctx if isinstance(n_ctx, int) else None
+
+
+def preflight_models(
+    base_url: str,
+    model: str,
+    timeout: float = PREFLIGHT_TIMEOUT,
+    max_model_len: int | None = None,
+) -> None:
+    """Raise ``RuntimeError`` unless *base_url* is up and serving *model*.
+
+    ``GET {base_url}/models`` (localhost only, per :func:`require_localhost`,
+    short timeout, stdlib ``urllib``) must answer HTTP 200 with *model* among
+    the returned ids' ``data``. Called before the first eval of a served run
+    (an attached endpoint, or ``--launch`` once the runtime reports ready):
+    a stopped or crashed server otherwise answers nothing, or the wrong
+    model, and every eval becomes a call error while the run still exits 0
+    with a plausible-looking results page.
+    """
+    require_localhost(base_url)
+    url = base_url.rstrip("/") + "/models"
+    request = urllib.request.Request(url, method="GET")
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:  # nosec B310
+            status = response.status
+            raw = response.read()
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        raise RuntimeError(f"cannot reach {url} to confirm the server is up: {exc}") from exc
+    if status != 200:
+        raise RuntimeError(f"{url} answered HTTP {status}, not 200")
+    try:
+        payload = json.loads(raw)
+    except ValueError as exc:
+        raise RuntimeError(f"{url} did not answer valid JSON: {exc}") from exc
+    data = payload.get("data") if isinstance(payload, dict) else None
+    ids = (
+        {item.get("id") for item in data if isinstance(item, dict)}
+        if isinstance(data, list)
+        else set()
+    )
+    if model not in ids:
+        raise RuntimeError(
+            f"{url} does not list {model!r} among its served models "
+            f"({sorted(i for i in ids if i)}); point --model at what the server is serving"
+        )
+    if max_model_len is not None:
+        # Issue 46, lapse l3: a run reported ctx=4096 while the server had been
+        # started with --max-model-len 2048. The served length is the truth.
+        entry = next((item for item in data if item.get("id") == model), {})
+        served = entry.get("max_model_len")
+        if served is None and entry.get("owned_by") == "llamacpp":
+            served = _llama_server_ctx(base_url, timeout)
+        if not isinstance(served, int):
+            raise RuntimeError(
+                f"{url} does not report max_model_len (nor llama-server's /props n_ctx) for "
+                f"{model!r}, so the served context "
+                f"cannot be checked against ctx={max_model_len}"
+            )
+        if served != max_model_len:
+            raise RuntimeError(
+                f"{url} serves {model!r} with max_model_len={served}, but this run is "
+                f"labelled ctx={max_model_len}; restart the server with --max-model-len "
+                f"{max_model_len} (MEASURE_CTX) or measure at ctx={served}"
+            )
+
+
+# ---------------------------------------------------------------------------
+# think blocks (issue 46: thinking is off, so every one found is counted)
+# ---------------------------------------------------------------------------
+
+_THINK_OPEN = "<think>"
+_THINK_CLOSE = "</think>"
+_THINK_BLOCK_RE = re.compile(
+    re.escape(_THINK_OPEN) + r"(.*?)(?:" + re.escape(_THINK_CLOSE) + "|$)", re.DOTALL
+)
+#: Reply fields a server's reasoning parser moves a think block into.
+_REASONING_FIELDS = ("reasoning_content", "reasoning")
+
+
+def nonempty_think(message: object) -> bool:
+    """True when a chat *message* carries a think block with any text in it.
+
+    The tags themselves are matched, never a substring such as ``think``:
+    a ``<think>`` block with non-blank text, text before a closing tag whose
+    opening tag was in the prompt, or a non-blank reasoning field. The empty
+    ``<think></think>`` a template renders with thinking off does not count.
+    """
+    if not isinstance(message, dict):
+        return False
+    for key in _REASONING_FIELDS:
+        value = message.get(key)
+        if isinstance(value, str) and value.strip():
+            return True
+    content = message.get("content")
+    if not isinstance(content, str):
+        return False
+    if any(match.group(1).strip() for match in _THINK_BLOCK_RE.finditer(content)):
+        return True
+    before, closed, _after = content.partition(_THINK_CLOSE)
+    return bool(closed) and _THINK_OPEN not in before and bool(before.strip())
+
+
+def chat_template_kwargs(enable_thinking: bool | None) -> dict[str, object] | None:
+    """The ``chat_template_kwargs`` a request carries: none unless thinking is configured."""
+    if enable_thinking is None:
+        return None
+    return {"enable_thinking": bool(enable_thinking)}
+
+
+def parse_bool(text: str) -> bool:
+    """``--enable-thinking``'s value: ``true`` or ``false``."""
+    lowered = text.strip().lower()
+    if lowered not in ("true", "false"):
+        raise argparse.ArgumentTypeError(f"expected true or false, got {text!r}")
+    return lowered == "true"
 
 
 # ---------------------------------------------------------------------------
@@ -213,6 +378,7 @@ def load_evals(path: Path) -> list[dict[str, Any]]:
 class CallResult:
     tool_names: tuple[str, ...]
     elapsed: float  # seconds
+    think: bool = False
 
 
 def call_endpoint(
@@ -221,10 +387,12 @@ def call_endpoint(
     tools: list[dict[str, Any]],
     text: str,
     timeout: float = DEFAULT_TIMEOUT,
+    template_kwargs: Mapping[str, object] | None = None,
 ) -> CallResult:
     """One ``POST {base_url}/chat/completions`` with *tools*, ``tool_choice: "auto"``,
-    ``temperature: 0``. stdlib ``urllib`` only. Raises ``RuntimeError`` on any
-    transport or protocol failure."""
+    ``temperature: 0`` and, when given, *template_kwargs* as ``chat_template_kwargs``.
+    stdlib ``urllib`` only. Raises ``RuntimeError`` on any transport or protocol
+    failure."""
     require_localhost(base_url)
     body = {
         "model": model,
@@ -233,6 +401,8 @@ def call_endpoint(
         "tool_choice": "auto",
         "temperature": 0,
     }
+    if template_kwargs is not None:
+        body["chat_template_kwargs"] = dict(template_kwargs)
     url = base_url.rstrip("/") + "/chat/completions"
     request = urllib.request.Request(
         url,
@@ -251,7 +421,20 @@ def call_endpoint(
         payload = json.loads(raw)
     except ValueError as exc:
         raise RuntimeError(f"{url}: reply is not valid JSON: {exc}") from exc
-    return CallResult(tool_names=tuple(_tool_names_from_payload(payload)), elapsed=elapsed)
+    return CallResult(
+        tool_names=tuple(_tool_names_from_payload(payload)),
+        elapsed=elapsed,
+        think=nonempty_think(_message_of(payload)),
+    )
+
+
+def _message_of(payload: object) -> object:
+    if not isinstance(payload, dict):
+        return None
+    choices = payload.get("choices")
+    if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+        return None
+    return choices[0].get("message")
 
 
 def _tool_names_from_payload(payload: object) -> list[str]:
@@ -298,6 +481,10 @@ class EvalResult:
     names_skill: bool
     outcome: str
     elapsed: float  # seconds
+    think: bool = False
+    #: Why the call failed, when ``outcome`` is :data:`OUTCOME_CALL_ERROR`; kept for
+    #: debugging, never written to the results page (it may carry endpoint detail).
+    error: str | None = None
 
 
 def run_measurement(
@@ -306,11 +493,17 @@ def run_measurement(
     tools: list[ToolRecord],
     evals: list[dict[str, Any]],
     timeout: float = DEFAULT_TIMEOUT,
+    template_kwargs: Mapping[str, object] | None = None,
 ) -> list[EvalResult]:
     """Calls the endpoint once per eval, in order, and scores each reply.
 
     Raises ``ValueError`` up front if any eval names an ``expected_skill``
-    absent from *tools* -- a data-integrity problem, not a model failure.
+    absent from *tools* -- a data-integrity problem, not a model failure. A
+    single eval whose call fails (transport error, non-200, unparseable
+    reply) does not abort the run: it is recorded as
+    :data:`OUTCOME_CALL_ERROR` (issue 46's tier-error finding: a crashed or
+    unreachable server otherwise silently truncates the run instead of
+    being counted), and the remaining evals are still measured.
     """
     skill_to_tool_name = {t.skill: t.name for t in tools}
     for record in evals:
@@ -324,7 +517,29 @@ def run_measurement(
     for record in evals:
         expected_skill = record["expected_skill"]
         expected_tool_name = skill_to_tool_name[expected_skill]
-        call = call_endpoint(base_url, model, tool_schemas, record["text"], timeout=timeout)
+        try:
+            call = call_endpoint(
+                base_url,
+                model,
+                tool_schemas,
+                record["text"],
+                timeout=timeout,
+                template_kwargs=template_kwargs,
+            )
+        except RuntimeError as exc:
+            results.append(
+                EvalResult(
+                    id=str(record.get("id", "")),
+                    repo=str(record.get("repo", "")),
+                    skill=str(record.get("skill", "")),
+                    expected_skill=expected_skill,
+                    names_skill=bool(record.get("names_skill", False)),
+                    outcome=OUTCOME_CALL_ERROR,
+                    elapsed=0.0,
+                    error=str(exc),
+                )
+            )
+            continue
         outcome = classify(call.tool_names, expected_tool_name)
         results.append(
             EvalResult(
@@ -335,6 +550,7 @@ def run_measurement(
                 names_skill=bool(record.get("names_skill", False)),
                 outcome=outcome,
                 elapsed=call.elapsed,
+                think=call.think,
             )
         )
     return results
@@ -380,6 +596,7 @@ class Aggregate:
     outcome_counts: dict[str, int]
     latency_median_ms: float
     latency_p95_ms: float
+    think_blocks: int = 0
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -390,6 +607,7 @@ class Aggregate:
             "outcome_counts": dict(self.outcome_counts),
             "latency_median_ms": self.latency_median_ms,
             "latency_p95_ms": self.latency_p95_ms,
+            "think_blocks": self.think_blocks,
         }
 
 
@@ -407,6 +625,7 @@ def aggregate(results: list[EvalResult]) -> Aggregate:
         outcome_counts=dict(Counter(r.outcome for r in results)),
         latency_median_ms=statistics.median(latencies_ms) if latencies_ms else 0.0,
         latency_p95_ms=_percentile(latencies_ms, 0.95),
+        think_blocks=sum(1 for r in results if r.think),
     )
 
 
@@ -482,8 +701,19 @@ def render_results(
     margin: str | None,
     manifest_provenance: list[dict[str, str]],
     aggregated: Aggregate,
+    enable_thinking: bool | None = None,
+    call_errors_allowed: int = 0,
 ) -> str:
     lines: list[str] = [f"# Jetson skill-routing measurement -- {label}, {when}", ""]
+
+    call_errors = aggregated.outcome_counts.get(OUTCOME_CALL_ERROR, 0)
+    if call_errors:
+        lines += [
+            f"**{call_errors} call-error eval(s) permitted by "
+            f"`--allow-tier-errors {call_errors_allowed}`** -- the endpoint was unreachable "
+            "or answered unusably for at least one eval; this run is not a clean measurement.",
+            "",
+        ]
 
     # The margin comes first, ahead of any number, so a tuned run's claim is
     # on record before the results below can be read.
@@ -503,6 +733,11 @@ def render_results(
             lines.append(f"- model revision: `{model_revision}` ({revision_status})")
         else:
             lines.append(f"- model revision: `{model_revision}`")
+    if enable_thinking is None:
+        lines.append("- thinking: not set (no chat_template_kwargs sent)")
+    else:
+        value = "true" if enable_thinking else "false"
+        lines.append(f"- thinking: chat_template_kwargs enable_thinking={value}")
     for prov in manifest_provenance:
         lines.append(f"- {prov['repo']}: <{prov['url']}> at commit `{prov['commit']}`")
     lines.append("")
@@ -525,6 +760,7 @@ def render_results(
     ]
     for outcome in OUTCOMES:
         lines.append(f"| {outcome} | {aggregated.outcome_counts.get(outcome, 0)} |")
+    lines.append(f"| Non-empty think blocks (must be 0) | {aggregated.think_blocks} |")
     lines += [
         "",
         "| Latency | ms |",
@@ -801,6 +1037,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true", help="also print the aggregated result as JSON to stdout"
     )
     parser.add_argument(
+        "--enable-thinking",
+        type=parse_bool,
+        default=None,
+        metavar="{true,false}",
+        help=(
+            "send chat_template_kwargs enable_thinking=<value> with every request "
+            "(issue 46 serves Qwen3.5 with false); not sent when omitted"
+        ),
+    )
+    parser.add_argument(
         "--launch",
         action="store_true",
         help=(
@@ -814,6 +1060,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--config",
         default=None,
         help="nvsh config.toml to read [tiers.lfm] from with --launch (default: XDG path)",
+    )
+    parser.add_argument(
+        "--allow-tier-errors",
+        type=int,
+        default=0,
+        metavar="N",
+        help="permit up to N call-error evals (the endpoint was unreachable or unusable) before"
+        " refusing to write the results page; default 0. The count is shown in the results"
+        " page when it is above 0",
     )
     return parser
 
@@ -881,13 +1136,43 @@ def main(argv: list[str] | None = None, *, launch_seams: LaunchSeams | None = No
             base_url = args.url
 
         try:
-            results = run_measurement(base_url, args.model, tools, evals, timeout=args.timeout)
+            preflight_models(base_url, args.model)
+        except RuntimeError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return EXIT_ENV
+
+        try:
+            results = run_measurement(
+                base_url,
+                args.model,
+                tools,
+                evals,
+                timeout=args.timeout,
+                template_kwargs=chat_template_kwargs(args.enable_thinking),
+            )
         except (RuntimeError, ValueError) as exc:
             print(f"error: {exc}", file=sys.stderr)
             return EXIT_USER
     finally:
         if runtime is not None:
             runtime.stop()
+
+    # Issue 46 finding: an unreachable/crashed endpoint mid-run turns every
+    # remaining eval into a call error, not a real routing decision; refuse to
+    # write the results page unless the operator explicitly permitted this many.
+    call_errors = sum(1 for r in results if r.outcome == OUTCOME_CALL_ERROR)
+    if call_errors > args.allow_tier_errors:
+        print(
+            f"error: {call_errors} call-error eval(s) (endpoint unreachable or unusable),"
+            f" above --allow-tier-errors {args.allow_tier_errors}; not writing a results page",
+            file=sys.stderr,
+        )
+        print(
+            "hint: fix or restart the endpoint and re-run, or pass --allow-tier-errors N to"
+            " permit up to N",
+            file=sys.stderr,
+        )
+        return EXIT_ENV
 
     aggregated = aggregate(results)
     when = date.today().isoformat()
@@ -906,11 +1191,19 @@ def main(argv: list[str] | None = None, *, launch_seams: LaunchSeams | None = No
         margin=args.margin,
         manifest_provenance=provenance,
         aggregated=aggregated,
+        enable_thinking=args.enable_thinking,
+        call_errors_allowed=args.allow_tier_errors,
     )
     rendered = redact(rendered.encode("utf-8")).decode("utf-8")
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(rendered, encoding="utf-8")
     print(f"wrote {out_path}")
+    if aggregated.think_blocks:
+        print(
+            f"warning: {aggregated.think_blocks} replies carried a non-empty think block"
+            " (must be 0 with thinking off)",
+            file=sys.stderr,
+        )
 
     if args.json:
         payload = aggregated.as_dict()

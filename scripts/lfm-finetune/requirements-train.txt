@@ -1,0 +1,22 @@
+# Pin the training stack used on the DGX Spark for issue 46 (and issue 39).
+# Python 3.12.12.
+# torch comes from the PyTorch CUDA 13.0 wheel index
+#   https://download.pytorch.org/whl/cu130
+# Install with:
+#   uv pip install --python <venv python> -r scripts/lfm-finetune/requirements-train.txt \
+#       --extra-index-url https://download.pytorch.org/whl/cu130
+torch==2.12.1
+torchvision==0.27.1
+triton==3.7.1
+transformers==5.5.0
+tokenizers==0.22.2
+huggingface-hub==1.32.0
+safetensors==0.8.0
+accelerate==1.15.0
+peft==0.21.0
+trl==0.24.0
+datasets==4.3.0
+bitsandbytes==0.50.2
+numpy==2.5.3
+unsloth==2026.9.9
+unsloth-zoo==2026.9.7

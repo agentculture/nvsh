@@ -48,6 +48,13 @@ would fail on a committed non-localhost endpoint anyway). For role
                                      not every server honours it)
     NVSH_AUG_<ROLE>_TIMEOUT          per-request timeout in seconds
                                      (optional, default 120)
+    NVSH_AUG_<ROLE>_REASONING_EFFORT chat-template reasoning effort (optional:
+                                     low/medium/high/xhigh; unset leaves the
+                                     server template's default). Recorded.
+    NVSH_AUG_<ROLE>_TEMPERATURE      sampling temperature, 0-2 (optional,
+                                     default 0.7; judging roles should set
+                                     0.1-0.3). Recorded on every output
+                                     record.
 
 A missing required variable is a clear, named error, never a silent
 default.
@@ -152,6 +159,18 @@ DEFAULT_MAX_TOKENS = 1024
 #: talking to a slower/busier backend can override it independently.
 DEFAULT_TIMEOUT = 120.0
 
+#: Sampling temperature for a role that sets none. The generator relies on it
+#: for varied phrasings; a judging role (corrector, reviewers) should set a
+#: low one through ``NVSH_AUG_<ROLE>_TEMPERATURE`` (issue 46: 0.1-0.3).
+DEFAULT_TEMPERATURE = 0.7
+
+#: Reasoning-effort levels a chat template may accept through
+#: ``chat_template_kwargs`` (the Qwen 3.8 template: xhigh, its default, medium
+#: and low; "high" is its alias for xhigh). Unset sends nothing, so the
+#: server's template default applies -- which is how issue 46's reviewer ran
+#: at xhigh without anyone choosing it (d10).
+REASONING_EFFORTS = ("low", "medium", "high", "xhigh")
+
 _TRUE_STRINGS = frozenset({"1", "true", "yes", "on"})
 
 
@@ -169,11 +188,15 @@ class RoleConfig:
     disable_thinking: bool = False
     #: Per-request timeout in seconds, from ``NVSH_AUG_<ROLE>_TIMEOUT``.
     timeout: float = DEFAULT_TIMEOUT
+    #: Sampling temperature, from ``NVSH_AUG_<ROLE>_TEMPERATURE`` (0-2).
+    temperature: float = DEFAULT_TEMPERATURE
+    #: ``NVSH_AUG_<ROLE>_REASONING_EFFORT``; ``None`` leaves the template default.
+    reasoning_effort: str | None = None
 
 
 def load_role_config(role: str, env: dict[str, str] | None = None) -> RoleConfig:
     """Read
-    ``NVSH_AUG_<role>_{URL,MODEL,KEY_ENV,MAX_TOKENS,DISABLE_THINKING,TIMEOUT}``
+    ``NVSH_AUG_<role>_{URL,MODEL,KEY_ENV,MAX_TOKENS,DISABLE_THINKING,TIMEOUT,TEMPERATURE}``
     from *env* (default ``os.environ``). Raises :class:`ConfigError` naming
     the exact variable that is missing."""
     source = os.environ if env is None else env
@@ -183,6 +206,8 @@ def load_role_config(role: str, env: dict[str, str] | None = None) -> RoleConfig
     max_tokens_var = f"NVSH_AUG_{role}_MAX_TOKENS"
     disable_thinking_var = f"NVSH_AUG_{role}_DISABLE_THINKING"
     timeout_var = f"NVSH_AUG_{role}_TIMEOUT"
+    temperature_var = f"NVSH_AUG_{role}_TEMPERATURE"
+    effort_var = f"NVSH_AUG_{role}_REASONING_EFFORT"
 
     url = source.get(url_var)
     if not url:
@@ -218,6 +243,23 @@ def load_role_config(role: str, env: dict[str, str] | None = None) -> RoleConfig
     else:
         timeout = DEFAULT_TIMEOUT
 
+    temperature_raw = source.get(temperature_var)
+    if temperature_raw:
+        try:
+            temperature = float(temperature_raw)
+        except ValueError:
+            raise ConfigError(f"{temperature_var} must be a number, got {temperature_raw!r}")
+        if not 0.0 <= temperature <= 2.0:
+            raise ConfigError(f"{temperature_var} must be between 0 and 2, got {temperature_raw!r}")
+    else:
+        temperature = DEFAULT_TEMPERATURE
+
+    reasoning_effort = (source.get(effort_var) or "").strip().lower() or None
+    if reasoning_effort is not None and reasoning_effort not in REASONING_EFFORTS:
+        raise ConfigError(
+            f"{effort_var} must be one of {', '.join(REASONING_EFFORTS)}, got {reasoning_effort!r}"
+        )
+
     return RoleConfig(
         role=role,
         url=url,
@@ -226,6 +268,8 @@ def load_role_config(role: str, env: dict[str, str] | None = None) -> RoleConfig
         max_tokens=max_tokens,
         disable_thinking=disable_thinking,
         timeout=timeout,
+        temperature=temperature,
+        reasoning_effort=reasoning_effort,
     )
 
 
@@ -449,7 +493,12 @@ def _answer_in_words(expect: dict[str, Any]) -> str:
     )
     detail = f" -- {values}" if values else ""
     if operation is not None and operation.read_only:
-        return f"run a read-only check and report what it shows: {what}{detail}"
+        # "report what it shows" read, at high reasoning effort, as a demand
+        # that the response already contain the results (issue 46, t18).
+        return (
+            f"run this read-only check (its output is shown to the user as the answer): "
+            f"{what}{detail}"
+        )
     return f"propose this change for the user to approve: {what}{detail}"
 
 
@@ -541,8 +590,11 @@ REVIEWER_SYSTEM = (
     "for a hand-off in so many words: judge what the request needs. "
     + _capabilities()
     + " Asking the user to approve a change before making it is always the "
-    "right way to carry out a request for one of the listed changes. Start "
-    "your reply with the single word 'yes' or 'no'."
+    "right way to carry out a request for one of the listed changes. Running "
+    "one of the listed checks is a complete answer to a request for what that "
+    "check reports: its output is what the user then sees, so never reject a "
+    "check for not already containing its results. Start your reply with the "
+    "single word 'yes' or 'no'."
 )
 
 #: Skill seeds have no fixed answer text to compare against, only a capability
@@ -647,20 +699,32 @@ def _extract_content(message: dict[str, Any]) -> str:
     return (message.get("content") or "").strip()
 
 
-def _post_chat_completion(
-    role: RoleConfig, system: str, user: str, timeout: float | None = None
-) -> str:
+def chat_payload(role: RoleConfig, system: str, user: str) -> dict[str, Any]:
+    """The chat-completion request body every role call sends (also used by
+    ``calibrate_reviewer.py``, so the probe measures the same configuration)."""
     payload: dict[str, Any] = {
         "model": role.model,
         "messages": [
             {"role": "system", "content": system},
             {"role": "user", "content": user},
         ],
-        "temperature": 0.7,
+        "temperature": role.temperature,
         "max_tokens": role.max_tokens,
     }
+    template_kwargs: dict[str, Any] = {}
     if role.disable_thinking:
-        payload["chat_template_kwargs"] = {"enable_thinking": False}
+        template_kwargs["enable_thinking"] = False
+    if role.reasoning_effort is not None:
+        template_kwargs["reasoning_effort"] = role.reasoning_effort
+    if template_kwargs:
+        payload["chat_template_kwargs"] = template_kwargs
+    return payload
+
+
+def _post_chat_completion(
+    role: RoleConfig, system: str, user: str, timeout: float | None = None
+) -> str:
+    payload = chat_payload(role, system, user)
     headers = {"Content-Type": "application/json"}
     if role.key:
         headers["Authorization"] = f"Bearer {role.key}"
@@ -817,12 +881,33 @@ _HEDGE_WORDS = (
     "ambiguous",
     "unclear",
     "partially",
+    "unsure",
+)
+#: Certainty words hedge only when they qualify the yes itself ("Yes,
+#: probably.", "Yes, likely the memory check"). Anywhere later they are the
+#: reviewer's own reasoning -- "requires investigation and likely changes
+#: beyond the fixed set" justified 7 of 977 stored escalate accepts.
+_YES_CERTAINTY_RE = re.compile(
+    r"""^\W*(?:\w+\W+){0,3}?(probably|likely|perhaps|possibly|maybe)\b""",
+    re.IGNORECASE,
 )
 #: A "no" that reads as a verdict: at the start of a line or sentence, or
-#: right after a slash or colon ("yes/no: no", "yes? No, it changes ...").
-#: A "no" inside a clause ("with no machine changes involved") is not one --
-#: counting it rejected clear yeses in a real run.
-_NO_RE = re.compile(r"(?:^\s*|[\n.?!:;/]\s*)no\b", re.IGNORECASE)
+#: right after a slash or colon ("yes/no: no", "yes? No, it changes ..."),
+#: allowing markdown or quotes around it ("Final verdict: **no**"). A "no"
+#: inside a clause ("with no machine changes involved") is not one --
+#: counting it rejected clear yeses in a real run. Deliberately conservative
+#: after a sentence break ("Yes. No change is needed." rejects): a false
+#: reject only loses a candidate, a false accept trains on a bad one
+#: (issue 46, d10: loosening this let real rejections through).
+_NO_RE = re.compile(
+    r"""(?:(?:^\s*|[\n.?!:;/]\s*)[*_`"']*no(?![a-z])"""
+    r"""|,\s*[*_`"']*no[*_`"']*\s*[,.;:!?\-\u2013\u2014]"""
+    r"""|(?<![a-z])no[*_`"'.!\s]*$)""",
+    re.IGNORECASE,
+)
+
+#: "Yes, not ..." negates the yes it follows ("Yes, not equivalent: ...").
+_YES_NOT_RE = re.compile(r"""^[\s*_`"',.:;\-\u2013\u2014]*not\b""", re.IGNORECASE)
 _HEDGE_RE = re.compile(r"\b(" + "|".join(_HEDGE_WORDS) + r")\b", re.IGNORECASE)
 
 
@@ -844,7 +929,12 @@ def parse_verdict(text: str) -> tuple[bool, str]:
     if first_word.lower() != "yes":
         return False, stripped
     rest = stripped[match.end() :]
-    if _NO_RE.search(rest) or _HEDGE_RE.search(rest):
+    if (
+        _NO_RE.search(rest)
+        or _HEDGE_RE.search(rest)
+        or _YES_NOT_RE.match(rest)
+        or _YES_CERTAINTY_RE.match(rest)
+    ):
         return False, stripped
     reason = rest.strip(" \t\n*_`\"'.,:;-—") or stripped
     return True, reason
@@ -955,6 +1045,26 @@ def copies_answer_template(text: str) -> str:
     return match.group(0) if match else ""
 
 
+#: A request that asks for the hand-off in so many words: users never do
+#: (the reviewer rule), yet the reviewer let two such escalate variations
+#: through (issue 46, d10 reviewer probe). Words only -- "escalating
+#: temperatures" is not a hand-off request.
+_HANDOFF_RE = re.compile(
+    r"\b(escalate (?:this|it|that|the (?:issue|problem|request|ticket))|"
+    r"escalate to (?:a|an|the) (?:human|senior|support|more capable|person|expert)|"
+    r"hand (?:it|this|that) (?:off|over)|hand-?off to (?:a|an|someone|another)|"
+    r"(?:to|for) (?:a|an|the) (?:human|senior|more capable) "
+    r"(?:agent|assistant|operator|engineer))\b",
+    re.IGNORECASE,
+)
+
+
+def asks_for_handoff(text: str) -> str:
+    """The hand-off wording *text* uses, or "" if none."""
+    match = _HANDOFF_RE.search(text)
+    return match.group(0) if match else ""
+
+
 def names_internal_operation(text: str) -> str:
     """The first operation-table identifier *text* names, or "" if none.
 
@@ -985,12 +1095,22 @@ def _variation_number(variation_id: str) -> int:
     return int(tail) if tail.isdigit() else 0
 
 
+#: Acceptance rules for a fresh run: "both" (reviewer A AND reviewer B, the
+#: original rule) or "reviewer_b" (reviewer B alone decides; reviewer A is
+#: still asked and recorded). Issue 46 d11: reviewer A (senses) failed the
+#: reviewer probe (3 false accepts, 2 false rejects of 53) while reviewer B
+#: passed it, and the t18 re-review already decides by reviewer B (d8).
+#: The deterministic guards apply under either rule.
+DECIDE_BY_RULES = ("both", "reviewer_b")
+
+
 def _process_variation(
     seed: Seed,
     variation_id: str,
     roles: dict[str, RoleConfig],
     counts: PipelineCounts,
     caller: RoleCaller,
+    decide_by: str = "both",
 ) -> dict[str, Any]:
     """Run one seed through generator -> corrector -> both reviewers.
 
@@ -1019,6 +1139,8 @@ def _process_variation(
         counts.rejected_by_b += 1
 
     models = {role: cfg.model for role, cfg in roles.items()}
+    temperatures = {role: cfg.temperature for role, cfg in roles.items()}
+    reasoning_efforts = {role: cfg.reasoning_effort for role, cfg in roles.items()}
     verdicts = {
         "reviewer_a": {"accept": accept_a, "reason": reason_a},
         "reviewer_b": {"accept": accept_b, "reason": reason_b},
@@ -1035,7 +1157,14 @@ def _process_variation(
     if copied:
         verdicts["template_check"] = {"accept": False, "reason": f"copies {copied!r}"}
         leaked = copied
-    accepted = accept_a and accept_b and not leaked
+    handoff = asks_for_handoff(corrected_text)
+    if handoff:
+        verdicts["handoff_check"] = {"accept": False, "reason": f"asks for {handoff!r}"}
+        leaked = leaked or handoff
+    if decide_by == "reviewer_b":
+        accepted = accept_b and not leaked
+    else:
+        accepted = accept_a and accept_b and not leaked
     # The record keeps the source entry's own corpus fields (kind/source/
     # class for a split seed; nothing for a skill seed, which is not a
     # corpus entry) and separately records which seed file shape produced
@@ -1050,13 +1179,371 @@ def _process_variation(
         "text": corrected_text,
         "expect": seed.expect,
         "models": models,
+        "temperatures": temperatures,
+        "reasoning_efforts": reasoning_efforts,
     }
     record.update(seed.corpus_fields)
+    if seed.seed_format == "skills":
+        # The capability description the reviewers judged against, so a
+        # --rereview can rebuild the same prompt (the record's own text is
+        # the request, not the description).
+        record["description"] = seed.seed_text
+    if decide_by != "both":
+        # Every verdict is kept when one reviewer is not deciding, so the
+        # overruled opinion stays auditable on accepted records too.
+        record["decided_by"] = decide_by
+        record["verdicts"] = verdicts
     if accepted:
         counts.accepted += 1
-    else:
+    elif "verdicts" not in record:
         record["verdicts"] = verdicts
     return {"accepted": accepted, "record": record}
+
+
+@dataclass
+class RereviewCounts:
+    """Counts for ``--rereview`` (t11, decisions c38/c41): only REVIEWER_B is
+    ever called; ``compared``/``agreed`` track how the fresh verdict lines up
+    with the stored one, which is what the non-thinking pilot (c41) reports."""
+
+    processed: int = 0
+    accepted: int = 0
+    rejected: int = 0
+    errors: int = 0
+    compared: int = 0
+    agreed: int = 0
+
+    def as_dict(self) -> dict[str, int]:
+        return {
+            "processed": self.processed,
+            "accepted": self.accepted,
+            "rejected": self.rejected,
+            "errors": self.errors,
+            "compared": self.compared,
+            "agreed": self.agreed,
+        }
+
+
+def _load_jsonl(path: Path) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    with open(path, encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            records.append(json.loads(line))
+    return records
+
+
+def load_rereview_candidates(paths: list[Path]) -> list[dict[str, Any]]:
+    """Load stored accepted+rejected records from *paths* (the ``--accepted-out``
+    / ``--rejected-out`` of a prior run), in file order. Each record is
+    returned exactly as stored -- validated only once a re-review is actually
+    attempted on it."""
+    records: list[dict[str, Any]] = []
+    for path in paths:
+        records.extend(_load_jsonl(path))
+    return records
+
+
+def _prior_verdicts(record: dict[str, Any]) -> dict[str, Any]:
+    """The verdicts a candidate carried before this re-review, kept on the
+    new record as ``prior_verdicts`` -- history only, never an input to the
+    decision (issue 46, deviation d8: each re-review is a clean slate).
+
+    ``augment.py`` only ever writes ``verdicts`` onto a *rejected* record
+    (see :func:`_process_variation`); a record stored as accepted carries no
+    ``verdicts`` at all, which is recorded as ``{"stored_as": "accepted"}``.
+    """
+    verdicts = record.get("verdicts")
+    if verdicts is None:
+        return {"stored_as": "accepted"}
+    return dict(verdicts)
+
+
+def _stored_reviewer_b_accept(record: dict[str, Any]) -> bool | None:
+    """The old reviewer B verdict, for the pilot's agreement report.
+
+    A record with no ``verdicts`` at all was stored as accepted, which means
+    the old reviewer B also said yes (see :func:`_prior_verdicts`).
+    ``None`` only when ``verdicts`` is present but carries no reviewer B
+    entry -- agreement reporting is then best-effort, unlike the required
+    reviewer A verdict above.
+    """
+    verdicts = record.get("verdicts")
+    if verdicts is None:
+        return True
+    reviewer_b = verdicts.get("reviewer_b") if isinstance(verdicts, dict) else None
+    if not isinstance(reviewer_b, dict) or "accept" not in reviewer_b:
+        return None
+    return bool(reviewer_b["accept"])
+
+
+def _rereview_guard_verdicts(text: str, seed: Seed) -> dict[str, dict[str, Any]]:
+    """Re-run the same deterministic guards :func:`_process_variation` applies
+    after the reviewers -- reused, not copied -- on the stored *text*: an
+    internal-operation/skill-identifier leak or a copied answer-template
+    phrase must keep a record rejected however the reviewers voted, exactly
+    as in a fresh run. Never a switch on a specific operation name; both
+    checks are the table-driven functions a fresh run already uses."""
+    guard_verdicts: dict[str, dict[str, Any]] = {}
+    leaked = names_internal_operation(text) or names_skill_identifier(text, seed.skill_names)
+    if leaked:
+        guard_verdicts["identifier_check"] = {"accept": False, "reason": f"names {leaked!r}"}
+    copied = "" if leaked else copies_answer_template(text)
+    if copied:
+        guard_verdicts["template_check"] = {"accept": False, "reason": f"copies {copied!r}"}
+    handoff = asks_for_handoff(text)
+    if handoff:
+        guard_verdicts["handoff_check"] = {"accept": False, "reason": f"asks for {handoff!r}"}
+    return guard_verdicts
+
+
+def _seed_from_stored_record(record: dict[str, Any]) -> Seed:
+    """Rebuild enough of a :class:`Seed` from a stored accepted/rejected
+    record to build :func:`reviewer_prompt` again. The generator and
+    corrector are never re-run -- the record's own ``text`` (already
+    generated and corrected) is reused as the request under review.
+
+    A skills record's reviewer prompt needs the capability description, not
+    the request: it comes from the record's stored ``description``, and a
+    skills record written before that field existed is refused (a
+    ``ValueError``, counted as an error) rather than reviewed against its own
+    text (PR #52 review)."""
+    expect = record["expect"]
+    seed_format = record.get("seed_format", "split")
+    corpus_fields = {key: record[key] for key in ("kind", "source", "class") if key in record}
+    needs_change_check = seed_format != "skills" and _needs_change_check(expect)
+    seed_text = record.get("text", "")
+    if seed_format == "skills":
+        seed_text = record.get("description")
+        if not isinstance(seed_text, str) or not seed_text:
+            raise ValueError(
+                "skills record has no stored capability description; generate it"
+                " again with this augment.py rather than re-reviewing it"
+            )
+    return Seed(
+        source_id=str(record.get("source_id", record.get("id", ""))),
+        seed_format=seed_format,
+        side=record.get("side"),
+        seed_text=seed_text,
+        expect=expect,
+        needs_change_check=needs_change_check,
+        corpus_fields=corpus_fields,
+    )
+
+
+def _process_rereview_candidate(
+    record: dict[str, Any], role: RoleConfig, caller: RoleCaller
+) -> dict[str, Any]:
+    """Re-review one stored candidate as a clean slate (issue 46, deviation
+    d8): call only REVIEWER_B on the record's already-generated/corrected
+    ``text``, with a prompt built from the text and the expected answer
+    alone -- never a prior verdict -- and let that fresh verdict plus the
+    deterministic guards decide. Whatever was stored before (reviewer A,
+    the old reviewer B, a stored rejection) moves to ``prior_verdicts`` as
+    history and never enters the decision."""
+    old_accept_b = _stored_reviewer_b_accept(record)
+    prior = _prior_verdicts(record)
+
+    seed = _seed_from_stored_record(record)
+    system, user = reviewer_prompt(seed, record["text"])
+    accept_b, reason_b = _reviewer_verdict(role, system, user, caller)
+
+    guard_verdicts = _rereview_guard_verdicts(record["text"], seed)
+    accepted = accept_b and not guard_verdicts
+    models = dict(record.get("models", {}))
+    models[role.role] = role.model
+    new_record = dict(record)
+    new_record["models"] = models
+    new_record["verdicts"] = {
+        "reviewer_b": {
+            "accept": accept_b,
+            "reason": reason_b,
+            "temperature": role.temperature,
+            "reasoning_effort": role.reasoning_effort,
+        },
+        **guard_verdicts,
+    }
+    new_record["prior_verdicts"] = prior
+    return {
+        "accepted": accepted,
+        "record": new_record,
+        "old_accept_b": old_accept_b,
+        "new_accept_b": accept_b,
+    }
+
+
+def run_rereview(
+    candidate_files: list[Path],
+    role: RoleConfig,
+    accepted_out: Path,
+    rejected_out: Path,
+    limit: int | None = None,
+    caller: RoleCaller = default_caller,
+    max_retries: int = DEFAULT_MAX_RETRIES,
+    backoff_base: float = DEFAULT_BACKOFF_BASE,
+    sleep_fn: Callable[[float], None] = time.sleep,
+    rand_fn: Callable[[], float] = random.random,
+    workers: int = 1,
+) -> RereviewCounts:
+    """Re-review stored accepted+rejected candidates with REVIEWER_B only
+    (decisions c38/c41). Resumable like :func:`run_pipeline`: an id already
+    present in *accepted_out* or *rejected_out* is skipped. *limit* caps how
+    many candidates are attempted, which is what the non-thinking pilot
+    (about 150 candidates, c41) uses.
+
+    *workers* processes candidates through a bounded thread pool, exactly
+    like :func:`run_pipeline` (deviation d4: the thinking-mode reviewer-B
+    re-review takes about 44s per candidate, which is too slow to run one
+    at a time at pilot scale). ``main()`` passes the existing ``--workers``
+    value here; the default of 1 here keeps a direct call serial, matching
+    the pre-concurrency behaviour, for a caller that never passes it."""
+    candidates = load_rereview_candidates(candidate_files)
+    done = _existing_ids(accepted_out) | _existing_ids(rejected_out)
+    tasks = [record for record in candidates if record.get("id") not in done]
+    if limit is not None:
+        tasks = tasks[:limit]
+
+    retry_policy = RetryPolicy(
+        max_retries=max_retries, backoff_base=backoff_base, sleep_fn=sleep_fn, rand_fn=rand_fn
+    )
+    counts = RereviewCounts()
+    if not tasks:
+        return counts
+
+    lock = threading.Lock()
+
+    def caller_with_retry(role_config: RoleConfig, system: str, user: str) -> str:
+        return _call_with_retry(caller, role_config, system, user, retry_policy)
+
+    def _run_one(record: dict[str, Any]) -> None:
+        record_id = record.get("id", "?")
+        try:
+            outcome = _process_rereview_candidate(record, role, caller_with_retry)
+        except (
+            urllib.error.URLError,
+            TimeoutError,
+            OSError,
+            http.client.HTTPException,
+            KeyError,
+            ValueError,
+        ) as exc:
+            with lock:
+                counts.errors += 1
+            print(f"error: {record_id}: {exc}", file=sys.stderr)
+            return
+
+        with lock:
+            if record_id in done:  # pragma: no cover - tasks already dedupes against done
+                return
+            counts.processed += 1
+            # One record, one write, one line -- the lock is held across the
+            # whole append (and the accept/reject/agreement bookkeeping) so a
+            # record is never interleaved with another thread's write, and
+            # `done` is updated in the same critical section so no id can
+            # ever be written twice, exactly as run_pipeline's _run_one does.
+            if outcome["accepted"]:
+                counts.accepted += 1
+                _append_jsonl(accepted_out, outcome["record"])
+            else:
+                counts.rejected += 1
+                _append_jsonl(rejected_out, outcome["record"])
+            done.add(record_id)
+
+            old_accept_b = outcome["old_accept_b"]
+            if old_accept_b is not None:
+                counts.compared += 1
+                if old_accept_b == outcome["new_accept_b"]:
+                    counts.agreed += 1
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, workers)) as executor:
+        futures = [executor.submit(_run_one, record) for record in tasks]
+        for future in concurrent.futures.as_completed(futures):
+            future.result()
+
+    return counts
+
+
+def rederive_clean_slate(
+    input_files: list[Path],
+    old_outputs: list[Path],
+    accepted_out: Path,
+    rejected_out: Path,
+    dry_run: bool = False,
+) -> RereviewCounts:
+    """Re-derive re-review outputs written under the old rule (stored
+    reviewer A AND fresh reviewer B) under the clean-slate rule (issue 46,
+    deviation d8) without calling any model: the fresh reviewer B verdict
+    and the re-run guards already on each old output record decide; the
+    candidate's stored verdicts, looked up by id in *input_files* (the
+    re-review's own input), become ``prior_verdicts``, and agreement is
+    counted against the stored reviewer B verdict as in a live re-review.
+
+    Everything is validated before anything is written: an existing output,
+    an id repeated in the input or across the old outputs, an old output id
+    missing from the input, or an old output with no fresh reviewer B
+    verdict is refused. *dry_run* returns the counts and writes nothing."""
+    for path in (accepted_out, rejected_out):
+        if path.exists():
+            raise ValueError(f"{path} exists; re-derive writes fresh files only")
+    originals: dict[Any, dict[str, Any]] = {}
+    for record in load_rereview_candidates(input_files):
+        record_id = record.get("id")
+        if record_id in originals:
+            raise ValueError(f"{record_id}: repeated in the re-review input")
+        originals[record_id] = record
+
+    counts = RereviewCounts()
+    decided: list[tuple[bool, dict[str, Any]]] = []
+    seen: set[Any] = set()
+    for path in old_outputs:
+        for old in _load_jsonl(path):
+            record_id = old.get("id")
+            if record_id in seen:
+                raise ValueError(f"{record_id}: repeated across the old outputs")
+            seen.add(record_id)
+            if record_id not in originals:
+                raise ValueError(f"{record_id}: not in the re-review input")
+            verdicts = old.get("verdicts") or {}
+            fresh_b = verdicts.get("reviewer_b")
+            if not isinstance(fresh_b, dict) or not isinstance(fresh_b.get("accept"), bool):
+                raise ValueError(f"{record_id}: no fresh reviewer_b verdict to re-derive from")
+            guards = {k: v for k, v in verdicts.items() if k not in ("reviewer_a", "reviewer_b")}
+            original = originals[record_id]
+            new_record = dict(old)
+            new_record["verdicts"] = {"reviewer_b": fresh_b, **guards}
+            new_record["prior_verdicts"] = _prior_verdicts(original)
+            accepted = fresh_b["accept"] and not guards
+            counts.processed += 1
+            if accepted:
+                counts.accepted += 1
+            else:
+                counts.rejected += 1
+            old_accept_b = _stored_reviewer_b_accept(original)
+            if old_accept_b is not None:
+                counts.compared += 1
+                if old_accept_b == fresh_b["accept"]:
+                    counts.agreed += 1
+            decided.append((accepted, new_record))
+
+    if not dry_run:
+        for accepted, new_record in decided:
+            _append_jsonl(accepted_out if accepted else rejected_out, new_record)
+    return counts
+
+
+def _print_rereview_summary(counts: RereviewCounts, out: Any = None) -> None:
+    """One summary line: processed/accepted/rejected/errors, plus agreement
+    with the stored reviewer B verdicts (the pilot's own acceptance-rate
+    check, decision c41) as ``agreement=<agreed>/<compared>``."""
+    stream = out if out is not None else sys.stdout
+    print(
+        f"rereview: processed={counts.processed} accepted={counts.accepted} "
+        f"rejected={counts.rejected} errors={counts.errors} "
+        f"agreement={counts.agreed}/{counts.compared}",
+        file=stream,
+    )
 
 
 def _plan_tasks(
@@ -1125,7 +1612,12 @@ def run_pipeline(
     progress_every: float = 60.0,
     now_fn: Callable[[], float] = time.monotonic,
     progress_out: Any = None,
+    decide_by: str = "both",
 ) -> PipelineCounts:
+    if decide_by not in DECIDE_BY_RULES:
+        raise ValueError(
+            f"decide_by must be one of {', '.join(DECIDE_BY_RULES)}, got {decide_by!r}"
+        )
     seeds: list[Seed] = []
     for seed_file in seed_files:
         seeds.extend(load_seeds(seed_file, side))
@@ -1162,7 +1654,9 @@ def run_pipeline(
             return _call_with_retry(caller, role, system, user, retry_policy, on_retry)
 
         try:
-            outcome = _process_variation(seed, variation_id, roles, local_counts, caller_with_retry)
+            outcome = _process_variation(
+                seed, variation_id, roles, local_counts, caller_with_retry, decide_by
+            )
         except (
             urllib.error.URLError,
             TimeoutError,
@@ -1229,7 +1723,45 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument("--per-source", type=int, default=3, help="variations to attempt per seed")
-    parser.add_argument("--limit", type=int, default=None, help="cap total variations (dry runs)")
+    parser.add_argument(
+        "--limit",
+        "--sample",
+        dest="limit",
+        type=int,
+        default=None,
+        help=(
+            "cap total variations attempted (dry runs), or candidates re-reviewed with "
+            "--rereview -- --sample is the same option, named for the non-thinking pilot (c41)"
+        ),
+    )
+    parser.add_argument(
+        "--rereview",
+        action="store_true",
+        help=(
+            "re-review stored accepted+rejected candidates (seed_files) with REVIEWER_B only, "
+            "reusing their generator/corrector text (decisions c38/c41)"
+        ),
+    )
+    parser.add_argument(
+        "--rederive-clean-slate",
+        nargs="+",
+        metavar="OLD_OUTPUT",
+        help=(
+            "with --rereview: rewrite re-review outputs written under the old rule "
+            "(stored reviewer A AND fresh reviewer B) under the clean-slate rule "
+            "(deviation d8) into --accepted-out/--rejected-out, calling no model; "
+            "seed_files are the re-review's own input"
+        ),
+    )
+    parser.add_argument(
+        "--decide-by",
+        choices=DECIDE_BY_RULES,
+        default="both",
+        help=(
+            "which reviewer verdicts decide acceptance in a fresh run: both (default) or "
+            "reviewer_b alone, with reviewer A still asked and recorded (issue 46, d11)"
+        ),
+    )
     parser.add_argument("--accepted-out", default="accepted.jsonl")
     parser.add_argument("--rejected-out", default="rejected.jsonl")
     parser.add_argument(
@@ -1269,6 +1801,64 @@ def main(argv: list[str] | None = None) -> int:
 
     seed_paths = [Path(p) for p in args.seed_files]
 
+    if args.rereview:
+        # The offline re-derive (deviation d8) calls no model, so it runs
+        # before -- and never needs -- the reviewer B configuration.
+        if args.rederive_clean_slate:
+            try:
+                counts = rederive_clean_slate(
+                    input_files=seed_paths,
+                    old_outputs=[Path(path) for path in args.rederive_clean_slate],
+                    accepted_out=Path(args.accepted_out),
+                    rejected_out=Path(args.rejected_out),
+                    dry_run=args.dry_run,
+                )
+            except (OSError, ValueError) as exc:
+                print(f"error: {exc}", file=sys.stderr)
+                return 2
+            _print_rereview_summary(counts)
+            return 0
+        try:
+            reviewer_b = load_role_config("REVIEWER_B")
+        except ConfigError as exc:
+            parser.error(str(exc))
+            return 2  # pragma: no cover - parser.error already exits
+        if args.dry_run:
+            # Codex review finding #7: dry-run must be handled before any
+            # dispatch to the reviewer -- report the count, the limit and
+            # the reviewer B model, and exit without calling anything or
+            # writing accepted/rejected output.
+            try:
+                candidates = load_rereview_candidates(seed_paths)
+            except (ConfigError, ValueError) as exc:
+                print(f"error: {exc}", file=sys.stderr)
+                return 2
+            done = _existing_ids(Path(args.accepted_out)) | _existing_ids(Path(args.rejected_out))
+            tasks = [record for record in candidates if record.get("id") not in done]
+            if args.limit is not None:
+                tasks = tasks[: args.limit]
+            print(
+                f"dry-run: {len(tasks)} candidate(s) would be re-reviewed with REVIEWER_B "
+                f"({reviewer_b.model}); no endpoint was called"
+            )
+            return 0
+        try:
+            counts = run_rereview(
+                candidate_files=seed_paths,
+                role=reviewer_b,
+                accepted_out=Path(args.accepted_out),
+                rejected_out=Path(args.rejected_out),
+                limit=args.limit,
+                max_retries=args.max_retries,
+                backoff_base=args.backoff_base,
+                workers=args.workers,
+            )
+        except (ConfigError, ValueError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        _print_rereview_summary(counts)
+        return 0
+
     if args.dry_run:
         try:
             seeds: list[Seed] = []
@@ -1302,6 +1892,7 @@ def main(argv: list[str] | None = None) -> int:
             max_retries=args.max_retries,
             backoff_base=args.backoff_base,
             progress_every=args.progress_every,
+            decide_by=args.decide_by,
         )
     except (SeedRefused, ConfigError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)

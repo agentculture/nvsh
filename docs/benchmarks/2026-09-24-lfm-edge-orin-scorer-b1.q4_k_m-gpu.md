@@ -1,0 +1,93 @@
+# Tier 2 measurement, 2026-09-24: edge-orin-scorer-b1.q4_k_m-gpu
+
+- Command: `scripts/lfm-finetune/measure.py --split $HOME/lfm-edge/q46/work/splits/val.json --model scorer-b1.q4_k_m --revision sha256:1c637c66369518b3 --label edge-orin-scorer-b1.q4_k_m-gpu --config $HOME/lfm-edge/q46/out/scorer-b1.q4_k_m.toml --ctx 2048 --ground-snapshot $HOME/lfm-edge/q46/work/ground-snapshot.json --enable-thinking false --max-logprobs 22 --out $HOME/lfm-edge/q46/out/edge-orin-scorer-b1.q4_k_m-gpu.md --predictions $HOME/lfm-edge/q46/out/pred --scorer served --tokenizer $HOME/lfm-edge/q46/tok/scorer-b1`
+- Split: `$HOME/lfm-edge/q46/work/splits/val.json` (66 entries, 66 sources)
+- Seed: 46 (from the split header)
+- nvsh: 0.18.0, commit `unknown`
+- Models (repo id @ revision): `scorer-b1.q4_k_m` @ `sha256:1c637c66369518b3` (operator-supplied, not verified: attached endpoint)
+- Tier 2 settings, identical for every run except the model: engine=llama-server, mode=attach, image=ghcr.io/nvidia-ai-iot/llama_cpp@sha256:f7c67c102b08252e963f9e5f92c3a36554c8f69305eb7ea257c6cd12e24c3191 (llama.cpp 10373 38406d597, Jetson AGX Orin, JetPack R39), ctx=2048, tool_call_parser=qwen3_coder
+- Grounding: fixed snapshot `$HOME/lfm-edge/q46/work/ground-snapshot.json` (platform: fixture world from the split file)
+- Serving: engine=llama-server, mode=attach, ctx=2048, image=`ghcr.io/nvidia-ai-iot/llama_cpp@sha256:f7c67c102b08252e963f9e5f92c3a36554c8f69305eb7ea257c6cd12e24c3191 (llama.cpp 10373 38406d597, Jetson AGX Orin, JetPack R39)`, tool_call_parser=qwen3_coder
+- Requests: chat_template_kwargs enable_thinking=false (the scorer renders its own prompts, thinking off)
+- Decision mode: candidate scorer (served) through scorer.py, max-logprobs 22 (operator-supplied); asks for 22 per request
+- Slice: full split
+- Ground snapshot: `$HOME/lfm-edge/q46/work/ground-snapshot.json` sha256 `0d79c8fe63cef6a9b2e38a1719d173d59c4e793eed5b9ca3fe7b335148dc533b` (263 services, 34 containers; created 2026-09-24)
+- Acceptance run: no
+- Final run: no
+
+A candidate-scorer run: the bench table does not apply; the figures are
+metrics.py's, over the predictions file the scorer's results were written to.
+
+## Issue 46 metrics
+
+metrics.py over each model's predictions file (one line per entry). The candidate
+distribution of a generative run comes from its deciding reply's log-probabilities.
+
+| Metric | `scorer-b1.q4_k_m` |
+|---|---|
+| Right proposals (metrics.py) | 28 of 32 |
+| Abstention recall (escalate entries escalated) | 75.0% (12 of 16) |
+| Abstention precision, strict (deviation d2) | 92.3% |
+| False-positive tool calls (proposals on explain/escalate entries) | 0 of 34 |
+| Wrong mutating, total (wrong operation + wrong arguments) | 0 (0 + 0) |
+| Invalid outputs | 4 of 66 (not_grounded: 4) |
+| Lines with a candidate distribution | 0 of 66 |
+| ECE (10 equal-width bins) | n/a |
+| Brier (multi-class) | n/a |
+| Tokens generated per decision, mean / median | 0.0 / 0.0 |
+| Time to first decision, cold / warm median / warm p95 | 128 ms / 109 ms / 111 ms |
+| Decision latency, cold / warm median / warm p95 | 128 ms / 109 ms / 111 ms |
+| Non-empty think blocks (must be 0) | 0 |
+
+- `scorer-b1.q4_k_m`: lines without a candidate distribution: labels missing from the top log-probabilities: 66
+
+| nvsh outcome | issue 46 JSON |
+|---|---|
+| propose | `{"action": "tool", "tool": <operation>, "arguments": <arguments>}` |
+| explain | `{"action": "no_action"}` |
+| escalate | `{"action": "abstain"}` |
+| invalid | `{"action": "invalid"}` |
+
+Reporting only: every model is trained and scored on nvsh's propose/explain/escalate tools. Issue 46's abstain is nvsh's escalate, so abstention recall is the escalation recall and abstention precision the strict escalation precision (an escalation on an explain entry counts against it). Explain (answer in words, no tool) has no counterpart in issue 46's tool|abstain pair; it is shown as the no_action label issue 46 uses for Track B and is never counted as an abstention. An invalid output is not a decision.
+
+## Background before each run
+
+### `scorer-b1.q4_k_m`
+
+Other running containers: model-gear-gateway, model-gear-vllm-embed, model-gear-vllm-rerank, prod-worker-1, q46-edge
+
+`docker ps`:
+
+```text
+CONTAINER ID   IMAGE                COMMAND                  CREATED         STATUS                  PORTS                                         NAMES
+801e529db59c   f7c67c102b08         "llama-server --mode…"   5 seconds ago   Up 4 seconds            127.0.0.1:18090->8080/tcp                     q46-edge
+dfbc45dc003e   lobes-gateway        "python -m lobes.gat…"   5 days ago      Up 21 hours (healthy)   0.0.0.0:8000->8000/tcp, [::]:8000->8000/tcp   model-gear-gateway
+1c44dd522337   7c5a10e9a8b3         "bash /usr/local/bin…"   11 days ago     Up 11 days (healthy)    8000/tcp                                      model-gear-vllm-rerank
+3bfdffc535f5   7c5a10e9a8b3         "bash /usr/local/bin…"   11 days ago     Up 11 days (healthy)    8000/tcp                                      model-gear-vllm-embed
+255b819d6360   culture-nodes:prod   "/nodes worker"          2 weeks ago     Up 2 weeks                                                            prod-worker-1
+```
+
+`nvidia-smi`:
+
+```text
+Thu Sep 24 12:02:52 2026       
++-----------------------------------------------------------------------------------------+
+| NVIDIA-SMI 595.78                 Driver Version: 595.78         CUDA Version: 13.2     |
++-----------------------------------------+------------------------+----------------------+
+| GPU  Name                 Persistence-M | Bus-Id          Disp.A | Volatile Uncorr. ECC |
+| Fan  Temp   Perf          Pwr:Usage/Cap |           Memory-Usage | GPU-Util  Compute M. |
+|                                         |                        |               MIG M. |
+|=========================================+========================+======================|
+|   0  Orin (nvgpu)                  N/A  |   N/A              N/A |                  N/A |
+| N/A   N/A  N/A             N/A  /  N/A  | Not Supported          |     N/A          N/A |
+|                                         |                        |                  N/A |
++-----------------------------------------+------------------------+----------------------+
+
++-----------------------------------------------------------------------------------------+
+| Processes:                                                                              |
+|  GPU   GI   CI              PID   Type   Process name                        GPU Memory |
+|        ID   ID                                                               Usage      |
+|=========================================================================================|
+|  No running processes found                                                             |
++-----------------------------------------------------------------------------------------+
+```
