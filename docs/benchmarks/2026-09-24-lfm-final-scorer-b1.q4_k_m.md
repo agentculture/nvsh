@@ -5,9 +5,9 @@
 - Seed: 46 (from the split header)
 - nvsh: 0.18.0, commit `568684f41328bccb3e1fb9ad02b61420b170e4ea`
 - Models (repo id @ revision): `scorer-b1.q4_k_m` @ `sha256:8a0d872e089aaaa6` (operator-supplied, not verified: attached endpoint)
-- Tier 2 settings, identical for every run except the model: engine=llama-server, mode=attach, image=native llama-server /home/spark/lfm-train/llama.cpp/build/bin/llama-server (0.00.000.366 I srv llama_server: initializing ... version: 0.4.1-dev (build 11132, commit 633733d0a) built with GNU 13.3.0 for Linux aarch64), ctx=2048, tool_call_parser=qwen3_coder
+- Tier 2 settings, identical for every run except the model: engine=llama-server, mode=attach, image=native llama-server $HOME/lfm-train/llama.cpp/build/bin/llama-server (0.00.000.366 I srv llama_server: initializing ... version: 0.4.1-dev (build 11132, commit 633733d0a) built with GNU 13.3.0 for Linux aarch64), ctx=2048, tool_call_parser=qwen3_coder
 - Grounding: fixed snapshot `$HOME/lfm-train/work/q46/ground-snapshot.json` (platform: fixture world from the split file)
-- Serving: engine=llama-server, mode=attach, ctx=2048, image=`native llama-server /home/spark/lfm-train/llama.cpp/build/bin/llama-server (0.00.000.366 I srv llama_server: initializing ... version: 0.4.1-dev (build 11132, commit 633733d0a) built with GNU 13.3.0 for Linux aarch64)`, tool_call_parser=qwen3_coder
+- Serving: engine=llama-server, mode=attach, ctx=2048, image=`native llama-server $HOME/lfm-train/llama.cpp/build/bin/llama-server (0.00.000.366 I srv llama_server: initializing ... version: 0.4.1-dev (build 11132, commit 633733d0a) built with GNU 13.3.0 for Linux aarch64)`, tool_call_parser=qwen3_coder
 - Requests: chat_template_kwargs enable_thinking=false (the scorer renders its own prompts, thinking off)
 - Decision mode: candidate scorer (served) through scorer.py, max-logprobs 22 (operator-supplied); asks for 22 per request
 - Slice: full split

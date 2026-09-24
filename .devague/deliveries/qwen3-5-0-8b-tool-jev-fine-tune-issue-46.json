@@ -436,7 +436,7 @@
     {
       "id": "e10",
       "obligation_ref": "o10",
-      "test_ref": "/home/spark/lfm-train/work/q46/measure/a3-val-ctx4096.md",
+      "test_ref": "$HOME/lfm-train/work/q46/measure/a3-val-ctx4096.md",
       "behavior_text": "a3 on validation at 4K (29/32, wm 0, 440 ms) vs 2K (31/32, wm 0, 400 ms), MEASURE_CTX only; the served context is checked by the preflight",
       "contract_text": "The 2K vs 4K context comparison is run by configuration only",
       "evidence_type": "integration",

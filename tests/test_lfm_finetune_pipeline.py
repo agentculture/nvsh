@@ -1540,6 +1540,24 @@ def test_measure_final_of_an_awq_build_serves_its_awq_dir_with_vllm(tmp_path: Pa
     assert record["backend"] == "vllm"
 
 
+def test_a_gguf_run_records_the_llama_server_path_home_relative(tmp_path: Path) -> None:
+    """CI's portability check refuses a /home/<user>/ path in committed results
+    pages; the native binary is recorded as $HOME/... like every other path."""
+    port = _free_port()
+    pipe = _Pipeline(tmp_path, f"MEASURE_PORT={port}\n")
+    pipe.ready(stock=False)
+    _quantized(pipe)
+    llama = _fake_llama_server(tmp_path)
+    home = str(Path(llama["LLAMA_SERVER"]).parent)
+    result = pipe.run("measure-final", "a1.q4_k_m", HOME=home, **llama)
+    assert result.returncode == 0, result.stderr
+    [(_, argv)] = pipe.calls("measure.py")
+    [config_path] = _option(argv, "--config")
+    image = tomllib.loads(Path(config_path).read_text(encoding="utf-8"))["tiers"]["lfm"]["image"]
+    assert "$HOME/" + Path(llama["LLAMA_SERVER"]).name in image
+    assert home not in image
+
+
 def test_measure_final_of_a_gguf_build_serves_it_with_llama_server(tmp_path: Path) -> None:
     port = _free_port()
     pipe = _Pipeline(tmp_path, f"MEASURE_PORT={port}\n")

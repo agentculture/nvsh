@@ -422,11 +422,15 @@ serve_for_measure() {
   image=$(printf '%s' "$MEASURE_IMAGE" | python3 -c 'import json, sys; print(json.dumps(sys.stdin.read()))')
   if is_gguf_build "$name"; then
     engine=llama-server
+    # shellcheck disable=SC2016  # a literal $HOME is written into the record
     image=$(python3 -c '
-import json, sys
+import json, os, sys
 record = json.load(open(sys.argv[1], encoding="utf-8"))
 version = " ".join(record["version"].split())
 binary = record["binary"]
+home = os.environ.get("HOME", "")
+if home and binary.startswith(home.rstrip("/") + "/"):
+    binary = "$HOME" + binary[len(home.rstrip("/")):]  # no /home/<user>/ in results pages
 print(json.dumps(f"native llama-server {binary} ({version})"))
 ' "$WORK/measure/$label.serve.json")
   fi
