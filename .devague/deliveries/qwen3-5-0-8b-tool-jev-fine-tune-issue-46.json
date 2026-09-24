@@ -2,7 +2,7 @@
   "plan_slug": "qwen3-5-0-8b-tool-jev-fine-tune-issue-46",
   "schema_version": 2,
   "created": "2026-09-23T10:18:50Z",
-  "updated": "2026-09-24T08:43:15Z",
+  "updated": "2026-09-24T09:00:35Z",
   "deviations": [
     {
       "id": "d1",
@@ -244,6 +244,21 @@
       "status": "proposed",
       "classification": "risky",
       "seq": 18
+    },
+    {
+      "id": "d19",
+      "what": "t25 outcome: Track A's shipped quantized build is a3-heal.q4_k_m (32/32 = its bf16, no new wrong-mutating id, 245 ms warm: c43 and c36 latency/memory pass); a3-heal.awq still fails c43 after the heal (93.75%, -6.25 pts) and is not shipped -- no second heal round (c42 names one conditional heal; the Q4_K_M GGUF is the edge format). a3-heal's bf16 behaviour equals a3's (32/32, same 2 wrong-mutating ids), so the recovered GGUF entry is within one-entry noise; stated as such. Track B keeps scorer-b1 (both quants pass c43 without a heal)",
+      "task_ref": "t25",
+      "reason": "the confirmed heal rule decided each build; looping heals on a one-entry margin is not in c42 and would keep spending test-side runs",
+      "affects": [
+        "t25",
+        "t26",
+        "t27"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "classification": "acceptable",
+      "seq": 19
     }
   ],
   "evidence": [],
