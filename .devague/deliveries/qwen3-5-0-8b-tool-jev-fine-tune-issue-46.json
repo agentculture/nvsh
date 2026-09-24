@@ -2,7 +2,7 @@
   "plan_slug": "qwen3-5-0-8b-tool-jev-fine-tune-issue-46",
   "schema_version": 2,
   "created": "2026-09-23T10:18:50Z",
-  "updated": "2026-09-24T09:00:35Z",
+  "updated": "2026-09-24T09:26:35Z",
   "deviations": [
     {
       "id": "d1",
@@ -151,7 +151,7 @@
       "reason": "reviewer A failed the known-good/known-bad reviewer probe (3 false accepts, 2 false rejects of 53; it judges whether the assistant can handle a request, not whether the given response is right), while reviewer B passed 0/0; one acceptance rule across the frozen dataset; decided by the lead under the operator's standing goal to /deviate and decide",
       "affects": [],
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "classification": "acceptable",
       "seq": 11
     },
@@ -164,7 +164,7 @@
         "t24"
       ],
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "classification": "acceptable",
       "seq": 12
     },
@@ -177,7 +177,7 @@
         "t24"
       ],
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "classification": "acceptable",
       "seq": 13
     },
@@ -188,7 +188,7 @@
       "reason": "found while preparing t19's leakage checks; decided by the lead under the operator's standing goal",
       "affects": [],
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "classification": "acceptable",
       "seq": 14
     },
@@ -201,7 +201,7 @@
         "t24"
       ],
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "classification": "acceptable",
       "seq": 15
     },
@@ -215,7 +215,7 @@
         "t9"
       ],
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "classification": "acceptable",
       "seq": 16
     },
@@ -228,7 +228,7 @@
         "t25"
       ],
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "classification": "acceptable",
       "seq": 17
     },
@@ -241,7 +241,7 @@
         "t25"
       ],
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "classification": "risky",
       "seq": 18
     },
@@ -256,7 +256,7 @@
         "t27"
       ],
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "classification": "acceptable",
       "seq": 19
     }
