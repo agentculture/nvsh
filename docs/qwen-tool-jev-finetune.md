@@ -67,16 +67,20 @@ next, and the exact commands, so the run can be picked up cold.
   measurement to run without an out-of-memory failure (ledger P64); they
   are restored once the run finishes.
 
-**Running.** Nothing.
+**Running.** t25: `a3`'s `Q4_K_M` and AWQ builds are done; `scorer-b1`'s are
+building next; the measurement tooling for quantized builds is being built
+test-first, ahead of any quantized-build numbers. See [step
+13](#13-quantize-and-heal-in-progress--a3-built-scorer-b1-building) and
+ledger P67a/P67.
 
 **Next, in order:**
 
-1. **t25:** `Q4_K_M` and AWQ of `a3` and `scorer-b1`, measured on the test
-   side against the same bars; heal only if a build loses more than 3
-   points of right proposals or adds a new wrong-mutating id (c42, c43).
-   This is also where container memory (c36, not yet measured — both t24
-   runs were attach-mode against an already-running server) gets measured
-   for the first time.
+1. **t25 (continuing):** finish `scorer-b1`'s quantized builds; measure
+   both checkpoints' `Q4_K_M` and AWQ builds on the test side against the
+   same bars; heal only if a build loses more than 3 points of right
+   proposals or adds a new wrong-mutating id (c42, c43). This is also where
+   container memory (c36, not yet measured — both t24 runs were attach-mode
+   against an already-running server) gets measured for the first time.
 2. **t26:** the edge check on AGX Orin.
 3. **t27:** a private upload, only after asking the operator.
 4. **t28:** the report and this guide's final pass.
@@ -1318,28 +1322,60 @@ distribution and writes a sidecar `<out>.provenance.json`. `metrics.py` then
 scores the filled file. Its input is the predictions file `measure-final`
 kept in `$WORK/final/<name>` (P50).
 
-### 13. Quantize and heal *(not yet run)*
+### 13. Quantize and heal (in progress — `a3` built, `scorer-b1` building)
 
 Build llama.cpp (the spike used master
 `633733d0aeedd721868bf5f1b935fa3f39f9164e`, configured with
 `-DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=121`) and a separate venv for
 llm-compressor (`uv pip install llmcompressor --index-strategy
-unsafe-best-match`; see ledger P25). Then:
+unsafe-best-match`; see ledger P25). `LLAMA_CPP_CONVERT` must point at a
+small wrapper, not `convert_hf_to_gguf.py` itself (ledger P67a): running
+the converter directly under `uv run` lets its shebang pick whichever
+`python3` is first on `PATH`, which inside `uv run` is the repository's own
+environment — no `torch` there, so conversion fails with
+`ModuleNotFoundError: No module named 'torch'`. A two-line wrapper that
+`exec`s the converter with the AWQ venv's own Python (the one with torch
+and a transformers new enough to understand Qwen3.5) fixes it:
 
 ```bash
-LLAMA_CPP_DIR=<llama.cpp checkout> \
-LLAMA_CPP_CONVERT=<llama.cpp checkout>/convert_hf_to_gguf.py \
-LLAMA_CPP_QUANTIZE=<llama.cpp build>/bin/llama-quantize \
-LLAMA_CPP_IMATRIX=<llama.cpp build>/bin/llama-imatrix \
-AWQ_PY=<awq venv>/bin/python \
-  $P --env qwen.env quantize a1
+#!/bin/sh
+exec <awq venv>/bin/python <llama.cpp checkout>/convert_hf_to_gguf.py "$@"
 ```
+
+```bash
+export LLAMA_CPP_DIR=<llama.cpp checkout>
+export LLAMA_CPP_CONVERT=<path to the wrapper above>
+export LLAMA_CPP_QUANTIZE=<llama.cpp build>/bin/llama-quantize
+export LLAMA_CPP_IMATRIX=<llama.cpp build>/bin/llama-imatrix
+export AWQ_PY=<awq venv>/bin/python
+$P --env qwen.env quantize a1
+```
+
+**All four tool-path variables must be `export`ed in the env file, not
+merely set there.** `quantize.py` reads them from its own process
+environment; an env file is only *sourced* into the calling shell, which
+does not by itself export anything to a child process — the same class of
+mistake as `MEASURE_CTX`/`MEASURE_GPU_FRACTION` in steps 9 and 10, but
+here it means the tool paths are silently empty rather than silently wrong.
 
 `AWQ_PY` is the separate AWQ venv's Python (llm-compressor 0.14.0,
 transformers 5.17.0, compressed-tensors 0.19.0); `quantize.py` refuses to
 fall back to the training venv, whose transformers is too old for
 llm-compressor on this architecture. `LLAMA_CPP_DIR` is optional and only
 records the llama.cpp commit; without it the version reads "unknown".
+
+**A text-only merge can declare an MTP head it has no weights for (ledger
+P67).** `a3`'s merge (the lapse-l4 text-only class) keeps the base config's
+`mtp_num_hidden_layers=1` but carries 0 `mtp.*` tensors (320 tensors total,
+against stock's 488 including 15 `mtp.*`), so the GGUF converter wrote a
+25th block with nothing to fill it and `llama-imatrix` refused: "tensor
+'blk.24.attn_norm.weight' not found". `quantize.py`'s `mtp_without_weights()`
+now detects this from the checkpoint itself (a declared MTP head with no
+matching tensor) and converts with the GGUF converter's own `--no-mtp` flag
+in that case; the run record's `gguf_no_mtp` field states whether this
+fired. This has no effect on any bf16 measurement already reported (t21-t24
+never served the MTP head either), and does not need re-running any prior
+result — it only affects GGUF conversion. *Commit:* `21a381f`.
 
 What the stage does:
 
@@ -1358,6 +1394,18 @@ What the stage does:
   `Q4_K_M`.
 - **Versions.** The run record names the llama.cpp commit and the AWQ venv's
   package versions.
+
+**Results so far, `a3` (built):** `Q4_K_M` GGUF 529 MB (from a 1.52 GB bf16
+GGUF), imatrix computed from 301 train-side entries; INT4 AWQ (W4A16, group
+size 128, pack-quantized through llm-compressor) 1.05 GB. AWQ shrinks less
+than GGUF here by design: the 18 of 24 Gated-DeltaNet linear-attention
+layers and `lm_head` stay bf16 in both recipes, but GGUF's `Q4_K_M`
+quantizes more of the remaining attention/MLP weight types than the AWQ
+recipe's `Linear`-only targets do. `scorer-b1`'s quantized builds are
+running next. Measurement tooling for the quantized builds (naming:
+`<run>.awq` / `<run>.q4_k_m`; GGUF served by a local `llama-server` build,
+llama.cpp `633733d`, CUDA) is being built test-first; the actual
+measurements against the c33-c43 bars follow once it lands.
 
 **Serving the AWQ build needs one extra vLLM argument.** The run record
 carries `serve_args`: `--limit-mm-per-prompt '{"image": 0, "video": 0}'`.
@@ -2068,6 +2116,49 @@ committed now (`3df700c`).
   `runs/<name>/train-log.json` carries `train_scorer.py`'s own training
   objective, and refuse with a hint if so and no `--scorer` mode was given.
   *Commit:* `d39c5e3`.
+- **P67a. The GGUF converter's own shebang can pick the wrong Python.**
+  `quantize.py` runs `LLAMA_CPP_CONVERT` (`convert_hf_to_gguf.py`) directly,
+  so it starts under whatever `python3` is first on `PATH` — inside `uv
+  run`, that is the repository's own environment, which has no `torch`:
+  "GGUF conversion failed (exit 1) ... ModuleNotFoundError: No module named
+  'torch'". *Found:* the lead, running the quantize stage for the first
+  time under `uv run`. *Cause:* the converter script's shebang is not aware
+  of which Python actually has the packages (torch, transformers 5.17,
+  which understands Qwen3.5) it needs; running it as an executable trusts
+  whatever `python3` resolves to at that moment, not the AWQ venv. *Fix:*
+  point `LLAMA_CPP_CONVERT` at a two-line wrapper script that `exec`s the
+  converter with the AWQ venv's own Python explicitly, instead of relying
+  on the shebang. **Related pitfall:** the tool-path variables
+  (`LLAMA_CPP_CONVERT`, `LLAMA_CPP_QUANTIZE`, `LLAMA_CPP_IMATRIX`,
+  `AWQ_PY`) must be `export`ed in the env file, not merely set there —
+  `quantize.py` reads them from its own process environment, and an env
+  file is only *sourced* into the caller's shell, which does not by itself
+  export anything to a child process.
+- **P67. A text-only merge can declare an MTP head it has no weights for,
+  and the GGUF converter writes a block for it anyway.** Converting `a3`
+  to GGUF failed at the imatrix step: "imatrix computation failed ...
+  check_tensor_dims: tensor 'blk.24.attn_norm.weight' not found". *Found:*
+  the lead, running the quantize stage on `a3`. *Cause:* the text-only
+  merge class (`Qwen3_5ForCausalLM`, lapse l4) keeps the base config's
+  `mtp_num_hidden_layers=1` but carries no `mtp.*` tensor at all (`a3`'s
+  merge: 320 tensors, 0 of them `mtp.*`; stock: 488 tensors, 15 `mtp.*`),
+  so the converter wrote a 25th block matching the declared layer count
+  with nothing to fill it. Since vLLM never loaded the MTP head for any
+  bf16 measurement in this run, this has no effect on any number reported
+  so far — it only breaks the GGUF conversion. A first fix attempt (staging
+  a copy of the config with `mtp_num_hidden_layers=0`) was caught by Codex
+  before it ran: this llama.cpp build's `_QwenMtpMixin` re-infers the layer
+  count from the tensors actually present and asserts it is nonzero, so a
+  declared count of 0 would have failed a different way. *Fix (commit
+  `21a381f`):* `quantize.py`'s `mtp_without_weights()` detects a config
+  that declares an MTP head with no matching tensor, and converts with the
+  GGUF converter's own `--no-mtp` flag in that case; the run record's
+  `gguf_no_mtp` field states whether this fired. **Follow-up not yet
+  addressed:** the merged checkpoint's own `config.json` still declares an
+  MTP head it does not have, independent of GGUF conversion — worth
+  revisiting for the release bundle (t27), since anything else that reads
+  the config at face value could make the same wrong assumption GGUF's
+  converter did.
 
 ## Troubleshooting: symptoms and causes
 
@@ -2094,6 +2185,8 @@ above.
 | A judge/reviewer model rejects requests that read as obviously correct, often with reasoning like "it only describes running the check instead of reporting" | The reviewer's prompt did not say a check's own output counts as a complete answer, and it was running at a high, unrecorded reasoning effort by default | Fix the prompt wording, make the reasoning effort explicit and recorded, and run a known-good/known-bad calibration probe before trusting a full pass | P53, d10, lapse l2 |
 | A wrapper script's log line claims `rc=0` right after a command that visibly failed | `echo "$(date -Is) rc=$?"` runs the command substitution `$(date -Is)` first, which resets `$?` before `echo` ever reads it | Capture `rc=$?` on its own line immediately after the command, before anything else runs | (wrapper-script lesson, run log 2026-09-24 05:44) |
 | A test fails, but only when run as part of the full suite while something else (for example a training job) is using the machine, and passes reliably alone | A timing-based test assumption breaks under real machine load | Known and named (`tests/test_setup_timing.py::test_setup_does_not_meaningfully_slow_down_prompt_startup`); not a bug in the code under test | [Not verified yet](#not-verified-yet) |
+| GGUF conversion fails under `uv run` with `ModuleNotFoundError: No module named 'torch'`, even though the AWQ venv has torch installed | The converter script runs under whatever `python3` its own shebang finds first on `PATH`, which inside `uv run` is the repository's own environment, not the AWQ venv | Point `LLAMA_CPP_CONVERT` at a small wrapper script that `exec`s the converter with the AWQ venv's Python explicitly, instead of running the converter directly; also make sure every tool-path variable is `export`ed in the env file, not merely set there | P67a |
+| `llama-imatrix` refuses a converted GGUF: `check_tensor_dims: tensor 'blk.24.attn_norm.weight' not found` | The source checkpoint's config still declares an MTP head (`mtp_num_hidden_layers` > 0) left over from the base model, but the text-only merge (lapse l4) carries no `mtp.*` tensor for it, so the converter wrote a block with nothing to fill it | Convert with the GGUF converter's own `--no-mtp` flag when the checkpoint declares an MTP head it has no weights for; `quantize.py` now detects this case itself | P67 |
 
 ## Not verified yet
 
@@ -2998,3 +3091,51 @@ single, final, no-retry measurement.
 measured on the test side against the same bars, healing only if a build
 loses more than 3 points of right proposals or adds a new wrong-mutating id
 (c42, c43) — and where container memory finally gets measured.
+
+### 2026-09-24 ~10:30: t25 under way — two quantize-stage bugs, `a3` built
+
+Two bugs surfaced converting `a3`'s merge to GGUF, before any quantized
+build existed to measure.
+
+**P67a: the converter's own shebang picked the repository's Python, not
+the AWQ venv's.** `quantize.py` runs `LLAMA_CPP_CONVERT`
+(`convert_hf_to_gguf.py`) directly; under `uv run`, whatever `python3` is
+first on `PATH` is the repository's own environment, which has no `torch`
+— "GGUF conversion failed (exit 1) ... ModuleNotFoundError: No module
+named 'torch'". Fixed by pointing `LLAMA_CPP_CONVERT` at a two-line wrapper
+that `exec`s the converter with the AWQ venv's Python explicitly (the venv
+with torch and a transformers new enough to know Qwen3.5). Related: all
+four tool-path variables must be `export`ed in the env file — `quantize.py`
+reads its own process environment, and a sourced env file does not export
+anything to a child process by itself.
+
+**P67: the text-only merge declares an MTP head it has no weights for.**
+Next failure: "imatrix computation failed ... check_tensor_dims: tensor
+'blk.24.attn_norm.weight' not found". `a3`'s merge (the lapse-l4 text-only
+class) keeps the base config's `mtp_num_hidden_layers=1` but carries 0
+`mtp.*` tensors (320 tensors total; stock has 488, 15 of them `mtp.*`), so
+the GGUF converter wrote a 25th block with nothing to fill it. Since vLLM
+never served the MTP head for any bf16 measurement so far, no existing
+result is affected — only GGUF conversion breaks. A first fix attempt
+(staging a copy of the config with `mtp_num_hidden_layers=0`) was caught by
+Codex before it ran: this llama.cpp build's `_QwenMtpMixin` re-infers the
+layer count from the tensors present and asserts it is nonzero, so a
+declared 0 would have failed differently. The landed fix (`21a381f`):
+`quantize.py`'s `mtp_without_weights()` detects a declared MTP head with no
+matching tensor and converts with the GGUF converter's own `--no-mtp` flag;
+the run record's `gguf_no_mtp` field states whether this fired.
+Follow-up, not yet addressed: the merged checkpoint's own `config.json`
+still declares an MTP head it does not have, independent of GGUF
+conversion — worth checking before t27's release bundle, since anything
+else reading the config at face value could make the same wrong assumption.
+
+**`a3`'s quantized builds, done:** `Q4_K_M` GGUF 529 MB (from a 1.52 GB
+bf16 GGUF), imatrix from 301 train-side entries; INT4 AWQ (W4A16, group
+128, pack-quantized) 1.05 GB. AWQ shrinks less than GGUF by design here:
+both keep the 18 of 24 Gated-DeltaNet linear-attention layers and `lm_head`
+in bf16, but `Q4_K_M` quantizes more of the remaining weight types than
+AWQ's `Linear`-only targets. `scorer-b1`'s quantized builds are running
+next. Measurement tooling for the quantized builds (`<run>.awq` /
+`<run>.q4_k_m` naming; GGUF served by a local `llama-server` build,
+llama.cpp `633733d`, CUDA) is being built test-first, so no quantized-build
+measurement exists yet.
