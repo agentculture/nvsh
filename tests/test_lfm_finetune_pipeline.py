@@ -10,6 +10,7 @@ fail closed with a plain skip when missing).
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import os
@@ -1407,3 +1408,478 @@ def test_serve_wait_saves_the_full_log_when_the_server_fails(tmp_path: Path) -> 
     assert str(log) in result.stderr
     full = [c for c in _docker_calls(tmp_path) if c[0] == "logs" and "--tail" not in c]
     assert full and full[0][-1] == "q46-measure-18060"
+
+
+# ---------------------------------------------------------------------------
+# Issue 46, t25 (known gap h2): measuring a quantized build of a run --
+# <run>.awq (vLLM, like any model dir) and <run>.q4_k_m (native llama-server)
+# ---------------------------------------------------------------------------
+
+#: A native llama-server as serve_for_measure.sh sees it: `--version` prints to
+#: stderr like the real binary; otherwise it records its argv, prints a log
+#: line and stays up (bounded) until it is sent SIGTERM.
+_FAKE_LLAMA_SERVER = """#!/usr/bin/env bash
+if [ "${1:-}" = --version ]; then
+  echo "version: 9999 (deadbeef)" >&2
+  echo "built with fake-cc for test" >&2
+  exit 0
+fi
+python3 -c 'import json, sys; print(json.dumps(sys.argv[1:]))' "$@" >> "$LLAMA_LOG"
+echo "llama-server start" >> "$EVENT_LOG"
+echo "fake-llama: the last log line"
+[ -z "${FAKE_LLAMA_DIE:-}" ] || exit 1
+trap 'echo "llama-server stop" >> "$EVENT_LOG"; exit 0' TERM
+for _ in $(seq 300); do sleep 0.1; done
+"""
+
+
+def _fake_llama_server(tmp_path: Path) -> dict[str, str]:
+    path = tmp_path / "bin" / "llama-server"
+    path.parent.mkdir(exist_ok=True)
+    path.write_text(_FAKE_LLAMA_SERVER, encoding="utf-8")
+    path.chmod(0o755)
+    return {"LLAMA_SERVER": str(path), "LLAMA_LOG": str(tmp_path / "llama.log")}
+
+
+def _llama_calls(tmp_path: Path) -> list[list[str]]:
+    log = tmp_path / "llama.log"
+    if not log.exists():
+        return []
+    return [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+
+
+def _quantized(pipe: "_Pipeline", run: str = "a1") -> Path:
+    """What `pipeline.sh quantize <run>` leaves: the GGUF, the greedy AWQ dir
+    and quantize-run.json."""
+    quant = pipe.work / "quant" / run
+    _greedy_dir(quant / "awq")
+    (quant / "model-q4_k_m.gguf").write_bytes(b"GGUF fake")
+    (quant / "quantize-run.json").write_text('{"model_dir": "merged"}\n', encoding="utf-8")
+    return quant
+
+
+def _build_revision(quant: Path) -> str:
+    digest = hashlib.sha256((quant / "quantize-run.json").read_bytes()).hexdigest()
+    return f"sha256:{digest[:16]}"
+
+
+def _train_py(tmp_path: Path) -> tuple[Path, Path]:
+    site = tmp_path / "train-site-packages"
+    site.mkdir()
+    train_py = tmp_path / "train-python"
+    train_py.write_text(f'#!/usr/bin/env bash\necho "{site}"\n', encoding="utf-8")
+    train_py.chmod(0o755)
+    return train_py, site
+
+
+def test_measure_final_of_an_awq_build_serves_its_awq_dir_with_vllm(tmp_path: Path) -> None:
+    pipe = _Pipeline(tmp_path)
+    pipe.ready(stock=False)
+    quant = _quantized(pipe)
+    result = pipe.run("measure-final", "a1.awq")
+    assert result.returncode == 0, result.stderr
+    [(_, argv)] = pipe.calls("measure.py")
+    assert _option(argv, "--model") == ["a1.awq"]
+    assert _option(argv, "--label") == ["final-a1.awq"]
+    assert _option(argv, "--revision") == [_build_revision(quant)]
+    [out] = _option(argv, "--predictions")
+    assert out.endswith("/final/a1.awq")
+    [run] = [c for c in _docker_calls(tmp_path) if c[0] == "run"]
+    assert _option(run, "-v") == [f"{quant / 'awq'}:/model:ro"]
+    assert _option(run, "--served-model-name") == ["a1.awq"]
+    assert _option(run, "--limit-mm-per-prompt") == ['{"image": 0, "video": 0}']
+    [config_path] = _option(argv, "--config")
+    config = tomllib.loads(Path(config_path).read_text(encoding="utf-8"))
+    assert config["tiers"]["lfm"]["engine"] == "vllm"
+    record = json.loads((pipe.work / "measure" / "final-a1.awq.serve.json").read_text())
+    assert record["backend"] == "vllm"
+
+
+def test_measure_final_of_a_gguf_build_serves_it_with_llama_server(tmp_path: Path) -> None:
+    pipe = _Pipeline(tmp_path)
+    pipe.ready(stock=False)
+    quant = _quantized(pipe)
+    llama = _fake_llama_server(tmp_path)
+    result = pipe.run("measure-final", "a1.q4_k_m", **llama)
+    assert result.returncode == 0, result.stderr
+    assert not [c for c in _docker_calls(tmp_path) if c[0] == "run"]
+    [served] = _llama_calls(tmp_path)
+    assert served == [
+        "--model",
+        str(quant / "model-q4_k_m.gguf"),
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "18060",
+        "--ctx-size",
+        "2048",
+        "--jinja",
+        "--n-gpu-layers",
+        "999",
+        "--temp",
+        "0",
+        "--top-k",
+        "1",
+        "--alias",
+        "a1.q4_k_m",
+    ]
+    [(_, argv)] = pipe.calls("measure.py")
+    assert _option(argv, "--model") == ["a1.q4_k_m"]
+    assert _option(argv, "--label") == ["final-a1.q4_k_m"]
+    assert _option(argv, "--revision") == [_build_revision(quant)]
+    [config_path] = _option(argv, "--config")
+    config = tomllib.loads(Path(config_path).read_text(encoding="utf-8"))
+    lfm = config["tiers"]["lfm"]
+    assert lfm["engine"] == "llama-server"
+    assert lfm["mode"] == "attach"
+    assert lfm["base_url"] == "http://127.0.0.1:18060/v1"
+    assert lfm["model"] == "a1.q4_k_m"
+    # The run record's image field names the native serving stack and version.
+    assert "llama-server" in lfm["image"] and "9999 (deadbeef)" in lfm["image"]
+    assert _IMAGE not in lfm["image"]
+    assert load_config(Path(config_path)).tiers["lfm"]["engine"] == "llama-server"
+    record = json.loads((pipe.work / "measure" / "final-a1.q4_k_m.serve.json").read_text())
+    assert record["backend"] == "llama-server"
+    assert record["binary"] == llama["LLAMA_SERVER"]
+    assert "version: 9999 (deadbeef)" in record["version"]
+    assert record["argv"] == [llama["LLAMA_SERVER"], *served]
+    events = _events(tmp_path)
+    start_at = events.index("llama-server start")
+    ready_at = events.index("curl http://127.0.0.1:18060/v1/models")
+    measure_at = events.index("uv measure.py")
+    stop_at = events.index("llama-server stop")
+    assert start_at < ready_at < measure_at < stop_at
+
+
+@pytest.mark.parametrize("stage", ["measure-val", "measure-final", "measure-skills"])
+def test_a_failing_gguf_measure_still_stops_llama_server(stage: str, tmp_path: Path) -> None:
+    pipe = _Pipeline(tmp_path)
+    pipe.ready(stock=False)
+    _quantized(pipe)
+    args = ["--margin", "+15"] if stage == "measure-skills" else []
+    result = pipe.run(
+        stage, "a1.q4_k_m", *args, FAKE_MEASURE_STATUS="5", **_fake_llama_server(tmp_path)
+    )
+    assert result.returncode != 0
+    assert "llama-server stop" in _events(tmp_path)
+    assert not list((pipe.work / "measure").glob("q46-measure-*.pid"))
+
+
+def test_measure_skills_of_a_gguf_build_uses_the_llama_server_url(tmp_path: Path) -> None:
+    pipe = _Pipeline(tmp_path)
+    pipe.ready(stock=False)
+    quant = _quantized(pipe)
+    result = pipe.run("measure-skills", "a1.q4_k_m", "--margin", "+15", **_fake_llama_server(tmp_path))
+    assert result.returncode == 0, result.stderr
+    [(_, argv)] = pipe.calls("measure_skills.py")
+    assert _option(argv, "--url") == ["http://127.0.0.1:18060/v1"]
+    assert _option(argv, "--model") == ["a1.q4_k_m"]
+    assert _option(argv, "--model-revision") == [_build_revision(quant)]
+    assert _option(argv, "--margin") == ["+15"]
+
+
+@pytest.mark.parametrize("build", ["a1.awq", "a1.q4_k_m"])
+@pytest.mark.parametrize("stage", ["measure-val", "measure-final", "measure-skills"])
+def test_a_build_that_was_never_quantized_is_refused_with_a_hint(
+    stage: str, build: str, tmp_path: Path
+) -> None:
+    pipe = _Pipeline(tmp_path)
+    pipe.ready(stock=False)
+    args = ["--margin", "+15"] if stage == "measure-skills" else []
+    result = pipe.run(stage, build, *args, **_fake_llama_server(tmp_path))
+    assert result.returncode == 1
+    assert "quantize a1" in result.stderr
+    assert not pipe.calls("measure.py") and not pipe.calls("measure_skills.py")
+    assert not [c for c in _docker_calls(tmp_path) if c[0] == "run"]
+    assert not _llama_calls(tmp_path)
+
+
+@pytest.mark.parametrize("build", ["a1.awq", "a1.q4_k_m"])
+def test_a_build_without_its_quantize_record_is_refused(build: str, tmp_path: Path) -> None:
+    pipe = _Pipeline(tmp_path)
+    pipe.ready(stock=False)
+    quant = _quantized(pipe)
+    (quant / "quantize-run.json").unlink()
+    result = pipe.run("measure-final", build, **_fake_llama_server(tmp_path))
+    assert result.returncode == 1
+    assert "quantize-run.json" in result.stderr and "quantize a1" in result.stderr
+    assert not pipe.calls("measure.py")
+    assert not _llama_calls(tmp_path)
+
+
+def test_an_awq_build_without_greedy_decoding_is_refused(tmp_path: Path) -> None:
+    """Deviation d3 holds for the AWQ dir like any model dir."""
+    pipe = _Pipeline(tmp_path)
+    pipe.ready(stock=False)
+    quant = _quantized(pipe)
+    (quant / "awq" / "generation_config.json").unlink()
+    result = pipe.run("measure-final", "a1.awq")
+    assert result.returncode != 0
+    assert "generation_config.json" in result.stderr
+    assert not pipe.calls("measure.py")
+    assert not [c for c in _docker_calls(tmp_path) if c[0] == "run"]
+
+
+def test_a_gguf_build_needs_llama_server(tmp_path: Path) -> None:
+    pipe = _Pipeline(tmp_path)
+    pipe.ready(stock=False)
+    _quantized(pipe)
+    env = {k: v for k, v in pipe.env.items() if k != "LLAMA_SERVER"}
+    result = subprocess.run(
+        ["bash", str(_PIPELINE), "--env", str(pipe.env_file), "measure-final", "a1.q4_k_m"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        env=env,
+    )
+    assert result.returncode != 0
+    assert "LLAMA_SERVER" in result.stderr
+    assert not pipe.calls("measure.py")
+
+
+@pytest.mark.parametrize(
+    ("stage", "args", "label"),
+    [
+        ("measure-final", ["--slice", "missing-candidate"], "final-a1.q4_k_m-missing-candidate"),
+        ("measure-heldout", [], "heldout-a1.q4_k_m"),
+        ("measure-heldout", ["--slice=missing-candidate"], "heldout-a1.awq-missing-candidate"),
+    ],
+)
+def test_build_names_keep_the_d16_labels(
+    stage: str, args: list, label: str, tmp_path: Path
+) -> None:
+    pipe = _Pipeline(tmp_path, f"HELDOUT_SPLIT={_held_out(tmp_path)}\n")
+    pipe.ready(stock=False)
+    _quantized(pipe)
+    build = label.split("-", 1)[1].removesuffix("-missing-candidate")
+    result = pipe.run(stage, build, *args, **_fake_llama_server(tmp_path))
+    assert result.returncode == 0, result.stderr
+    [(_, argv)] = pipe.calls("measure.py")
+    assert _option(argv, "--label") == [label]
+
+
+@pytest.mark.parametrize("build", ["a1.awq", "a1.q4_k_m"])
+@pytest.mark.parametrize("stage", ["measure-final", "measure-heldout"])
+def test_build_names_keep_the_final_args_allowlist(stage: str, build: str, tmp_path: Path) -> None:
+    pipe = _Pipeline(tmp_path, f"HELDOUT_SPLIT={_held_out(tmp_path)}\n")
+    pipe.ready(stock=False)
+    _quantized(pipe)
+    result = pipe.run(stage, build, "--label", "other", **_fake_llama_server(tmp_path))
+    assert result.returncode == 1
+    assert not pipe.calls("measure.py")
+    assert not _llama_calls(tmp_path)
+
+
+@pytest.mark.parametrize("build", ["a1.awq", "a1.q4_k_m"])
+def test_build_names_refuse_an_extra_ctx(build: str, tmp_path: Path) -> None:
+    pipe = _Pipeline(tmp_path)
+    pipe.ready(stock=False)
+    _quantized(pipe)
+    result = pipe.run("measure-val", build, "--ctx", "4096", **_fake_llama_server(tmp_path))
+    assert result.returncode != 0
+    assert "MEASURE_CTX" in result.stderr
+    assert not _llama_calls(tmp_path)
+
+
+@pytest.mark.parametrize("build", ["a1.awq", "a1.q4_k_m"])
+@pytest.mark.parametrize("stage", ["measure-val", "measure-final"])
+def test_a_scorer_build_still_needs_a_scorer_mode(stage: str, build: str, tmp_path: Path) -> None:
+    """P66 holds for a build: the base run's train-log.json says it is a scorer."""
+    pipe = _Pipeline(tmp_path)
+    pipe.ready(stock=False)
+    _quantized(pipe)
+    _mark_scorer_run(pipe)
+    result = pipe.run(stage, build, **_fake_llama_server(tmp_path))
+    assert result.returncode == 1
+    assert "--scorer" in result.stderr
+    assert not pipe.calls("measure.py")
+    assert not [c for c in _docker_calls(tmp_path) if c[0] == "run"]
+    assert not _llama_calls(tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("build", "tokenizer"), [("a1.awq", "quant/a1/awq"), ("a1.q4_k_m", "runs/a1/merged")]
+)
+def test_a_served_scorer_build_gets_a_tokenizer_dir(
+    build: str, tokenizer: str, tmp_path: Path
+) -> None:
+    train_py, site = _train_py(tmp_path)
+    pipe = _Pipeline(tmp_path, f"TRAIN_PY={train_py}\n")
+    pipe.ready(stock=False)
+    _quantized(pipe)
+    _mark_scorer_run(pipe)
+    result = pipe.run("measure-final", build, "--scorer", "served", **_fake_llama_server(tmp_path))
+    assert result.returncode == 0, result.stderr
+    [(pythonpath, argv)] = pipe.calls("measure.py")
+    assert pythonpath == str(site)
+    assert _option(argv, "--tokenizer") == [str(pipe.work / tokenizer)]
+    assert _option(argv, "--label") == [f"final-{build}"]
+
+
+@pytest.mark.parametrize(
+    ("stage", "mode"),
+    [
+        ("measure-val", ["--scorer", "in-process"]),
+        ("measure-val", ["--scorer=in-process"]),
+        ("measure-final", ["--scorer", "in-process"]),
+        ("measure-heldout", ["--scorer=in-process"]),
+    ],
+)
+def test_a_gguf_build_refuses_the_in_process_scorer(
+    stage: str, mode: list, tmp_path: Path
+) -> None:
+    """transformers never loads the GGUF: an in-process run would measure the
+    bf16 base run under the quant's name."""
+    train_py, _ = _train_py(tmp_path)
+    pipe = _Pipeline(tmp_path, f"TRAIN_PY={train_py}\nHELDOUT_SPLIT={_held_out(tmp_path)}\n")
+    pipe.ready(stock=False)
+    _quantized(pipe)
+    _mark_scorer_run(pipe)
+    result = pipe.run(stage, "a1.q4_k_m", *mode, **_fake_llama_server(tmp_path))
+    assert result.returncode == 1
+    assert "in-process" in result.stderr and "GGUF" in result.stderr
+    assert not pipe.calls("measure.py")
+    assert not _llama_calls(tmp_path)
+
+
+def test_a_plain_run_name_with_a_dot_is_still_a_run(tmp_path: Path) -> None:
+    pipe = _Pipeline(tmp_path)
+    pipe.ready(stock=False, run="a1.5")
+    result = pipe.run("measure-final", "a1.5")
+    assert result.returncode == 0, result.stderr
+    [run] = [c for c in _docker_calls(tmp_path) if c[0] == "run"]
+    assert _option(run, "-v") == [f"{pipe.work / 'runs' / 'a1.5' / 'merged'}:/model:ro"]
+
+
+# serve_for_measure.sh's llama-server backend (a MODEL that is a .gguf file)
+
+
+def _gguf(tmp_path: Path) -> Path:
+    path = tmp_path / "quant" / "a1" / "model-q4_k_m.gguf"
+    path.parent.mkdir(parents=True)
+    path.write_bytes(b"GGUF fake")
+    return path
+
+
+def _alive_pid(path: Path) -> int:
+    return int(path.read_text(encoding="utf-8").split()[0])
+
+
+def test_serve_start_runs_llama_server_for_a_gguf_file(tmp_path: Path) -> None:
+    model = _gguf(tmp_path)
+    record = tmp_path / "out" / "a1.serve.json"
+    run_dir = tmp_path / "run"
+    llama = _fake_llama_server(tmp_path)
+    env = {**llama, "MEASURE_RUN_DIR": str(run_dir), "MEASURE_MODEL_NAME": "a1.q4_k_m"}
+    result = _serve(tmp_path, "start", str(model), "18061", str(record), MEASURE_IMAGE="", **env)
+    try:
+        assert result.returncode == 0, result.stderr
+        assert not _docker_calls(tmp_path)
+        pid_file = run_dir / "q46-measure-18061.pid"
+        pid = _alive_pid(pid_file)
+        deadline = time.time() + 10
+        while not _llama_calls(tmp_path) and time.time() < deadline:
+            time.sleep(0.1)
+        [served] = _llama_calls(tmp_path)
+        assert _option(served, "--model") == [str(model)]
+        assert _option(served, "--port") == ["18061"]
+        assert _option(served, "--host") == ["127.0.0.1"]
+        assert _option(served, "--alias") == ["a1.q4_k_m"]
+        saved = json.loads(record.read_text(encoding="utf-8"))
+        assert saved["backend"] == "llama-server"
+        assert saved["model_file"] == str(model)
+        assert saved["served_model_name"] == "a1.q4_k_m"
+        assert saved["port"] == 18061
+        assert "temperature 0" in saved["decoding"]
+        assert "built with fake-cc" in saved["version"]
+        assert saved["log"] == str(run_dir / "q46-measure-18061.log")
+        assert _alive(pid)
+    finally:
+        stopped = _serve(tmp_path, "stop", "18061", MEASURE_RUN_DIR=str(run_dir))
+    assert stopped.returncode == 0, stopped.stderr
+    deadline = time.time() + 10
+    while _alive(pid) and time.time() < deadline:
+        time.sleep(0.1)
+    assert not _alive(pid)
+    assert not pid_file.exists()
+    assert "llama-server stop" in _events(tmp_path)
+
+
+@pytest.mark.parametrize("setting", ["", "/no/such/llama-server"])
+def test_serve_start_refuses_a_gguf_without_a_runnable_llama_server(
+    setting: str, tmp_path: Path
+) -> None:
+    model = _gguf(tmp_path)
+    result = _serve(
+        tmp_path, "start", str(model), "18061", LLAMA_SERVER=setting, MEASURE_RUN_DIR=str(tmp_path)
+    )
+    assert result.returncode != 0
+    assert "LLAMA_SERVER" in result.stderr
+    assert not list(tmp_path.glob("q46-measure-*.pid"))
+
+
+def test_serve_start_refuses_a_second_llama_server_on_one_port(tmp_path: Path) -> None:
+    model = _gguf(tmp_path)
+    env = {**_fake_llama_server(tmp_path), "MEASURE_RUN_DIR": str(tmp_path / "run")}
+    first = _serve(tmp_path, "start", str(model), "18061", **env)
+    try:
+        assert first.returncode == 0, first.stderr
+        second = _serve(tmp_path, "start", str(model), "18061", **env)
+        assert second.returncode != 0
+        assert "stop 18061" in second.stderr
+    finally:
+        _serve(tmp_path, "stop", "18061", **env)
+
+
+def test_serve_stop_never_kills_a_process_it_did_not_start(tmp_path: Path) -> None:
+    other = subprocess.Popen(["sleep", "30"])
+    try:
+        run_dir = tmp_path / "run"
+        run_dir.mkdir()
+        (run_dir / "q46-measure-18061.pid").write_text(
+            f"{other.pid}\n{tmp_path / 'bin' / 'llama-server'}\n", encoding="utf-8"
+        )
+        result = _serve(tmp_path, "stop", "18061", MEASURE_RUN_DIR=str(run_dir))
+        assert result.returncode == 0, result.stderr
+        assert other.poll() is None
+        assert not (run_dir / "q46-measure-18061.pid").exists()
+    finally:
+        other.kill()
+        other.wait()
+
+
+def test_serve_wait_prints_llama_servers_log_when_it_dies(tmp_path: Path) -> None:
+    model = _gguf(tmp_path)
+    run_dir = tmp_path / "run"
+    full_log = tmp_path / "a1.serve.log"
+    env = {**_fake_llama_server(tmp_path), "MEASURE_RUN_DIR": str(run_dir), "FAKE_LLAMA_DIE": "1"}
+    started = _serve(tmp_path, "start", str(model), "18061", **env)
+    assert started.returncode == 0, started.stderr
+    result = _serve(
+        tmp_path,
+        "wait",
+        "18061",
+        str(full_log),
+        FAKE_CURL_STATUS="7",
+        MEASURE_WAIT_SECONDS="10",
+        MEASURE_POLL_SECONDS="0.2",
+        **env,
+    )
+    assert result.returncode == 2
+    assert "fake-llama: the last log line" in result.stderr
+    assert "stopped before it was ready" in result.stderr
+    assert "fake-llama" in full_log.read_text(encoding="utf-8")
+    assert not [c for c in _docker_calls(tmp_path) if c[0] == "logs"]
+    _serve(tmp_path, "stop", "18061", **env)
+
+
+def test_the_gguf_temperature_rule_is_documented() -> None:
+    """Deviation d3 is applied by flags for a GGUF (no generation_config.json)."""
+    text = _SERVE.read_text(encoding="utf-8")
+    header = text[: text.index("set -euo pipefail")]
+    assert "llama-server" in header and "--temp 0 --top-k 1" in header
+    assert "LLAMA_SERVER" in header
+    usage = _PIPELINE.read_text(encoding="utf-8")
+    usage = usage[: usage.index("set -euo pipefail")]
+    assert "<run>.awq" in usage and "<run>.q4_k_m" in usage
