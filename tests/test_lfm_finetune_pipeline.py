@@ -1166,3 +1166,15 @@ def test_train_scorer_trains_on_the_assembled_shared_dataset() -> None:
     assert '--train "$data"' in block
     assert "splits/train.json" not in block
     assert "run assemble first" in block
+
+
+def test_train_scorer_merges_and_stages_like_train() -> None:
+    """Issue 46 t23: a Track B run must be measurable by measure-val like Track A
+    -- a merged model dir with a greedy generation config and a staged revision."""
+    text = _PIPELINE.read_text(encoding="utf-8")
+    start = text.index("  train-scorer)")
+    block = text[start : text.index(";;", start)]
+    assert '--merge-only "$run/adapter"' in block
+    assert 'gen_config.py write "$run/merged"' in block
+    assert '--repo "$REPO-scorer"' in block
+    assert '> "$run/revision"' in block

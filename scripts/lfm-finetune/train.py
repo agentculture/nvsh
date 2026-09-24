@@ -288,7 +288,9 @@ def lora_targets(name: str) -> list[str]:
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--train", required=True, type=Path)
+    parser.add_argument(
+        "--train", type=Path, help="training examples (required unless --merge-only)"
+    )
     parser.add_argument("--val", type=Path, help="validation examples (loss only)")
     parser.add_argument("--out", required=True, type=Path)
     parser.add_argument("--base", default=DEFAULT_BASE)
@@ -323,6 +325,9 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - needs a GP
         merge_adapter(args.base, args.revision, args.merge_only, args.out / "merged")
         print(f"merged {args.merge_only} into {args.out / 'merged'}")
         return 0
+    if args.train is None:
+        print("train.py: --train is required unless --merge-only is given", file=sys.stderr)
+        return 2
 
     # Imported here so the helpers above work without a training environment.
     # unsloth must come first: importing it patches transformers.
