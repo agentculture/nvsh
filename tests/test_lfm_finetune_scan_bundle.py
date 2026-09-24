@@ -118,7 +118,8 @@ def test_scan_json_payload_structure(tmp_path):
     assert "hash" in payload
     assert "findings" in payload
     assert "clean" in payload
-    assert isinstance(payload["hash"], str) and len(payload["hash"]) == 64
+    assert isinstance(payload["hash"], str)
+    assert len(payload["hash"]) == 64
     assert isinstance(payload["findings"], list)
     assert isinstance(payload["clean"], bool)
 

@@ -190,7 +190,8 @@ def test_label_logits_are_restricted_to_the_candidate_tokens_at_each_last_positi
     logits = module.label_logits(model, input_ids, mask, torch.tensor(label_ids))
     assert tuple(logits.shape) == (4, len(label_ids))
     kept = model.kept[-1]
-    assert not isinstance(kept, int) and len(kept) <= 4  # never every position's logits
+    assert not isinstance(kept, int)
+    assert len(kept) <= 4  # never every position's logits
     # Each row's scores are the head's output at that row's own last real token.
     for row_index, row in enumerate(rows[:4]):
         alone = torch.tensor([row["input_ids"]])

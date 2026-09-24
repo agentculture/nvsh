@@ -258,7 +258,8 @@ def test_apache_card_names_the_base_family_and_the_given_parser() -> None:
         teachers=_apache_teachers(),
     )
     front = card.split("---")[1]
-    assert "- liquid" not in front and "- lfm2.5" not in front
+    assert "- liquid" not in front
+    assert "- lfm2.5" not in front
     assert "- qwen" in front
     assert 'tool_call_parser = "qwen3_coder"' in card
     assert "lfm2" not in card.split("## Use with nvsh")[1].split("##")[0]
@@ -410,7 +411,8 @@ def test_the_card_lists_the_runs_own_teachers_and_their_roles(tmp_path) -> None:
     assert "| Qwen 3.8 27B | Apache-2.0 | copyedited it |" in card
     assert "| Gemma 4 26B-A4B | Apache-2.0 | reviewer A, advisory" in card
     assert "| Qwen 3.8 27B | Apache-2.0 | accepted it (reviewer B, deciding) |" in card
-    assert "Nemotron" not in card and "OpenMDW" not in card
+    assert "Nemotron" not in card
+    assert "OpenMDW" not in card
     assert "both reviewers accepted it" not in card
     assert "reviewer B's verdict alone decided" in card
 
@@ -484,7 +486,8 @@ def test_each_results_file_contributes_its_issue_46_table(tmp_path) -> None:
     card = (tmp_path / "bundle" / "README.md").read_text()
     assert "| Right proposals (metrics.py) | 31 of 32 |" in card
     assert "| Right proposals (metrics.py) | 32 of 32 |" in card
-    assert "final-a3-heal" in card and "edge-orin-a3-heal.q4_k_m" in card
+    assert "final-a3-heal" in card
+    assert "edge-orin-a3-heal.q4_k_m" in card
     assert "`edge-orin.md`" in card
     # the bench table, the note lines and the paths are not quoted
     assert "per source | 30 of 32" not in card
@@ -530,8 +533,10 @@ def test_a_gguf_bundle_holds_the_gguf_tokenizer_template_and_licence(tmp_path) -
     ]
     assert (out / "model-q4_k_m.gguf").read_bytes() == gguf.read_bytes()
     card = (out / "README.md").read_text()
-    assert "llama-server" in card and "--jinja" in card
-    assert "mmproj" in card and "text-only" in card
+    assert "llama-server" in card
+    assert "--jinja" in card
+    assert "mmproj" in card
+    assert "text-only" in card
     assert "--temp 0 --top-k 1" in card
     assert f"`{_QWEN_REPO}`" in card
     assert "Q4_K_M" in (out / "NOTICE").read_text()

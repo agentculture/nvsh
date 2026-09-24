@@ -1930,7 +1930,8 @@ def test_preflight_refuses_a_different_served_context(measure, models_server):
     with pytest.raises(measure.MeasureError) as excinfo:
         measure.preflight_models(_models_url(models_server), "good-model", ctx=4096)
     assert excinfo.value.code == measure.EXIT_ENV
-    assert "2048" in excinfo.value.message and "4096" in excinfo.value.message
+    assert "2048" in excinfo.value.message
+    assert "4096" in excinfo.value.message
 
 
 def test_preflight_refuses_when_the_served_context_cannot_be_read(measure, models_server):
@@ -1954,7 +1955,8 @@ def test_preflight_refuses_a_llama_server_with_another_context(measure, models_s
     _ModelsHandler.props_n_ctx = 4096
     with pytest.raises(measure.MeasureError) as excinfo:
         measure.preflight_models(_models_url(models_server) + "/v1", "good-model", ctx=2048)
-    assert "4096" in excinfo.value.message and "2048" in excinfo.value.message
+    assert "4096" in excinfo.value.message
+    assert "2048" in excinfo.value.message
 
 
 def test_preflight_refuses_a_llama_server_without_props(measure, models_server):
@@ -2008,7 +2010,8 @@ def test_scorer_failure_reason_reaches_stderr(measure, tmp_path, capsys):
     argv = _argv(split, tmp_path / "r.md", "--scorer", "in-process", models=(STOCK,))
     assert measure.main(argv, seams=harness.seams) == 2
     err = capsys.readouterr().err
-    assert "scorer start-up failed" in err and "transformers" in err
+    assert "scorer start-up failed" in err
+    assert "transformers" in err
 
 
 def test_tokenizer_option_reaches_the_scorer_spec(measure, tmp_path):
@@ -2021,7 +2024,8 @@ def test_tokenizer_option_reaches_the_scorer_spec(measure, tmp_path):
     argv = _argv(split, tmp_path / "r.md", "--scorer", "in-process", models=(STOCK,))
     argv += ["--tokenizer", "/models/merged"]
     measure.main(argv, seams=harness.seams)
-    assert built and built[0].tokenizer == "/models/merged"
+    assert built
+    assert built[0].tokenizer == "/models/merged"
 
 
 @pytest.mark.parametrize(

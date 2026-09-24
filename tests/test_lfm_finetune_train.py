@@ -257,7 +257,8 @@ def test_real_qwen_mask_is_answer_only(tool: str) -> None:
     answer = tokenizer.decode(kept)
     assert answer.startswith("<tool_call>\n<function=" + tool + ">")
     assert answer.endswith("</tool_call><|im_end|>")
-    assert "<think>" not in answer and "<|im_start|>" not in answer
+    assert "<think>" not in answer
+    assert "<|im_start|>" not in answer
     # Masked tokens form one contiguous run at the end of the answer turn.
     first = row["labels"].index(kept[0])
     assert row["labels"][first : first + len(kept)] == kept
@@ -419,7 +420,8 @@ def test_merge_only_needs_no_training_file() -> None:
     # so the merge-only path (and train-scorer's merge, t23) could not parse.
     module = _module()
     args = module._parser().parse_args(["--merge-only", "adapter", "--out", "o"])
-    assert args.train is None and str(args.merge_only) == "adapter"
+    assert args.train is None
+    assert str(args.merge_only) == "adapter"
 
 
 def test_training_without_a_training_file_is_refused(capsys) -> None:
