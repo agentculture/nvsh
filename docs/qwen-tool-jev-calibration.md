@@ -15,9 +15,11 @@ This page is a long-lived guide and ledger, owned only by the documentation
 subagent for plan task t10. It is updated in the same step as every run,
 obstacle or fix, in the style of `docs/qwen-tool-jev-finetune.md`.
 
-**Status: starting, 2026-09-25.** Wave 1 of the plan has begun: t1, t3, t4,
-t5, t9, t10 and t11 are in progress or started. See [Where the run
-stands](#where-the-run-stands) for the live picture.
+**Status: in progress, 2026-09-25.** Wave 1 of the plan has begun. t9, t10
+and t11 are merged; t1, t3, t4 and t5 are in progress. See [Where the run
+stands](#where-the-run-stands) for the live picture, and the [pre-registered
+decision rule](#the-pre-registered-checkpoint-decision-rule-t9) for how the
+chosen checkpoint will be picked.
 
 ## What this cycle is
 
@@ -118,9 +120,9 @@ this cycle's PRs. Marked *(planned)* until the task's PR merges.
 | `sweep_gate.py` | *(planned, new)* Offline threshold sweep over stored `predictions.jsonl` files, no GPU needed; refuses test/held-out without `--final`. | t6 |
 | `permutation_probe.py` | *(planned, new)* Runs the permutation seam at least 10 times per entry per perturbation kind (order, letters, subset, paraphrase) and reports the operation-level answer-change rate with n and a bootstrap 95% CI; never canonicalises runtime order. | t7 |
 | `measure.py` | *(planned)* Wires in the new readout, applies a fitted calibration file, renders per-slice reliability tables into the committed benchmark markdown, records complete/incomplete served counts, and fixes issue #57 (a failed startup no longer blocks a clean re-run under the same label). | t8 |
-| `docs/tool-jev-calibration-rule.md` | *(planned, new, docs-only)* The pre-registered checkpoint-selection rule — selection fold, ordered criteria, tie-breaks, and the calibration-aware-stage trigger — committed before the first training run of this cycle. | t9 |
+| `docs/tool-jev-calibration-rule.md` | **Merged** (commit `b1c6cb6`). The pre-registered checkpoint-selection rule — selection fold, ordered criteria, tie-breaks, and the calibration-aware-stage trigger — confirmed by the operator before any training. See [below](#the-pre-registered-checkpoint-decision-rule-t9). | t9 |
 | `docs/qwen-tool-jev-calibration.md` | This file. | t10 |
-| `docs/qwen-tool-jev-finetune.md`, `docs/benchmarks/2026-09-24-qwen-tool-jev-comparison.md`, `release_bundle.py` (model-card text) | *(planned)* Relabelled: Track A described as a specialized generative tool router, Track B as the Jev-style candidate scorer; no text calls them equally Jev-like. | t11 |
+| `docs/qwen-tool-jev-finetune.md`, `docs/benchmarks/2026-09-24-qwen-tool-jev-comparison.md`, `release_bundle.py` (model-card text) | **Merged.** Track A is now described as a specialized generative tool router and Track B as the Jev-style candidate scorer; no text calls them equally Jev-like. | t11 |
 | `split.py` | *(planned)* Can write a versioned corpus v2 (header records version, seed, source hashes, and the calibration fit/selection fold assignment) to a path outside `nvsh/`; validation and test sizes become parameters (validation >= 150, test ~150); never writes `nvsh/tiers/corpus`. | t12 |
 | `draft_heldout.py` | Unchanged tool from issue 46, reused to draft the new sealed held-out set for this cycle (lead reads counts and hashes only). | t13 |
 | `build_dataset.py`, `merge_variations.py` | *(planned)* Store each rendered example's offered candidates, order and letter map; generate deterministic missing-candidate / no-valid-option train examples from train entries only (`eval_slices.py`'s shape); an optional mode renders the corpus's 8 decline classes as distinct escalate-reason candidates, described from a scripts-side JSON, rolling up to escalate in gold labels. | t14 |
@@ -207,13 +209,50 @@ shaped several of this cycle's requirements.
   validation distributions, never inherited from a bf16 fit — carried into
   t17 and t19.
 
+## The pre-registered checkpoint decision rule (t9)
+
+Committed as `docs/tool-jev-calibration-rule.md` (commit `b1c6cb6`),
+confirmed by the operator before any training command of this cycle runs.
+Any run outside it, or any rerun, is a recorded `/deviate`, not a silent
+choice.
+
+- **Judged on the selection fold** of corpus v2 validation only; the fit
+  fold is used only to fit the temperature and gate thresholds for that
+  candidate. The fresh test side and the sealed held-out are never
+  consulted before the choice — they are measured once, after it (t20).
+- **Four pre-registered candidates**, each 3 epochs (issue 46 found 3 best
+  for Track B): `r1` (per-example randomized order/letters/subsets, corpus
+  v2, one escalate label), `r2` (`r1` plus the 8 escalation reasons as
+  distinct candidates — the c28 ablation), `r3` (`r1` at learning rate 1e-4,
+  following `b4`'s calibration lead), and a conditional `r4` (below).
+  `scorer-b1` is measured the same way as a reference point, but is not
+  itself a candidate.
+- **The rule, in order:** (1) hard filter — 0 wrong mutating actions on the
+  selection fold and its missing-candidate slice; (2) hard filter — right
+  proposals at least `scorer-b1`'s rate on the same fold minus 5 points;
+  (3) lowest permutation answer-change rate, pooled across perturbation
+  kinds (candidates within 1 point advance together); (4) lowest ECE after
+  temperature (candidates within 0.01 advance together); (5) highest
+  missing-candidate escalation rate; (6) ties broken by higher right-
+  proposal rate, then the simpler recipe (`r1` before `r3` before `r2`).
+  `r2`'s escalation reasons are kept only if `r2` wins under this rule.
+- **`r4`, the conditional calibration-aware stage**, runs only if the
+  chosen candidate's selection-fold ECE after temperature is still above
+  0.10: the same recipe plus label smoothing 0.1 and a Brier term (weight
+  0.5) beside cross-entropy. `r4` replaces the choice only if it wins under
+  the same rule; otherwise the choice stands and the miss is recorded. When
+  `r4` is not triggered, the selection-fold ECE that kept it off is
+  recorded as evidence.
+
 ## Where the run stands
 
-**Wave 1 started**, 2026-09-25: t1 (readout core), t3 (served readout cap),
-t4 (calibration-fit module), t5 (per-slice metrics), t9 (pre-registered
-decision rule), t10 (this guide) and t11 (Track A/B documentation relabel).
-No task has reported a completed run yet; this section will be updated at
-each step as the lead forwards findings.
+**Wave 1 in progress**, 2026-09-25. **Merged:** t9 (pre-registered decision
+rule, `b1c6cb6`), t10 (this guide) and t11 (Track A/B documentation
+relabel). **In progress:** t1 (readout core), t3 (served readout cap), t4
+(calibration-fit module) and t5 (per-slice metrics). No training run has
+happened yet — t9's rule is committed and operator-confirmed ahead of the
+cycle's first training command, as required. This section will be updated
+at each step as the lead forwards findings.
 
 ## Ledger (symptom -> cause -> fix)
 
@@ -226,6 +265,24 @@ each step as the lead forwards findings.
   t3); unify the label-probability definition (t1); fit `Q4_K_M`'s
   temperature and thresholds on its own validation distributions, not
   bf16's (t17, t19).
+- **P2, worktree/branch naming.** **Symptom:** setting up this cycle's
+  per-task worktrees under the plan's default naming (`agent/t1`, ...)
+  collided. **Cause:** branches and worktrees named `agent/t1..` already
+  existed on disk from earlier assign-to-workforce runs (issue 46's cycle
+  used the same default pattern). **Fix:** this cycle's task branches and
+  worktrees are namespaced by issue: `agent/i53-<task>` (for example this
+  guide's own `agent/i53-t10`) and worktree directories `i53-<task>` (for
+  example `i53-t10`), instead of the plan's bare `agent/<task>` default.
+- **P3, plan housekeeping — t22's date placeholder.** **Symptom:** the
+  exported plan failed markdownlint (MD033, bare/invalid inline HTML-like
+  token) on task t22's first acceptance criterion. **Cause:** the
+  acceptance line used a literal, unbackticked `<date>` placeholder for the
+  benchmark report's filename pattern
+  (`docs/benchmarks/<date>-tool-jev-calibration-cycle.md`), which
+  markdownlint parses as an HTML tag. **Fix:** the placeholder was
+  backticked (`` `<date>` ``); because the plan's content changed, t22
+  reverted to proposed and the operator re-confirmed it before it counted
+  as part of the approved split.
 
 ## Reproduce steps
 
