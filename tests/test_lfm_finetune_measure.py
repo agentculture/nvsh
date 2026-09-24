@@ -1714,16 +1714,18 @@ def test_preflight_accepts_a_server_serving_the_model(measure, models_server):
 
 
 def test_preflight_refuses_the_wrong_model_name(measure, models_server):
+    url = _models_url(models_server)
     with pytest.raises(measure.MeasureError) as excinfo:
-        measure.preflight_models(_models_url(models_server), "other-model")
+        measure.preflight_models(url, "other-model")
     assert excinfo.value.code == measure.EXIT_ENV
     assert "other-model" in excinfo.value.message
 
 
 def test_preflight_refuses_a_wrong_http_status(measure, models_server, monkeypatch):
     monkeypatch.setattr(_ModelsHandler, "status", 500)
+    url = _models_url(models_server)
     with pytest.raises(measure.MeasureError) as excinfo:
-        measure.preflight_models(_models_url(models_server), "good-model")
+        measure.preflight_models(url, "good-model")
     assert excinfo.value.code == measure.EXIT_ENV
     assert "500" in excinfo.value.message
 
@@ -1938,8 +1940,9 @@ def test_preflight_accepts_a_matching_served_context(measure, models_server, mon
 
 def test_preflight_refuses_a_different_served_context(measure, models_server, monkeypatch):
     monkeypatch.setattr(_ModelsHandler, "max_model_len", 2048)
+    url = _models_url(models_server)
     with pytest.raises(measure.MeasureError) as excinfo:
-        measure.preflight_models(_models_url(models_server), "good-model", ctx=4096)
+        measure.preflight_models(url, "good-model", ctx=4096)
     assert excinfo.value.code == measure.EXIT_ENV
     assert "2048" in excinfo.value.message
     assert "4096" in excinfo.value.message
@@ -1949,8 +1952,9 @@ def test_preflight_refuses_when_the_served_context_cannot_be_read(
     measure, models_server, monkeypatch
 ):
     monkeypatch.setattr(_ModelsHandler, "max_model_len", None)
+    url = _models_url(models_server)
     with pytest.raises(measure.MeasureError) as excinfo:
-        measure.preflight_models(_models_url(models_server), "good-model", ctx=4096)
+        measure.preflight_models(url, "good-model", ctx=4096)
     assert "max_model_len" in excinfo.value.message
 
 
@@ -1968,16 +1972,18 @@ def test_preflight_reads_a_llama_server_context_from_props(
 def test_preflight_refuses_a_llama_server_with_another_context(measure, models_server, monkeypatch):
     monkeypatch.setattr(_ModelsHandler, "owned_by", "llamacpp")
     monkeypatch.setattr(_ModelsHandler, "props_n_ctx", 4096)
+    url = _models_url(models_server) + "/v1"
     with pytest.raises(measure.MeasureError) as excinfo:
-        measure.preflight_models(_models_url(models_server) + "/v1", "good-model", ctx=2048)
+        measure.preflight_models(url, "good-model", ctx=2048)
     assert "4096" in excinfo.value.message
     assert "2048" in excinfo.value.message
 
 
 def test_preflight_refuses_a_llama_server_without_props(measure, models_server, monkeypatch):
     monkeypatch.setattr(_ModelsHandler, "owned_by", "llamacpp")
+    url = _models_url(models_server) + "/v1"
     with pytest.raises(measure.MeasureError) as excinfo:
-        measure.preflight_models(_models_url(models_server) + "/v1", "good-model", ctx=2048)
+        measure.preflight_models(url, "good-model", ctx=2048)
     assert "n_ctx" in excinfo.value.message or "max_model_len" in excinfo.value.message
 
 
@@ -1985,8 +1991,9 @@ def test_a_redirected_props_answer_is_refused(measure, models_server, monkeypatc
     """Codex: a redirect could carry the /props answer off localhost."""
     monkeypatch.setattr(_ModelsHandler, "owned_by", "llamacpp")
     monkeypatch.setattr(_ModelsHandler, "props_redirect", True)
+    url = _models_url(models_server) + "/v1"
     with pytest.raises(measure.MeasureError):
-        measure.preflight_models(_models_url(models_server) + "/v1", "good-model", ctx=2048)
+        measure.preflight_models(url, "good-model", ctx=2048)
 
 
 def test_props_are_not_consulted_for_a_server_that_is_not_llama_cpp(
@@ -1995,8 +2002,9 @@ def test_props_are_not_consulted_for_a_server_that_is_not_llama_cpp(
     monkeypatch.setattr(
         _ModelsHandler, "props_n_ctx", 2048
     )  # present, but the server does not say it is llama.cpp
+    url = _models_url(models_server)
     with pytest.raises(measure.MeasureError):
-        measure.preflight_models(_models_url(models_server), "good-model", ctx=2048)
+        measure.preflight_models(url, "good-model", ctx=2048)
 
 
 def test_preflight_without_ctx_is_unchanged(measure, models_server, monkeypatch):

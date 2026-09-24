@@ -159,7 +159,7 @@ def _write(tmp_path: Path, rows: list[dict]) -> Path:
     return path
 
 
-@pytest.fixture()
+@pytest.fixture
 def result(metrics, tmp_path):
     return metrics.compute(metrics.read_predictions(_write(tmp_path, _fixture_rows())))
 
@@ -206,8 +206,9 @@ def test_read_predictions_round_trips_the_fixture(metrics, tmp_path):
 def test_read_predictions_rejects_bad_records_with_the_line(metrics, tmp_path, mutate, fragment):
     rows = _fixture_rows()
     mutate(rows[0])
+    path = _write(tmp_path, rows)
     with pytest.raises(metrics.MetricsError) as info:
-        metrics.read_predictions(_write(tmp_path, rows))
+        metrics.read_predictions(path)
     assert "line 1" in str(info.value)
     assert fragment in str(info.value)
 
@@ -219,8 +220,9 @@ def test_read_predictions_rejects_unparseable_json_and_duplicate_ids(metrics, tm
         metrics.read_predictions(path)
     rows = _fixture_rows()
     rows[1]["id"] = "p1"
+    duplicated = _write(tmp_path, rows)
     with pytest.raises(metrics.MetricsError, match="duplicate"):
-        metrics.read_predictions(_write(tmp_path, rows))
+        metrics.read_predictions(duplicated)
 
 
 # ---------------------------------------------------------------------------

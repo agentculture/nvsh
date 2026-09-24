@@ -102,8 +102,9 @@ def test_a_label_stays_with_its_candidate_when_others_are_not_offered() -> None:
 
 
 def test_an_unknown_candidate_is_refused() -> None:
+    module = _module()
     with pytest.raises(ValueError, match="not a candidate"):
-        _module().labels_for(("no_such_operation",))
+        module.labels_for(("no_such_operation",))
 
 
 # -- the distribution --
@@ -409,8 +410,9 @@ class _OneTokenPerChar:
 
 def test_label_token_ids_refuses_a_label_that_is_not_a_single_token() -> None:
     module = _module()
+    tokenizer = _OneTokenPerChar()
     with pytest.raises(ValueError, match="single token"):
-        module.label_token_ids(_OneTokenPerChar(), {"a": "AB"})
+        module.label_token_ids(tokenizer, {"a": "AB"})
 
 
 def test_label_token_ids_refuses_two_labels_sharing_a_token() -> None:
@@ -420,8 +422,9 @@ def test_label_token_ids_refuses_two_labels_sharing_a_token() -> None:
         def encode(self, text, add_special_tokens=False):
             return [1]
 
+    tokenizer = _Same()
     with pytest.raises(ValueError, match="share"):
-        module.label_token_ids(_Same(), {"a": "A", "b": "B"})
+        module.label_token_ids(tokenizer, {"a": "A", "b": "B"})
 
 
 def _qwen_tokenizer():

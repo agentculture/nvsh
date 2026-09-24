@@ -74,8 +74,9 @@ def test_gold_candidate_maps_each_expectation_kind() -> None:
 
 
 def test_a_gold_operation_outside_the_table_is_refused() -> None:
+    module = _module()
     with pytest.raises(ValueError, match="not a candidate"):
-        _module().gold_candidate({"operation": "no_such_operation"})
+        module.gold_candidate({"operation": "no_such_operation"})
 
 
 def test_read_split_returns_request_text_and_gold_for_each_entry(tmp_path) -> None:
@@ -89,23 +90,24 @@ def test_read_split_returns_request_text_and_gold_for_each_entry(tmp_path) -> No
 def test_training_refuses_any_side_but_train(tmp_path) -> None:
     module = _module()
     for side in ("val", "test"):
+        path = _split(tmp_path, side, _ENTRIES)
         with pytest.raises(ValueError, match="side"):
-            module.read_split(_split(tmp_path, side, _ENTRIES), module.TRAIN_SIDE)
+            module.read_split(path, module.TRAIN_SIDE)
 
 
 def test_validation_reads_only_the_val_side(tmp_path) -> None:
     module = _module()
     assert module.read_split(_split(tmp_path, "val", _ENTRIES), module.VAL_SIDE)
+    test_path = _split(tmp_path, "test", _ENTRIES)
     with pytest.raises(ValueError, match="side"):
-        module.read_split(_split(tmp_path, "test", _ENTRIES), module.VAL_SIDE)
+        module.read_split(test_path, module.VAL_SIDE)
 
 
 def test_the_held_out_split_is_refused_by_name_and_by_header(tmp_path) -> None:
     module = _module()
+    named = _split(tmp_path, "train", _ENTRIES, name="held-out.json")
     with pytest.raises(ValueError, match="held-out"):
-        module.read_split(
-            _split(tmp_path, "train", _ENTRIES, name="held-out.json"), module.TRAIN_SIDE
-        )
+        module.read_split(named, module.TRAIN_SIDE)
     path = tmp_path / "renamed.json"
     path.write_text(json.dumps({"header": "Held-out split: sealed.", "entries": _ENTRIES}))
     with pytest.raises(ValueError, match="held-out"):
@@ -114,8 +116,9 @@ def test_the_held_out_split_is_refused_by_name_and_by_header(tmp_path) -> None:
 
 def test_a_split_with_no_entries_is_refused(tmp_path) -> None:
     module = _module()
+    path = _split(tmp_path, "train", [])
     with pytest.raises(ValueError, match="no entries"):
-        module.read_split(_split(tmp_path, "train", []), module.TRAIN_SIDE)
+        module.read_split(path, module.TRAIN_SIDE)
 
 
 # -- encoding --
@@ -137,8 +140,9 @@ def test_encode_puts_the_gold_index_on_the_rendered_prompt(tmp_path) -> None:
 def test_encode_refuses_a_prompt_over_max_length_rather_than_cutting_it(tmp_path) -> None:
     module = _module()
     examples = module.read_split(_split(tmp_path, "train", _ENTRIES), module.TRAIN_SIDE)
+    tokenizer = _Tokenizer()
     with pytest.raises(ValueError, match="over 5"):
-        module.encode(_Tokenizer(), examples, max_length=5)
+        module.encode(tokenizer, examples, max_length=5)
 
 
 def test_file_sha256_names_the_exact_split_bytes(tmp_path) -> None:

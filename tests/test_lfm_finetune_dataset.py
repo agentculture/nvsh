@@ -553,8 +553,9 @@ def test_verify_round_trip_raises_on_a_mismatched_parse():
     def _wrong_parse(rendered: str) -> tuple[str, dict]:
         return "not-escalate", {}
 
+    tokenizer = _FakeTemplateTokenizer()
     with pytest.raises(ValueError, match="round-trip"):
-        module.verify_round_trip(example, _FakeTemplateTokenizer(), _wrong_parse)
+        module.verify_round_trip(example, tokenizer, _wrong_parse)
 
 
 @pytest.mark.parametrize("outcome", ["propose", "escalate", "explain"])
@@ -587,8 +588,9 @@ def test_qwen_tokenizer_refuses_string_arguments_like_lfm():
     platform = world_platform(load_world(dev_corpus_path()))
     propose_entry = next(e for e in entries if e.expect.get("args"))
     example = module.example_from_entry(propose_entry, platform, module.ARGUMENTS_AS_STRING)
-    with pytest.raises(Exception):
-        tokenizer.apply_chat_template(example["messages"], tools=example["tools"], tokenize=False)
+    messages, tools = example["messages"], example["tools"]
+    with pytest.raises(TypeError, match="mapping"):
+        tokenizer.apply_chat_template(messages, tools=tools, tokenize=False)
 
 
 def test_lfm_tokenizer_refuses_string_arguments():
@@ -600,8 +602,10 @@ def test_lfm_tokenizer_refuses_string_arguments():
     platform = world_platform(load_world(dev_corpus_path()))
     propose_entry = next(e for e in entries if e.expect.get("args"))
     example = module.example_from_entry(propose_entry, platform, module.ARGUMENTS_AS_STRING)
-    with pytest.raises(Exception):
-        tokenizer.apply_chat_template(example["messages"], tools=example["tools"], tokenize=False)
+    jinja2 = pytest.importorskip("jinja2")
+    messages, tools = example["messages"], example["tools"]
+    with pytest.raises(jinja2.exceptions.TemplateError, match="must be a mapping"):
+        tokenizer.apply_chat_template(messages, tools=tools, tokenize=False)
 
 
 def test_qwen_tokenizer_operation_before_arguments_default_order_round_trips():
@@ -648,12 +652,10 @@ def test_build_fails_when_the_tokenizer_render_mismatches():
     """Reproduces finding #6: before this fix, verify_round_trip was never
     called from build() at all, so this mismatch shipped silently."""
     module = _module()
+    corpus = dev_corpus_path()
+    tokenizer = _MismatchingPythonicTokenizer()
     with pytest.raises(ValueError, match="round-trip"):
-        module.build(
-            dev_corpus_path(),
-            verify_render=True,
-            tokenizer=_MismatchingPythonicTokenizer(),
-        )
+        module.build(corpus, verify_render=True, tokenizer=tokenizer)
 
 
 def test_build_does_not_verify_by_default():
@@ -682,9 +684,10 @@ def test_qwen_build_with_string_arguments_fails_the_round_trip_guard():
     test_qwen_tokenizer_refuses_string_arguments_like_lfm already shows."""
     module = _module()
     tokenizer = _cached_tokenizer(_QWEN_BASE, _QWEN_REVISION)
-    with pytest.raises(Exception):
+    corpus = dev_corpus_path()
+    with pytest.raises(TypeError, match="mapping"):
         module.build(
-            dev_corpus_path(),
+            corpus,
             module.ARGUMENTS_AS_STRING,
             verify_render=True,
             base=_QWEN_BASE,

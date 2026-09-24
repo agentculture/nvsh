@@ -73,15 +73,17 @@ def test_a_non_train_split_is_refused() -> None:
 def test_two_variations_with_the_same_id_are_refused_even_with_different_text() -> None:
     module = _module()
     variations = [_variation("How busy is the GPU?"), _variation("Show me GPU usage")]
+    split = _split()
     with pytest.raises(ValueError, match="g1~v1"):
-        module.merge(_split(), variations)
+        module.merge(split, variations)
 
 
 def test_a_variation_id_equal_to_a_split_entry_id_is_refused() -> None:
     module = _module()
     variations = [_variation("How busy is the GPU?", id="g1")]
+    split = _split()
     with pytest.raises(ValueError, match="g1"):
-        module.merge(_split(), variations)
+        module.merge(split, variations)
 
 
 def test_a_variation_from_another_side_is_refused() -> None:

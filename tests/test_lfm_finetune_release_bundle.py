@@ -157,19 +157,21 @@ class TestApacheLicenceKind:
     """Apache-2.0 licence-path through release_bundle."""
 
     def test_apache_bundle_refuses_a_non_apache_licence(self, tmp_path: Path) -> None:
-        _module()  # ensure module is available
+        module = _module()
         base_snapshot = _base(tmp_path)  # LFM licence by default
         results = tmp_path / "r7-val.md"
         results.write_text(_RESULTS)
+        merged = _merged(tmp_path)
+        out = tmp_path / "bundle"
         with pytest.raises(ValueError, match="not Apache-2.0"):
-            _module().build(
-                merged=_merged(tmp_path),
+            module.build(
+                merged=merged,
                 base_snapshot=base_snapshot,
                 repo="jetson-ai-lab/lfm2.5-350m-nvsh-triage",
                 run="r7",
                 results=results,
                 data_summary="945 examples from nvsh's train split.",
-                out=tmp_path / "bundle",
+                out=out,
                 licence_kind="apache",
             )
 
@@ -421,8 +423,9 @@ def test_run_teachers_refuses_a_non_apache_teacher(tmp_path) -> None:
     table = dict(_TEACHER_TABLE)
     table["senses"] = {"name": "Nemotron 3.5 Lightning", "licence": "OpenMDW-1.1"}
     teacher_file, accepted, train = _teachers(tmp_path, table=table)
+    module = _module()
     with pytest.raises(ValueError, match="Apache"):
-        _module().run_teachers(teacher_file, accepted, train, apache_only=True)
+        module.run_teachers(teacher_file, accepted, train, apache_only=True)
 
 
 def test_an_apache_build_refuses_teachers_not_checked_for_apache(tmp_path) -> None:
@@ -674,5 +677,6 @@ def test_main_needs_the_accepted_and_train_files_with_teacher_models(tmp_path) -
         "--out",
         str(tmp_path / "bundle"),
     ]
+    module = _module()
     with pytest.raises(SystemExit):
-        _module().main(argv)
+        module.main(argv)

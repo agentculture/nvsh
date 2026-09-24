@@ -171,8 +171,9 @@ def test_without_markers_rendering_switches_thinking_off() -> None:
 
 
 def test_without_markers_an_example_over_max_length_is_refused() -> None:
+    module, tokenizer, example = _module(), _NoMarkerTokenizer(), _single_turn()
     with pytest.raises(ValueError, match="over 5"):
-        _module().tokenize_example(_NoMarkerTokenizer(), _single_turn(), max_length=5)
+        module.tokenize_example(tokenizer, example, max_length=5)
 
 
 def test_with_markers_the_assistant_mask_is_still_used() -> None:

@@ -1029,8 +1029,9 @@ def test_nonempty_think(mod, message, expected):
 
 
 def test_preflight_refuses_the_wrong_model_name(mod, fake_server):
+    url = _base_url(fake_server)
     with pytest.raises(RuntimeError, match="other-model"):
-        mod.preflight_models(_base_url(fake_server), "other-model")
+        mod.preflight_models(url, "other-model")
 
 
 def test_preflight_refuses_a_refused_connection(mod):

@@ -231,8 +231,9 @@ def test_an_unknown_teacher_alias_is_refused(tmp_path) -> None:
 def test_load_role_models_rejects_a_malformed_entry(tmp_path) -> None:
     path = tmp_path / "bad.json"
     path.write_text(json.dumps({"worker": {"name": "Qwen"}}))
+    module = _module()
     with pytest.raises(ValueError, match="licence"):
-        _module().load_role_models(path)
+        module.load_role_models(path)
 
 
 def _two_variation_inputs(
@@ -328,8 +329,9 @@ def test_apache_only_checks_every_used_teacher_not_just_the_first(tmp_path) -> N
     inputs = _two_variation_inputs(
         tmp_path, second_models=second_models, role_models_table=table, apache_only=True
     )
+    module = _module()
     with pytest.raises(ValueError, match="Apache"):
-        _module().build(**inputs)
+        module.build(**inputs)
 
 
 def test_the_shared_corrector_reviewer_b_disclosure_compares_resolved_names(tmp_path) -> None:
@@ -452,7 +454,7 @@ def test_teacher_summary_derives_roles_and_the_decision_rule_from_the_run(tmp_pa
     assert summary.decisions == {"reviewer_b": 1}
     assert summary.shared_corrector_reviewer_names == ["Qwen 3.8 27B"]
     rows = module.teacher_rows(summary)
-    assert ("Gemma 4 26B-A4B", "Apache-2.0") == rows[2][:2]
+    assert rows[2][:2] == ("Gemma 4 26B-A4B", "Apache-2.0")
     assert "advisory" in rows[2][2]
 
 
@@ -460,13 +462,10 @@ def test_teacher_summary_refuses_a_non_apache_teacher(tmp_path) -> None:
     module = _module()
     table = dict(_ROLE_MODELS)
     table["senses"] = {"name": "Nemotron 3.5 Lightning", "licence": "OpenMDW-1.1"}
+    reviews = {"dev-a~v1": _reviewer_b_row()}
+    role_models = module.load_role_models(_role_models_file(tmp_path, table))
     with pytest.raises(ValueError, match="Apache"):
-        module.teacher_summary(
-            [{"id": "dev-a~v1"}],
-            {"dev-a~v1": _reviewer_b_row()},
-            module.load_role_models(_role_models_file(tmp_path, table)),
-            apache_only=True,
-        )
+        module.teacher_summary([{"id": "dev-a~v1"}], reviews, role_models, apache_only=True)
 
 
 def test_several_rejected_files_are_counted_together(tmp_path) -> None:
