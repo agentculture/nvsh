@@ -11,10 +11,11 @@ spark2). Both are scored by one harness on one clean test side against stock.
 This page is the design, the code map, the split, a ledger of every problem
 hit and its fix, and the steps to reproduce the run.
 
-**Status: in progress, 2026-09-23.** The tooling is built and reviewed, the
-spikes are done, the split is re-seeded, and the reviewer-B re-review is
-running. Nothing has been trained yet. Steps not yet run are marked *(not yet
-run)*, and anything not checked is marked *(unverified)* or listed under
+**Status: in progress, 2026-09-24.** The tooling is built and reviewed, the
+spikes are done, the split is re-seeded, the stock baseline is measured on
+validation, and the reviewer-B re-review is running at its final settings.
+Nothing has been trained yet. Steps not yet run are marked *(not yet run)*,
+and anything not checked is marked *(unverified)* or listed under
 [Not verified yet](#not-verified-yet). The dated [run log](#run-log-issue-46)
 at the end records each step as it happens.
 
@@ -25,21 +26,36 @@ are CC-BY-4.0 and are used as a test set only; nothing trained on them is
 published here. Training happens on development machines. **nvsh itself
 never trains and never uploads.**
 
-## Where the run stands (2026-09-23, about 18:50)
+## Where the run stands (2026-09-24, about 03:00)
 
 - **Done:** the tooling is complete and live-checked. The sealed held-out
-  set is done: 69 entries, sha256 `5eb650f9...`.
-- **Running:** the reviewer-B re-review with thinking on, over 1,176
-  candidates. About 92% are accepted so far. One empty-reply error will be
-  retried by resuming.
-- **Next, data:** augment the 95 new train-side sources through the
-  all-Apache pipeline. Then filter and exclude (the new validation and test
-  sides, issue 39's old test side, the held-out texts), assemble, scan,
-  freeze with hashes, and copy to spark2.
-- **Then, models:** the stock baseline at 2K and 4K; Track A on spark and
-  Track B on spark2; one final run per checkpoint plus Track A's exact
-  calibration; quantization; the edge check on AGX Orin; a private upload
-  (with the operator's approval); the report; and a PR ("part of #46").
+  set is done: 69 entries, sha256 `5eb650f9...`. t21, the stock baseline on
+  validation, is done (numbers in [Reproduce it, step
+  9](#9-stock-baseline-t21-done-on-validation)).
+- **Running:** t18, a clean-slate re-review at the fixed settings (thinking
+  on, temperature 0.2, `reasoning_effort` xhigh, 900 s timeout, 2 workers),
+  started 2026-09-23 ~22:50 over all 1,176 candidates. About 935 of 1,176
+  done, about 97% accepted so far (up from 86% before the prompt fix in
+  d10). ETA was about 3 hours from the start.
+- **Prepared, not yet run:** t19, augmenting the 43 train-side sources that
+  are not old issue-39 test entries (22 operation, 12 explain, 9 escalate;
+  258 variations at 6 per source), decided by reviewer B alone (d11);
+  leakage checks and a stricter `assemble` are built (d14, branch
+  `agent/q46-f17`, under review, not yet merged into this branch).
+- **Also done since the last update:** t20, spark2 re-synced (versions
+  identical to spark's, see [Training environment](#1-training-environment-spark-and-spark2));
+  t21, the stock baseline on validation (2K and 4K) and the Jetson skills
+  eval at `MEASURE_CTX=8192` (numbers below); t22, a `--targets
+  attn-mlp-gdn` option added to `train.py` for the linear-attention LoRA
+  comparison (plan risk r9), also on `agent/q46-f17`.
+- **Next, data:** run t19 once its branch merges, then filter and exclude
+  (the new validation and test sides, issue 39's old test side, the
+  held-out texts, the sealed held-out), assemble, scan, freeze with hashes,
+  and copy to spark2.
+- **Then, models:** Track A on spark and Track B on spark2; one final run
+  per checkpoint plus Track A's exact calibration; quantization; the edge
+  check on AGX Orin; a private upload (with the operator's approval); the
+  report; and a PR ("part of #46").
 
 ## What "successful" means
 
@@ -162,6 +178,82 @@ decision.
   measures one model. Proposed by the lead and approved by the operator.
   Built as task h2 (`serve_for_measure.sh` and the pipeline's measure
   stages, merged in `1062123`).
+- **d8, the re-review is a clean slate.** The fresh, thinking reviewer B
+  verdict plus the deterministic guards decide each candidate; stored
+  verdicts are kept only as `prior_verdicts` and never bias the fresh call.
+  Each reviewer call is one independent two-message request (the rules plus
+  one candidate's text and expected answer; no history, no examples, no
+  prior verdict). `augment.py --rederive-clean-slate` re-derives what the
+  old rule would have said, offline, for comparison only. Operator decision,
+  2026-09-23 ~20:40. *Merge:* `ce72f01` (`f13`); Codex found 5 issues in the
+  offline re-derive (duplicate ids twice, a wrong agreement count, a
+  needless reviewer config, dry-run writing output), fixed in `ccd8a03`.
+- **d9, reviewer temperature 0.2.** `NVSH_AUG_<ROLE>_TEMPERATURE`, recorded
+  per record and per verdict; the generator keeps 0.7. Timeout 900 s,
+  `--workers 2`. Reason: a probe of two real reviewer calls found about 90%
+  of wall time was queue wait on the shared gateway model, not thinking, and
+  the operator judged temperature 0.7 too hallucination-prone for a judge.
+  All 1,176 candidates are redone at 0.2 so every verdict comes from one
+  setting; the 0.7 clean-slate outputs are archived (not committed).
+  *Merges:* `7a2810a`/`e9d8495` (the temperature knob), `1a35540` (the
+  decision record).
+- **d10, reviewer prompt fix, conservative parser, calibration.** A wording
+  fix ("run this read-only check (its output is shown to the user as the
+  answer)") stopped the reviewer misreading a correct read-only proposal as
+  incomplete. The verdict parser stayed deliberately conservative — a
+  loosening tried during this fix let real rejections through and was
+  reverted — and was hardened over three Codex review rounds (markdown- and
+  underscore-wrapped "no", a trailing "no", ", no,", "Yes, not ...",
+  certainty words in the first four words). Replay of 977 stored accepts: 0
+  newly rejected. A new deterministic `handoff_check` guard rejects requests
+  that ask for the hand-off in words ("escalate this to a human agent"): 2
+  of 1,176 candidates, no false positives against phrases like "privilege
+  escalation" or "UEFI handoff". `NVSH_AUG_<ROLE>_REASONING_EFFORT` was
+  added and is recorded per call; `calibrate_reviewer.py` builds a
+  deterministic known-good/known-bad probe (seed 46) to check a reviewer
+  setting before a full run. *Merge:* `56765d1` (`f15`).
+- **d11, reviewer B alone decides t19.** For the fresh variations t19 will
+  generate, `augment.py --decide-by reviewer_b` lets reviewer B's verdict
+  plus the deterministic guards decide on their own; reviewer A is still
+  asked and its verdict is still recorded, but does not gate acceptance.
+  Every record carries both `decided_by` and both verdicts, so the
+  comparison is not lost. Reason: reviewer A (Gemma 4 26B-A4B, no thinking)
+  probed at 3 false accepts and 2 false rejects, mostly on escalate versus
+  a listed check — it answers "can the assistant handle this" rather than
+  "is this response right". Proposed by the lead; Codex review found no
+  issues. *Merge:* `ed01957`, recorded in `580675a`.
+- **d12, stock's test-side run happens once, in t24.** Stock's only
+  test-side and held-out measurement runs in t24, alongside the tuned
+  checkpoints, rather than as an earlier separate baseline pass. The Jetson
+  skills regression margin is committed before any tuned-checkpoint score
+  is seen: a tuned checkpoint passes the skills check if its overall
+  accuracy is at least stock's minus 5 points (out of 104) and its
+  not-named accuracy is at least stock's minus 5 points (out of 70) — a
+  regression guard reported with the raw counts, not a fixed pass bar.
+  Committed at `580675a`, before the skills run.
+- **d13, skills evals are served at `MEASURE_CTX=8192` for every model.** A
+  single skills prompt listing all 38 tools is 3,939 tokens: at 2K every one
+  of the 104 evals was a call error (the tier-error gate refuses to write a
+  results page at all), and 4K leaves no room for the reply. 8K is the
+  smallest context that leaves headroom for both the prompt and the answer,
+  and it is used for stock and every tuned checkpoint alike so the skills
+  numbers stay comparable.
+- **d14, leakage checking before assembly.** Of the 95 train-side sources
+  that had no stored variations, 52 are old issue-39 test entries (already
+  excluded from training); t19 augments only the remaining 43. A new
+  `leakage_check.py` flags a variation as leaked against exact match, a
+  5-token shingle Jaccard of at least 0.8, or a word-set Jaccard of at least
+  0.8 for texts of 4 or more words (ids only — it never reads or logs the
+  matched text, so it is safe to run against the sealed held-out).
+  `assemble` now merges with `--filter-to-split`, excludes validation, test
+  and `PROTECTED_EXTRA` (the issue-39 test split, the corpus held-out and
+  the sealed held-out), and runs `leakage_check.py` before rendering. A dry
+  run on the current data found 52 issue-39 test sources and 1 train source
+  identical to a test entry inside the 301-entry train split, plus 7
+  re-reviewed variations matching protected text (2 against the sealed
+  held-out, 2 against validation, 1 against test, 2 against issue-39's old
+  test side). *Commit:* `4580c06`, on branch `agent/q46-f17`, under review
+  and not yet merged into this branch.
 
 ### Quantization plan
 
@@ -446,16 +538,52 @@ filtered input with `--workers 4` (deviation d4) *(exact invocation
 unverified)*. `--dry-run` reports the count and exits; `--sample N` runs the
 pilot.
 
-### 6. Augment the new train sources *(not yet run)*
+The re-review that actually ran (t18) went through several settings changes
+before it reached the fixed configuration; see the [run
+log](#run-log-issue-46) for the stall, the timeout fix and the effort
+calibration that produced them. The final, fixed settings are: **clean
+slate** (d8: fresh reviewer B verdict plus deterministic guards decide;
+stored verdicts kept only as `prior_verdicts`), **temperature 0.2** (d9),
+**`reasoning_effort` xhigh** (d10, the calibration probe's choice), **900 s
+timeout, `--workers 2`** (d9 — matched to the gateway's `--max-num-seqs=2`
+so no request queues behind another). Before a full run at a new setting,
+run the calibration probe first:
 
 ```bash
-grant run --inject NVSH_GATEWAY_KEY=<secret> -- $P --env qwen.env augment-nvsh
+grant run --inject NVSH_GATEWAY_KEY=<secret> -- \
+  python scripts/lfm-finetune/calibrate_reviewer.py --seed 46
+```
+
+`calibrate_reviewer.py` builds a deterministic known-good/known-bad probe
+(good pairs per class; bad pairs: a different read-only check, a mutating
+change for a read request, escalate for an operation request, an operation
+for an escalate request, a hand-off request) and reports false accepts and
+false rejects per `reasoning_effort`. Only then run the full re-review:
+
+```bash
+grant run --inject NVSH_GATEWAY_KEY=<secret> -- \
+  $P --env qwen.env rereview --workers 2
+```
+
+### 6. Augment the new train sources *(not yet run)*
+
+Only the 43 train-side sources without a stored variation and without a
+matching issue-39 test entry are augmented (d14); the other 52 of the 95 are
+old issue-39 test sources and are excluded from training regardless.
+Reviewer B alone decides acceptance (d11); reviewer A is still asked and
+recorded, but never gates it:
+
+```bash
+grant run --inject NVSH_GATEWAY_KEY=<secret> -- \
+  $P --env qwen.env augment-nvsh --decide-by reviewer_b
 $P --env qwen.env filter-variations
 ```
 
 `augment-nvsh` is resumable and skips variation ids already written.
 `filter-variations` counts accepted variations against the train split
-without touching `assemble`'s output.
+without touching `assemble`'s output. `--decide-by reviewer_b` records both
+verdicts and `decided_by` on every new record, so the two reviewers' outputs
+stay comparable even though only one decides.
 
 ### 7. Assemble and freeze *(not yet run)*
 
@@ -463,12 +591,27 @@ without touching `assemble`'s output.
 $P --env qwen.env assemble
 ```
 
-This merges the variations (with `--exclude` over val and test) and builds
-`$WORK/data/nvsh-train.jsonl`, round-tripping one rendered example per
-outcome through the Qwen template. After this the data is frozen; any later
-change is a recorded deviation (decision c40).
+This merges the variations with `--filter-to-split`, excludes validation,
+test and `PROTECTED_EXTRA` (issue 39's old test split, the corpus held-out
+and the sealed held-out — d14), runs `leakage_check.py` against every
+protected side (exact match, or a 5-token shingle or word-set Jaccard of at
+least 0.8; ids only), and builds `$WORK/data/nvsh-train.jsonl` from the
+filtered file only, round-tripping one rendered example per outcome through
+the Qwen template. After this the data is frozen; any later change is a
+recorded deviation (decision c40). `leakage_check.py` can also be run by
+hand, printing counts and matching ids only (never text), so it is safe to
+run against the sealed held-out before the final run:
 
-### 8. Grounding snapshot *(not yet run)*
+```bash
+python scripts/lfm-finetune/leakage_check.py --train "$WORK/data/nvsh-train.jsonl" \
+  --protected "$WORK/splits/val.json" "$WORK/splits/test.json" <held-out file> \
+  [--out-filtered <cleaned file>]
+```
+
+With `--out-filtered` it writes the training file without the matched
+entries and exits 0; otherwise any match exits 1.
+
+### 8. Grounding snapshot
 
 ```bash
 python scripts/lfm-finetune/measure.py snapshot --out "$GROUND_SNAPSHOT" \
@@ -480,7 +623,12 @@ counts only. `GROUND_SNAPSHOT` is a required key in the env file, and the
 pipeline's `measure-val` and `measure-final` stages pass it to every
 measurement.
 
-### 9. Stock baseline *(not yet run as a final baseline)*
+This run's snapshot: 263 services (253 read from spark, 10 more only in the
+validation/test/held-out split files) and 34 containers (30 from spark, 4
+more only in the split files). As always, only counts were printed; entry
+text was not read.
+
+### 9. Stock baseline (t21, done on validation)
 
 Every model is measured the same way (deviation d7). The pipeline's measure
 stages take one name each, `stock` for the stock copy in `$WORK/stock` or a
@@ -523,8 +671,30 @@ tuned run is scored:
 $P --env qwen.env measure-val stock
 ```
 
-For 4K, set `MEASURE_CTX=4096` and pass `--ctx 4096`
-*(the 4K run is not yet recorded)*.
+For 4K, **export** `MEASURE_CTX=4096` before calling the pipeline rather
+than only setting it in the env file: an exported `MEASURE_CTX` outranks the
+env file's value (lapse l3, below), and `measure-val`/`measure-final`
+already always pass `--ctx "$MEASURE_CTX"` themselves — passing your own
+`--ctx` on top is refused. A non-2048 `measure-val` run is named
+`<name>-val-ctx<N>` (`stock-val-ctx4096` here).
+
+```bash
+export MEASURE_CTX=4096
+$P --env qwen.env measure-val stock
+```
+
+**t21 results (validation, pinned vLLM helper):**
+
+| Ctx | Right proposals | Escalations | Explanations | Wrong mutating | Warm median | Warm p95 |
+|---|---|---|---|---|---|---|
+| 2K | 0 of 32 | 10 of 16 | 7 of 18 | 0 (1 mutating proposal with wrong arguments) | 678 ms | 2,072 ms |
+| 4K (served at `--max-model-len 4096`, verified) | 0 of 32 | 10 of 16 | 7 of 18 | 0 | 660 ms | 2,058 ms |
+
+Jetson skills (104 evals), served at `MEASURE_CTX=8192` (d13, since a
+skills prompt with all 38 tools is already 3,939 tokens): 42 of 104 (40%)
+overall, 14 of 34 skill-named, 28 of 70 not-named; by area, bsp 16 of 48,
+device 26 of 56. Outcomes: 42 correct, 27 wrong_skill, 31 no_call, 4
+several_calls, 0 call_error, 0 think blocks.
 
 **A dead server fails the run** (P49). Before the first entry, `measure.py`
 checks `GET <base_url>/models` and requires the served model name. Any tier
@@ -548,6 +718,27 @@ transformers refuses to save temperature 0 with sampling off; the
 `gen_config.py write` step right after it puts the temperature back (P37).
 `TRAIN_ARGS` in the env file still holds issue 39's 350M settings and must be
 re-tuned for 0.8B on validation only (c20).
+
+For the LoRA-target comparison (r9, ledger P6), `train.py --targets
+attn-mlp|attn-mlp-gdn` picks explicitly between unsloth's default
+attention/MLP projections and that same set with Qwen3.5's 18 Gated-DeltaNet
+linear-attention projections added (`linear_attn.in_proj_qkv`, `in_proj_z`,
+`in_proj_a`, `in_proj_b`, `out_proj`); those names exist only in the
+language model (the vision tower uses `qkv`/`proj`/`linear_fc1`/`2`; the MTP
+head has only attention/MLP names). The chosen target set is passed
+explicitly and printed, so a run's log states which one it used:
+
+```bash
+$P --env qwen.env train a1 --targets attn-mlp
+$P --env qwen.env train a1-gdn --targets attn-mlp-gdn
+$P --env qwen.env measure-val a1
+$P --env qwen.env measure-val a1-gdn
+```
+
+Compare the two on validation only, per r9. (`agent/q46-f17`, not yet
+merged into this branch, and unsloth accepting the GDN target names is
+verified only at the first real training run — see [Not verified
+yet](#not-verified-yet).)
 
 ### 11. Train Track B on spark2 *(not yet run)*
 
@@ -1116,6 +1307,76 @@ committed now (`3df700c`).
   Hub without a revision. *Fix:* pinned to the snapshot the draft was made
   with, `851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a`. *Commit:* `fcf2701`.
 
+### Found during the t18 re-review and t19/t21 preparation
+
+- **P51. A foregone-reject candidate still cost a full thinking call.**
+  171 of the 289 candidates remaining in the first re-review pass carried a
+  stored reviewer-A "no" (the old AND rule made that a foregone reject), yet
+  the run still paid for a full thinking reviewer-B call on each one.
+  *Found:* the lead, reading the stall at 2026-09-23 19:50 (about 6 done in
+  30 minutes). *Fix (f12, `9af65f8`):* skip candidates with a stored
+  reviewer-A "no". *Superseded:* d8's clean-slate rule reverted this — a
+  clean slate re-derives every candidate fresh, so a stored verdict can no
+  longer shortcut a call. *Commit:* `9af65f8`, reverted by `ce72f01` (f13).
+- **P52. The gateway never aborts an upstream request when a client times
+  out.** With a 300 s client timeout and 6 retries, a long-thinking review
+  kept generating on cortex (the gateway's Qwen 3.8 27B server) while the
+  client gave up and re-sent the same request, up to 7 times; 5 requests in
+  flight against only 4 workers meant orphaned generations. This collapsed
+  the re-review rate from about 3 per minute to about 0.3 per minute.
+  *Found:* the lead, probing two real reviewer calls (304 and 581 reasoning
+  tokens but 182 s and 269 s wall time — about 90% queue wait). *Evidence:*
+  vLLM's own metrics on cortex showed `finished_reason="abort"` = 0 over
+  about 5,600 requests. *Fix (d9):* a timeout longer than the longest
+  generation (900 s) and `--workers` matched to the gateway's
+  `--max-num-seqs` (2), so no request queues behind another. *Commit:*
+  `1a35540` (decision record); the temperature and timeout knobs landed in
+  `7a2810a`/`e9d8495`.
+- **P53. The reviewer ran at a hidden `reasoning_effort` of xhigh by
+  default.** Cortex's chat template supports `reasoning_effort` xhigh
+  (default), medium and low, and nothing in the pipeline ever set it, so
+  every review before this point ran at xhigh (about 1,250 tokens each) with
+  no visibility into the cost. Reading 13 xhigh rejections found 10 were
+  correct read-only requests rejected on a misreading ("it only describes
+  running the check instead of actually reporting") and 1 was a parser false
+  negative. *Found:* the lead, running effort A/B on 20 xhigh verdicts (low
+  and medium accepted 7-8 of the 10 xhigh rejections). *Fix (d10):* the
+  read-only check's expected answer and the reviewer's system prompt both
+  now say a check output is a complete answer;
+  `NVSH_AUG_<ROLE>_REASONING_EFFORT` makes the effort explicit and recorded
+  per call; `calibrate_reviewer.py` checks a setting against a known-good/
+  known-bad probe before a full run. The prompt fix alone cut xhigh's mean
+  from about 1,250 tokens to 445. *Commit:* `56765d1` (f15).
+- **P54 (lapse l3). A run labelled 4K was served at 2K.** A t21 validation
+  run recorded as "same result at 4K" was actually served at
+  `--max-model-len 2048`: the env file's `MEASURE_CTX=2048` silently
+  replaced the exported `MEASURE_CTX=4096`, and `measure.py --ctx 4096`
+  labelled the results page from the flag alone, without checking what the
+  server had actually loaded. *Found:* the lead, reading the serving record
+  after reporting the result. *Fix:* `measure.py`'s preflight now requires
+  the served model's reported `max_model_len` (from `GET /models`, the
+  effective default included per a Codex finding) to equal the run's `--ctx`
+  before any entry is scored; an exported `MEASURE_CTX` outranks the env
+  file's value; `measure-val` and `measure-final` always pass `--ctx
+  "$MEASURE_CTX"` themselves and refuse an extra `--ctx` from the caller; a
+  non-2048 `measure-val` run is named `<name>-val-ctx<N>`. The invalid run
+  is quarantined under `$WORK/measure/invalid/` rather than deleted.
+  *Commits:* `cb7228f`, `b12c2b9` (Codex's effective-default finding),
+  `9abe2df` (a fake scorer server made to report `max_model_len` like a real
+  vLLM, so the check has a test), merged in `340b453`. Recorded as lapse l3
+  in `580675a`.
+- **P55. Reviewer A answers a different question than reviewer B.** A probe
+  of reviewer A (Gemma 4 26B-A4B, no thinking) found 3 false accepts
+  (escalate accepted for a request a listed check already answers) and 2
+  false rejects (escalate rejected for a request that genuinely needs it),
+  at about 48 tokens mean — it reads as answering "can the assistant handle
+  this" rather than "is this response right". *Found:* the lead's reviewer
+  probe ahead of t19. *Fix (d11):* t19's fresh variations are decided by
+  reviewer B and the deterministic guards alone
+  (`augment.py --decide-by reviewer_b`); reviewer A is still asked and its
+  verdict is still recorded, so the comparison is not lost, but it no longer
+  gates acceptance. *Commit:* `ed01957`, recorded in `580675a`.
+
 ## Not verified yet
 
 - **The GGUF half of f11 on a live run**: the lead's live re-check covered
@@ -1129,7 +1390,14 @@ committed now (`3df700c`).
 - **Track A calibration on the final side** (d6): the tool is verified on
   stock with issue 39's old validation split; it has not yet run on a final
   run's predictions.
-- **The re-review's exact command and filter** (step 5).
+- **The re-review's exact filter command** (step 5): the settings that
+  ended up running (clean slate, temperature 0.2, xhigh, 900 s, 2 workers)
+  are recorded, but the exact command that filtered the 1,720 stored
+  candidates to the 1,176 train-side ones is not.
+- **Unsloth accepting the Gated-DeltaNet target names** (r9, ledger P6):
+  `train.py --targets attn-mlp-gdn` names the linear-attention projections,
+  but whether unsloth actually wraps them with a LoRA adapter is verified
+  only once a real training run using that flag completes.
 - **nvsh's runtime and unparsed Qwen tool calls** (P45): `LfmTier` still
   treats a failed parse as an explanation. Out of scope here (c9); tracked
   as [nvsh issue #50](https://github.com/agentculture/nvsh/issues/50).
@@ -1152,9 +1420,10 @@ None of these has been done yet.
 1. **More data.** If data limits a result, generate more train-side data
    through the same teachers and guards. The operator: "we can always
    generate more data if needed".
-2. **LoRA on the linear-attention layers.** Compare adapters on the
-   Gated-DeltaNet projections with unsloth's default targets, on validation
-   (plan risk r9, ledger P6).
+2. **LoRA on the linear-attention layers.** `train.py --targets
+   attn-mlp-gdn` now exists to add the Gated-DeltaNet projections; the
+   validation comparison against unsloth's default targets (plan risk r9,
+   ledger P6) itself is still to run.
 3. **Latency.** bf16 decodes at about 10 ms per token, `Q4_K_M` at about
    4.3 ms and AWQ at about 6 ms. The 250 ms bar may need a quantized build
    (plan risk r10, ledger P8).
@@ -1174,6 +1443,22 @@ None of these has been done yet.
 8. **Reviewers.** Across two waves Codex found 15 real defects where the
    qwen worker reviewer approved everything. Keep a strong second reviewer.
    The lead's live checks on real data and tools found the rest.
+9. **Cortex's own serving settings.** Raising `--max-num-seqs` from 2 to 4
+   and `num_speculative_tokens` from 7 to 3-4 might raise the gateway's
+   shared throughput for the reviewer calls, but this needs a benchmark
+   first and is model-gear's call, not this pipeline's.
+10. **Structured verdict output.** The reviewer's answer is still free text
+    that a hardened but still blacklist-style parser reads (d10); asking the
+    model for a structured (for example JSON) verdict would remove a whole
+    class of parser edge cases.
+11. **A larger reviewer probe.** The 29 bad items in the current probe (d10,
+    d11) only bound the false-accept rate to below about 10%; a bigger probe
+    would tighten that bound.
+12. **The Jetson skills build's contamination scan is very slow.**
+    `build_bodies`'s sliding-window scan over long `SKILL.md` bodies pegs a
+    CPU core for over 10 minutes after the build's main outputs are already
+    written. It is a performance problem only — `bodies.json` is not used by
+    issue 46 — but worth fixing before a future run needs it on a schedule.
 
 ## Run log (issue 46)
 
@@ -1404,3 +1689,158 @@ stopped server, `measure.py` now exits 2 ("cannot reach
 page. `--predictions` is allowed on final and acceptance runs, and
 `measure-final` keeps each final run's predictions in `$WORK/final/<name>`
 for the d6 calibration step.
+
+### 2026-09-23 19:50-21:00: t18 stall, f12, d8 clean slate
+
+The re-review slowed to about 6 done in 30 minutes: cortex (model-gear's
+primary on spark2) runs 2 sequences with 4-5 waiting, shared with other
+work. Four requests failed as "timed out" (the 300 s timeout includes queue
+wait). Reading the remaining queue found 171 of 289 candidates carried a
+stored reviewer-A "no" under the old AND rule — a foregone reject that still
+cost a full thinking call (P51); f12 (`9af65f8`) skipped them.
+
+At 20:40 the operator decided every re-review must instead be a clean
+slate: not aware of previous decisions, so the fresh thinking judgement is
+the real signal. The lead verified every reviewer call is already one
+independent two-message request (the rules plus one candidate's text and
+expected answer, no history, no examples, no prior verdict). Deviation d8
+recorded and approved.
+
+f13 (`ce72f01`) implements the clean-slate rule (a fresh reviewer B verdict
+plus the deterministic guards decide; stored verdicts kept only as
+`prior_verdicts`) and reverts f12; `--rederive-clean-slate` re-derives what
+the old rule would have said, offline, for comparison. Codex found 5 issues
+in the offline re-derive (duplicate ids twice, a wrong agreement count, a
+needless reviewer config, dry-run writing output), fixed in `ccd8a03`. Full
+suite: 3,980 before the merge, 3,986 after.
+
+The operator stopped the old, non-clean-slate run by hand (the auto-mode
+classifier had refused to kill it) and cleared the run wrapper so it would
+not resume under the old rule. The old-rule outputs are archived, not
+committed. Re-deriving the old rule against the 894 candidates already
+reviewed gave 826 accepted, 68 rejected (the old rule itself had said
+798/96 — 28 flip to accepted); agreement with the old, stored reviewer-B
+verdicts was 832 of 894. The clean-slate re-review for the remaining 282
+candidates resumed about 21:00.
+
+### 2026-09-23 21:10-21:45: why t18 collapsed, d9
+
+The rate after the 20:52 resume was about 0.3 per minute, down from about 3
+per minute in the afternoon. A probe of two real reviewer calls found 304
+and 581 reasoning tokens but 182 s and 269 s wall time — about 90% queue
+wait, not thinking. vLLM's own metrics on cortex (Qwen 3.8 27B NVFP4,
+`--max-num-seqs=2`, DSpark speculative decoding with 7 draft tokens) showed
+`finished_reason="abort"` = 0 over about 5,600 requests: the gateway never
+cancels an upstream generation when a client disconnects. With a 300 s
+timeout and 6 retries, a long-thinking review kept generating upstream while
+the client gave up and re-sent it, up to 7 times, and 5 requests in flight
+against 4 workers orphaned generations (P52). The operator noted only this
+pipeline uses cortex, sharing about 45 tokens per second across the 2
+serving slots.
+
+The operator also judged temperature 0.7 too hallucination-prone for a
+judge, and asked for 0.1-0.3. f14 (`e9d8495`) added
+`NVSH_AUG_<ROLE>_TEMPERATURE` (default 0.7, range 0-2), recorded as
+`record.temperatures` and `verdicts.reviewer_b.temperature`; Codex found no
+issues; full suite 3,992 (one earlier run had one transient failure, not
+reproduced). Deviation d9 recorded (`1a35540`): reviewer temperature 0.2,
+timeout 900 s, `--workers 2`. The operator decided to redo all 1,176 at 0.2
+so every verdict comes from one setting; the 0.7 clean-slate outputs are
+archived, not committed.
+
+At 22:00 the operator considered a round-robin reorder with a 3-accepted-
+per-source coverage stop, then decided to let the class-sorted run finish
+all 1,176 instead (ETA about 06:00): early stopping would be unsafe because
+escalate (296) and explain (279) entries come last in the class-sorted
+queue. No reorder; no d10 from this decision (d10 is the effort/prompt fix
+below).
+
+### 2026-09-23 22:00-22:50: reviewer effort, d10, lapse l2
+
+Cortex's chat template supports `reasoning_effort` xhigh (the default),
+medium and low; nothing in the pipeline had ever set it, so every review to
+this point ran at xhigh (about 1,250 tokens each) with no visibility into
+the cost (P53). An effort A/B probe on 20 xhigh verdicts found low and
+medium accepted 7-8 of the 10 xhigh rejections; reading them showed 10 of 13
+xhigh rejections were correct read-only requests rejected on a misreading
+("it only describes running the check instead of actually reporting" — the
+prompt itself asked for exactly that), and 1 was a parser false negative
+("yes: ...; no change or broader investigation is required").
+
+The operator approved: stop, fix the prompt and parser, calibrate the
+reviewer, then restart. The xhigh/0.2 pass done so far (158 records) is
+archived, not committed. Deviation d10 recorded; lapse l2
+(grader-unverified — the reviewer had been used as the grader for full
+passes without a known-good/known-bad check) filed.
+
+f15 (merge `56765d1`) fixed the read-only check's expected answer and the
+reviewer's system prompt to say a check is a complete answer; kept the
+verdict parser conservative (a loosening tried during this fix let real
+rejections through and was reverted) and hardened it over three Codex
+review rounds (markdown/underscore-wrapped "no", a trailing "no", ", no,",
+"Yes, not ...", certainty words in the first four words) — a replay of 977
+stored accepts found 0 newly rejected; added a deterministic `handoff_check`
+guard that rejects requests asking for the hand-off in words (2 of 1,176
+candidates, no false positives against phrases like "privilege escalation"
+or "UEFI handoff"); added `NVSH_AUG_<ROLE>_REASONING_EFFORT`, a shared
+`chat_payload()`, and `calibrate_reviewer.py`. Full suite: 4,041.
+
+A reviewer probe (53 items: 24 good, 29 bad; final parser and guards) found:
+low 0 false accepts / 0 false rejects (227 tokens mean); medium 0 false
+accepts / 3 false rejects, all parser costs on wordy yeses (312 tokens);
+xhigh 0 false accepts / 0 false rejects (445 tokens — down from about 1,250
+before the prompt fix). The 29 bad items only bound the false-accept rate to
+below about 10%. The operator chose xhigh. A fresh clean-slate pass of all
+1,176 candidates started about 22:50 (ETA about 3 hours); one empty-reply
+error was seen so far and will be retried by resuming.
+
+### 2026-09-24 ~00:00-02:00: t20 re-sync, t21 stock baseline, t22 target option, t19/d14 prepared
+
+spark2 was re-synced for Track B; its venv versions matched spark's exactly
+(no drift since the earlier setup).
+
+t21, the stock baseline, ran on validation with the pinned-vLLM measurement
+helper (d7): at 2K, 0 of 32 right proposals, 10 of 16 escalations, 7 of 18
+explanations, 0 wrong mutating (1 mutating proposal with wrong arguments),
+warm median 678 ms / p95 2,072 ms; at 4K (served at `--max-model-len 4096`,
+verified against the served model), the same right-proposal, escalation and
+explanation counts, warm median 660 ms / p95 2,058 ms. The Jetson skills
+eval (104 entries), served at `MEASURE_CTX=8192` (d13, since the skills
+prompt with all 38 tools is 3,939 tokens on its own): 42 of 104 (40%)
+overall, 14 of 34 skill-named, 28 of 70 not-named (bsp 16/48, device 26/56);
+42 correct, 27 wrong_skill, 31 no_call, 4 several_calls, 0 call_error, 0
+think blocks. Deviations d12 (stock's test-side/held-out run happens once,
+in t24, alongside the tuned checkpoints) and d13 (skills served at 8K for
+every model) recorded (`580675a`).
+
+While measuring, a labelling bug surfaced: a t21 run recorded as 4K had
+actually been served at 2K, because the env file's `MEASURE_CTX` silently
+overrode an exported one and `measure.py --ctx` trusted its own flag instead
+of the server (lapse l3, ledger P54). Fixed and merged (`cb7228f`,
+`b12c2b9`, `9abe2df`, `340b453`): `measure.py` now checks the served
+model's reported context before scoring, an exported `MEASURE_CTX` wins over
+the env file, the measure stages always pass their own `--ctx` and refuse a
+caller's extra one, and a non-2048 `measure-val` run is named
+`<name>-val-ctx<N>`. The invalid earlier run is quarantined, not deleted.
+
+t22 added `train.py --targets attn-mlp|attn-mlp-gdn` (`f283dfe`, branch
+`agent/q46-f17`) so the linear-attention LoRA comparison (r9, ledger P6) can
+be run explicitly and the choice is printed and logged.
+
+t19 was prepared but not yet run: of the 95 train-side sources without
+stored variations, 52 are old issue-39 test entries already excluded from
+training, so t19 augments only the remaining 43 (22 operation, 12 explain, 9
+escalate; 258 variations at 6 per source). Reviewer B alone decides
+acceptance for these (deviation d11, `ed01957`), with reviewer A still asked
+and recorded for comparison (ledger P55). `leakage_check.py` and a stricter
+`assemble` (deviation d14, `4580c06`) check every new variation against
+validation, test, `PROTECTED_EXTRA` and the sealed held-out by exact match
+or near-duplicate (5-token shingle or word-set Jaccard >= 0.8), using ids
+only; a dry run against the current data found 52 issue-39 test sources and
+1 train source identical to a test entry inside the 301-entry train split,
+plus 7 already-reviewed variations matching protected text. t19 and t22's
+commits are on branch `agent/q46-f17`, under review and not yet merged into
+this branch.
+
+As of this update (about 03:00), the clean-slate re-review (t18) has about
+935 of 1,176 candidates done, about 97% accepted.
