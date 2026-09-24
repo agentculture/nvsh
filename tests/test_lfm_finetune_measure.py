@@ -1960,3 +1960,22 @@ def test_tokenizer_option_reaches_the_scorer_spec(measure, tmp_path):
     argv += ["--tokenizer", "/models/merged"]
     measure.main(argv, seams=harness.seams)
     assert built and built[0].tokenizer == "/models/merged"
+
+
+@pytest.mark.parametrize(
+    ("label", "ok"),
+    [
+        ("final-a3.q4_k_m", True),
+        ("val-350m", True),
+        ("Final-A3", False),
+        ("_x", False),
+        ("a b", False),
+    ],
+)
+def test_label_allows_a_quantized_build_name(measure, tmp_path, label, ok):
+    """Issue 46, t25: a GGUF build is named <run>.q4_k_m, so its labels carry '_'."""
+    split = _split(tmp_path, "val.json")
+    harness = Harness(measure, tmp_path, FakeDocker())
+    argv = _argv(split, tmp_path / "r.md")
+    argv[argv.index("--label") + 1] = label
+    assert (measure.main(argv, seams=harness.seams) == 0) is ok

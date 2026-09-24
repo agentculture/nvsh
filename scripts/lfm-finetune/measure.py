@@ -180,7 +180,7 @@ EXIT_OK = 0
 EXIT_USER = 1
 EXIT_ENV = 2
 
-_LABEL_RE = re.compile(r"^[a-z0-9][a-z0-9.-]*$")
+_LABEL_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 _SEED_RE = re.compile(r"seed=(\d+)")
 _RUN_TIMEOUT = 30.0
 
@@ -2485,7 +2485,8 @@ def run(argv: Sequence[str], seams: Seams) -> int:
     args = _parser().parse_args(list(argv))
     if not _LABEL_RE.match(args.label):
         raise MeasureError(
-            EXIT_USER, f"--label {args.label!r} must be lower-case letters, " "digits, '.' or '-'"
+            EXIT_USER,
+            f"--label {args.label!r} must be lower-case letters, " "digits, '.', '_' or '-'",
         )
     if len(args.revision) != len(args.model):
         raise MeasureError(
