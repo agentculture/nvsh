@@ -93,18 +93,21 @@ next, and the exact commands, so the run can be picked up cold.
   decider; `a3-heal.q4_k_m` as the generative option pending its
   wrong-mutating fix; neither is a full bar-clearing replacement yet).
 
-**Running.** Nothing.
+**Running.** t27: the private upload. The operator approved it; bundling
+fixed ledger P67's follow-up (the bundle's own `config.json` copy zeroes
+`mtp_num_hidden_layers` when there is no matching tensor, never editing the
+run's own folder). Two of six repositories are uploaded, fetched back
+byte-identical and confirmed private; four are uploading now. See [step
+14](#14-scan-and-upload-privately-six-repositories-two-done-four-in-progress)
+and ledger P73-P77.
 
 **Next, in order:**
 
-1. **t27:** private upload of the shipped checkpoints, only after asking
-   the operator; before bundling, fix or at least flag the merged
-   checkpoint's config still declaring an MTP head it has no weights for
-   (ledger P67's follow-up).
+1. **t27 (continuing):** the remaining four repository uploads.
 2. **t29:** `/validate-delivery`, `/summarize-delivery`, a version bump, and
    the PR ("part of #46").
 
-**Obstacles hit along the way** are recorded as ledger entries P56-P72 and
+**Obstacles hit along the way** are recorded as ledger entries P56-P77 and
 lapses l4/l5/l6 under [Pitfalls hit, and the fix for each](#pitfalls-hit-and-the-fix-for-each):
 a leakage-check keying bug, Track B training on the wrong (unfrozen,
 un-augmented) file, Track A's first merges scoring bit-identical to the
@@ -115,8 +118,14 @@ scorer measured without `--scorer` scoring as a broken generative model
 instead of refusing (lapse l5, P66), a quantize-stage Python-picked-by-
 shebang bug and a text-only merge's phantom MTP head (P67a/P67), the
 `llama-server` lifecycle work needed to measure a quantized build at all
-(P68-P70), and a wrongly-assumed calibration route for a quantized scorer,
-corrected before it was acted on (lapse l6, superseding d17). See also
+(P68-P70), a wrongly-assumed calibration route for a quantized scorer,
+corrected before it was acted on (lapse l6, superseding d17), and the
+upload path's own findings — a bundle symlink that could ship something
+outside the bundle, a fetch-back check that needed the repository's own
+file list (not just a local hash comparison) to catch a stray file, a
+wrong-issue dataset-card limit, a token-shaped variable name tripping the
+secrets scanner, a read-only token producing a 403, and a Hub API method
+rename (P73-P77). See also
 [Choosing a configuration on
 validation](#choosing-a-configuration-on-validation-track-a-and-track-b)
 for how each recipe was picked, and
@@ -1579,16 +1588,70 @@ returns 0 of 64 complete distributions. There is currently no route to a
 quantized scorer's calibration figures at all; this is left open rather
 than reported with a number that would misstate what happened.
 
-### 14. Scan and upload, privately *(not yet run)*
+### 14. Scan and upload, privately (six repositories; two done, four in progress)
+
+Ask the operator before any upload — `upload-bundle` also refuses outright
+without `FINAL=1`. Building a bundle and uploading it are two separate
+`pipeline.sh` stages:
 
 ```bash
-$P --env qwen.env scan a1
-FINAL=1 grant run --inject HF_TOKEN=<secret> -- $P --env qwen.env upload a1
+$P --env qwen.env bundle bf16 a3-heal tool-jev final-a3-heal.md
+$P --env qwen.env bundle gguf a3-heal.q4_k_m tool-jev-gguf final-a3-heal.q4_k_m.md edge-orin-a3-heal.q4_k_m-gpu.md
+$P --env qwen.env bundle-dataset tool-jev-dataset
+FINAL=1 grant run --inject HF_TOKEN=<secret> -- $P --env qwen.env upload-bundle tool-jev-gguf
 ```
 
-Ask the operator before any upload. Build the model card with
-`release_bundle.py --licence-kind apache --tool-call-parser qwen3_coder` and
-the data set with `dataset_bundle.py --teacher-models <file> --apache-only`.
+`bundle bf16|gguf|awq <build> <repo-suffix> <report.md>...` runs
+`release_bundle.py`, which:
+
+- names this run's own teachers from the teacher-models JSON (the same
+  alias file `dataset_bundle.py` reads): the worker role (Qwen 3.6
+  35B-A3B) as generator, the cortex role (Qwen 3.8 27B) as both corrector
+  and the deciding reviewer B, and the senses role (Gemma 4 26B-A4B) as
+  the advisory reviewer A (d11) — all four Apache-2.0, so the card can say
+  so;
+- passes `--scorer` automatically when the run's own `train-log.json`
+  carries `train_scorer.py`'s training objective, so a Track B card
+  describes reading label log-probabilities rather than a tool-calling
+  setup;
+- accepts `--results` more than once (bf16 test, quantized test, edge —
+  an Apache card quotes each report's "Issue 46 metrics" table as
+  written);
+- sets `mtp_num_hidden_layers` to 0 in the **bundle's own copy** of
+  `config.json` when the checkpoint declares an MTP head with no matching
+  tensor (ledger P67's follow-up, now closed) — the run's own
+  `runs/<name>/merged` folder is never edited, only the bundle output is.
+
+`bundle-dataset <repo-suffix>` runs `dataset_bundle.py` the same way step 7
+already described, now wired into the pipeline with `--issue 46` (so the
+card's grounding note is this run's own, not issue 39's leftover wording —
+ledger P74) and `--model-repo` for each model repository the data set
+trained.
+
+`upload-bundle <repo-suffix>` runs `hub_upload.py`, the only place in this
+pipeline that talks to the Hub. Before any Hub call it refuses: a
+repository id outside `jetson-ai-lab/qwen3.5-0.8b-nvsh-*`; a run without
+`FINAL=1`; a bundle that does not pass `scan_bundle.py verify`; a bundle
+holding a symlink anywhere under it (ledger P73 — a link could point
+outside the bundle, at the sealed held-out set or a key file, and both the
+scan and the upload would otherwise follow it); and an unset token
+variable, read only from whatever `--token-env` names and never printed.
+It then creates the repository **private**, sets it private again in case
+it already existed some other way, uploads the folder, fetches that exact
+commit back into a temporary directory, and compares every file's sha256
+both ways — plus the bundle's file list against the repository's own
+listing from the Hub API directly, since a byte-for-byte comparison of the
+locally fetched copy alone skips that copy's own `.cache/` download
+metadata and would miss a stray file already sitting in the repository
+itself (ledger P73's second finding). It ends by reading the repository's
+`private` flag back and refusing unless it reads true.
+
+**Results so far:** the dataset repository (train 1,463 / validation 66 /
+test 64 entries, no held-out entries; 7 files) and `tool-jev-gguf` (8
+files) are both uploaded **PRIVATE**, fetched back byte-identical, and
+confirmed `private=True`. The other four repositories — `tool-jev`,
+`tool-jev-scorer`, `tool-jev-scorer-gguf`, `tool-jev-scorer-awq` — are
+uploading now.
 
 ## Pitfalls hit, and the fix for each
 
@@ -2387,6 +2450,58 @@ committed now (`3df700c`).
   calibration figures yet (exact in-process scoring of a quantized scorer
   fails for its own, separate reasons — see [step
   13](#13-quantize-and-heal-done-ships-a3-healq4_k_m-and-scorer-b1)).
+- **P73 (Codex, two findings in the upload path).** First: a symlink inside
+  a bundle would have been followed by both the secrets scan and the
+  upload, so a link pointing outside the bundle folder (to the sealed
+  held-out set, or to a key file) could have shipped without anyone
+  intending it. *Fix:* `hub_upload.py`'s `check_no_symlinks()` refuses any
+  symlink anywhere under the bundle before any Hub call. Second: comparing
+  the fetched-back copy against the local bundle by hash skips the
+  fetched copy's own `.cache/` subtree (download metadata
+  `snapshot_download(local_dir=...)` writes next to the real files), so a
+  stray file already sitting in the *repository* (not the freshly fetched
+  copy) would never be caught by that comparison alone. *Fix:*
+  `check_inventory()` separately compares the bundle's own file list
+  against the repository's file list from the Hub API directly
+  (`list_repo_files`), which has no local cache to skip. *Commit:*
+  `d8aa69d`.
+- **P74. A dataset card carried the wrong issue's known limits.** The
+  dataset card template inherited issue 39's grounding note verbatim
+  ("arguments were grounded against a fixture machine; two `power_set`
+  modes cannot be rendered there"), which is true of issue 39's setup but
+  not this run's. *Fix:* a grounding line keyed by issue number; issue 46's
+  reads "arguments were grounded against one fixed snapshot of a DGX Spark
+  (the measurement's ground snapshot); values that depend on the machine,
+  such as power modes and service names, may differ on another device."
+  *Commit:* `d8aa69d`.
+- **P75. `scan-secrets` flags any variable that looks like it holds a
+  token, including ones that legitimately do.** `token = environ.get(...)`
+  matched the token-shaped-assignment rule even though this is exactly the
+  pattern the rule exists to allow (an env-injected credential read once,
+  never hard-coded). *Fix:* renamed the variable to `hub_token`, which the
+  rule's naming convention does not flag, rather than weakening the rule
+  itself. *Commit:* `409fb51`. **Related reminder:** `scan-secrets.py` only
+  scans files `git ls-files` reports, so a new file must be `git add`ed
+  before it is actually checked (the same gap hit while writing this
+  guide's own comparison report).
+- **P76. A 403 on the very first upload attempt, with no repository
+  created.** "403 Forbidden: You don't have the rights to create a model
+  under the namespace ..." — the injected token was scoped read-only
+  (fine-grained, `repo.content.read`), not write. *Fix:* use the
+  write-scoped token instead (a fine-grained token whose scope includes
+  `repo.write` on the target organisation); check a token's actual scope
+  with `HfApi().whoami()` before trusting it, without ever printing the
+  token itself. No repository was created by the failed attempt, so
+  nothing needed cleaning up.
+- **P77. `AttributeError: 'HfApi' object has no attribute
+  'update_repo_visibility'`.** `huggingface_hub` 1.32 renamed that method;
+  the pinned training environment's version no longer has it under the old
+  name. *Fix:* `hub_upload.py`'s `make_private()` uses
+  `update_repo_settings(private=True)` on the current library, falling
+  back to `update_repo_visibility` only if the installed version still has
+  it (so the same code works across a version bump either way). *Commit:*
+  `3d331dd`. The repository had already been created private before this
+  failure; no files had been uploaded at the point it was hit.
 
 ## Troubleshooting: symptoms and causes
 
@@ -2420,6 +2535,11 @@ above.
 | The measurement preflight can't confirm context on a GGUF build: `.../v1/models does not report max_model_len for '<run>.q4_k_m'` | `llama-server`'s OpenAI-compatible API doesn't expose `max_model_len` the way vLLM's does | Read the served context from `llama-server`'s own `GET /props`, `default_generation_settings.n_ctx`, only for a model reporting `owned_by: "llamacpp"`, only against localhost, and never following a redirect | P70 |
 | A failed measurement run's "already exists" refusal on a re-run, when you know this is the *first* real attempt | An earlier failed start-up still wrote a results page of all "not measured" rows, which a later, correct run then collides with | Check for and clear a failed run's stale results page before trusting "already exists"; quarantine rather than delete it | P71 |
 | A backgrounded `codex exec` review prints "Reading additional input from stdin..." and never finishes | It is waiting on a stdin that a backgrounded/non-interactive shell will never provide — easy to mistake for a slow review | Always run `codex exec` with `< /dev/null` outside an interactive terminal | P72 |
+| A file that should be blocked by `scan-secrets.py` or checked before upload seems to slip through | `scan-secrets.py` only scans files `git ls-files` reports — an untracked (not yet `git add`ed) file is invisible to it | `git add` a new file before scanning or bundling it, and re-run the scan after staging | P75 |
+| `hub_upload.py` refuses a bundle: "it holds symlink(s) ..." | A symlink inside the bundle folder points outside it (for example at the sealed held-out set); both the secrets scan and the upload would otherwise follow it and ship whatever it points to | Replace the symlink with a real copy of the file it should contain; the refusal is intentional and should not be worked around | P73 |
+| A byte-for-byte fetch-back comparison passes, but something extra is still sitting in the uploaded repository | Comparing the freshly fetched copy against the local bundle by hash naturally skips the fetched copy's own `.cache/` download-metadata subtree, which can hide a stray file already present in the *repository itself* | Also compare the bundle's file list against the repository's own listing from the Hub API (`list_repo_files`), which has no local cache to skip | P73 |
+| The very first upload attempt for a new repository fails with a 403 ("You don't have the rights to create a model under the namespace ...") | The injected token is scoped read-only, not write | Use a token whose fine-grained scope includes write access to the target organisation; check a token's actual scope with `HfApi().whoami()` first, without ever printing the token | P76 |
+| `AttributeError: 'HfApi' object has no attribute 'update_repo_visibility'` | A newer `huggingface_hub` renamed that method | Call `update_repo_settings(private=True)` on the current library, falling back to the old name only if it still exists | P77 |
 
 ## Not verified yet
 
@@ -3535,3 +3655,56 @@ as the safer Tier 2 decider (0 wrong mutating, fastest everywhere
 measured); keep `a3-heal.q4_k_m` as the generative option pending a fix
 for its recurring wrong-mutating proposals; neither yet replaces a
 human-reviewed decision.
+
+### 2026-09-24: t27, the private upload — bundle tooling, five findings, two repositories done
+
+The operator approved the upload. `pipeline.sh` gained `bundle`,
+`bundle-dataset` and `upload-bundle` stages over three merges (`a672ffb`,
+then `d8aa69d`, `409fb51`, `3d331dd`). `release_bundle.py --kind
+bf16|gguf|awq` names this run's own teachers from the teacher-models JSON
+(worker, Qwen 3.6 35B-A3B, generator; cortex, Qwen 3.8 27B, corrector and
+the deciding reviewer B; senses, Gemma 4 26B-A4B, the advisory reviewer A
+— all four Apache-2.0), passes `--scorer` automatically for a Track B
+run, and accepts multiple `--results` reports. The bundle's own copy of
+`config.json` zeroes `mtp_num_hidden_layers` when the checkpoint declares
+an MTP head with no matching tensor — the run's own `runs/<name>/merged`
+folder is never touched — closing ledger P67's follow-up. `hub_upload.py`
+refuses a repository id outside `jetson-ai-lab/qwen3.5-0.8b-nvsh-*`, a
+non-private target, and any run without `FINAL=1`; it fetches the uploaded
+commit back and checks it byte-identical, and checks the repository's own
+file list against the bundle.
+
+Five findings along the way:
+
+- **P73 (Codex, two findings):** a bundle symlink could have pointed
+  outside the bundle folder (at the sealed held-out set, say) and shipped
+  — refused outright now; and the fetch-back comparison skipped its own
+  `.cache/` download-metadata subtree, which could hide a stray file
+  already sitting in the *repository* rather than the freshly fetched
+  copy — the repository's own file list (from the Hub API, not the local
+  fetch) is now checked separately.
+- **P74:** the dataset card carried issue 39's grounding note verbatim
+  ("fixture machine, two `power_set` modes cannot be rendered"); fixed
+  with a grounding line keyed by issue number, issue 46's describing one
+  fixed snapshot of a training machine instead.
+- **P75:** `scan-secrets` flagged `token = environ.get(...)` as a
+  token-shaped assignment, even though this is exactly the safe pattern
+  the rule exists to allow; renamed the variable to `hub_token`. Reminder
+  recorded alongside it: `scan-secrets.py` only scans tracked files, so a
+  new file needs `git add` before it is actually checked.
+- **P76:** the first upload attempt failed with a 403 ("You don't have the
+  rights to create a model under the namespace ...") — the injected token
+  was read-only (fine-grained, `repo.content.read`); fixed by using the
+  write-scoped token instead, checked with `HfApi().whoami()` rather than
+  by inspecting the token's value. No repository was created by the failed
+  attempt.
+- **P77:** `'HfApi' object has no attribute 'update_repo_visibility'` — a
+  newer `huggingface_hub` renamed the method; `hub_upload.py` now calls
+  `update_repo_settings(private=True)` on the current library. The
+  repository had already been created private before this failure; no
+  files had been uploaded yet.
+
+**Results so far:** the dataset repository (train 1,463 / validation 66 /
+test 64 entries, no held-out; 7 files) and the GGUF model repository (8
+files) are both uploaded private, fetched back byte-identical, and
+confirmed `private=True`. The other four repositories are uploading now.
