@@ -332,6 +332,15 @@ case "$STAGE" in
     run_capped "$run" "$TRAIN_PY" "$HERE/train_scorer.py" --train "$data" \
       --val "$WORK/splits/val.json" --out "$run" --base "$BASE" --revision "$BASE_REV" \
       ${TRAIN_SCORER_ARGS:-}
+    # Merged, greedy and staged exactly like a Track A run, so measure-val
+    # scorer[-name] serves and measures it the same way (t23). Staged under
+    # its own repo name so it never shares a revision list with Track A.
+    run_capped "$run" "$TRAIN_PY" "$HERE/train.py" --merge-only "$run/adapter" --out "$run" \
+      --base "$BASE" --revision "$BASE_REV"
+    py scripts/lfm-finetune/gen_config.py write "$run/merged"
+    py scripts/lfm-finetune/stage_cache.py --merged "$run/merged" --repo "$REPO-scorer" \
+      --cache "$HF_CACHE" --base-snapshot "$(base_snapshot)" | tee "$run/stage.log"
+    awk '/staged/{print $NF}' "$run/stage.log" > "$run/revision"
     ;;
   measure-val)
     name=${1:?measure-val <name> [measure.py args]}; shift

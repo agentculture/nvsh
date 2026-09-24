@@ -412,3 +412,17 @@ def test_targets_option_defaults_to_attn_mlp() -> None:
     module = _module()
     args = module._parser().parse_args(["--train", "t.jsonl", "--out", "o"])
     assert args.targets == "attn-mlp"
+
+
+def test_merge_only_needs_no_training_file() -> None:
+    # Documented as `train.py --merge-only <adapter>`, but --train was required,
+    # so the merge-only path (and train-scorer's merge, t23) could not parse.
+    module = _module()
+    args = module._parser().parse_args(["--merge-only", "adapter", "--out", "o"])
+    assert args.train is None and str(args.merge_only) == "adapter"
+
+
+def test_training_without_a_training_file_is_refused(capsys) -> None:
+    module = _module()
+    assert module.main(["--out", "o"]) == 2
+    assert "--train" in capsys.readouterr().err
