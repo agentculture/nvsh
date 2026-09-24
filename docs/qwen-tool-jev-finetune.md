@@ -11,6 +11,17 @@ spark2). Both are scored by one harness on one clean test side against stock.
 This page is the design, the code map, the split, a ledger of every problem
 hit and its fix, and the steps to reproduce the run.
 
+**Track A vs Track B: two different architectures.** Track A is a specialized
+generative tool router: it receives an operator's request, calls Qwen to
+generate a structured tool call (propose, explain, or escalate), and outputs
+the result directly. Track A is Jev-inspired but not a native Jev-style
+decision model; its next-token probability distribution over candidates is
+reconstructed offline by `track_a_calibration.py` through teacher-forcing,
+not its runtime interface. Track B is the Jev-style candidate scorer: every
+candidate (16 operations plus explain and escalate) is listed in the prompt
+under a one-letter label, and the model's next-token log-probabilities over
+those labels are read once; the highest-scoring label is the choice.
+
 **Status: in progress, 2026-09-24.** The tooling is built and reviewed, the
 spikes are done, the split is re-seeded, the stock baseline is measured on
 validation, the training data is frozen, and both tracks have trained and

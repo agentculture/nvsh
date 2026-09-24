@@ -529,10 +529,10 @@ def model_card(
 
     if scorer:
         what = (
-            "for [nvsh](https://github.com/agentculture/nvsh)'s Tier 2 as a **candidate\n"
-            "scorer** (Track B): every candidate -- each operation in nvsh's table, plus\n"
-            "`explain` and `escalate` -- is listed in the prompt under a one-letter label,\n"
-            "and the model's next-token log-probabilities over those labels are read\n"
+            "for [nvsh](https://github.com/agentculture/nvsh)'s Tier 2 as a **Jev-style\n"
+            "candidate scorer** (Track B): every candidate -- each operation in nvsh's table,\n"
+            "plus `explain` and `escalate` -- is listed in the prompt under a one-letter\n"
+            "label, and the model's next-token log-probabilities over those labels are read\n"
             "once. The highest-scoring label is the choice; an operation's arguments come\n"
             "from nvsh's deterministic grounding, never from the model. It is not a\n"
             "generative tool caller."
@@ -540,11 +540,13 @@ def model_card(
         tags_tool = "- candidate-scoring\n"
     else:
         what = (
-            "for [nvsh](https://github.com/agentculture/nvsh)'s Tier 2:\n"
-            "given an operator's request at a Jetson or DGX Spark shell, answer with one\n"
-            "of three tools: `propose` (an operation from nvsh's table, for the operator\n"
-            "to approve), `explain` (a short answer) or `escalate` (hand the request to a\n"
-            "full agent)."
+            "for [nvsh](https://github.com/agentculture/nvsh)'s Tier 2 as a **specialized\n"
+            "generative tool router** (Track A): given an operator's request at a Jetson\n"
+            "or DGX Spark shell, answer with one of three tools: `propose` (an operation\n"
+            "from nvsh's table, for the operator to approve), `explain` (a short answer)\n"
+            "or `escalate` (hand the request to a full agent). Track A generates structured\n"
+            "tool calls directly; its probability distribution over candidates is\n"
+            "reconstructed offline by `track_a_calibration.py`, not from its runtime output."
         )
         tags_tool = "- tool-calling\n"
 

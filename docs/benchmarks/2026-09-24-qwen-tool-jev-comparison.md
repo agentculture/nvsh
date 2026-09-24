@@ -8,6 +8,13 @@ by file name, each of which is that number's run id; nothing here is
 measured fresh. See [`docs/qwen-tool-jev-finetune.md`](../qwen-tool-jev-finetune.md)
 for the full design, ledger and reproduce steps this report summarizes.
 
+**Track A vs Track B: two different architectures.** Track A is a specialized
+generative tool router (Jev-inspired but not a native Jev-style decision model;
+it generates structured tool calls and reconstructs its candidate distribution
+offline via `track_a_calibration.py`). Track B is the Jev-style candidate
+scorer (reads next-token scores per candidate label, always returns a choice
+from the offered candidates).
+
 **Shipped:** Track A `a3-heal.q4_k_m`, Track B `scorer-b1` (both its
 `.awq` and `.q4_k_m` builds pass c43 unhealed; `scorer-b1.q4_k_m` is the
 recommended pick — see [Recommendation](#recommendation)). **Neither
