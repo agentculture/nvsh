@@ -133,6 +133,15 @@ def compare(local: Path, fetched: Path) -> list[str]:
     return problems
 
 
+def _set_private(api: Any, repo: str, repo_type: str) -> None:
+    """Make *repo* private: ``update_repo_settings`` (huggingface_hub 1.x), or the
+    older ``update_repo_visibility``. Never anything but private=True."""
+    if hasattr(api, "update_repo_settings"):
+        api.update_repo_settings(repo, private=True, repo_type=repo_type)
+    else:
+        api.update_repo_visibility(repo, private=True, repo_type=repo_type)
+
+
 def upload(
     *,
     bundle: Path,
@@ -165,7 +174,7 @@ def upload(
 
     api = hub.HfApi(token=hub_token)
     api.create_repo(repo, repo_type=repo_type, private=True, exist_ok=True)
-    api.update_repo_visibility(repo, private=True, repo_type=repo_type)
+    _set_private(api, repo, repo_type)
     commit = api.upload_folder(
         folder_path=str(bundle),
         repo_id=repo,

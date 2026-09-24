@@ -304,3 +304,15 @@ def test_a_bundle_that_ships_its_own_gitattributes_passes_the_inventory(tmp_path
     (bundle / ".gitattributes").write_text("*.gguf filter=lfs\n")
     (bundle / "README.md").write_text("x")
     assert _module().check_inventory(bundle, [".gitattributes", "README.md"]) == []
+
+
+def test_a_1x_hub_is_made_private_with_update_repo_settings(tmp_path) -> None:
+    """huggingface_hub 1.x has update_repo_settings, not update_repo_visibility."""
+    calls = []
+
+    class Api:
+        def update_repo_settings(self, repo_id, **kwargs):
+            calls.append(("update_repo_settings", repo_id, kwargs))
+
+    _module()._set_private(Api(), _REPO, "model")  # noqa: SLF001
+    assert calls == [("update_repo_settings", _REPO, {"private": True, "repo_type": "model"})]
