@@ -56,6 +56,19 @@ def _load(path: Path) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
     return doc, list(doc["entries"])
 
 
+def _texts(entries: list[dict[str, Any]], source: Path) -> list[str]:
+    """Every entry's ``text``; an entry without a non-empty string text is refused
+    (Codex review: it would otherwise pass unchecked, or match other missing
+    texts as the string "None")."""
+    texts = []
+    for index, entry in enumerate(entries):
+        text = entry.get("text")
+        if not isinstance(text, str) or not text.strip():
+            raise ValueError(f"{source}: entry {entry.get('id', index)!r} has no text to check")
+        texts.append(text)
+    return texts
+
+
 def match(train_text: str, protected_text: str) -> str | None:
     """``"exact"``, ``"near-duplicate"`` or ``None``."""
     a, b = normalize_text(train_text), normalize_text(protected_text)
@@ -76,25 +89,24 @@ def match(train_text: str, protected_text: str) -> str | None:
 
 def find_matches(
     train: list[dict[str, Any]], protected: dict[str, list[dict[str, Any]]]
-) -> list[dict[str, str]]:
+) -> list[dict[str, Any]]:
+    """One match per training row that matches any protected entry; ``row`` is
+    the training row's index, so filtering never depends on ids being unique."""
     found = []
-    for entry in train:
+    for row, entry in enumerate(train):
         for name, entries in protected.items():
-            for other in entries:
-                kind = match(str(entry.get("text", "")), str(other.get("text", "")))
-                if kind:
-                    found.append(
-                        {
-                            "train_id": str(entry.get("id")),
-                            "protected": name,
-                            "protected_id": str(other.get("id")),
-                            "kind": kind,
-                        }
-                    )
-                    break
-            else:
-                continue
-            break
+            other = next((o for o in entries if match(entry["text"], o["text"])), None)
+            if other is not None:
+                found.append(
+                    {
+                        "row": row,
+                        "train_id": str(entry.get("id")),
+                        "protected": name,
+                        "protected_id": str(other.get("id")),
+                        "kind": match(entry["text"], other["text"]),
+                    }
+                )
+                break
     return found
 
 
@@ -106,7 +118,16 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     doc, train = _load(args.train)
-    protected = {path.name: _load(path)[1] for path in args.protected}
+    # Keyed by the full path: two files named test.json (issue 46: the new
+    # split's and issue 39's) must both be checked (Codex review).
+    protected = {str(path): _load(path)[1] for path in args.protected}
+    try:
+        _texts(train, args.train)
+        for path, entries in protected.items():
+            _texts(entries, Path(path))
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
     matches = find_matches(train, protected)
     report = {
         "train": len(train),
@@ -118,8 +139,8 @@ def main(argv: list[str] | None = None) -> int:
     print(json.dumps(report, indent=1))
     if args.out_filtered is None:
         return 1 if matches else 0
-    drop = {m["train_id"] for m in matches}
-    kept = [entry for entry in train if str(entry.get("id")) not in drop]
+    drop = {m["row"] for m in matches}
+    kept = [entry for row, entry in enumerate(train) if row not in drop]
     if doc is None:
         body = "".join(json.dumps(entry, ensure_ascii=False) + "\n" for entry in kept)
     else:

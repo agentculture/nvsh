@@ -74,3 +74,47 @@ def test_short_texts_only_match_exactly(tmp_path, capsys) -> None:
     module.main(["--train", str(train), "--protected", str(held)])
     report = json.loads(capsys.readouterr().out)
     assert [h["train_id"] for h in report["matches"]] == ["t1"]
+
+
+def test_two_protected_files_with_the_same_name_are_both_checked(tmp_path, capsys) -> None:
+    # Codex review: files keyed by basename let one test.json replace another.
+    module = _module()
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    first = _split(tmp_path / "a" / "test.json", {"x1": "Restart the vllm service now please"})
+    second = _split(tmp_path / "b" / "test.json", {"y1": "How hot is the Jetson board right now"})
+    train = _split(
+        tmp_path / "train.json",
+        {
+            "t1": "Restart the vllm service now please",
+            "t2": "How hot is the Jetson board right now",
+        },
+    )
+    assert module.main(["--train", str(train), "--protected", str(first), str(second)]) == 1
+    report = json.loads(capsys.readouterr().out)
+    assert report["hits"] == 2
+    assert len(report["protected"]) == 2
+
+
+def test_filtering_drops_only_the_matching_rows(tmp_path, capsys) -> None:
+    module = _module()
+    train = tmp_path / "train.jsonl"
+    rows = [
+        {"id": "dup", "text": "Show the GPU stats now please"},
+        {"id": "dup", "text": "What is unified memory on GB10"},
+    ]
+    train.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+    held = _split(tmp_path / "held.json", {"h1": "Show the GPU stats now please"})
+    out_file = tmp_path / "out.jsonl"
+    module.main(["--train", str(train), "--protected", str(held), "--out-filtered", str(out_file)])
+    kept = [json.loads(line) for line in out_file.read_text(encoding="utf-8").splitlines()]
+    assert [r["text"] for r in kept] == ["What is unified memory on GB10"]
+
+
+def test_an_entry_without_a_text_is_refused(tmp_path, capsys) -> None:
+    module = _module()
+    train = tmp_path / "train.jsonl"
+    train.write_text(json.dumps({"id": "m1", "messages": []}) + "\n", encoding="utf-8")
+    held = _split(tmp_path / "held.json", {"h1": "anything at all here"})
+    assert module.main(["--train", str(train), "--protected", str(held)]) == 2
+    assert "m1" in capsys.readouterr().err
