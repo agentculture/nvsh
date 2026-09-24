@@ -286,12 +286,41 @@ def awq_python_from_env(env: Mapping[str, str]) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _tensor_names(model_dir: Path) -> set[str]:
+    """Every tensor name in *model_dir*'s safetensors files (headers only)."""
+    names: set[str] = set()
+    for shard in sorted(model_dir.glob("*.safetensors")):
+        with open(shard, "rb") as handle:
+            size = int.from_bytes(handle.read(8), "little")
+            header = json.loads(handle.read(size))
+        names.update(name for name in header if name != "__metadata__")
+    return names
+
+
+def mtp_without_weights(model_dir: Path) -> bool:
+    """True when *model_dir*'s config declares an MTP head that has no ``mtp.*`` tensor.
+
+    Issue 46, P67: the text-only merge (``Qwen3_5ForCausalLM``) keeps the base
+    config's ``mtp_num_hidden_layers`` but none of its ``mtp.*`` tensors, so
+    llama.cpp's converter writes one block more than it has weights for and
+    llama.cpp refuses the file (``blk.24.attn_norm.weight`` not found). Such a
+    model converts with ``--no-mtp`` -- the model that was measured, since the
+    served bf16 checkpoint never had an MTP head either.
+    """
+    config = json.loads((model_dir / "config.json").read_text(encoding="utf-8"))
+    holders = [c for c in (config.get("text_config"), config) if isinstance(c, dict)]
+    declared = any(int(c.get("mtp_num_hidden_layers") or 0) > 0 for c in holders)
+    return declared and not any("mtp" in name for name in _tensor_names(model_dir))
+
+
 def convert_gguf(
     run: RunFn,
     tools: ToolPaths,
     model_dir: Path,
     out_file: Path,
     timeout: float = DEFAULT_TIMEOUT,
+    *,
+    no_mtp: bool = False,
 ) -> str:
     """Convert a merged HF checkpoint to a bf16 GGUF. Refuses a vision-projector output.
 
@@ -303,6 +332,8 @@ def convert_gguf(
     refusal, not silently accepted.
     """
     argv = [tools.convert, str(model_dir), "--outfile", str(out_file), "--outtype", "bf16"]
+    if no_mtp:
+        argv.append("--no-mtp")  # P67: see mtp_without_weights
     code, output = run(argv, timeout)
     if code != 0:
         raise QuantizeError(f"GGUF conversion failed (exit {code}): {output}")
@@ -571,7 +602,8 @@ def main(argv: list[str] | None = None) -> int:
         # GGUF picks up the sampling defaults if the converter reads them --
         # ordered that way, never assumed of a specific converter version.
         _sibling("gen_config").write(args.model_dir)
-        convert_gguf(run, tools, args.model_dir, gguf_bf16)
+        no_mtp = mtp_without_weights(args.model_dir)
+        convert_gguf(run, tools, args.model_dir, gguf_bf16, no_mtp=no_mtp)
         compute_imatrix(run, tools, gguf_bf16, calibration_txt, imatrix_file)
         quantize_q4_k_m(run, tools, gguf_bf16, imatrix_file, q4_k_m)
         export_awq(run, awq_py, args.model_dir, calibration_jsonl, awq_dir, len(texts))
@@ -583,6 +615,7 @@ def main(argv: list[str] | None = None) -> int:
     run_log = {
         "calibration_entries": len(texts),
         "gguf_q4_k_m": str(q4_k_m),
+        "gguf_no_mtp": no_mtp,
         "awq_dir": str(awq_dir),
         "awq_copied_files": awq_result["copied_files"],
         "awq_serve_args": awq_result["serve_args"],

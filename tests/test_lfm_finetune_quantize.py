@@ -555,3 +555,59 @@ def test_heal_needed_true_when_the_wrong_mutating_set_changes_with_equal_counts(
     bf16 = module.QuantSummary(right_pct=90.0, wrong_mutating_ids=frozenset({"a"}))
     quant = module.QuantSummary(right_pct=90.0, wrong_mutating_ids=frozenset({"b"}))
     assert module.heal_needed(bf16, quant) is True
+
+
+# -- the GGUF conversion source (issue 46, t25, P67) --
+
+
+def _safetensors(path: Path, names: list[str]) -> None:
+    header = json.dumps(
+        {name: {"dtype": "BF16", "shape": [1], "data_offsets": [0, 2]} for name in names}
+    )
+    raw = header.encode("utf-8")
+    path.write_bytes(len(raw).to_bytes(8, "little") + raw + b"\0\0")
+
+
+def _model_dir(tmp_path: Path, *, mtp_layers: int, tensors: list[str], nested: bool) -> Path:
+    model = tmp_path / "merged"
+    model.mkdir()
+    text = {"num_hidden_layers": 24, "mtp_num_hidden_layers": mtp_layers}
+    config = {
+        "architectures": ["Qwen3_5ForCausalLM"],
+        **({"text_config": text} if nested else text),
+    }
+    (model / "config.json").write_text(json.dumps(config), encoding="utf-8")
+    (model / "tokenizer.json").write_text("{}", encoding="utf-8")
+    _safetensors(model / "model.safetensors", tensors)
+    return model
+
+
+@pytest.mark.parametrize("nested", [True, False])
+def test_a_declared_mtp_head_without_weights_is_detected(nested: bool, tmp_path: Path) -> None:
+    """P67: the text-only merge keeps mtp_num_hidden_layers=1 but no mtp.* tensor."""
+    model = _model_dir(tmp_path, mtp_layers=1, tensors=["model.layers.0.w"], nested=nested)
+    assert _module().mtp_without_weights(model) is True
+
+
+def test_an_mtp_head_with_weights_is_kept(tmp_path: Path) -> None:
+    model = _model_dir(tmp_path, mtp_layers=1, tensors=["mtp.fc.weight"], nested=True)
+    assert _module().mtp_without_weights(model) is False
+
+
+def test_a_model_without_an_mtp_head_is_left_alone(tmp_path: Path) -> None:
+    model = _model_dir(tmp_path, mtp_layers=0, tensors=["model.layers.0.w"], nested=True)
+    assert _module().mtp_without_weights(model) is False
+
+
+@pytest.mark.parametrize("no_mtp", [True, False])
+def test_convert_gguf_passes_no_mtp_only_when_asked(no_mtp: bool, tmp_path: Path) -> None:
+    mod = _module()
+    calls = []
+
+    def run(argv, timeout):
+        calls.append(argv)
+        return 0, ""
+
+    tools = mod.ToolPaths(convert="convert", quantize="q", imatrix="i")
+    mod.convert_gguf(run, tools, tmp_path, tmp_path / "out.gguf", no_mtp=no_mtp)
+    assert ("--no-mtp" in calls[0]) is no_mtp
