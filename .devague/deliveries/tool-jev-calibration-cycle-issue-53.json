@@ -1,0 +1,27 @@
+{
+  "plan_slug": "tool-jev-calibration-cycle-issue-53",
+  "schema_version": 2,
+  "created": "2026-09-24T23:49:55Z",
+  "updated": "2026-09-24T23:49:55Z",
+  "deviations": [
+    {
+      "id": "d1",
+      "what": "t1 criterion 1's train_scorer adoption of the shared label-probability definition moves to t16 (label_variant_ids + label_logits_from_vocab, variant ids recorded in run metadata); the lead updates one t8-owned assertion in tests/test_lfm_finetune_measure.py (served top == READOUT_TOP) at t1's merge; measure.py's --max-logprobs preflight stays with t8",
+      "task_ref": "t1",
+      "reason": "train_scorer.py is owned by t16 and t1 was told not to touch it; t1's required READOUT_TOP change breaks one hard-coded top-22 assertion in a t8 test file, and merges must stay green",
+      "affects": [
+        "t16",
+        "t8",
+        "c39",
+        "h31"
+      ],
+      "origin": "user",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 1
+    }
+  ],
+  "evidence": [],
+  "deltas": [],
+  "supersessions": []
+}
