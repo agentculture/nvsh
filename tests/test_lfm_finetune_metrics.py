@@ -181,7 +181,7 @@ def test_schema_fields_are_the_documented_ones(metrics):
         "ttfd_ms",
         "latency_ms",
     )
-    assert metrics.OUTCOMES == ("propose", "explain", "escalate", "invalid")
+    assert metrics.OUTCOMES == ("propose", "explain", "escalate", "abstain_uncertain", "invalid")
 
 
 def test_read_predictions_round_trips_the_fixture(metrics, tmp_path):
@@ -232,7 +232,11 @@ def test_read_predictions_rejects_unparseable_json_and_duplicate_ids(metrics, tm
 
 def test_right_proposals_n_of_n_and_percent(result):
     # operation-expected: p1 p2 p3 p4 p5 p12 -> N=6; only p1 is right
-    assert result["right_proposals"] == {"n": 1, "N": 6, "percent": pytest.approx(100 / 6)}
+    right_proposals = dict(result["right_proposals"])
+    ci = right_proposals.pop("ci")
+    assert right_proposals == {"n": 1, "N": 6, "percent": pytest.approx(100 / 6)}
+    assert ci["n"] == 6
+    assert ci["value"] == pytest.approx(1 / 6)
 
 
 def test_escalation_recall_and_precision(result):
@@ -279,7 +283,11 @@ def test_escalation_agrees_with_bench_compute_escalation(metrics, tmp_path):
 def test_false_positive_tool_calls_over_explain_and_escalate_items(result):
     # explain/escalate-expected: p6 p7 p8 p13 p9 p10 p11 -> N=7; proposals: p7, p11
     # (p13's unknown operation is an invalid output, counted there instead)
-    assert result["false_positive_tool_calls"] == {"n": 2, "N": 7, "rate": pytest.approx(2 / 7)}
+    false_calls = dict(result["false_positive_tool_calls"])
+    ci = false_calls.pop("ci")
+    assert false_calls == {"n": 2, "N": 7, "rate": pytest.approx(2 / 7)}
+    assert ci["n"] == 7
+    assert ci["value"] == pytest.approx(2 / 7)
 
 
 def test_wrong_mutating_splits_operation_and_arguments(result):
@@ -290,12 +298,16 @@ def test_wrong_mutating_splits_operation_and_arguments(result):
 
 def test_invalid_outputs_count_malformed_and_out_of_table(result):
     # p5 recorded invalid (malformed), p13 proposed an operation not in the table
-    assert result["invalid"] == {
+    invalid = dict(result["invalid"])
+    ci = invalid.pop("ci")
+    assert invalid == {
         "n": 2,
         "N": 13,
         "rate": pytest.approx(2 / 13),
         "by_reason": {"malformed": 1, "unknown_operation": 1},
     }
+    assert ci["n"] == 13
+    assert ci["value"] == pytest.approx(2 / 13)
 
 
 def test_proposal_with_arguments_failing_the_schema_is_invalid(metrics):
@@ -401,6 +413,7 @@ def test_issue46_json_maps_each_outcome(metrics):
     assert as46(_rec("b", {"escalate": True}, "escalate")) == {"action": "abstain"}
     assert as46(_rec("c", {"explain": True}, "explain")) == {"action": "no_action"}
     assert as46(_rec("d", {"explain": True}, "invalid")) == {"action": "invalid"}
+    assert as46(_rec("e", {"escalate": True}, "abstain_uncertain")) == {"action": "abstain"}
 
 
 def test_mapping_is_emitted_with_the_metrics(metrics, result):
@@ -409,6 +422,233 @@ def test_mapping_is_emitted_with_the_metrics(metrics, result):
     assert '{"action": "abstain"}' in mapping["markdown"]
     assert "escalate" in mapping["markdown"]
     assert mapping["note"]
+
+
+# ---------------------------------------------------------------------------
+# abstain_uncertain (issue 53): counted separately, rolled into escalation bars
+# ---------------------------------------------------------------------------
+
+
+def _abstain_uncertain_rows() -> list[dict]:
+    """Like the escalation slice of the main fixture, but a gate abstained instead."""
+    return [
+        # escalate-expected, gate abstained (counts as tp, like p6)
+        _rec("q1", {"escalate": True}, "abstain_uncertain", candidates={ESC: 1.0}),
+        # escalate-expected, gate did NOT abstain -> still a false negative
+        _rec("q2", {"escalate": True}, "explain", candidates={EXP: 0.6, ESC: 0.4}),
+        # operation-expected, gate abstained -> false positive for escalation bars
+        _rec(
+            "q3",
+            _op("memory_stats"),
+            "abstain_uncertain",
+            candidates={ESC: 0.7, "memory_stats": 0.3},
+        ),
+        # explain-expected, gate abstained -> escalated_on_explain
+        _rec("q4", {"explain": True}, "abstain_uncertain", candidates={ESC: 0.55, EXP: 0.45}),
+    ]
+
+
+def test_abstain_uncertain_counts_toward_escalation_bars_but_separately(metrics, tmp_path):
+    predictions = metrics.read_predictions(_write(tmp_path, _abstain_uncertain_rows()))
+    got = metrics.compute(predictions)
+    escalation = got["escalation"]
+    # Both q1 (escalate-expected) and q3 (operation-expected) count as escalated.
+    assert (escalation["tp"], escalation["fn"], escalation["fp"]) == (1, 1, 1)
+    assert escalation["escalated_on_explain"] == 1
+    # ... but abstain_uncertain is also broken out on its own.
+    assert escalation["abstain_uncertain"] == {"tp": 1, "fp": 1, "escalated_on_explain": 1}
+    assert got["outcome_counts"]["escalate"] == 0
+    assert got["outcome_counts"]["abstain_uncertain"] == 3
+
+
+def test_abstain_uncertain_and_escalate_both_map_to_issue46_abstain(metrics):
+    rows = [row["nvsh"] for row in metrics.issue46_mapping()["rows"]]
+    assert rows == ["propose", "explain", "escalate", "abstain_uncertain", "invalid"]
+
+
+# ---------------------------------------------------------------------------
+# Escalation-reason roll-up (issue 53)
+# ---------------------------------------------------------------------------
+
+
+def test_escalate_reason_label_rolls_up_to_bare_escalate_for_calibration(metrics):
+    # A gold escalate, scored entirely under a reasoned label: it should compare
+    # exactly as if the model had said the bare "(escalate)" label.
+    rolled = metrics.rollup_escalate_candidates({"escalate:low_confidence": 0.7, EXP: 0.3})
+    assert rolled == {ESC: pytest.approx(0.7), EXP: pytest.approx(0.3)}
+    label, confidence = metrics.top_candidate(rolled)
+    assert (label, confidence) == (ESC, pytest.approx(0.7))
+
+
+def test_escalate_reason_is_extracted_and_tallied(metrics, tmp_path):
+    rows = [
+        _rec("r1", {"escalate": True}, "escalate", candidates={"escalate:low_confidence": 1.0}),
+        _rec(
+            "r2",
+            _op("memory_stats"),
+            "propose",
+            "memory_stats",
+            {},
+            {"escalate:timeout": 0.6, "memory_stats": 0.4},
+        ),
+        _rec("r3", {"escalate": True}, "escalate", candidates={ESC: 1.0}),
+    ]
+    predictions = metrics.read_predictions(_write(tmp_path, rows))
+    got = metrics.compute(predictions)
+    assert got["escalation_reasons"] == {"low_confidence": 1, "timeout": 1}
+    assert metrics.escalate_reason(ESC) is None
+    assert metrics.escalate_reason("escalate:") is None
+    assert metrics.canonical_label("escalate:timeout") == ESC
+    assert metrics.canonical_label("memory_stats") == "memory_stats"
+
+
+def test_missing_candidate_rolls_up_escalate_reason_before_checking_gold(metrics):
+    # Gold is escalate; candidates only offer a reasoned escalate label -> not missing.
+    prediction = metrics.Prediction.from_dict(
+        _rec("s1", {"escalate": True}, "escalate", candidates={"escalate:timeout": 1.0})
+    )
+    assert metrics.is_missing_candidate(prediction) is False
+
+
+# ---------------------------------------------------------------------------
+# Per-slice ECE/Brier/bins, candidate count, missing-candidate (issue 53)
+# ---------------------------------------------------------------------------
+
+
+def test_slice_name_is_the_gold_operations_read_only_flag(metrics):
+    read_only = metrics.Prediction.from_dict(_rec("t1", _op("memory_stats"), "explain"))
+    mutating = metrics.Prediction.from_dict(
+        _rec("t2", _op("container_restart", container="x"), "explain")
+    )
+    escalate = metrics.Prediction.from_dict(_rec("t3", {"escalate": True}, "escalate"))
+    explain = metrics.Prediction.from_dict(_rec("t4", {"explain": True}, "explain"))
+    assert metrics.slice_name(read_only) == "read_only"
+    assert metrics.slice_name(mutating) == "mutating"
+    assert metrics.slice_name(escalate) == "escalate_or_explain"
+    assert metrics.slice_name(explain) == "escalate_or_explain"
+
+
+def test_slices_partition_the_fixture_and_report_calibration(result, metrics):
+    slices = result["slices"]
+    assert set(slices) == {"read_only", "mutating", "escalate_or_explain"}
+    # Every prediction lands in exactly one slice.
+    assert sum(s["n"] for s in slices.values()) == 13
+    # p1 (memory_stats, read-only) and p2 (service_status, read-only) are read_only;
+    # p3/p4 (container_restart / service_restart, mutating) are mutating.
+    assert slices["read_only"]["n"] >= 2
+    assert slices["mutating"]["n"] >= 2
+    for name in ("read_only", "mutating", "escalate_or_explain"):
+        calibration = slices[name]["calibration"]
+        assert "ece" in calibration and "ece_ci" in calibration
+        assert "brier" in calibration and "brier_ci" in calibration
+        assert "bins" in calibration and len(calibration["bins"]) == metrics.ECE_BINS
+
+
+def test_slice_candidate_count_and_missing_candidate(metrics, tmp_path):
+    rows = [
+        # A -nocand line: read-only gold, candidates missing the gold operation.
+        _rec(
+            "u1-nocand",
+            _op("memory_stats"),
+            "escalate",
+            candidates={"service_status": 0.5, ESC: 0.5},
+        ),
+        # An ordinary read-only line with the gold offered.
+        _rec("u2", _op("memory_stats"), "propose", "memory_stats", {}, {"memory_stats": 1.0}),
+    ]
+    predictions = metrics.read_predictions(_write(tmp_path, rows))
+    got = metrics.compute(predictions)
+    read_only = got["slices"]["read_only"]
+    assert read_only["n"] == 2
+    # u1-nocand offers 2 candidates, u2 offers 1 -> mean/median 1.5.
+    assert read_only["candidate_count"] == {"n": 2, "mean": 1.5, "median": 1.5}
+    assert read_only["missing_candidate"]["n"] == 1
+    assert read_only["missing_candidate"]["N"] == 2
+    assert read_only["missing_candidate"]["rate"]["value"] == pytest.approx(0.5)
+
+
+def test_is_missing_candidate_by_id_suffix_or_absent_gold(metrics):
+    by_suffix = metrics.Prediction.from_dict(
+        _rec("v-nocand", _op("memory_stats"), "escalate", candidates={ESC: 1.0})
+    )
+    by_absent_gold = metrics.Prediction.from_dict(
+        _rec("v2", _op("memory_stats"), "propose", "memory_stats", {}, {"service_status": 1.0})
+    )
+    present = metrics.Prediction.from_dict(
+        _rec("v3", _op("memory_stats"), "propose", "memory_stats", {}, {"memory_stats": 1.0})
+    )
+    assert metrics.is_missing_candidate(by_suffix) is True
+    assert metrics.is_missing_candidate(by_absent_gold) is True
+    assert metrics.is_missing_candidate(present) is False
+
+
+# ---------------------------------------------------------------------------
+# Bootstrap confidence intervals (issue 53)
+# ---------------------------------------------------------------------------
+
+
+def test_bootstrap_ci_is_seeded_and_reproducible(metrics):
+    items = [1, 0, 1, 1, 0, 0, 1, 1, 0, 1]
+    first = metrics.bootstrap_ci(items, metrics._mean_stat, seed=7, resamples=200)
+    second = metrics.bootstrap_ci(items, metrics._mean_stat, seed=7, resamples=200)
+    assert first == second
+    assert first["n"] == 10
+    assert first["value"] == pytest.approx(0.6)
+    assert 0.0 <= first["ci_low"] <= first["value"] <= first["ci_high"] <= 1.0
+
+
+def test_bootstrap_ci_degenerate_cases(metrics):
+    assert metrics.bootstrap_ci([], metrics._mean_stat) == {
+        "n": 0,
+        "value": None,
+        "ci_low": None,
+        "ci_high": None,
+    }
+    one = metrics.bootstrap_ci([1], metrics._mean_stat)
+    assert one == {"n": 1, "value": 1.0, "ci_low": 1.0, "ci_high": 1.0}
+
+
+def test_compute_bootstrap_seed_and_resamples_are_reported_and_parameterised(metrics, tmp_path):
+    predictions = metrics.read_predictions(_write(tmp_path, _fixture_rows()))
+    default = metrics.compute(predictions)
+    assert default["bootstrap"] == {
+        "seed": metrics.DEFAULT_BOOTSTRAP_SEED,
+        "resamples": metrics.DEFAULT_BOOTSTRAP_RESAMPLES,
+    }
+    custom = metrics.compute(predictions, bootstrap_seed=99, bootstrap_resamples=50)
+    assert custom["bootstrap"] == {"seed": 99, "resamples": 50}
+    # A different seed can move the CI bounds without changing the point estimate.
+    assert custom["right_proposals"]["percent"] == default["right_proposals"]["percent"]
+
+
+def test_every_rate_and_ece_carries_n_and_a_bootstrap_ci(result):
+    for ci in (
+        result["right_proposals"]["ci"],
+        result["escalation"]["recall_ci"],
+        result["escalation"]["precision_ci"],
+        result["escalation"]["precision_strict_ci"],
+        result["false_positive_tool_calls"]["ci"],
+        result["invalid"]["ci"],
+        result["calibration"]["ece_ci"],
+        result["calibration"]["brier_ci"],
+    ):
+        assert set(ci) == {"n", "value", "ci_low", "ci_high"}
+        assert isinstance(ci["n"], int) and ci["n"] > 0
+
+
+# ---------------------------------------------------------------------------
+# The reliability markdown renderer (issue 53; measure.py/t8 is the caller)
+# ---------------------------------------------------------------------------
+
+
+def test_reliability_markdown_has_one_table_per_slice_and_no_operation_names(result, metrics):
+    markdown = metrics.reliability_markdown(result["slices"])
+    for name in metrics.SLICE_NAMES:
+        assert f"### {name}" in markdown
+    assert "| bin | n | confidence | accuracy |" in markdown
+    # The renderer itself never names an operation -- only slice names and numbers.
+    assert "memory_stats" not in markdown
+    assert "container_restart" not in markdown
 
 
 # ---------------------------------------------------------------------------
