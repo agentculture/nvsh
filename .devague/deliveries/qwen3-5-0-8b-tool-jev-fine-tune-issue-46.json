@@ -2,7 +2,7 @@
   "plan_slug": "qwen3-5-0-8b-tool-jev-fine-tune-issue-46",
   "schema_version": 2,
   "created": "2026-09-23T10:18:50Z",
-  "updated": "2026-09-23T23:37:04Z",
+  "updated": "2026-09-23T23:54:55Z",
   "deviations": [
     {
       "id": "d1",
@@ -167,6 +167,30 @@
       "status": "proposed",
       "classification": "acceptable",
       "seq": 12
+    },
+    {
+      "id": "d13",
+      "what": "The 104 Jetson skills evals are served at MEASURE_CTX=8192 for every model (stock and tuned alike): one skills prompt with all 38 tool definitions is 3,939 tokens under the Qwen template, so at 2K every eval was a call error (caught by the tier-error gate, no results page written) and 4K leaves no room for the reply; the nvsh 2K/4K comparison is unaffected",
+      "task_ref": "t21",
+      "reason": "measured prompt length (3,939 tokens, stock tokenizer, all tools) during t21; decided by the lead under the operator's standing goal",
+      "affects": [
+        "t24"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "classification": "acceptable",
+      "seq": 13
+    },
+    {
+      "id": "d14",
+      "what": "t19 augments only the 43 new train-side sources that are not issue-39 test entries (258 variations at 6 per source), not all 95: 52 of the 95 sources without stored variations are old issue-39 test entries, which t19 excludes from training anyway. The assembled training set is also run through leakage_check.py against val, test, the issue-39 test, the corpus held-out and the sealed held-out (exact and near-duplicate, ids only) and every hit is dropped: a dry run found 52 issue-39 test sources, 1 train source identical to a test entry (a corpus text under two ids), and 7 re-reviewed variations matching protected text (2 of them the sealed held-out)",
+      "task_ref": "t19",
+      "reason": "found while preparing t19's leakage checks; decided by the lead under the operator's standing goal",
+      "affects": [],
+      "origin": "llm",
+      "status": "proposed",
+      "classification": "acceptable",
+      "seq": 14
     }
   ],
   "evidence": [],
