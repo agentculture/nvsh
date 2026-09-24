@@ -2,7 +2,7 @@
   "plan_slug": "qwen3-5-0-8b-tool-jev-fine-tune-issue-46",
   "schema_version": 2,
   "created": "2026-09-23T10:18:50Z",
-  "updated": "2026-09-23T23:54:55Z",
+  "updated": "2026-09-24T03:48:26Z",
   "deviations": [
     {
       "id": "d1",
@@ -191,6 +191,19 @@
       "status": "proposed",
       "classification": "acceptable",
       "seq": 14
+    },
+    {
+      "id": "d15",
+      "what": "Track B's calibration (ECE, Brier) is measured with the exact in-process scorer (measure.py --scorer in-process: the full distribution over every candidate label), and its decisions and latency with the served scorer; both runs must agree on every decision. The served scorer returned no complete distribution for any validation entry (0 of 66): a fine-tuned scorer leaves the other letter labels outside vLLM's top 22 log-probabilities (risk r8), and the harness refuses to renormalize a partial top-k. Stock's Track B baseline is measured the same way",
+      "task_ref": "t23",
+      "reason": "found measuring scorer-b1 on validation (served: 0/66 distributions; in-process: 66/66, identical decisions); the counterpart of d6 for Track A; decided by the lead under the operator's standing goal",
+      "affects": [
+        "t24"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "classification": "acceptable",
+      "seq": 15
     }
   ],
   "evidence": [],

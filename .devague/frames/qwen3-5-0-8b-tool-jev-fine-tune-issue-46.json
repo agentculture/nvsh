@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-09-23T06:56:50Z",
-  "updated": "2026-09-23T23:17:26Z",
+  "updated": "2026-09-24T04:02:38Z",
   "claims": [
     {
       "id": "c1",
@@ -1345,6 +1345,17 @@
       "skipped_check": "compare the serving record's --max-model-len with the reported ctx before reporting",
       "refs": [
         "t21"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l4",
+      "code": "control-absent",
+      "what": "Track A runs a1 and a2 were merged into models bit-identical to the base: unsloth trained the vision-language class (adapter keys under model.language_model.*), train.py's merge loaded the text-only AutoModelForCausalLM, PEFT found none of the adapter keys and only warned, and the lead measured both merged models on validation (0 of 32, like stock) before checking that a tuned model differed from its base",
+      "skipped_check": "a check that the merged model's weights differ from the base (and that every adapter tensor loaded) before measuring",
+      "refs": [
+        "t22"
       ],
       "origin": "llm",
       "status": "proposed"
