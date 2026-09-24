@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "drafting",
   "created": "2026-09-24T22:47:35Z",
-  "updated": "2026-09-24T22:48:45Z",
+  "updated": "2026-09-24T22:55:36Z",
   "claims": [
     {
       "id": "c1",
@@ -129,9 +129,9 @@
         {
           "id": "q2",
           "text": "Which bars define done for this cycle? Candidates: ECE <= 0.10 on the deployed Q4_K_M with a CI; 0 wrong mutating at the chosen thresholds; answer-change rate under permutation <= some X% (OpenJev ~2.3%); missing-candidate abstain >= some Y% (7/32 today).",
-          "resolved": false,
+          "resolved": true,
           "blocking": true,
-          "resolution": ""
+          "resolution": "OpenJev level (operator 2026-09-25): permutation answer-change <= 2.3% (c25); calibration and abstention bars are nvsh's own since OpenJev publishes neither (c26, c27); missing data is a target, not an excuse (c24)."
         }
       ],
       "links": [],
@@ -169,9 +169,9 @@
         {
           "id": "q3",
           "text": "Should semantic escalate reasons stay one label, or become distinguishable? The corpus already tags them (class decline:outside_table 28, repair 14, diagnosis 13, missing_argument 12, not_a_request 10, multi_step 8, injection 7, over_time 6 in nvsh/tiers/corpus/dev.json) but build_dataset.py:92-93 collapses all to one ESCALATE_REASON.",
-          "resolved": false,
+          "resolved": true,
           "blocking": true,
-          "resolution": ""
+          "resolution": "Ablation: 8 decline classes as targets vs one label; keep only if validation improves (c28)."
         }
       ],
       "links": [],
@@ -201,9 +201,9 @@
         {
           "id": "q4",
           "text": "Where does the fresh sealed test side and held-out come from: new sources drafted by the teachers (draft_heldout.py pattern) or a re-split of the existing 431-entry corpus plus new entries?",
-          "resolved": false,
+          "resolved": true,
           "blocking": true,
-          "resolution": ""
+          "resolution": "Re-split the corpus; add new sources when needed (c29)."
         }
       ],
       "links": [],
@@ -293,9 +293,9 @@
         {
           "id": "q5",
           "text": "Does the calibration cycle cover Track A (a3-heal, ECE 0.080 via teacher forcing) as well, or Track B only, with Track A limited to the documentation relabel?",
-          "resolved": false,
+          "resolved": true,
           "blocking": true,
-          "resolution": ""
+          "resolution": "Track B only; Track A gets the doc relabel; Track A work -> #56 (c30)."
         }
       ],
       "links": [],
@@ -305,7 +305,25 @@
     {
       "id": "c21",
       "kind": "non_goal",
-      "text": "RLCD or other calibration-aware training objectives, and a generic Choice/Noul/Score API, are not built in this cycle; issue #53's order puts them after standard post-hoc calibration has been measured (proposed order step 5).",
+      "text": "A generic Choice/Noul/Score API is not built in this cycle; it moved to issue #55 (issue #53 gap 5, proposed order step 5).",
+      "origin": "llm",
+      "status": "proposed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": [
+        {
+          "text": "RLCD or other calibration-aware training objectives, and a generic Choice/Noul/Score API, are not built in this cycle; issue #53's order puts them after standard post-hoc calibration has been measured (proposed order step 5).",
+          "kind": "non_goal",
+          "reason": "operator 2026-09-25: out-of-scope items get their own issue; RLCD split out into its own conditional-stage claim"
+        }
+      ]
+    },
+    {
+      "id": "c22",
+      "kind": "non_goal",
+      "text": "No change to the nvsh runtime's third-party dependency set (pyproject dependencies = []); any runtime use of the scorer goes through the existing HTTP ToolChat.score_next_token pattern (nvsh/tiers/toolchat.py).",
       "origin": "llm",
       "status": "proposed",
       "honesty_conditions": [],
@@ -315,9 +333,105 @@
       "revisions": []
     },
     {
-      "id": "c22",
-      "kind": "non_goal",
-      "text": "No change to the nvsh runtime's third-party dependency set (pyproject dependencies = []); any runtime use of the scorer goes through the existing HTTP ToolChat.score_next_token pattern (nvsh/tiers/toolchat.py).",
+      "id": "c23",
+      "kind": "requirement",
+      "text": "Out-of-scope items get their own issue rather than a silent non-goal: runtime wiring -> #54, Choice/Noul/Score -> #55, Track A follow-ups -> #56 (operator 2026-09-25).",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c24",
+      "kind": "decision",
+      "text": "Missing data is never a reason to stop short of a bar: where a gap is data-limited, generating train-side data through the all-Apache pipeline is the fix and becomes a task (operator 2026-09-25: 'Missing data is not an explanation - it's a target to fill').",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c25",
+      "kind": "success_signal",
+      "text": "Permutation robustness at OpenJev level: shuffling candidate order and permuting op->letter labels changes the semantic choice in <= 2.3% of cases (OpenJev's published figure; its own base model was 18.5%, https://huggingface.co/openjev/openjev). Closed or explained with a cause other than missing data.",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c26",
+      "kind": "success_signal",
+      "text": "Calibration on the deployed Q4_K_M scorer: ECE <= 0.10 with a bootstrap CI and a published reliability diagram, on the fresh test side. OpenJev publishes no ECE/Brier (it ships a fixed readout temperature, READOUT_T=0.85), so there is no OpenJev calibration number to match; the #46 bar c35 stands.",
+      "origin": "llm",
+      "status": "proposed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c27",
+      "kind": "success_signal",
+      "text": "0 wrong mutating actions at the chosen gate thresholds, and escalation (semantic or uncertainty) on >= 80% of the missing-candidate slice (7/32 today); OpenJev reports no abstention mechanism, so these bars are nvsh's own (c34 lineage).",
+      "origin": "llm",
+      "status": "proposed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c28",
+      "kind": "decision",
+      "text": "Escalation reasons: train an ablation with the 8 corpus decline classes (outside_table, repair, diagnosis, missing_argument, not_a_request, multi_step, injection, over_time) as distinguishable targets vs one escalate label; keep the reasons only if they improve validation results (operator 2026-09-25: 'if it helps, we add the 8 reasons').",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c29",
+      "kind": "decision",
+      "text": "Fresh evaluation sides come from a re-split of the corpus; new teacher-drafted sources are added when a slice or validation size needs them (operator 2026-09-25).",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c30",
+      "kind": "decision",
+      "text": "Track B is the subject of the cycle, as issue #53 frames it (every gap targets the candidate scorer); Track A only gets the documentation relabel (gap 4), its improvements go to #56 (operator 2026-09-25).",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c31",
+      "kind": "requirement",
+      "text": "Conditional calibration-aware training stage (our own objective, not RLCD, whose method TypeSafe has not published): if post-hoc temperature/vector scaling plus the new data does not reach the calibration bar, train with a calibration-aware objective \u2014 label smoothing / a proper-scoring-rule term (Brier) beside CE, and/or a cost-sensitive decision reward on the gate's act/abstain outcome \u2014 and compare against the post-hoc result.",
       "origin": "llm",
       "status": "proposed",
       "honesty_conditions": [],
@@ -433,6 +547,17 @@
         "c3",
         "c20",
         "c21"
+      ]
+    },
+    {
+      "id": "s11",
+      "surface": "external: OpenJev model card + TypeSafe Jev blog",
+      "finding": "OpenJev: 27B, CC BY-NC 4.0 (reference only), order-shuffle answer change 2.3% vs 18.5% for its base, trained for order consistency; calibration is a fixed readout temperature (READOUT_T=0.85, noul T=1.829) with no published ECE/Brier and no abstention mechanism. TypeSafe RLCD: no reward, scoring rule, data, paper or numbers disclosed.",
+      "seeds": [
+        "c25",
+        "c26",
+        "c27",
+        "c31"
       ]
     }
   ],
