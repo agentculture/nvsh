@@ -1636,9 +1636,28 @@ class _ModelsHandler(http.server.BaseHTTPRequestHandler):
     ids: list[str] = ["good-model"]
     #: ``max_model_len`` reported for every id; ``None`` omits the field.
     max_model_len: int | None = None
+    #: llama-server's shape (issue 46, t25): ``owned_by`` "llamacpp" and the
+    #: context in ``GET /props``; ``None`` serves no /props at all.
+    owned_by: str | None = None
+    props_n_ctx: int | None = None
+    props_redirect = False
 
     def do_GET(self) -> None:  # noqa: N802 - http.server's naming convention
-        if self.path.rstrip("/") != "/models":
+        if self.path.rstrip("/") == "/props" and _ModelsHandler.props_redirect:
+            self.send_response(302)
+            self.send_header("Location", "http://127.0.0.2:9/props")
+            self.end_headers()
+            return
+        if self.path.rstrip("/") == "/props" and _ModelsHandler.props_n_ctx is not None:
+            body = {"default_generation_settings": {"n_ctx": _ModelsHandler.props_n_ctx}}
+            data = json.dumps(body).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+            return
+        if self.path.rstrip("/") not in ("/models", "/v1/models"):
             self.send_response(404)
             self.end_headers()
             return
@@ -1647,6 +1666,8 @@ class _ModelsHandler(http.server.BaseHTTPRequestHandler):
             entry: dict = {"id": i}
             if _ModelsHandler.max_model_len is not None:
                 entry["max_model_len"] = _ModelsHandler.max_model_len
+            if _ModelsHandler.owned_by is not None:
+                entry["owned_by"] = _ModelsHandler.owned_by
             entries.append(entry)
         data = json.dumps({"data": entries}).encode("utf-8")
         self.send_response(_ModelsHandler.status)
@@ -1664,6 +1685,9 @@ def models_server():
     _ModelsHandler.status = 200
     _ModelsHandler.ids = ["good-model"]
     _ModelsHandler.max_model_len = None
+    _ModelsHandler.owned_by = None
+    _ModelsHandler.props_n_ctx = None
+    _ModelsHandler.props_redirect = False
     server = http.server.HTTPServer(("127.0.0.1", 0), _ModelsHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -1914,6 +1938,44 @@ def test_preflight_refuses_when_the_served_context_cannot_be_read(measure, model
     with pytest.raises(measure.MeasureError) as excinfo:
         measure.preflight_models(_models_url(models_server), "good-model", ctx=4096)
     assert "max_model_len" in excinfo.value.message
+
+
+@pytest.mark.parametrize("suffix", ["", "/v1"])
+def test_preflight_reads_a_llama_server_context_from_props(measure, models_server, suffix):
+    """Issue 46, t25: llama-server's /v1/models has no max_model_len; its
+    context is /props default_generation_settings.n_ctx at the server root."""
+    _ModelsHandler.owned_by = "llamacpp"
+    _ModelsHandler.props_n_ctx = 2048
+    measure.preflight_models(_models_url(models_server) + suffix, "good-model", ctx=2048)
+
+
+def test_preflight_refuses_a_llama_server_with_another_context(measure, models_server):
+    _ModelsHandler.owned_by = "llamacpp"
+    _ModelsHandler.props_n_ctx = 4096
+    with pytest.raises(measure.MeasureError) as excinfo:
+        measure.preflight_models(_models_url(models_server) + "/v1", "good-model", ctx=2048)
+    assert "4096" in excinfo.value.message and "2048" in excinfo.value.message
+
+
+def test_preflight_refuses_a_llama_server_without_props(measure, models_server):
+    _ModelsHandler.owned_by = "llamacpp"
+    with pytest.raises(measure.MeasureError) as excinfo:
+        measure.preflight_models(_models_url(models_server) + "/v1", "good-model", ctx=2048)
+    assert "n_ctx" in excinfo.value.message or "max_model_len" in excinfo.value.message
+
+
+def test_a_redirected_props_answer_is_refused(measure, models_server):
+    """Codex: a redirect could carry the /props answer off localhost."""
+    _ModelsHandler.owned_by = "llamacpp"
+    _ModelsHandler.props_redirect = True
+    with pytest.raises(measure.MeasureError):
+        measure.preflight_models(_models_url(models_server) + "/v1", "good-model", ctx=2048)
+
+
+def test_props_are_not_consulted_for_a_server_that_is_not_llama_cpp(measure, models_server):
+    _ModelsHandler.props_n_ctx = 2048  # present, but the server does not say it is llama.cpp
+    with pytest.raises(measure.MeasureError):
+        measure.preflight_models(_models_url(models_server), "good-model", ctx=2048)
 
 
 def test_preflight_without_ctx_is_unchanged(measure, models_server):

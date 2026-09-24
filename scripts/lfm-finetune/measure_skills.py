@@ -196,6 +196,33 @@ def require_localhost(base_url: str) -> None:
         raise ValueError(f"host must be 127.0.0.1, ::1 or localhost (got {parsed.hostname!r})")
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Refuse every redirect: the answer must come from the localhost server asked."""
+
+    def redirect_request(self, *_args, **_kwargs):  # noqa: D102
+        return None
+
+
+def _llama_server_ctx(base_url: str, timeout: float) -> int | None:
+    """llama-server's served context: ``GET /props`` at the server root,
+    ``default_generation_settings.n_ctx`` (issue 46, t25). Its ``/v1/models``
+    carries no ``max_model_len``. ``None`` when the answer does not say."""
+    root = base_url.rstrip("/")
+    if root.endswith("/v1"):
+        root = root[: -len("/v1")]
+    require_localhost(root)
+    request = urllib.request.Request(root + "/props", method="GET")
+    opener = urllib.request.build_opener(_NoRedirect)  # a redirect could leave localhost
+    try:
+        with opener.open(request, timeout=timeout) as response:  # nosec B310
+            payload = json.loads(response.read())
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError):
+        return None
+    settings = payload.get("default_generation_settings") if isinstance(payload, dict) else None
+    n_ctx = settings.get("n_ctx") if isinstance(settings, dict) else None
+    return n_ctx if isinstance(n_ctx, int) else None
+
+
 def preflight_models(
     base_url: str,
     model: str,
@@ -241,10 +268,14 @@ def preflight_models(
     if max_model_len is not None:
         # Issue 46, lapse l3: a run reported ctx=4096 while the server had been
         # started with --max-model-len 2048. The served length is the truth.
-        served = next((item.get("max_model_len") for item in data if item.get("id") == model), None)
+        entry = next((item for item in data if item.get("id") == model), {})
+        served = entry.get("max_model_len")
+        if served is None and entry.get("owned_by") == "llamacpp":
+            served = _llama_server_ctx(base_url, timeout)
         if not isinstance(served, int):
             raise RuntimeError(
-                f"{url} does not report max_model_len for {model!r}, so the served context "
+                f"{url} does not report max_model_len (nor llama-server's /props n_ctx) for "
+                f"{model!r}, so the served context "
                 f"cannot be checked against ctx={max_model_len}"
             )
         if served != max_model_len:
