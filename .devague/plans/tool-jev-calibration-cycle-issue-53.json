@@ -1,0 +1,1001 @@
+{
+  "slug": "tool-jev-calibration-cycle-issue-53",
+  "title": "Tool-Jev calibration cycle (issue 53)",
+  "frame_slug": "tool-jev-calibration-cycle-issue-53",
+  "schema_version": 5,
+  "status": "drafting",
+  "created": "2026-09-24T23:13:14Z",
+  "updated": "2026-09-24T23:15:30Z",
+  "targets": [
+    {
+      "id": "c1",
+      "kind": "announcement",
+      "text": "The Tool-Jev scorer now makes calibrated, label-permutation-robust decisions on its deployed quantized build: an improvement cycle over code and data measured the permutation dependence of scorer-b1, added an uncertainty gate separate from semantic escalate, trained with per-example randomized candidate labels on a grown dataset, and reports reliability per slice for the actual shipped artifact (issue #53)",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h1",
+      "kind": "honesty",
+      "text": "Every clause of the announcement is backed by a measured report on the fresh sides; any bar missed is reported as missed, not rounded up.",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c2",
+      "kind": "requirement",
+      "text": "Permutation probe of the existing scorer-b1 before any retraining: score the val side with (a) shuffled candidate order, (b) a random op->letter permutation, (c) candidate subsets, (d) paraphrased candidate descriptions, and report how often the semantic choice changes (OpenJev reports ~2.3% on order shuffle). Needs a new seam: labels are fixed by LABEL_ALPHABET[full.index(name)] (scripts/lfm-finetune/scorer.py:139-153) and descriptions are hard-wired to ops_table (scorer.py:174-181); no shuffle/permute hook exists today.",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h6",
+      "kind": "honesty",
+      "text": "The probe runs on the existing scorer-b1 checkpoint before any new training and reports answer-change rate per perturbation (order, letters, subset, paraphrase) on val.",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c3",
+      "kind": "requirement",
+      "text": "Uncertainty-abstention gate kept separate from semantic escalate: escalate stays an ordinary candidate label (scorer.py:64), and a policy over the distribution (p_escalate, p_top1 floor, top1-top2 margin, normalized entropy) decides abstain_uncertain; today the decision is a bare argmax (scorer.py:363). Thresholds are chosen separately for read-only vs mutating ops using Operation.read_only (nvsh/ops/table.py), never an operation name.",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h7",
+      "kind": "honesty",
+      "text": "Escalate stays a candidate label and abstain_uncertain is a separate outcome in predictions and metrics; the gate code references Operation.read_only only.",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c4",
+      "kind": "requirement",
+      "text": "Threshold sweeps and calibration fits run offline from stored per-example distributions: the in-process ('exact') predictions.jsonl files already hold the full label->probability dict for every entry (work/q46/final/scorer-b1/*-exact-*.predictions.jsonl: test 64, missing-candidate 32, held-out 69), so no model re-run is needed to sweep gates on existing checkpoints; fits use val.json only (measure.py check_split_allowed refuses test without --final, held-out without --acceptance).",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h8",
+      "kind": "honesty",
+      "text": "Gate sweeps on scorer-b1 are reproducible from stored predictions.jsonl without a GPU; thresholds are chosen on val only.",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c5",
+      "kind": "requirement",
+      "text": "Post-hoc calibration (temperature scaling first, then vector scaling) fitted on val and applied to each line's candidates before top_candidate/brier_one (scripts/lfm-finetune/metrics.py:334-402); no fit/apply step exists today.",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h9",
+      "kind": "honesty",
+      "text": "The fitted temperature (and vector) is fitted on val only, stored with the run, and applied identically to test/held-out and the served build.",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c6",
+      "kind": "requirement",
+      "text": "Per-slice calibration reporting: ECE/Brier and reliability tables split by read-only vs mutating, candidate count, missing-candidate/OOD slice and confidence bucket. metrics.py already computes 10-bin {n, confidence, accuracy} (ece_bins, metrics.py:347-363) but only over a whole file, and the committed docs/benchmarks/*.md render only the two scalars.",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h10",
+      "kind": "honesty",
+      "text": "Per-slice reports render the reliability bins in the committed benchmark markdown, not only the JSON.",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c7",
+      "kind": "requirement",
+      "text": "A complete-label readout for served builds: today every served scorer run (bf16 vLLM, AWQ vLLM, Q4_K_M llama-server on Spark and Orin) returns 0/64 complete distributions because label tokens fall outside the top len(labels)+TOP_MARGIN logprobs (scorer.py:245-256, nvsh/tiers/toolchat.py:336-350, docs/benchmarks/2026-09-24-lfm-final-scorer-b1.md). The gap is the readout path, not quantization.",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h11",
+      "kind": "honesty",
+      "text": "A served run of the deployed build yields complete distributions for >= 95% of entries (0/64 today), and incomplete ones are still counted, never renormalised.",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c9",
+      "kind": "requirement",
+      "text": "Calibration is measured on the deployed artifact (scorer Q4_K_M GGUF via llama-server on DGX Spark, and on AGX Orin), not only on bf16: no ECE/Brier exists today for AWQ or Q4_K_M (deviation d17, lapse l6 in docs/deliveries/2026-09-23-qwen3-5-0-8b-tool-jev-fine-tune-issue-46.md).",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h13",
+      "kind": "honesty",
+      "text": "Calibration numbers exist for the Q4_K_M build measured through the served path on DGX Spark and on AGX Orin.",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c10",
+      "kind": "requirement",
+      "text": "Training variant with per-example randomized candidate order, op->letter mapping and candidate subsets. train_scorer.py today uses one fixed label_ids list for the whole run (train_scorer.py:297) and encode() always passes offered=None (train_scorer.py:130-143), so label ids and the CE target index must become per-row.",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h14",
+      "kind": "honesty",
+      "text": "Training randomises order, letters and subsets per example with a recorded seed; the label ids and CE target are derived per row from the rendered prompt.",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c11",
+      "kind": "requirement",
+      "text": "Dataset cycle: train-side missing-candidate / no-valid-option examples (the frozen 1,463-example set has 0 entries with a reduced candidate list, docs/benchmarks/2026-09-24-qwen-tool-jev-comparison.md:224-229), built deterministically from eval_slices.py's shape, plus the comparison doc's other five recommendations (missing-argument escalates, diagnosis-vs-explanation pairs, explicit-mode power_set positives, disambiguation pairs, hard negatives), through the same all-Apache augment.py teachers, reviewer B and leakage_check.py.",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h15",
+      "kind": "honesty",
+      "text": "New train-side data goes through the all-Apache teachers, reviewer B and leakage_check.py against every eval side, and is frozen before the final run (post-freeze changes are deviations).",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c12",
+      "kind": "requirement",
+      "text": "Candidate sets and label assignments are stored per training example at dataset build time (build_dataset.py / merge_variations.py), not invented at collate time: corpus entries carry no candidates field today, and label token ids and the CE target are keyed off whatever list encode() renders.",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h16",
+      "kind": "honesty",
+      "text": "Every training example records its offered candidates and letter map, so a run can be replayed exactly.",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c13",
+      "kind": "requirement",
+      "text": "Fresh evaluation sides: the issue-46 test side is spent (comparison doc next-iteration notes), so this cycle needs a new sealed test side and held-out, and validation grown from 66 to ~150-200 entries so threshold and temperature fits are not driven by single entries (1/15 escalate = 6.7 pts).",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h17",
+      "kind": "honesty",
+      "text": "The new test side and held-out are sealed before any training of this cycle; validation has >= 150 entries; the issue-46 test side is not used for any claim.",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c14",
+      "kind": "requirement",
+      "text": "Results carry uncertainty: with n=64 test and n=32 missing-candidate, ECE/recall move 3-7 pts per entry, so reports include bootstrap confidence intervals and reliability diagrams, not just point ECE/Brier.",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h18",
+      "kind": "honesty",
+      "text": "Every reported rate and ECE carries a bootstrap CI and n.",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c16",
+      "kind": "boundary",
+      "text": "No code switches on a specific operation name: gates and per-slice reports key on Operation.read_only and candidate count only (docs/tiers-improving-accuracy.md rule; nvsh/tiers/router.py:17-18).",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h19",
+      "kind": "honesty",
+      "text": "No gate, report or data rule mentions a specific operation name.",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c17",
+      "kind": "boundary",
+      "text": "The sealed held-out is never read by the lead (counts and hashes only) and is exposed once per final checkpoint; test/held-out are never used for fitting thresholds or temperature.",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h20",
+      "kind": "honesty",
+      "text": "The lead reads held-out counts/hashes only; each final checkpoint is exposed to test/held-out once.",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c18",
+      "kind": "boundary",
+      "text": "All data and model repos stay private on the Hub; making any repo public needs per-repo operator approval (issue 46 c48).",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h21",
+      "kind": "honesty",
+      "text": "Every Hub repo created in this cycle is private; none made public without a per-repo operator approval.",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c19",
+      "kind": "boundary",
+      "text": "No free-form generation on the Track B path; deterministic nvsh code keeps grounding, validation and execution (issue #53 success criteria).",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h22",
+      "kind": "honesty",
+      "text": "The Track B path emits max_tokens=1 / one forward position; grounding and validation stay in deterministic code.",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c20",
+      "kind": "requirement",
+      "text": "Documentation distinguishes Track A (specialized generative tool router; its distribution is reconstructed offline by track_a_calibration.py teacher forcing) from Track B (Jev-style candidate decision/scoring model) so the two are not described as equally Jev-like (issue #53 gap 4).",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h23",
+      "kind": "honesty",
+      "text": "Guide, comparison doc and model cards call Track A a generative tool router and Track B the Jev-style scorer.",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c23",
+      "kind": "requirement",
+      "text": "Out-of-scope items get their own issue rather than a silent non-goal: runtime wiring -> #54, Choice/Noul/Score -> #55, Track A follow-ups -> #56 (operator 2026-09-25).",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h24",
+      "kind": "honesty",
+      "text": "Issues #54, #55, #56 exist and are linked from #53 and the spec.",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c25",
+      "kind": "success_signal",
+      "text": "Permutation robustness at OpenJev level: shuffling candidate order and permuting op->letter labels changes the semantic choice in <= 2.3% of cases (OpenJev's published figure; its own base model was 18.5%, https://huggingface.co/openjev/openjev). Closed or explained with a cause other than missing data.",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h25",
+      "kind": "honesty",
+      "text": "The rate is measured on the fresh test side with at least 3 random permutations per entry, at the op level, with the runtime order not canonicalised.",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c26",
+      "kind": "success_signal",
+      "text": "Calibration on the deployed Q4_K_M scorer: ECE <= 0.10 with a bootstrap CI and a published reliability diagram, on the fresh test side. OpenJev publishes no ECE/Brier (it ships a fixed readout temperature, READOUT_T=0.85), so there is no OpenJev calibration number to match; the #46 bar c35 stands.",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h26",
+      "kind": "honesty",
+      "text": "ECE and CI are computed from complete served distributions of the deployed Q4_K_M after the val-fitted temperature.",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c27",
+      "kind": "success_signal",
+      "text": "0 wrong mutating actions at the chosen gate thresholds, and escalation (semantic or uncertainty) on >= 80% of the missing-candidate slice (7/32 today); OpenJev reports no abstention mechanism, so these bars are nvsh's own (c34 lineage).",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h27",
+      "kind": "honesty",
+      "text": "Wrong-mutating is counted at the chosen thresholds on test and held-out; missing-candidate escalation counts semantic escalate plus uncertainty abstain.",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c31",
+      "kind": "requirement",
+      "text": "Conditional calibration-aware training stage (our own objective, not RLCD, whose method TypeSafe has not published): if post-hoc temperature/vector scaling plus the new data does not reach the calibration bar, train with a calibration-aware objective \u2014 label smoothing / a proper-scoring-rule term (Brier) beside CE, and/or a cost-sensitive decision reward on the gate's act/abstain outcome \u2014 and compare against the post-hoc result.",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h28",
+      "kind": "honesty",
+      "text": "The calibration-aware stage runs only if the post-hoc + data result misses the ECE bar, and its result is compared head-to-head with post-hoc on val.",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c34",
+      "kind": "audience",
+      "text": "The nvsh operator deciding whether a local Tool-Jev scorer can make bounded routing decisions it can threshold, and the next implementer of #54 who needs a measured artifact and measured thresholds.",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h2",
+      "kind": "honesty",
+      "text": "The audience can read the final report without knowing issue 46's internals: it names the artifact, thresholds, slices and CIs.",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c35",
+      "kind": "before_state",
+      "text": "scorer-b1 (PR #52) picks by bare argmax over labels fixed to table order; nobody knows whether it evaluates the supplied candidates or memorised letters; its exact ECE is 0.132 (bar 0.10), it escalates on 7/32 missing-candidate entries, and the shipped Q4_K_M has no calibration measurement at all because the served readout returns 0/64 complete distributions.",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h3",
+      "kind": "honesty",
+      "text": "Every number in the before state is traceable to docs/benchmarks/2026-09-24-*scorer-b1* or the #46 delivery record.",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c36",
+      "kind": "after_state",
+      "text": "A retrained Track B scorer whose choice survives label/order permutation, whose served Q4_K_M returns complete label distributions that are calibrated after a fitted temperature, with separate semantic-escalate and uncertainty-abstain outcomes, thresholds measured per read-only/mutating, and every result reported per slice with confidence intervals on fresh evaluation sides.",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h4",
+      "kind": "honesty",
+      "text": "Each after-state property has a report line or chart on the fresh sides; none is claimed from bf16 alone when it concerns the deployed build.",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c37",
+      "kind": "why_it_matters",
+      "text": "nvsh only acts safely on a small model's decision if a probability means what it says and the decision tracks the offered alternatives: that is the difference between a tiny tool classifier and a local decision primitive nvsh can threshold (issue #53 design note).",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h5",
+      "kind": "honesty",
+      "text": "The gate and calibration are evaluated on decisions nvsh would act on (proposals and mutating ops), not only on aggregate accuracy.",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c38",
+      "kind": "requirement",
+      "text": "Served readout completeness comes from a large top-k, not logit_bias: raise the scorer's requested top (TOP_MARGIN in scripts/lfm-finetune/scorer.py) and the server cap (MEASURE_MAX_LOGPROBS / vLLM --max-logprobs in serve_for_measure.sh) to >= 5000. Probe 2026-09-25 (llama-server, scorer-b1 Q4_K_M and bf16 GGUF, CPU, 6 spent-test prompts): top-22 missed 10-15 labels, top-400 missed 1 on 3/6, top-5000 was complete on 6/6 in ~0.4 s per request. ToolChat.score_next_token already takes top as a parameter, so no nvsh/ change is needed.",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h30",
+      "kind": "honesty",
+      "text": "A served run with top >= 5000 returns complete distributions for every entry of validation on llama-server (Spark and Orin) and vLLM, or the incomplete count is reported.",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c39",
+      "kind": "requirement",
+      "text": "One label-probability definition for every path: in-process scoring reads one token id per label (label_token_ids, scorer.py:161-171) while served scoring sums token variants such as 'A' and ' A' (distribution, scorer.py:222-242). Probe: bf16 GGUF matched the in-process exact distribution within 1e-4 on 5/6 prompts, but dev-f02 differed by 0.137 in bf16 \u2014 a readout definition gap, not quantization. Pick one definition (train, in-process and served) before any calibration number is compared across paths.",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h31",
+      "kind": "honesty",
+      "text": "The chosen definition is one function shared by train_scorer, the in-process scorer and the served scorer, with a test that both paths return the same distribution on a fixture.",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c40",
+      "kind": "requirement",
+      "text": "Calibration and readout fidelity are judged against the same artifact: the Q4_K_M distribution legitimately differs from bf16 (probe: max abs diff up to 0.096 on dev-e08 where the bf16 GGUF matched to 1e-4), so the temperature and thresholds are fitted on the deployed Q4_K_M's own validation distributions, and h12's 'match bf16 exact within 0.01' check applies to the bf16 GGUF (readout fidelity), not to Q4.",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h32",
+      "kind": "honesty",
+      "text": "The bf16 GGUF served readout matches the in-process exact distribution within 0.01 on validation; Q4 temperature/thresholds are fitted on Q4's own validation predictions.",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c41",
+      "kind": "requirement",
+      "text": "Validation is not double-dipped: the temperature fit, the gate thresholds and the checkpoint choice all come from validation, so validation is split into a fit fold and a selection fold (or cross-validated), fixed with a seed before the first run.",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h33",
+      "kind": "honesty",
+      "text": "The fold assignment is seeded, recorded in the run, and no entry informs both the fit and the selection.",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c42",
+      "kind": "requirement",
+      "text": "A pre-registered checkpoint decision rule is written before any training run of this cycle, including how clean-test accuracy trades against permutation robustness and calibration (q7 risk; in #46, b1 beat the better-calibrated b4 only on the pre-registered rule \u2014 docs/qwen-tool-jev-finetune.md Track B runs).",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h34",
+      "kind": "honesty",
+      "text": "The rule is committed (spec or plan) before the first training command of the cycle runs.",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c43",
+      "kind": "requirement",
+      "text": "The run keeps a live guide and ledger (code map, split, design, every issue with symptom -> cause -> fix, results, reproduce steps), maintained by a documentation subagent after every step, in the style of docs/qwen-tool-jev-finetune.md (operator standing rule for fine-tune runs since issue 46).",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h35",
+      "kind": "honesty",
+      "text": "The guide shows an entry for every run, obstacle and fix within the same step it happened.",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c44",
+      "kind": "requirement",
+      "text": "New models and data never overwrite the PR #52 artifacts: scorer-b1 stays reproducible as the baseline, new builds go to new private repos or tagged revisions, and every bundle passes scripts/lfm-finetune/scan_bundle.py before upload (issue 46 c47/c48 lineage).",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h36",
+      "kind": "honesty",
+      "text": "PR #52's six repos are byte-identical before and after the cycle; each new upload has a clean scan_bundle report.",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c45",
+      "kind": "requirement",
+      "text": "Escalation-reason candidates (if the c28 ablation keeps them) get descriptions from scripts-side data, not nvsh/tiers/lfm.py tools (scorer._description reads lfm.tools_for for controls, scorer.py:174-181), and metrics roll every reason up to escalate so the missing-candidate and escalation bars stay comparable; candidate count stays within the single-token label check (label_token_ids refuses multi-token labels).",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h37",
+      "kind": "honesty",
+      "text": "No reason description is read from nvsh/; metrics tests show reasons rolling up to escalate.",
+      "deferred": false,
+      "deferred_reason": ""
+    }
+  ],
+  "tasks": [
+    {
+      "id": "t1",
+      "summary": "Readout core in scorer.py: one label-probability definition and a complete top-k",
+      "origin": "llm",
+      "status": "proposed",
+      "acceptance_criteria": [
+        "One function computes candidate probabilities from label logits/logprobs and is used by the in-process scorer, the served scorer and train_scorer (tests/test_lfm_finetune_scorer.py asserts both paths give the same distribution on a fixture)",
+        "The served request asks for top >= 5000 via a named constant (READOUT_TOP) instead of len(labels)+TOP_MARGIN; incomplete results are still marked incomplete, never renormalised",
+        "Track B still sends max_tokens=1 and one forward position (test)"
+      ],
+      "deps": [],
+      "covers": [
+        "c39",
+        "h31",
+        "c19",
+        "h22"
+      ],
+      "instruction": "Files: scripts/lfm-finetune/scorer.py, tests/test_lfm_finetune_scorer.py only. Decide the definition from the 2026-09-25 probe (dev-f02 gap: in-process single token id vs served variant sum 'A'/' A'); prefer the served variant-sum definition and make in-process sum the same token ids, then document why in the docstring."
+    },
+    {
+      "id": "t2",
+      "summary": "Permutation seam in scorer.py: seeded order/letter permutation, subsets and description overrides",
+      "origin": "llm",
+      "status": "proposed",
+      "acceptance_criteria": [
+        "prompt_messages/score accept an explicit label map (candidate -> letter) and an order; labels_for keeps today's fixed map as the default (existing tests unchanged)",
+        "A seeded helper produces a random order + letter permutation + optional subset; the same seed gives the same map (test)",
+        "Candidate descriptions can be overridden from a scripts-side mapping (for paraphrase probes and reason candidates) without reading nvsh/; default stays ops_table/lfm (test)",
+        "Results are compared at the operation level, never the letter (test: permuted letters, same op chosen => no change counted)"
+      ],
+      "deps": [
+        "t1"
+      ],
+      "covers": [
+        "c2"
+      ],
+      "instruction": "Files: scripts/lfm-finetune/scorer.py, tests/test_lfm_finetune_scorer.py. Keep label_token_ids' single-token and distinct-id checks for every letter in LABEL_ALPHABET actually used."
+    },
+    {
+      "id": "t3",
+      "summary": "Served readout cap: servers started for measurement return >= 5000 logprobs",
+      "origin": "llm",
+      "status": "proposed",
+      "acceptance_criteria": [
+        "serve_for_measure.sh defaults MEASURE_MAX_LOGPROBS to >= 5000 for vLLM (--max-logprobs) and passes no cap that truncates llama-server n_probs below it; pipeline env examples updated",
+        "bash -n passes; existing serve_for_measure tests (if any) pass"
+      ],
+      "deps": [],
+      "covers": [
+        "c38",
+        "c7"
+      ],
+      "instruction": "Files: scripts/lfm-finetune/serve_for_measure.sh, scripts/lfm-finetune/pipeline*.env.example. Do not touch scorer.py (t1 owns READOUT_TOP)."
+    },
+    {
+      "id": "t4",
+      "summary": "Post-hoc calibration module: seeded validation folds, temperature and vector scaling fit/apply",
+      "origin": "llm",
+      "status": "proposed",
+      "acceptance_criteria": [
+        "New scripts/lfm-finetune/calibration_fit.py: split validation ids into fit/selection folds with a recorded seed; no id in both (test)",
+        "Fits a temperature (and a per-candidate vector) by minimising NLL on the fit fold from predictions.jsonl candidates; apply() rescales a predictions file; recovers a known temperature on synthetic data (test)",
+        "Refuses test/held-out files as fit input (test); writes the fitted parameters as JSON stored with the run"
+      ],
+      "deps": [],
+      "covers": [
+        "c5",
+        "h9",
+        "c41",
+        "h33"
+      ],
+      "instruction": "New files only: scripts/lfm-finetune/calibration_fit.py, tests/test_lfm_finetune_calibration_fit.py. Stdlib only (math, json, random); reuse metrics.py readers by import, do not edit metrics.py."
+    },
+    {
+      "id": "t5",
+      "summary": "metrics.py: per-slice ECE/Brier, bootstrap CIs, abstain_uncertain outcome, reliability bins in markdown",
+      "origin": "llm",
+      "status": "proposed",
+      "acceptance_criteria": [
+        "compute() reports ECE/Brier/bins per slice: read-only vs mutating (Operation.read_only), candidate count, missing-candidate, confidence bucket (test)",
+        "Every rate and ECE carries n and a seeded bootstrap 95% CI (test)",
+        "abstain_uncertain is counted separately from semantic escalate; escalation bars count both; escalation reasons roll up to escalate (test)",
+        "A markdown renderer prints the reliability bin table per slice; grep shows no operation name in metrics code"
+      ],
+      "deps": [],
+      "covers": [
+        "c6",
+        "h10",
+        "c14",
+        "h18",
+        "c16",
+        "h19"
+      ],
+      "instruction": "Files: scripts/lfm-finetune/metrics.py, tests/test_lfm_finetune_metrics.py. measure.py's report page calls the new renderer in t8, not here."
+    },
+    {
+      "id": "t6",
+      "summary": "Uncertainty gate module and offline threshold sweep",
+      "origin": "llm",
+      "status": "proposed",
+      "acceptance_criteria": [
+        "New scripts/lfm-finetune/gate.py: decide(distribution, offered, thresholds) -> propose | explain | escalate | abstain_uncertain using p_escalate, p_top1 floor, top1-top2 margin and normalized entropy, thresholds keyed by Operation.read_only only (tests, incl. grep for no operation names)",
+        "sweep_gate CLI reads predictions.jsonl (no GPU) and reports, per threshold set, accuracy, wrong-mutating, missing-candidate escalation and abstention on a given fold; refuses test/held-out unless --final (test)",
+        "The sweep reproduces scorer-b1's stored argmax decisions exactly when every threshold is disabled (test on a fixture)"
+      ],
+      "deps": [
+        "t5"
+      ],
+      "covers": [
+        "c3",
+        "h7",
+        "c4",
+        "h8"
+      ],
+      "instruction": "New files: scripts/lfm-finetune/gate.py, scripts/lfm-finetune/sweep_gate.py, tests/test_lfm_finetune_gate.py. Use metrics.py (t5) for outcome counting."
+    },
+    {
+      "id": "t7",
+      "summary": "Permutation probe runner with answer-change rate and CI",
+      "origin": "llm",
+      "status": "proposed",
+      "acceptance_criteria": [
+        "New scripts/lfm-finetune/permutation_probe.py: for each entry, >= 10 seeded perturbations of each kind (order, letters, subset keeping gold, paraphrased descriptions) via the t2 seam; reports op-level answer-change rate with n and bootstrap 95% CI per kind (test with a fake scorer)",
+        "Never canonicalises runtime order; refuses test/held-out without --final (test)"
+      ],
+      "deps": [
+        "t2",
+        "t5"
+      ],
+      "covers": [
+        "h25"
+      ],
+      "instruction": "New files: scripts/lfm-finetune/permutation_probe.py, tests/test_lfm_finetune_permutation_probe.py. Paraphrases come from a scripts-side JSON of alternative descriptions (authored in t12), passed by path."
+    },
+    {
+      "id": "t8",
+      "summary": "measure.py: wire the new readout, calibration apply and per-slice report into measure runs; fix P71",
+      "origin": "llm",
+      "status": "proposed",
+      "acceptance_criteria": [
+        "measure runs accept --calibration <params.json> and render per-slice reliability tables into the committed benchmark markdown (test)",
+        "A served run records complete/incomplete counts; incomplete lines are counted, never renormalised (test)",
+        "A failed start-up no longer leaves a results page that blocks a clean re-run with the same label (issue #57; test)"
+      ],
+      "deps": [
+        "t1",
+        "t4",
+        "t5"
+      ],
+      "covers": [
+        "h11"
+      ],
+      "instruction": "Files: scripts/lfm-finetune/measure.py, tests/test_lfm_finetune_measure*.py. Closes #57 in the PR body."
+    },
+    {
+      "id": "t9",
+      "summary": "Pre-registered decision rule for checkpoint choice, committed before any training",
+      "origin": "llm",
+      "status": "proposed",
+      "acceptance_criteria": [
+        "docs/tool-jev-calibration-rule.md states, before the first training command: the selection fold, the ordered criteria (0 wrong mutating at gate thresholds; permutation change rate; ECE after temperature; missing-candidate escalation; clean accuracy floor vs scorer-b1), tie-breaks, and what makes the c31 calibration-aware stage run",
+        "The commit adding it precedes the first training run's commit/log timestamp (checked in validate-delivery)"
+      ],
+      "deps": [],
+      "covers": [
+        "c42",
+        "h34"
+      ],
+      "instruction": "Docs only. Operator confirms the rule text before t14 starts."
+    },
+    {
+      "id": "t10",
+      "summary": "Live guide and ledger with a documentation subagent",
+      "origin": "llm",
+      "status": "proposed",
+      "acceptance_criteria": [
+        "docs/qwen-tool-jev-calibration.md exists from the start of the run: code map, corpus v2 design, every run/obstacle/fix (symptom -> cause -> fix), results, reproduce steps",
+        "Updated in the same step as each run, obstacle or fix; markdownlint, scan-secrets and harness-smoke clean; no home or machine paths"
+      ],
+      "deps": [],
+      "covers": [
+        "c43",
+        "h35"
+      ],
+      "instruction": "A long-lived doc subagent in its own worktree owns only this file and never runs devague; the lead forwards every finding as it happens (issue 46 style, docs/qwen-tool-jev-finetune.md is the model)."
+    },
+    {
+      "id": "t11",
+      "summary": "Documentation relabel: Track A is a generative tool router, Track B the Jev-style scorer",
+      "origin": "llm",
+      "status": "proposed",
+      "acceptance_criteria": [
+        "docs/qwen-tool-jev-finetune.md, docs/benchmarks/2026-09-24-qwen-tool-jev-comparison.md and the model-card text in release_bundle.py describe Track A as a specialized generative tool router and Track B as the Jev-style candidate scorer; no text calls them equally Jev-like"
+      ],
+      "deps": [],
+      "covers": [
+        "c20",
+        "h23"
+      ],
+      "instruction": "Files: those three only (not the new guide, owned by t10). Track A's distribution is reconstructed offline by track_a_calibration.py; say so."
+    },
+    {
+      "id": "t12",
+      "summary": "Corpus v2 tooling: versioned re-split kept outside nvsh/, with validation folds",
+      "origin": "llm",
+      "status": "proposed",
+      "acceptance_criteria": [
+        "split.py can write a versioned corpus v2 (header names version, seed, source hashes) to a path outside nvsh/ and never writes nvsh/tiers/corpus (test)",
+        "Target sizes are parameters: validation >= 150, test ~150, stratified by answer kind; the fold assignment from calibration_fit is recorded in the split header (test)",
+        "git diff shows no change under nvsh/tiers/corpus/ (checked in validate-delivery)"
+      ],
+      "deps": [
+        "t4"
+      ],
+      "covers": [],
+      "instruction": "Files: scripts/lfm-finetune/split.py, tests/test_lfm_finetune_split*.py. The v2 files themselves live in the run's work dir and the private data repo, never committed (operator decisions q10/q11)."
+    },
+    {
+      "id": "t13",
+      "summary": "Draft new sources for the fresh evaluation sides and the sealed held-out",
+      "origin": "llm",
+      "status": "proposed",
+      "acceptance_criteria": [
+        "Enough new reviewed entries (all-Apache teachers, reviewer B, leakage_check.py) to give validation >= 150 and test ~150 after the v2 re-split; counts per answer kind and per escalation reason recorded",
+        "A new held-out is drafted with draft_heldout.py; the lead records only counts and hashes; it is sealed before any training of this cycle and stored only in the private data repo",
+        "The issue-46 test side is not used for any claim of this cycle"
+      ],
+      "deps": [
+        "t12"
+      ],
+      "covers": [
+        "c13",
+        "h17",
+        "c17",
+        "h20"
+      ],
+      "instruction": "Run task. Measure only on a quiet GPU; teachers on the lobes (restore any lobe you stop). Forward every step to the t10 doc agent."
+    },
+    {
+      "id": "t14",
+      "summary": "Dataset build: per-example candidate sets and letter maps, missing-candidate and no-valid-option examples, reason candidates",
+      "origin": "llm",
+      "status": "proposed",
+      "acceptance_criteria": [
+        "build_dataset.py stores offered candidates, order and letter map on every rendered example, seeded and replayable (test)",
+        "Deterministic missing-candidate / no-valid-option train examples are generated from train entries only (gold removed -> escalate), eval_slices shape, never from eval sides (test)",
+        "An optional reasons mode renders the 8 decline classes as distinct escalate-reason candidates with descriptions from a scripts-side JSON (not nvsh/), rolling up to escalate in gold labels (test)",
+        "The scripts-side paraphrase JSON for the permutation probe exists and is covered by a schema test"
+      ],
+      "deps": [
+        "t2"
+      ],
+      "covers": [
+        "c12",
+        "h16",
+        "c45",
+        "h37"
+      ],
+      "instruction": "Files: scripts/lfm-finetune/build_dataset.py, merge_variations.py, new scripts/lfm-finetune/data/{reasons,paraphrases}.json, their tests. Candidate count must stay within the single-token label check."
+    },
+    {
+      "id": "t15",
+      "summary": "Augment for the comparison doc's five other recommendations, then freeze the v2 training set",
+      "origin": "llm",
+      "status": "proposed",
+      "acceptance_criteria": [
+        "New train-side variations for missing-argument escalation, diagnosis-vs-explanation pairs, explicit-mode power_set positives, disambiguation pairs and hard negatives, through augment.py teachers + reviewer B; acceptance counts recorded",
+        "leakage_check.py is clean against every v2 eval side and the held-out; the frozen set's hashes are recorded; any later change is a /deviate record"
+      ],
+      "deps": [
+        "t13",
+        "t14"
+      ],
+      "covers": [
+        "c11",
+        "h15"
+      ],
+      "instruction": "Run task. More data is an acceptable fix when a slice is short (operator rule); add it before the freeze."
+    },
+    {
+      "id": "t16",
+      "summary": "train_scorer.py: per-row label ids and targets from the rendered prompt; optional calibration-aware loss",
+      "origin": "llm",
+      "status": "proposed",
+      "acceptance_criteria": [
+        "Each row's label token ids and CE target come from that row's stored letter map and offered set; two rows with different maps give different target indices for the same gold op (test)",
+        "The randomisation seed and per-row maps are logged in train-log.json",
+        "A --calibration-loss option adds label smoothing and/or a Brier term beside CE; off by default (test)"
+      ],
+      "deps": [
+        "t1",
+        "t2"
+      ],
+      "covers": [
+        "c10",
+        "h14"
+      ],
+      "instruction": "Files: scripts/lfm-finetune/train_scorer.py, tests/test_lfm_finetune_train_scorer*.py. Keep the default path byte-identical in behaviour for the fixed map so scorer-b1 stays reproducible."
+    },
+    {
+      "id": "t17",
+      "summary": "Baseline on scorer-b1 before any retraining: permutation probe, readout fidelity, offline gate and temperature",
+      "origin": "llm",
+      "status": "proposed",
+      "acceptance_criteria": [
+        "Permutation probe of scorer-b1 on v2 validation: answer-change rate + CI per perturbation kind (order, letters, subset, paraphrase), before any new training",
+        "Served bf16 GGUF readout at top >= 5000 matches in-process exact within 0.01 on validation (or the gap is reported); Q4_K_M served distributions recorded on validation",
+        "Offline gate sweep and temperature fit on scorer-b1's Q4 validation predictions (fit fold / selection fold); results in the guide"
+      ],
+      "deps": [
+        "t3",
+        "t6",
+        "t7",
+        "t8",
+        "t12",
+        "t13"
+      ],
+      "covers": [
+        "c2",
+        "h6",
+        "c40",
+        "h32"
+      ],
+      "instruction": "Run task on a quiet GPU. Q4 fits use Q4's own validation predictions, not bf16's."
+    },
+    {
+      "id": "t18",
+      "summary": "Training runs and selection: randomized-label variant, reasons ablation, lr variants, conditional calibration-aware stage",
+      "origin": "llm",
+      "status": "proposed",
+      "acceptance_criteria": [
+        "At least: randomized-label run on v2 (reasons off), same with reasons on (c28 ablation), and a lower-lr variant; each measured in-process on the selection fold with the gate and temperature",
+        "The checkpoint is chosen by the pre-registered rule (t9); reasons kept only if they improve validation",
+        "The calibration-aware stage runs only if post-hoc + data miss ECE <= 0.10 on validation, and is compared head-to-head with post-hoc on validation; if not triggered, the validation evidence is recorded"
+      ],
+      "deps": [
+        "t9",
+        "t15",
+        "t16",
+        "t17"
+      ],
+      "covers": [
+        "c31",
+        "h28"
+      ],
+      "instruction": "Run task (spark2 training, spark measuring; never overlap training and measuring on one Spark). Any retry beyond the pre-registered set is a /deviate record."
+    },
+    {
+      "id": "t19",
+      "summary": "Quantize the chosen checkpoint and calibrate the deployed build",
+      "origin": "llm",
+      "status": "proposed",
+      "acceptance_criteria": [
+        "Q4_K_M GGUF of the chosen checkpoint served by llama-server with top >= 5000 returns complete distributions on validation",
+        "Temperature (and vector if chosen) and gate thresholds are fitted on the Q4 build's own fit/selection folds and stored with the run"
+      ],
+      "deps": [
+        "t18"
+      ],
+      "covers": [
+        "c5"
+      ],
+      "instruction": "Run task. AWQ optional; if built, calibrate it the same way or say it was not."
+    },
+    {
+      "id": "t20",
+      "summary": "Final measurement on the fresh test side and held-out, Spark and Orin",
+      "origin": "llm",
+      "status": "proposed",
+      "acceptance_criteria": [
+        "Permutation answer-change rate on fresh test with >= 10 permutations per entry, point estimate and 95% CI, runtime order not canonicalised (bar <= 2.3%)",
+        "Deployed Q4_K_M: ECE with bootstrap CI and reliability diagrams per slice after the fitted temperature (bar <= 0.10); complete distributions >= 95%",
+        "Wrong mutating at the chosen thresholds on test and held-out (bar 0); missing-candidate escalation incl. uncertainty abstain (bar >= 80%)",
+        "Same deployed build measured on AGX Orin (validation side) with complete distributions; each final checkpoint exposed to test/held-out once"
+      ],
+      "deps": [
+        "t19"
+      ],
+      "covers": [
+        "c25",
+        "c26",
+        "h26",
+        "c27",
+        "h27",
+        "c9",
+        "h13",
+        "h30",
+        "h11"
+      ],
+      "instruction": "Run task. Bars missed are reported as missed, never rounded up; a missed bar blamed on data becomes a data task, not an explanation (operator rule)."
+    },
+    {
+      "id": "t21",
+      "summary": "Private uploads without touching PR #52's artifacts",
+      "origin": "llm",
+      "status": "proposed",
+      "acceptance_criteria": [
+        "New private repos (or tagged revisions) for the new scorer, GGUF and data; every bundle has a clean scan_bundle report; the six PR #52 repos are byte-identical before and after"
+      ],
+      "deps": [
+        "t20"
+      ],
+      "covers": [
+        "c44",
+        "h36",
+        "c18",
+        "h21"
+      ],
+      "instruction": "Ask the operator before any upload; HF_TOKEN_FT grant, never make anything public."
+    },
+    {
+      "id": "t22",
+      "summary": "Cycle report: comparison against scorer-b1 and OpenJev, before/after, follow-up links",
+      "origin": "llm",
+      "status": "proposed",
+      "acceptance_criteria": [
+        "docs/benchmarks/<date>-tool-jev-calibration-cycle.md: every announcement clause with its measured number, CI and n, before (scorer-b1, sourced) vs after, per-slice reliability tables, OpenJev comparison limited to what OpenJev publishes",
+        "Names the artifact, thresholds and slices so a reader without #46 context can use it (#54's input); links #54-#60"
+      ],
+      "deps": [
+        "t20",
+        "t11"
+      ],
+      "covers": [
+        "c1",
+        "h1",
+        "c34",
+        "h2",
+        "c35",
+        "h3",
+        "c36",
+        "h4",
+        "c37",
+        "h5",
+        "c23",
+        "h24"
+      ],
+      "instruction": "Docs task; markdownlint clean."
+    },
+    {
+      "id": "t23",
+      "summary": "Close the loop: validate-delivery, summarize-delivery, version bump, PR",
+      "origin": "llm",
+      "status": "proposed",
+      "acceptance_criteria": [
+        "/validate-delivery evidence filed for every success signal and honesty condition; /summarize-delivery record committed; version bumped; PR via /cicd says 'part of #53' with CI and Sonar green"
+      ],
+      "deps": [
+        "t21",
+        "t22",
+        "t10"
+      ],
+      "covers": [],
+      "instruction": "Standing flow: follow all waves, /deviate and decide, /validate-delivery and /summarize-delivery before the PR."
+    }
+  ],
+  "risks": [
+    {
+      "id": "r1",
+      "text": "Shared compute: training and serving on one DGX Spark causes NV_ERR_NO_MEMORY (issue 46 ledger); teachers run on the lobes. Measure only on a quiet GPU, train on spark2, restore any lobe stopped.",
+      "kind": "unknown_nonblocking",
+      "task_id": "t18",
+      "resolved": false,
+      "resolution": ""
+    },
+    {
+      "id": "r2",
+      "text": "vLLM at --max-logprobs >= 5000 and Orin's llama.cpp build at n_probs 5000 were not probed (frame park v2); if either fails, h30 reports the incomplete count and the readout is revisited via /deviate.",
+      "kind": "unknown_nonblocking",
+      "task_id": "t17",
+      "resolved": false,
+      "resolution": ""
+    },
+    {
+      "id": "r3",
+      "text": "Lowercase letter labels (a-z) may behave differently from uppercase once letters are randomised (frame park v3); t17/t18 report answer-change by label case.",
+      "kind": "unknown_nonblocking",
+      "task_id": "t18",
+      "resolved": false,
+      "resolution": ""
+    },
+    {
+      "id": "r4",
+      "text": "Corpus v2 volume: validation >= 150 and test ~150 plus the train side need roughly 250+ new reviewed entries beyond today's 431, plus a new held-out; teacher throughput (~23 tok/s per request on cortex) may make t13 the longest step.",
+      "kind": "unknown_nonblocking",
+      "task_id": "t13",
+      "resolved": false,
+      "resolution": ""
+    },
+    {
+      "id": "r5",
+      "text": "AGX Orin must be reachable over ssh for t20's edge measurement; if it is not, the Orin row is reported as not measured, not inferred from the Spark.",
+      "kind": "unknown_nonblocking",
+      "task_id": "t20",
+      "resolved": false,
+      "resolution": ""
+    }
+  ],
+  "obligations": []
+}
