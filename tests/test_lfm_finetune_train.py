@@ -426,3 +426,19 @@ def test_training_without_a_training_file_is_refused(capsys) -> None:
     module = _module()
     assert module.main(["--out", "o"]) == 2
     assert "--train" in capsys.readouterr().err
+
+
+def test_text_tokenizer_unwraps_a_multimodal_processor() -> None:
+    # Issue 46 t22: unsloth returns Qwen3.5's processor, whose chat template
+    # wants content parts, so rendering plain-string examples crashed.
+    module = _module()
+
+    class Tok:
+        pass
+
+    class Processor:
+        tokenizer = Tok()
+
+    tok = Tok()
+    assert module.text_tokenizer(tok) is tok
+    assert module.text_tokenizer(Processor()) is Processor.tokenizer
