@@ -85,6 +85,7 @@ def test_an_unknown_stage_dry_run_lists_every_stage(env_file: Path, tmp_path) ->
         "train",
         "measure-val",
         "measure-final",
+        "measure-heldout",
         "measure-skills",
         "status",
         *_NEW_STAGES,
@@ -1089,6 +1090,111 @@ def test_measure_final_keeps_the_single_final_runs_predictions(name: str, tmp_pa
     [(_, argv)] = pipe.calls("measure.py")
     [out] = _option(argv, "--predictions")
     assert out.endswith(f"/final/{name}")
+
+
+def _held_out(tmp_path: Path) -> Path:
+    path = tmp_path / "held-out-q46.sealed.json"
+    path.write_text('{"header": "held-out", "entries": []}\n', encoding="utf-8")
+    return path
+
+
+def test_measure_final_labels_the_missing_candidate_slice_apart(tmp_path: Path) -> None:
+    """Issue 46 t24: the slice is its own run, so it never overwrites or is
+    refused as a re-run of the full test-side run."""
+    pipe = _Pipeline(tmp_path)
+    pipe.ready()
+    result = pipe.run("measure-final", "a1", "--slice", "missing-candidate")
+    assert result.returncode == 0, result.stderr
+    [(_, argv)] = pipe.calls("measure.py")
+    assert "--final" in argv
+    assert _option(argv, "--split") == [str(pipe.work / "splits" / "test.json")]
+    assert _option(argv, "--label") == ["final-a1-missing-candidate"]
+    assert _option(argv, "--slice") == ["missing-candidate"]
+    [out] = _option(argv, "--predictions")
+    assert out.endswith("/final/a1")
+
+
+def test_measure_heldout_scores_the_sealed_file_with_acceptance(tmp_path: Path) -> None:
+    held_out = _held_out(tmp_path)
+    pipe = _Pipeline(tmp_path, f"HELDOUT_SPLIT={held_out}\n")
+    pipe.ready()
+    result = pipe.run("measure-heldout", "a1")
+    assert result.returncode == 0, result.stderr
+    [(_, argv)] = pipe.calls("measure.py")
+    assert _option(argv, "--split") == [str(held_out)]
+    assert "--acceptance" in argv and "--final" not in argv
+    assert "--details" not in argv
+    assert _option(argv, "--label") == ["heldout-a1"]
+    [out] = _option(argv, "--predictions")
+    assert out.endswith("/final/a1")
+
+
+def test_measure_heldout_labels_the_missing_candidate_slice_apart(tmp_path: Path) -> None:
+    pipe = _Pipeline(tmp_path, f"HELDOUT_SPLIT={_held_out(tmp_path)}\n")
+    pipe.ready()
+    result = pipe.run("measure-heldout", "a1", "--slice=missing-candidate")
+    assert result.returncode == 0, result.stderr
+    [(_, argv)] = pipe.calls("measure.py")
+    assert _option(argv, "--label") == ["heldout-a1-missing-candidate"]
+
+
+@pytest.mark.parametrize("setting", ["", "HELDOUT_SPLIT=/no/such/held-out.json\n"])
+def test_measure_heldout_needs_the_sealed_file(setting: str, tmp_path: Path) -> None:
+    pipe = _Pipeline(tmp_path, setting)
+    pipe.ready()
+    result = pipe.run("measure-heldout", "a1")
+    assert result.returncode == 1
+    assert "HELDOUT_SPLIT" in result.stderr
+    assert not pipe.calls("measure.py")
+    assert not [c for c in _docker_calls(tmp_path) if c[0] == "run"]
+
+
+@pytest.mark.parametrize("stage", ["measure-final", "measure-heldout"])
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["--ctx", "4096"],
+        ["--details", "x.jsonl"],
+        ["--label", "other"],
+        ["--lab", "final-a1"],
+        ["--split", "other-held-out.json"],
+        ["--sli=missing-candidate"],
+        ["--slice", "missing-candidate", "--slice=full"],
+        ["--scorer", "served", "--scorer", "in-process"],
+        ["--slice", "partial"],
+        ["--slice"],
+        ["--out", "x.md"],
+    ],
+)
+def test_final_stages_take_only_slice_and_scorer(stage: str, args: list, tmp_path: Path) -> None:
+    """Codex on d16: measure.py's argparse keeps the last value and accepts
+    abbreviations, so any other arg could relabel the run, swap the split or
+    overwrite another run's predictions."""
+    pipe = _Pipeline(tmp_path, f"HELDOUT_SPLIT={_held_out(tmp_path)}\n")
+    pipe.ready()
+    result = pipe.run(stage, "a1", *args)
+    assert result.returncode == 1
+    assert not pipe.calls("measure.py")
+    assert not [c for c in _docker_calls(tmp_path) if c[0] == "run"]
+
+
+@pytest.mark.parametrize("args", [["--slice", "full"], ["--slice=full"]])
+def test_an_explicit_full_slice_keeps_the_plain_label(args: list, tmp_path: Path) -> None:
+    pipe = _Pipeline(tmp_path)
+    pipe.ready()
+    result = pipe.run("measure-final", "a1", *args)
+    assert result.returncode == 0, result.stderr
+    [(_, argv)] = pipe.calls("measure.py")
+    assert _option(argv, "--label") == ["final-a1"]
+
+
+def test_measure_heldout_refuses_a_scorer_run_without_a_scorer_mode(tmp_path: Path) -> None:
+    pipe = _Pipeline(tmp_path, f"HELDOUT_SPLIT={_held_out(tmp_path)}\n")
+    pipe.ready()
+    _mark_scorer_run(pipe)
+    result = pipe.run("measure-heldout", "a1")
+    assert result.returncode == 1
+    assert "--scorer" in result.stderr
 
 
 def test_measure_val_at_another_context_takes_it_from_the_environment(tmp_path: Path) -> None:

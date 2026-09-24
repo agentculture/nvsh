@@ -30,7 +30,13 @@
 #                         (train_scorer.py, a training stage; runs/scorer[-name])
 #   measure-val <name> [args]    validation run with per-entry details (iterate on
 #                         this)
-#   measure-final <name> [args]  a final run on the test side
+#   measure-final <name> [--slice S] [--scorer M]   a final run on the test
+#                         side, labelled final-<name>[-missing-candidate]
+#   measure-heldout <name> [--slice S] [--scorer M]   the one run on the sealed
+#                         held-out file (HELDOUT_SPLIT, measure.py --acceptance),
+#                         labelled heldout-<name>[-missing-candidate]. Both take
+#                         nothing else (d16): S is full|missing-candidate, M is
+#                         served|in-process
 #   measure-skills <name> [--margin "<margin>"]   the 104 skill evals; a tuned
 #                         <name> needs --margin, which stock never gets
 #                         Each measure stage measures ONE model per call (deviation d7):
@@ -45,8 +51,8 @@
 #                         --enable-thinking ENABLE_THINKING (default false);
 #                         measure.py also gets --ground-snapshot GROUND_SNAPSHOT
 #                         (required; see `measure.py snapshot`) and --max-logprobs
-#                         MEASURE_MAX_LOGPROBS, and measure-val and measure-final hand
-#                         any further [args] to it (e.g. --ctx 2048).
+#                         MEASURE_MAX_LOGPROBS, and measure-val hands any further
+#                         [args] to it (e.g. --scorer served).
 #   scan <name>           scan a trained run's merged checkpoint for secrets/binaries
 #                         (scan_bundle.py scan; writes scan.json next to it)
 #   quantize <name>       Q4_K_M GGUF + INT4 AWQ export of a merged checkpoint
@@ -81,7 +87,7 @@ set -euo pipefail
 #: below is the one place this list is printed, so it never drifts from the
 #: case statement silently.
 STAGES="split skills stock-copy augment-nvsh augment-skills rereview filter-variations \
-assemble train train-scorer measure-val measure-final measure-skills scan \
+assemble train train-scorer measure-val measure-final measure-heldout measure-skills scan \
 quantize heal upload status"
 
 # Everything runs inside main(), called on the last line, so bash parses the
@@ -212,6 +218,39 @@ refuse_scorer_without_mode() {
     if [ "$arg" = --scorer ] || [[ $arg == --scorer=* ]]; then return 0; fi
   done
   die "$name is a Track B scorer; pass --scorer served (decisions, latency) or --scorer in-process (exact calibration)"
+}
+
+check_final_args() {
+  # A final or held-out run takes only --slice and --scorer, each at most
+  # once, spelled out, with a known value: measure.py's argparse keeps the last
+  # value and accepts abbreviations, so anything else could relabel the run,
+  # swap the split or overwrite another run's predictions (issue 46, t24, d16).
+  # Prints the label suffix: "-missing-candidate" for that slice, else nothing.
+  local stage=$1 arg value slice='' scorer='' expect=''
+  shift
+  for arg in "$@"; do
+    if [ -n "$expect" ]; then
+      value=$arg
+    else
+      case $arg in
+        --slice | --scorer) expect=$arg; continue ;;
+        --slice=* | --scorer=*) expect=${arg%%=*}; value=${arg#*=} ;;
+        *) die "$stage takes only --slice and --scorer, not '$arg'" ;;
+      esac
+    fi
+    case $expect:$value in
+      --slice:full | --slice:missing-candidate)
+        [ -z "$slice" ] || die "$stage: --slice given twice"
+        slice=$value ;;
+      --scorer:served | --scorer:in-process)
+        [ -z "$scorer" ] || die "$stage: --scorer given twice"
+        scorer=$value ;;
+      *) die "$stage: $expect takes full|missing-candidate (--slice) or served|in-process (--scorer), not '$value'" ;;
+    esac
+    expect=
+  done
+  [ -z "$expect" ] || die "$stage: $expect needs a value"
+  if [ "$slice" = missing-candidate ]; then echo -missing-candidate; fi
 }
 
 measure_revision() {
@@ -399,17 +438,40 @@ case "$STAGE" in
       "${scorer_args[@]}" "$@"
     ;;
   measure-final)
-    name=${1:?measure-final <name> [measure.py args]}; shift
+    name=${1:?measure-final <name> [--slice S] [--scorer M]}; shift
     refuse_extra_ctx "$@"
+    suffix=$(check_final_args measure-final "$@")
     refuse_scorer_without_mode "$name" "$@"
     snapshot=$(ground_snapshot); rev=$(measure_revision "$name")
     mapfile -t scorer_args < <(scorer_measure_args "$name" "$@")
     site=$(measure_pythonpath "$@")
     if [ -n "$site" ]; then pythonpath="$site${PYTHONPATH:+:$PYTHONPATH}"; else pythonpath="${PYTHONPATH:-}"; fi
-    serve_for_measure "$name" "final-$name"
+    label="final-$name$suffix"
+    serve_for_measure "$name" "$label"
     PYTHONPATH="$pythonpath" \
       py scripts/lfm-finetune/measure.py --split "$WORK/splits/test.json" --final \
-      --model "$name" --revision "$rev" --label "final-$name" --config "$measure_config" \
+      --model "$name" --revision "$rev" --label "$label" --config "$measure_config" \
+      --ctx "$MEASURE_CTX" \
+      --ground-snapshot "$snapshot" --enable-thinking "${ENABLE_THINKING:-false}" \
+      --max-logprobs "$MEASURE_MAX_LOGPROBS" --predictions "$WORK/final/$name" \
+      "${scorer_args[@]}" "$@"
+    ;;
+  measure-heldout)
+    name=${1:?measure-heldout <name> [--slice S] [--scorer M]}; shift
+    [ -n "${HELDOUT_SPLIT:-}" ] || die "measure-heldout needs HELDOUT_SPLIT (the sealed held-out file) in the env file"
+    [ -s "$HELDOUT_SPLIT" ] || die "HELDOUT_SPLIT=$HELDOUT_SPLIT does not exist or is empty"
+    refuse_extra_ctx "$@"
+    suffix=$(check_final_args measure-heldout "$@")
+    refuse_scorer_without_mode "$name" "$@"
+    snapshot=$(ground_snapshot); rev=$(measure_revision "$name")
+    mapfile -t scorer_args < <(scorer_measure_args "$name" "$@")
+    site=$(measure_pythonpath "$@")
+    if [ -n "$site" ]; then pythonpath="$site${PYTHONPATH:+:$PYTHONPATH}"; else pythonpath="${PYTHONPATH:-}"; fi
+    label="heldout-$name$suffix"
+    serve_for_measure "$name" "$label"
+    PYTHONPATH="$pythonpath" \
+      py scripts/lfm-finetune/measure.py --split "$HELDOUT_SPLIT" --acceptance \
+      --model "$name" --revision "$rev" --label "$label" --config "$measure_config" \
       --ctx "$MEASURE_CTX" \
       --ground-snapshot "$snapshot" --enable-thinking "${ENABLE_THINKING:-false}" \
       --max-logprobs "$MEASURE_MAX_LOGPROBS" --predictions "$WORK/final/$name" \
