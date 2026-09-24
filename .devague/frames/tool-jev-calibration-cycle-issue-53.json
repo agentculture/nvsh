@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-09-24T22:47:35Z",
-  "updated": "2026-09-24T23:06:59Z",
+  "updated": "2026-09-24T23:10:20Z",
   "claims": [
     {
       "id": "c1",
@@ -168,6 +168,20 @@
           "resolved": false,
           "blocking": false,
           "resolution": ""
+        },
+        {
+          "id": "q8",
+          "text": "contradiction with c38?",
+          "resolved": false,
+          "blocking": true,
+          "resolution": ""
+        },
+        {
+          "id": "q9",
+          "text": "risk: Probe 2026-09-25: on llama-server an equal logit_bias of +30 on every label token left the returned probabilities unchanged (still 10-15 labels missing on 6/6 prompts, Q4 and bf16 GGUF) \u2014 returned probabilities are pre-bias, so the c8 assumption is false on llama-server; vLLM untested (its default logprobs mode is also pre-processor).",
+          "resolved": false,
+          "blocking": false,
+          "resolution": ""
         }
       ],
       "links": [],
@@ -295,6 +309,20 @@
           "resolved": true,
           "blocking": true,
           "resolution": "Re-split the corpus; add new sources when needed (c29)."
+        },
+        {
+          "id": "q10",
+          "text": "The corpus lives inside the runtime package (nvsh/tiers/corpus/dev.json and held-out.json, shipped in the wheel per tests/test_wheel_packaging.py, read by nvsh tiers bench and by the Needle, LFM and Laya #51 work). Re-splitting it or adding sources there is an nvsh/ change (conflicts c32, publishes to PyPI) and moves every other experiment's baseline. Does the new corpus version live scripts-side (e.g. a versioned corpus under scripts/lfm-finetune or the private data repo), or do we update nvsh/tiers/corpus and accept the runtime change?",
+          "resolved": false,
+          "blocking": true,
+          "resolution": ""
+        },
+        {
+          "id": "q11",
+          "text": "The existing held-out is committed publicly (nvsh/tiers/corpus/held-out.json) and its authoring is the operator task in issue #38. Who authors the new sealed held-out (teacher-drafted by draft_heldout.py with the lead reading counts only, as in #46, or the operator), and is it committed publicly or kept only in the private data repo?",
+          "resolved": false,
+          "blocking": true,
+          "resolution": ""
         }
       ],
       "links": [],
@@ -510,7 +538,15 @@
           "instruction": ""
         }
       ],
-      "hard_questions": [],
+      "hard_questions": [
+        {
+          "id": "q12",
+          "text": "Is the <= 2.3% bar met on the point estimate or on the CI upper bound? With ~100 test entries x 3 permutations, a 2.3% rate is ~7 flips and the 95% CI upper bound sits near 4-5%; proving the upper bound <= 2.3% needs roughly 1,000+ independent permutation trials (more permutations per entry help only partly, since they are correlated).",
+          "resolved": false,
+          "blocking": true,
+          "resolution": ""
+        }
+      ],
       "links": [],
       "instruction": "Report answer-change % with CI; compare with OpenJev 2.3% and scorer-b1's pre-retrain rate.",
       "revisions": []
@@ -714,6 +750,158 @@
       "links": [],
       "instruction": "",
       "revisions": []
+    },
+    {
+      "id": "c38",
+      "kind": "requirement",
+      "text": "Served readout completeness comes from a large top-k, not logit_bias: raise the scorer's requested top (TOP_MARGIN in scripts/lfm-finetune/scorer.py) and the server cap (MEASURE_MAX_LOGPROBS / vLLM --max-logprobs in serve_for_measure.sh) to >= 5000. Probe 2026-09-25 (llama-server, scorer-b1 Q4_K_M and bf16 GGUF, CPU, 6 spent-test prompts): top-22 missed 10-15 labels, top-400 missed 1 on 3/6, top-5000 was complete on 6/6 in ~0.4 s per request. ToolChat.score_next_token already takes top as a parameter, so no nvsh/ change is needed.",
+      "origin": "llm",
+      "status": "proposed",
+      "honesty_conditions": [
+        {
+          "id": "h30",
+          "text": "A served run with top >= 5000 returns complete distributions for every entry of validation on llama-server (Spark and Orin) and vLLM, or the incomplete count is reported.",
+          "status": "proposed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c39",
+      "kind": "requirement",
+      "text": "One label-probability definition for every path: in-process scoring reads one token id per label (label_token_ids, scorer.py:161-171) while served scoring sums token variants such as 'A' and ' A' (distribution, scorer.py:222-242). Probe: bf16 GGUF matched the in-process exact distribution within 1e-4 on 5/6 prompts, but dev-f02 differed by 0.137 in bf16 \u2014 a readout definition gap, not quantization. Pick one definition (train, in-process and served) before any calibration number is compared across paths.",
+      "origin": "llm",
+      "status": "proposed",
+      "honesty_conditions": [
+        {
+          "id": "h31",
+          "text": "The chosen definition is one function shared by train_scorer, the in-process scorer and the served scorer, with a test that both paths return the same distribution on a fixture.",
+          "status": "proposed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c40",
+      "kind": "requirement",
+      "text": "Calibration and readout fidelity are judged against the same artifact: the Q4_K_M distribution legitimately differs from bf16 (probe: max abs diff up to 0.096 on dev-e08 where the bf16 GGUF matched to 1e-4), so the temperature and thresholds are fitted on the deployed Q4_K_M's own validation distributions, and h12's 'match bf16 exact within 0.01' check applies to the bf16 GGUF (readout fidelity), not to Q4.",
+      "origin": "llm",
+      "status": "proposed",
+      "honesty_conditions": [
+        {
+          "id": "h32",
+          "text": "The bf16 GGUF served readout matches the in-process exact distribution within 0.01 on validation; Q4 temperature/thresholds are fitted on Q4's own validation predictions.",
+          "status": "proposed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c41",
+      "kind": "requirement",
+      "text": "Validation is not double-dipped: the temperature fit, the gate thresholds and the checkpoint choice all come from validation, so validation is split into a fit fold and a selection fold (or cross-validated), fixed with a seed before the first run.",
+      "origin": "llm",
+      "status": "proposed",
+      "honesty_conditions": [
+        {
+          "id": "h33",
+          "text": "The fold assignment is seeded, recorded in the run, and no entry informs both the fit and the selection.",
+          "status": "proposed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c42",
+      "kind": "requirement",
+      "text": "A pre-registered checkpoint decision rule is written before any training run of this cycle, including how clean-test accuracy trades against permutation robustness and calibration (q7 risk; in #46, b1 beat the better-calibrated b4 only on the pre-registered rule \u2014 docs/qwen-tool-jev-finetune.md Track B runs).",
+      "origin": "llm",
+      "status": "proposed",
+      "honesty_conditions": [
+        {
+          "id": "h34",
+          "text": "The rule is committed (spec or plan) before the first training command of the cycle runs.",
+          "status": "proposed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c43",
+      "kind": "requirement",
+      "text": "The run keeps a live guide and ledger (code map, split, design, every issue with symptom -> cause -> fix, results, reproduce steps), maintained by a documentation subagent after every step, in the style of docs/qwen-tool-jev-finetune.md (operator standing rule for fine-tune runs since issue 46).",
+      "origin": "llm",
+      "status": "proposed",
+      "honesty_conditions": [
+        {
+          "id": "h35",
+          "text": "The guide shows an entry for every run, obstacle and fix within the same step it happened.",
+          "status": "proposed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c44",
+      "kind": "requirement",
+      "text": "New models and data never overwrite the PR #52 artifacts: scorer-b1 stays reproducible as the baseline, new builds go to new private repos or tagged revisions, and every bundle passes scripts/lfm-finetune/scan_bundle.py before upload (issue 46 c47/c48 lineage).",
+      "origin": "llm",
+      "status": "proposed",
+      "honesty_conditions": [
+        {
+          "id": "h36",
+          "text": "PR #52's six repos are byte-identical before and after the cycle; each new upload has a clean scan_bundle report.",
+          "status": "proposed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c45",
+      "kind": "requirement",
+      "text": "Escalation-reason candidates (if the c28 ablation keeps them) get descriptions from scripts-side data, not nvsh/tiers/lfm.py tools (scorer._description reads lfm.tools_for for controls, scorer.py:174-181), and metrics roll every reason up to escalate so the missing-candidate and escalation bars stay comparable; candidate count stays within the single-token label check (label_token_ids refuses multi-token labels).",
+      "origin": "llm",
+      "status": "proposed",
+      "honesty_conditions": [
+        {
+          "id": "h37",
+          "text": "No reason description is read from nvsh/; metrics tests show reasons rolling up to escalate.",
+          "status": "proposed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
     }
   ],
   "open_vagueness": [
@@ -722,6 +910,24 @@
       "text": "Choice/Noul/Score primitives (e.g. 'is retrying this command safe?') as composable narrow decisions, per issue #53 gap 5 \u2014 revisit after this cycle's calibration results.",
       "kind": "follow_up",
       "claim_id": null,
+      "resolved": false,
+      "resolution": "",
+      "resolution_claim_id": null
+    },
+    {
+      "id": "v2",
+      "text": "vLLM /completions with --max-logprobs >= 5000 (memory, latency, whether returned logprobs are raw or processed) and Orin's llama.cpp build 10373 at n_probs 5000 were not probed; only llama-server on the Spark CPU was.",
+      "kind": "unknown_nonblocking",
+      "claim_id": "c38",
+      "resolved": false,
+      "resolution": "",
+      "resolution_claim_id": null
+    },
+    {
+      "id": "v3",
+      "text": "Residual surprise risk after this pass: per-example label randomization may interact with Qwen3.5 tokenization of lowercase letter labels (a-z) differently from uppercase; nothing examined yet shows whether the model treats them as equivalent labels.",
+      "kind": "unknown_nonblocking",
+      "claim_id": "c10",
       "resolved": false,
       "resolution": "",
       "resolution_claim_id": null
@@ -834,6 +1040,72 @@
         "c27",
         "c31"
       ]
+    },
+    {
+      "id": "s12",
+      "surface": "challenge pass / cheap-probe lens: llama-server CPU probe, scorer-b1 Q4_K_M + bf16 GGUF",
+      "finding": "6 spent-test prompts: logit_bias leaves returned probs unchanged; top-5000 complete 6/6; bf16 GGUF = in-process exact within 1e-4 on 5/6, dev-f02 off by 0.137 (variant-summing gap); Q4 drifts up to 0.096. Scratch port, no repo/GPU use.",
+      "seeds": [
+        "c38",
+        "c39",
+        "c40",
+        "q9"
+      ]
+    },
+    {
+      "id": "s13",
+      "surface": "challenge pass / adjacent-systems lens: nvsh/tiers/toolchat.py + nvsh/tiers/corpus/",
+      "finding": "score_next_token takes top, so readout needs no nvsh change; but dev.json and held-out.json ship in the wheel and feed nvsh tiers bench, Needle, LFM and Laya #51 \u2014 re-splitting there is a runtime change.",
+      "seeds": [
+        "c38",
+        "q10",
+        "q11"
+      ]
+    },
+    {
+      "id": "s14",
+      "surface": "challenge pass / unstated-assumptions lens: validation reuse + 2.3% bar",
+      "finding": "Temperature, thresholds and checkpoint choice all read validation; the 2.3% bar has no stated estimator and n makes its CI wider than the bar.",
+      "seeds": [
+        "c41",
+        "c42",
+        "q12"
+      ]
+    },
+    {
+      "id": "s15",
+      "surface": "challenge pass / lifecycle + operations lens: guide ledger, Hub artifacts, bundle scan",
+      "finding": "Operator standing rule for a live guide/ledger was not on the frame; baseline artifacts could be overwritten by new uploads; scan_bundle existed in #46 but not in this frame.",
+      "seeds": [
+        "c43",
+        "c44"
+      ]
+    },
+    {
+      "id": "s16",
+      "surface": "challenge pass / hidden-dependency lens: scorer._description + metrics CALIBRATION_LABELS",
+      "finding": "Reason candidates would otherwise pull descriptions from nvsh/tiers/lfm.py and break escalate roll-up.",
+      "seeds": [
+        "c45"
+      ]
+    },
+    {
+      "id": "s17",
+      "surface": "challenge pass / security lens: redaction, secrets, private hosts",
+      "finding": "Examined: scan_bundle.py + scripts/scan-secrets.py exist and cover uploads and commits; teachers are local lobes. No new finding beyond c44.",
+      "seeds": []
+    },
+    {
+      "id": "s18",
+      "surface": "challenge pass / concurrency + hardware lens: serve_for_measure.sh, shared GPU, Orin",
+      "finding": "Known limits: P68 same-port stop/start race (single serial runner), NV_ERR_NO_MEMORY when training and serving overlap on a Spark, lobes share GPUs. Plan-side risks, not spec changes.",
+      "seeds": []
+    },
+    {
+      "id": "s19",
+      "surface": "challenge pass / reversibility + migration lens",
+      "finding": "No schema or runtime migration: experiment-only (c32). Reversibility rests on c44 (baseline kept). Unexamined: vLLM and Orin behaviour at top-5000.",
+      "seeds": []
     }
   ],
   "lapses": [],
