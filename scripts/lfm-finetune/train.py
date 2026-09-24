@@ -280,6 +280,18 @@ LORA_TARGETS = {
 }
 
 
+def text_tokenizer(loaded):
+    """The text tokenizer inside whatever the loader returned.
+
+    For Qwen3.5 (a vision-language model) unsloth returns the multimodal
+    processor, whose chat template expects content as a list of parts and
+    crashes on plain strings (issue 46, t22). Its ``tokenizer`` attribute is
+    the text tokenizer, with the same chat template.
+    """
+    inner = getattr(loaded, "tokenizer", None)
+    return inner if inner is not None else loaded
+
+
 def lora_targets(name: str) -> list[str]:
     if name not in LORA_TARGETS:
         raise ValueError(f"unknown LoRA targets {name!r}; one of {', '.join(LORA_TARGETS)}")
@@ -344,9 +356,10 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - needs a GP
     except ValueError as exc:
         print(f"train.py: {exc}", file=sys.stderr)
         return 2
-    model, tokenizer = FastLanguageModel.from_pretrained(
+    model, loaded = FastLanguageModel.from_pretrained(
         args.base, revision=args.revision, max_seq_length=args.max_length, load_in_4bit=False
     )
+    tokenizer = text_tokenizer(loaded)
     model = FastLanguageModel.get_peft_model(
         model,
         r=args.rank,
