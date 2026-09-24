@@ -2,7 +2,7 @@
 # One pinned vLLM for every measured model (issue 46, deviation d7).
 #
 #   scripts/lfm-finetune/serve_for_measure.sh start MODEL_DIR PORT [RECORD_JSON]
-#   scripts/lfm-finetune/serve_for_measure.sh wait PORT
+#   scripts/lfm-finetune/serve_for_measure.sh wait PORT [FULL_LOG]
 #   scripts/lfm-finetune/serve_for_measure.sh stop PORT
 #
 # The stock copy, the Track A and Track B checkpoints and the AWQ build are
@@ -130,7 +130,7 @@ start() {
 }
 
 wait_ready() {
-  local port=${1:-}
+  local port=${1:-} full_log=${2:-}
   check_port "$port"
   local own url deadline
   own=$(container "$port")
@@ -152,6 +152,11 @@ wait_ready() {
     sleep "${MEASURE_POLL_SECONDS:-2}"
   done
   docker logs --tail "${MEASURE_LOG_LINES:-40}" "$own" >&2 2>&1 || true
+  if [ -n "$full_log" ]; then
+    # The last lines rarely reach vLLM's root cause (issue 46): keep it all.
+    docker logs "$own" >"$full_log" 2>&1 || true
+    echo "serve_for_measure: the full server log is in $full_log" >&2
+  fi
   exit 2
 }
 

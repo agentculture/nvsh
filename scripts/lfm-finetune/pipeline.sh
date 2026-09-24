@@ -231,7 +231,7 @@ serve_for_measure() {
   trap 'exit 130' INT
   trap 'exit 143' TERM
   bash "$HERE/serve_for_measure.sh" start "$model_dir" "$MEASURE_PORT" "$WORK/measure/$label.serve.json"
-  bash "$HERE/serve_for_measure.sh" wait "$MEASURE_PORT"
+  bash "$HERE/serve_for_measure.sh" wait "$MEASURE_PORT" "$WORK/measure/$label.serve.log"
   measure_config="$WORK/measure/$label.nvsh.toml"
   cat > "$measure_config" <<EOF
 # Written by pipeline.sh for one measure run: attach to serve_for_measure.sh's
