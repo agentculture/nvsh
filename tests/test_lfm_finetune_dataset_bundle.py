@@ -388,3 +388,151 @@ def test_main_wires_the_teacher_models_flag_and_apache_only(tmp_path, capsys) ->
     assert _module().main(argv) == 0
     out = json.loads(capsys.readouterr().out)
     assert out["variation"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Issue 46, t27: the decision rule, several rejected files, the run's seed and
+# the models the data set trained.
+# ---------------------------------------------------------------------------
+
+
+def _reviewer_b_row(row_id: str = "dev-a~v1") -> dict:
+    """A fresh issue-46 record accepted under --decide-by reviewer_b."""
+    return {
+        "id": row_id,
+        "models": _MODELS,
+        "decided_by": "reviewer_b",
+        "verdicts": {
+            "reviewer_a": {"accept": False, "reason": "no"},
+            "reviewer_b": {"accept": True, "reason": "yes"},
+        },
+    }
+
+
+def _rereview_row(row_id: str = "dev-a~v1") -> dict:
+    """A clean-slate re-review record: only reviewer B's fresh verdict decides."""
+    return {
+        "id": row_id,
+        "models": _MODELS,
+        "verdicts": {"reviewer_b": {"accept": True, "reason": "yes"}},
+        "prior_verdicts": {"reviewer_a": {"accept": True, "reason": "old"}},
+    }
+
+
+@pytest.mark.parametrize("row", [_reviewer_b_row(), _rereview_row()], ids=["fresh", "rereview"])
+def test_a_run_decided_by_reviewer_b_says_reviewer_a_was_advisory(tmp_path, row) -> None:
+    inputs = _inputs(tmp_path)
+    inputs["accepted"].write_text(json.dumps(row) + "\n")
+    _module().build(**inputs)
+    card = (tmp_path / "bundle" / "README.md").read_text()
+    assert "kept only when both said yes" not in card
+    assert "reviewer B's verdict alone decided" in card
+    assert "| Gemma 4 26B-A4B | Apache-2.0 | reviewer A, advisory: asked and recorded" in card
+    assert "| Qwen 3.8 27B | Apache-2.0 | accepted it (reviewer B, deciding) |" in card
+
+
+def test_a_run_decided_by_both_reviewers_keeps_the_original_wording(tmp_path) -> None:
+    _module().build(**_inputs(tmp_path))
+    card = (tmp_path / "bundle" / "README.md").read_text()
+    assert "kept only when both said yes" in card
+    assert "| Gemma 4 26B-A4B | Apache-2.0 | accepted it (reviewer A) |" in card
+
+
+def test_teacher_summary_derives_roles_and_the_decision_rule_from_the_run(tmp_path) -> None:
+    module = _module()
+    train = [{"id": "dev-a", "text": "t"}, {"id": "dev-a~v1", "text": "u"}]
+    summary = module.teacher_summary(
+        train,
+        {"dev-a~v1": _reviewer_b_row()},
+        module.load_role_models(_role_models_file(tmp_path)),
+        apache_only=True,
+    )
+    assert summary.role_teachers["GENERATOR"] == {"Qwen 3.6 35B-A3B": "Apache-2.0"}
+    assert summary.role_teachers["REVIEWER_B"] == {"Qwen 3.8 27B": "Apache-2.0"}
+    assert summary.decisions == {"reviewer_b": 1}
+    assert summary.shared_corrector_reviewer_names == ["Qwen 3.8 27B"]
+    rows = module.teacher_rows(summary)
+    assert ("Gemma 4 26B-A4B", "Apache-2.0") == rows[2][:2]
+    assert "advisory" in rows[2][2]
+
+
+def test_teacher_summary_refuses_a_non_apache_teacher(tmp_path) -> None:
+    module = _module()
+    table = dict(_ROLE_MODELS)
+    table["senses"] = {"name": "Nemotron 3.5 Lightning", "licence": "OpenMDW-1.1"}
+    with pytest.raises(ValueError, match="Apache"):
+        module.teacher_summary(
+            [{"id": "dev-a~v1"}],
+            {"dev-a~v1": _reviewer_b_row()},
+            module.load_role_models(_role_models_file(tmp_path, table)),
+            apache_only=True,
+        )
+
+
+def test_several_rejected_files_are_counted_together(tmp_path) -> None:
+    inputs = _inputs(tmp_path)
+    second = tmp_path / "rereview-rejected.jsonl"
+    second.write_text(json.dumps({"id": "dev-a~v3"}) + "\n" + json.dumps({"id": "dev-a~v4"}) + "\n")
+    inputs["rejected"] = [inputs["rejected"], second]
+    counts = _module().build(**inputs)
+    assert counts["rejected"] == 3
+
+
+def test_the_card_names_the_splits_own_seed(tmp_path) -> None:
+    inputs = _inputs(tmp_path)
+    val = inputs["splits"] / "val.json"
+    data = json.loads(val.read_text())
+    data["header"] = "Corpus. Split 'val' of dev.json (seed=46)."
+    val.write_text(json.dumps(data))
+    _module().build(**inputs)
+    card = (tmp_path / "bundle" / "README.md").read_text()
+    assert "(seed 46," in card
+    assert "seed 39" not in card
+
+
+def test_an_issue_46_card_names_the_models_it_trained_not_issue_39s(tmp_path) -> None:
+    inputs = _inputs(tmp_path)
+    inputs["issue"] = 46
+    inputs["model_repos"] = [
+        "jetson-ai-lab/qwen3.5-0.8b-nvsh-tool-jev",
+        "jetson-ai-lab/qwen3.5-0.8b-nvsh-tool-jev-scorer",
+    ]
+    _module().build(**inputs)
+    card = (tmp_path / "bundle" / "README.md").read_text()
+    assert "lfm2.5-350m" not in card
+    assert "issue 39" not in card
+    assert "`jetson-ai-lab/qwen3.5-0.8b-nvsh-tool-jev`" in card
+    assert "`jetson-ai-lab/qwen3.5-0.8b-nvsh-tool-jev-scorer`" in card
+    assert "nvsh issue 46" in card
+
+
+def test_main_takes_several_rejected_files_the_issue_and_model_repos(tmp_path, capsys) -> None:
+    inputs = _inputs(tmp_path)
+    second = tmp_path / "more-rejected.jsonl"
+    second.write_text(json.dumps({"id": "dev-a~v9"}) + "\n")
+    argv = [
+        "--splits",
+        str(inputs["splits"]),
+        "--train-augmented",
+        str(inputs["train_augmented"]),
+        "--accepted",
+        str(inputs["accepted"]),
+        "--rejected",
+        str(inputs["rejected"]),
+        str(second),
+        "--licence",
+        str(inputs["licence"]),
+        "--teacher-models",
+        str(_role_models_file(tmp_path)),
+        "--apache-only",
+        "--issue",
+        "46",
+        "--model-repo",
+        "jetson-ai-lab/qwen3.5-0.8b-nvsh-tool-jev",
+        "--out",
+        str(tmp_path / "bundle-cli"),
+    ]
+    assert _module().main(argv) == 0
+    assert json.loads(capsys.readouterr().out)["rejected"] == 2
+    card = (tmp_path / "bundle-cli" / "README.md").read_text()
+    assert "qwen3.5-0.8b-nvsh-tool-jev" in card

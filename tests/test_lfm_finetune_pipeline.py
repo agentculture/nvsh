@@ -43,6 +43,9 @@ _NEW_STAGES = (
     "upload",
 )
 
+#: The stages task t27 adds (issue 46: build, scan and privately upload bundles).
+_BUNDLE_STAGES = ("bundle", "bundle-dataset", "upload-bundle")
+
 #: The stage task f9 adds (deviation d3: every served model needs a
 #: generation_config.json pinning greedy decoding).
 _GEN_CONFIG_STAGES = ("stock-copy",)
@@ -92,6 +95,7 @@ def test_an_unknown_stage_dry_run_lists_every_stage(env_file: Path, tmp_path) ->
         "status",
         *_NEW_STAGES,
         *_GEN_CONFIG_STAGES,
+        *_BUNDLE_STAGES,
     ):
         assert stage in result.stderr, f"{stage!r} missing from: {result.stderr!r}"
 
@@ -469,6 +473,10 @@ def test_run_capped_still_returns_the_commands_status(tmp_path: Path) -> None:
 _FAKE_UV = """#!/usr/bin/env bash
 # Records every `uv run --frozen python ...` call; runs gen_config.py for real.
 printf '%s\\t%s\\n' "PYTHONPATH=${PYTHONPATH:-}" "$*" >> "$UV_LOG"
+# FAKE_UV_REAL: space-separated script names that run for real (t27).
+for real in ${FAKE_UV_REAL:-}; do
+  case "$*" in *"$real"*) shift 3; exec "$REAL_PY" "$@" ;; esac
+done
 case "$*" in
   *gen_config.py*) shift 3; exec "$REAL_PY" "$@" ;;
   *measure.py*|*measure_skills.py*)
@@ -2214,3 +2222,460 @@ def test_serve_start_refuses_while_another_start_holds_the_lock(tmp_path: Path) 
     assert stopped.returncode == 0, stopped.stderr
     assert not (run_dir / f"q46-measure-{port}.lock").exists()
     assert not (run_dir / f"q46-measure-{port}.pid").exists()
+
+
+# ---------------------------------------------------------------------------
+# Issue 46, t27: bundle, bundle-dataset and upload-bundle. No Hub call is
+# real: upload-bundle runs hub_upload.py against a fake huggingface_hub put on
+# PYTHONPATH by a fake TRAIN_PY, and nothing ever sees a real token.
+# ---------------------------------------------------------------------------
+
+_PREFIX = "jetson-ai-lab/qwen3.5-0.8b-nvsh-"
+_FAKE_TOKEN = "hf_fake_pipeline_token"
+
+#: A stand-in huggingface_hub that keeps "remote" repos under FAKE_HUB_DIR and
+#: logs every call (never the token) to FAKE_HUB_DIR/calls.jsonl.
+_FAKE_HUB = """
+import json, os, shutil
+from pathlib import Path
+from types import SimpleNamespace
+
+REMOTE = Path(os.environ["FAKE_HUB_DIR"])
+
+
+def _log(*call):
+    with open(REMOTE / "calls.jsonl", "a", encoding="utf-8") as handle:
+        handle.write(json.dumps(call) + "\\n")
+
+
+class HfApi:
+    def __init__(self, token=None):
+        _log("HfApi", token == os.environ.get("EXPECTED_TOKEN"))
+
+    def create_repo(self, repo_id, **kwargs):
+        _log("create_repo", repo_id, kwargs)
+        (REMOTE / repo_id).mkdir(parents=True, exist_ok=True)
+
+    def update_repo_visibility(self, repo_id, **kwargs):
+        _log("update_repo_visibility", repo_id, kwargs)
+
+    def upload_folder(self, *, folder_path, repo_id, **kwargs):
+        _log("upload_folder", repo_id, kwargs)
+        shutil.copytree(folder_path, REMOTE / repo_id, dirs_exist_ok=True)
+        return SimpleNamespace(oid="abc123")
+
+    def repo_info(self, repo_id, **kwargs):
+        _log("repo_info", repo_id, kwargs)
+        return SimpleNamespace(private=True)
+
+
+def snapshot_download(repo_id, *, local_dir, **kwargs):
+    _log("snapshot_download", repo_id, {k: v for k, v in kwargs.items() if k != "token"})
+    shutil.copytree(REMOTE / repo_id, local_dir, dirs_exist_ok=True)
+    tamper = os.environ.get("FAKE_HUB_TAMPER")
+    if tamper:
+        path = Path(local_dir) / tamper
+        path.write_bytes(path.read_bytes() + b"x")
+    return local_dir
+"""
+
+
+def _bundle_pipeline(tmp_path: Path, extra_env: str = "") -> "_Pipeline":
+    teachers = tmp_path / "teacher-models.json"
+    teachers.write_text('{"worker": {"name": "Qwen", "licence": "Apache-2.0"}}\n')
+    site = tmp_path / "fake-site"
+    (site / "huggingface_hub").mkdir(parents=True)
+    (site / "huggingface_hub" / "__init__.py").write_text(_FAKE_HUB, encoding="utf-8")
+    train_py = tmp_path / "fake-train-python"
+    train_py.write_text(f"#!/usr/bin/env bash\necho {site}\n", encoding="utf-8")
+    train_py.chmod(0o755)
+    return _Pipeline(
+        tmp_path,
+        extra_env=f"TEACHER_MODELS={teachers}\nBUNDLE_DATA_SUMMARY=n-records\n"
+        f"TRAIN_PY={train_py}\n" + extra_env,
+    )
+
+
+def _report(tmp_path: Path, name: str = "final-a3-heal.md") -> Path:
+    path = tmp_path / name
+    path.write_text("# report\n", encoding="utf-8")
+    return path
+
+
+def _quant(pipe: "_Pipeline", run: str) -> None:
+    quant = pipe.work / "quant" / run
+    _greedy_dir(quant / "awq")
+    (quant / "model-q4_k_m.gguf").write_bytes(b"GGUF")
+    (quant / "quantize-run.json").write_text('{"awq_serve_args": []}', encoding="utf-8")
+
+
+def test_bundle_bf16_builds_scans_and_records_the_bundle(tmp_path: Path) -> None:
+    pipe = _bundle_pipeline(tmp_path)
+    pipe.ready(stock=False, run="a3-heal")
+    report, edge = _report(tmp_path), _report(tmp_path, "edge.md")
+    result = pipe.run("bundle", "bf16", "a3-heal", "tool-jev", str(report), str(edge))
+    assert result.returncode == 0, result.stderr
+    ((_, argv),) = pipe.calls("release_bundle.py")
+    out = pipe.work / "bundles" / "tool-jev"
+    assert _option(argv, "--kind") == ["bf16"]
+    assert _option(argv, "--merged") == [str(pipe.work / "runs" / "a3-heal" / "merged")]
+    assert _option(argv, "--repo") == [_PREFIX + "tool-jev"]
+    assert _option(argv, "--run") == ["a3-heal"]
+    assert _option(argv, "--results") == [str(report), str(edge)]
+    assert _option(argv, "--licence-kind") == ["apache"]
+    assert _option(argv, "--tool-call-parser") == ["qwen3_coder"]
+    assert _option(argv, "--teacher-models") == [str(tmp_path / "teacher-models.json")]
+    assert _option(argv, "--accepted") == [str(pipe.work / "aug" / "nvsh-accepted.jsonl")]
+    assert _option(argv, "--train-augmented") == [str(pipe.work / "data" / "train-augmented.json")]
+    assert _option(argv, "--data-summary") == ["n-records"]
+    assert _option(argv, "--out") == [str(out)]
+    assert "--scorer" not in argv and "--quantized-from" not in argv
+    ((_, scan_argv),) = pipe.calls("scan_bundle.py")
+    assert scan_argv[-2:] == ["scan", str(out)]
+    meta = json.loads((pipe.work / "bundles" / "tool-jev.json").read_text(encoding="utf-8"))
+    assert meta == {
+        "kind": "bf16",
+        "build": "a3-heal",
+        "repo": _PREFIX + "tool-jev",
+        "repo_type": "model",
+    }
+
+
+def test_bundle_gguf_ships_the_q4_k_m_file_of_its_run(tmp_path: Path) -> None:
+    pipe = _bundle_pipeline(tmp_path)
+    pipe.ready(stock=False, run="a3-heal")
+    _quant(pipe, "a3-heal")
+    result = pipe.run("bundle", "gguf", "a3-heal.q4_k_m", "tool-jev-gguf", str(_report(tmp_path)))
+    assert result.returncode == 0, result.stderr
+    ((_, argv),) = pipe.calls("release_bundle.py")
+    assert _option(argv, "--kind") == ["gguf"]
+    assert _option(argv, "--gguf") == [str(pipe.work / "quant" / "a3-heal" / "model-q4_k_m.gguf")]
+    assert _option(argv, "--merged") == [str(pipe.work / "runs" / "a3-heal" / "merged")]
+    assert _option(argv, "--quantized-from") == [_PREFIX + "tool-jev"]
+    assert _option(argv, "--run") == ["a3-heal"]
+
+
+def test_bundle_awq_of_a_scorer_run_is_marked_a_scorer(tmp_path: Path) -> None:
+    pipe = _bundle_pipeline(tmp_path)
+    pipe.ready(stock=False, run="scorer-b1")
+    _mark_scorer_run(pipe, "scorer-b1")
+    _quant(pipe, "scorer-b1")
+    result = pipe.run(
+        "bundle", "awq", "scorer-b1.awq", "tool-jev-scorer-awq", str(_report(tmp_path))
+    )
+    assert result.returncode == 0, result.stderr
+    ((_, argv),) = pipe.calls("release_bundle.py")
+    assert _option(argv, "--awq-dir") == [str(pipe.work / "quant" / "scorer-b1" / "awq")]
+    assert "--scorer" in argv
+    assert _option(argv, "--quantized-from") == [_PREFIX + "tool-jev-scorer"]
+
+
+@pytest.mark.parametrize(
+    ("args", "message"),
+    [
+        (["gguf", "a3-heal", "tool-jev-gguf"], "a3-heal.q4_k_m"),
+        (["awq", "a3-heal.q4_k_m", "x"], "a3-heal.awq"),
+        (["bf16", "a3-heal.awq", "x"], "run name"),
+        (["fp8", "a3-heal", "x"], "bf16|gguf|awq"),
+        (["bf16", "a3-heal", "Tool_Jev"], "repo suffix"),
+        (["bf16", "a3-heal", "../x"], "repo suffix"),
+        (["bf16", "a3-heal", "tool-jev"], "measure report"),
+        (["bf16", "a3-heal", "tool-jev", "/no/such/report.md"], "/no/such/report.md"),
+        (["bf16", "no-such-run", "tool-jev", "REPORT"], "no-such-run"),
+    ],
+)
+def test_bundle_refuses_bad_arguments(tmp_path: Path, args: list, message: str) -> None:
+    pipe = _bundle_pipeline(tmp_path)
+    pipe.ready(stock=False, run="a3-heal")
+    args = [str(_report(tmp_path)) if arg == "REPORT" else arg for arg in args]
+    result = pipe.run("bundle", *args)
+    assert result.returncode == 1
+    assert message in result.stderr
+    assert pipe.calls("release_bundle.py") == []
+
+
+def test_bundle_needs_the_teacher_models_file(tmp_path: Path) -> None:
+    pipe = _bundle_pipeline(tmp_path, extra_env="TEACHER_MODELS=\n")
+    pipe.ready(stock=False, run="a3-heal")
+    result = pipe.run("bundle", "bf16", "a3-heal", "tool-jev", str(_report(tmp_path)))
+    assert result.returncode == 1
+    assert "TEACHER_MODELS" in result.stderr
+
+
+def test_bundle_stages_refuse_the_lfm_base(tmp_path: Path) -> None:
+    pipe = _bundle_pipeline(tmp_path, extra_env="BASE=LiquidAI/LFM2.5-350M\n")
+    for args in (
+        ["bundle", "bf16", "a3-heal", "tool-jev", str(_report(tmp_path))],
+        ["bundle-dataset", "tool-jev-data"],
+    ):
+        result = pipe.run(*args)
+        assert result.returncode == 1
+        assert "Qwen" in result.stderr
+
+
+def test_bundle_dataset_builds_the_apache_only_data_set(tmp_path: Path) -> None:
+    pipe = _bundle_pipeline(
+        tmp_path,
+        extra_env=f'BUNDLE_REJECTED="{tmp_path}/r1.jsonl {tmp_path}/r2.jsonl"\n'
+        'DATASET_MODEL_REPOS="tool-jev tool-jev-scorer"\n',
+    )
+    (pipe.work / "data").mkdir(parents=True)
+    (pipe.work / "data" / "train-augmented.json").write_text("{}", encoding="utf-8")
+    result = pipe.run("bundle-dataset", "tool-jev-dataset")
+    assert result.returncode == 0, result.stderr
+    ((_, argv),) = pipe.calls("dataset_bundle.py")
+    out = pipe.work / "bundles" / "tool-jev-dataset"
+    assert "--apache-only" in argv
+    assert _option(argv, "--splits") == [str(pipe.work / "splits")]
+    assert _option(argv, "--train-augmented") == [str(pipe.work / "data" / "train-augmented.json")]
+    assert _option(argv, "--accepted") == [str(pipe.work / "aug" / "nvsh-accepted.jsonl")]
+    rejected = argv[argv.index("--rejected") + 1 : argv.index("--rejected") + 3]
+    assert rejected == [f"{tmp_path}/r1.jsonl", f"{tmp_path}/r2.jsonl"]
+    assert _option(argv, "--licence") == [str(_REPO_ROOT / "LICENSE")]
+    assert _option(argv, "--teacher-models") == [str(tmp_path / "teacher-models.json")]
+    assert _option(argv, "--issue") == ["46"]
+    assert _option(argv, "--model-repo") == [_PREFIX + "tool-jev", _PREFIX + "tool-jev-scorer"]
+    assert _option(argv, "--out") == [str(out)]
+    ((_, scan_argv),) = pipe.calls("scan_bundle.py")
+    assert scan_argv[-2:] == ["scan", str(out)]
+    meta = json.loads((pipe.work / "bundles" / "tool-jev-dataset.json").read_text())
+    assert meta["kind"] == "dataset" and meta["repo_type"] == "dataset"
+    assert meta["repo"] == _PREFIX + "tool-jev-dataset"
+
+
+def test_bundle_dataset_needs_the_frozen_train_set(tmp_path: Path) -> None:
+    pipe = _bundle_pipeline(tmp_path)
+    result = pipe.run("bundle-dataset", "tool-jev-dataset")
+    assert result.returncode == 1
+    assert "train-augmented.json" in result.stderr
+
+
+def _scanned_bundle(pipe: "_Pipeline", suffix: str = "tool-jev", kind: str = "bf16") -> Path:
+    bundle = _greedy_dir(pipe.work / "bundles" / suffix)
+    (bundle / "README.md").write_text("# card\n", encoding="utf-8")
+    (bundle / "model.safetensors").write_bytes(b"\x00w\x01")
+    scan_bundle = _load_scan_bundle()
+    scan_bundle.write_scan(bundle, scan_bundle._get_scan_secrets())  # noqa: SLF001
+    meta = {"kind": kind, "build": "a3-heal", "repo": _PREFIX + suffix, "repo_type": "model"}
+    (pipe.work / "bundles" / f"{suffix}.json").write_text(json.dumps(meta), encoding="utf-8")
+    return bundle
+
+
+def _upload_env(tmp_path: Path, **extra: str) -> dict[str, str]:
+    remote = tmp_path / "remote"
+    remote.mkdir(exist_ok=True)
+    return {
+        "FINAL": "1",
+        "HF_TOKEN": _FAKE_TOKEN,
+        "EXPECTED_TOKEN": _FAKE_TOKEN,
+        "FAKE_UV_REAL": "scan_bundle.py hub_upload.py",
+        "FAKE_HUB_DIR": str(remote),
+        **extra,
+    }
+
+
+def _hub_calls(tmp_path: Path) -> list[list]:
+    log = tmp_path / "remote" / "calls.jsonl"
+    if not log.exists():
+        return []
+    return [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+
+
+def test_upload_bundle_uploads_privately_and_fetches_back_byte_identical(tmp_path: Path) -> None:
+    pipe = _bundle_pipeline(tmp_path)
+    _scanned_bundle(pipe)
+    result = pipe.run("upload-bundle", "tool-jev", **_upload_env(tmp_path))
+    assert result.returncode == 0, result.stderr
+    assert "private=True" in result.stdout
+    assert "byte-identical" in result.stdout
+    assert _FAKE_TOKEN not in result.stdout + result.stderr
+    calls = _hub_calls(tmp_path)
+    assert [call[0] for call in calls] == [
+        "HfApi",
+        "create_repo",
+        "update_repo_visibility",
+        "upload_folder",
+        "snapshot_download",
+        "repo_info",
+    ]
+    assert calls[0] == ["HfApi", True]
+    assert calls[1][1] == _PREFIX + "tool-jev"
+    assert calls[1][2]["private"] is True
+    assert calls[2][2]["private"] is True
+    # hub_upload.py got the training stack's site-packages on PYTHONPATH
+    ((pythonpath, _),) = pipe.calls("hub_upload.py")
+    assert pythonpath.split(":")[0] == str(tmp_path / "fake-site")
+
+
+def test_upload_bundle_fails_loudly_on_a_changed_fetch_back(tmp_path: Path) -> None:
+    pipe = _bundle_pipeline(tmp_path)
+    _scanned_bundle(pipe)
+    env = _upload_env(tmp_path, FAKE_HUB_TAMPER="model.safetensors")
+    result = pipe.run("upload-bundle", "tool-jev", **env)
+    assert result.returncode != 0
+    assert "model.safetensors: sha256 differs" in result.stderr
+
+
+def test_upload_bundle_refuses_without_final(tmp_path: Path) -> None:
+    pipe = _bundle_pipeline(tmp_path)
+    _scanned_bundle(pipe)
+    result = pipe.run("upload-bundle", "tool-jev", **_upload_env(tmp_path, FINAL="0"))
+    assert result.returncode == 1
+    assert "FINAL=1" in result.stderr
+    assert _hub_calls(tmp_path) == []
+
+
+@pytest.mark.parametrize("suffix", ["../tool-jev", "Tool", "a/b", ""])
+def test_upload_bundle_refuses_a_bad_repo_suffix(tmp_path: Path, suffix: str) -> None:
+    pipe = _bundle_pipeline(tmp_path)
+    result = pipe.run("upload-bundle", suffix, **_upload_env(tmp_path))
+    assert result.returncode == 1
+    assert "repo suffix" in result.stderr or "upload-bundle <repo-suffix>" in result.stderr
+    assert _hub_calls(tmp_path) == []
+
+
+def test_upload_bundle_refuses_a_missing_bundle(tmp_path: Path) -> None:
+    pipe = _bundle_pipeline(tmp_path)
+    result = pipe.run("upload-bundle", "tool-jev", **_upload_env(tmp_path))
+    assert result.returncode == 1
+    assert "run bundle" in result.stderr
+
+
+def test_upload_bundle_refuses_a_bundle_changed_after_its_scan(tmp_path: Path) -> None:
+    pipe = _bundle_pipeline(tmp_path)
+    bundle = _scanned_bundle(pipe)
+    (bundle / "README.md").write_text("changed\n", encoding="utf-8")
+    result = pipe.run("upload-bundle", "tool-jev", **_upload_env(tmp_path))
+    assert result.returncode == 1
+    assert "scan_bundle.py verify" in result.stderr
+    assert _hub_calls(tmp_path) == []
+
+
+def test_upload_bundle_refuses_a_model_bundle_without_greedy_decoding(tmp_path: Path) -> None:
+    pipe = _bundle_pipeline(tmp_path)
+    bundle = _scanned_bundle(pipe)
+    (bundle / "generation_config.json").unlink()
+    scan_bundle = _load_scan_bundle()
+    scan_bundle.write_scan(bundle, scan_bundle._get_scan_secrets())  # noqa: SLF001
+    result = pipe.run("upload-bundle", "tool-jev", **_upload_env(tmp_path))
+    assert result.returncode == 1
+    assert "generation_config.json" in result.stderr
+    assert _hub_calls(tmp_path) == []
+
+
+def test_upload_bundle_of_a_gguf_needs_no_generation_config(tmp_path: Path) -> None:
+    pipe = _bundle_pipeline(tmp_path)
+    bundle = _scanned_bundle(pipe, suffix="tool-jev-gguf", kind="gguf")
+    (bundle / "generation_config.json").unlink()
+    scan_bundle = _load_scan_bundle()
+    scan_bundle.write_scan(bundle, scan_bundle._get_scan_secrets())  # noqa: SLF001
+    result = pipe.run("upload-bundle", "tool-jev-gguf", **_upload_env(tmp_path))
+    assert result.returncode == 0, result.stderr
+
+
+def test_upload_bundle_refuses_an_unset_token(tmp_path: Path) -> None:
+    pipe = _bundle_pipeline(tmp_path)
+    _scanned_bundle(pipe)
+    env = _upload_env(tmp_path)
+    del env["HF_TOKEN"]
+    pipe.env.pop("HF_TOKEN", None)
+    result = pipe.run("upload-bundle", "tool-jev", **env)
+    assert result.returncode == 1
+    assert "HF_TOKEN is not set" in result.stderr
+    assert _hub_calls(tmp_path) == []
+
+
+def test_upload_bundle_refuses_a_record_naming_another_repo(tmp_path: Path) -> None:
+    pipe = _bundle_pipeline(tmp_path)
+    _scanned_bundle(pipe)
+    meta_path = pipe.work / "bundles" / "tool-jev.json"
+    meta = json.loads(meta_path.read_text())
+    meta["repo"] = "jetson-ai-lab/lfm2.5-350m-nvsh-triage"
+    meta_path.write_text(json.dumps(meta))
+    result = pipe.run("upload-bundle", "tool-jev", **_upload_env(tmp_path))
+    assert result.returncode == 1
+    assert _hub_calls(tmp_path) == []
+
+
+def test_the_qwen_env_example_documents_teacher_models() -> None:
+    text = _QWEN_ENV.read_text(encoding="utf-8")
+    assert "\nTEACHER_MODELS=" in text
+    assert "\nBUNDLE_DATA_SUMMARY=" in text
+    assert "bundle-dataset" in text and "upload-bundle" in text
+
+
+def _safetensors_file(path: Path, names: list[str]) -> None:
+    import struct
+
+    header = {"__metadata__": {"format": "pt"}}
+    for index, name in enumerate(names):
+        header[name] = {"dtype": "BF16", "shape": [1], "data_offsets": [2 * index, 2 * index + 2]}
+    blob = json.dumps(header).encode()
+    path.write_bytes(struct.pack("<Q", len(blob)) + blob + b"\0\0" * len(names))
+
+
+def test_bundle_then_upload_bundle_end_to_end_with_the_real_scripts(tmp_path: Path) -> None:
+    """The real release_bundle.py and scan_bundle.py build a clean bf16 bundle
+    from a synthetic run; upload-bundle ships it to the fake hub, private."""
+    pipe = _bundle_pipeline(tmp_path)
+    (tmp_path / "teacher-models.json").write_text(
+        json.dumps(
+            {
+                "worker": {"name": "Qwen 3.6 35B-A3B", "licence": "Apache-2.0"},
+                "cortex": {"name": "Qwen 3.8 27B", "licence": "Apache-2.0"},
+                "senses": {"name": "Gemma 4 26B-A4B", "licence": "Apache-2.0"},
+            }
+        )
+    )
+    snapshot = tmp_path / "hf-cache" / "hub" / "models--Qwen--Qwen3.5-0.8B" / "snapshots"
+    snapshot = snapshot / _QWEN_BASE_REV
+    snapshot.mkdir(parents=True)
+    (snapshot / "LICENSE").write_text("Apache License\nVersion 2.0, January 2004\n")
+    (snapshot / "chat_template.jinja").write_text("T")
+    merged = _greedy_dir(pipe.work / "runs" / "a3-heal" / "merged")
+    (merged / "config.json").write_text(
+        json.dumps({"architectures": ["Qwen3_5ForCausalLM"], "mtp_num_hidden_layers": 1})
+    )
+    (merged / "chat_template.jinja").write_text("T")
+    _safetensors_file(merged / "model.safetensors", ["model.layers.0.w"])
+    (pipe.work / "aug").mkdir(parents=True)
+    (pipe.work / "aug" / "nvsh-accepted.jsonl").write_text(
+        json.dumps(
+            {
+                "id": "dev-a~v1",
+                "models": {
+                    "GENERATOR": "worker",
+                    "CORRECTOR": "cortex",
+                    "REVIEWER_A": "senses",
+                    "REVIEWER_B": "cortex",
+                },
+                "decided_by": "reviewer_b",
+                "verdicts": {"reviewer_a": {"accept": True}, "reviewer_b": {"accept": True}},
+            }
+        )
+        + "\n"
+    )
+    (pipe.work / "data").mkdir(parents=True)
+    (pipe.work / "data" / "train-augmented.json").write_text(
+        json.dumps({"entries": [{"id": "dev-a"}, {"id": "dev-a~v1"}]})
+    )
+    report = tmp_path / "final-a3-heal.md"
+    report.write_text(
+        "# Tier 2 measurement, 2026-09-24: final-a3-heal\n\n## Issue 46 metrics\n\n"
+        "| Metric | `a3-heal` |\n|---|---|\n| Right proposals (metrics.py) | 31 of 32 |\n"
+    )
+    real = {"FAKE_UV_REAL": "release_bundle.py scan_bundle.py hub_upload.py"}
+    result = pipe.run("bundle", "bf16", "a3-heal", "tool-jev", str(report), **real)
+    assert result.returncode == 0, result.stderr
+    bundle = pipe.work / "bundles" / "tool-jev"
+    assert json.loads((bundle / "scan.json").read_text())["clean"] is True
+    assert json.loads((bundle / "config.json").read_text())["mtp_num_hidden_layers"] == 0
+    assert json.loads((merged / "config.json").read_text())["mtp_num_hidden_layers"] == 1
+    card = (bundle / "README.md").read_text()
+    assert "| Right proposals (metrics.py) | 31 of 32 |" in card
+    assert "Gemma 4 26B-A4B" in card and "Nemotron" not in card
+
+    result = pipe.run("upload-bundle", "tool-jev", **_upload_env(tmp_path))
+    assert result.returncode == 0, result.stderr
+    assert "private=True" in result.stdout
+    assert (tmp_path / "remote" / (_PREFIX + "tool-jev") / "README.md").read_text() == card
