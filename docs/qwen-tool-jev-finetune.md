@@ -26,7 +26,7 @@ are CC-BY-4.0 and are used as a test set only; nothing trained on them is
 published here. Training happens on development machines. **nvsh itself
 never trains and never uploads.**
 
-## Where the run stands (2026-09-24, about 08h40)
+## Where the run stands (2026-09-24, about 09h00)
 
 This section is a handoff: exactly what is done, what is running, what is
 next, and the exact commands, so the run can be picked up cold.
@@ -42,63 +42,59 @@ next, and the exact commands, so the run can be picked up cold.
 - t21, the stock baseline on validation, done (generative and exact
   scorer). t18-t21 numbers are in [Reproduce it, steps
   5-9](#5-re-review-with-reviewer-b).
-- t22, Track A: `a1`, `a2`, `a3`, `a4` all trained, merged (verified,
-  lapse l4) and measured on validation. **Chosen: `a3`** (0 wrong mutating,
-  meets c33/c34 on validation; recipe committed in
+- **t22, Track A: done.** `a1`, `a2`, `a3`, `a4` all trained, merged
+  (verified, lapse l4) and measured on validation; `a3` also checked at 4K
+  (informational). **Chosen: `a3`** (0 wrong mutating, meets c33/c34 on
+  validation, holds up at 4K; recipe committed in
   `pipeline-qwen.env.example`). See [Reproduce it, step
   10](#10-train-track-a-on-spark-a1-a4-done-a3-chosen) and [Choosing a
   configuration on
   validation](#choosing-a-configuration-on-validation-track-a-and-track-b).
-- t23, Track B: `b1`, `b2`, `b3` trained, merged and measured (`b1`'s served
-  and exact scores, `b2`/`b3`'s exact/trainer-side scores). **Best so far:
-  `b1`** (3 epochs; `b2` at 5 epochs overfits, `b3` at 2 epochs
-  undertrains), recipe committed in `pipeline-qwen.env.example`. See
-  [Reproduce it, step
-  11](#11-train-track-b-on-spark2-b1-b3-done-b4-running-b1-so-far).
+- **t23, Track B: done.** `b1`, `b2`, `b3`, `b4` all trained, merged and
+  measured. **Chosen: `b1`** (3 epochs; wins the pre-registered rule on
+  abstention precision over `b4`, which ties on decisions but calibrates
+  better — reported as a separate finding, not a reason to switch; `b2` at
+  5 epochs overfits, `b3` at 2 epochs undertrains), recipe committed in
+  `pipeline-qwen.env.example`. See [Reproduce it, step
+  11](#11-train-track-b-on-spark2-b1-b4-done-b1-chosen).
 - Unused serving models on the training and measurement machines were
   stopped, with the operator's OK, to free GPU memory for training and
   measurement to run without an out-of-memory failure (ledger P64); they
   are restored once the run finishes.
 
-**Running.**
+**Running.** Nothing. Both tracks' recipe searches are closed; the next
+work is the single final run.
 
-- `b4` (`b1` with lr 1e-4, 3 epochs) is training on spark2. Not yet
-  measured.
+**Next, in order (see the run log's [~09:00
+entry](#2026-09-24-0900-t22-and-t23-both-close-out) for the full detail):**
 
-**Next, in order (see the run log's [~08:40
-entry](#2026-09-24-0840-a3-and-a4-done--track-a-picks-a3) for the full plan
-and commands):**
+1. **t24, the single final run:** stock, `a3` and `scorer-b1`, each
+   measured exactly once — `scorer-b1` both served and exact
+   (`--scorer served`/`--scorer in-process`, for d15) — on the test side,
+   the sealed held-out set and the missing-candidate slice, at 2K, on a
+   quiet machine (`measure-final <name>`); Track A's exact calibration on
+   the final side (`track_a_calibration.py --final`); Jetson skills once
+   for `a3` (and for `b1` if the skills harness can attach to a scorer by
+   then) at `MEASURE_CTX=8192`, judged against the d12 margin (stock 42 of
+   104 overall; floor about 37 of 104 overall, about 25 of 70 not-named).
+2. **t25:** `Q4_K_M` and AWQ of the chosen checkpoint(s); heal only if a
+   build loses more than 3 points of right proposals or adds a new
+   wrong-mutating id (c42, c43).
+3. **t26:** the edge check on AGX Orin.
+4. **t27:** a private upload, only after asking the operator.
+5. **t28:** the report and this guide's final pass.
+6. **t29:** `/validate-delivery`, `/summarize-delivery`, a version bump, and
+   the PR ("part of #46").
 
-1. Finish t22: measure `a3` at 4K on validation
-   (`export MEASURE_CTX=4096; $P --env qwen.env measure-val a3`); Track A's
-   exact calibration on validation if useful (`track_a_calibration.py`, d6).
-2. Finish t23: measure `b4` served and exact
-   (`$P --env spark2.env measure-val b4 --scorer served|in-process`); pick
-   Track B's final recipe.
-3. t24, the single final run: stock, `a3` and the chosen Track B checkpoint,
-   each measured exactly once, on the test side, the sealed held-out set
-   and the missing-candidate slice, at 2K, on a quiet machine
-   (`measure-final <name>`, Track B also `--scorer in-process` for d15);
-   Track A's exact calibration on the final side
-   (`track_a_calibration.py --final`); Jetson skills once per tuned
-   checkpoint at `MEASURE_CTX=8192` against the d12 margin (stock 42 of
-   104; floor about 37 of 104 overall, about 25 of 70 not-named).
-4. t25: `Q4_K_M` and AWQ of the chosen checkpoint(s); heal only if a build
-   loses more than 3 points of right proposals or adds a new wrong-mutating
-   id (c42, c43).
-5. t26: the edge check on AGX Orin.
-6. t27: a private upload, only after asking the operator.
-7. t28: the report and this guide's final pass.
-8. t29: `/validate-delivery`, `/summarize-delivery`, a version bump, and the
-   PR ("part of #46").
-
-**Obstacles hit along the way** are recorded as ledger entries P56-P64 and
-lapse l4 under [Pitfalls hit, and the fix for each](#pitfalls-hit-and-the-fix-for-each):
+**Obstacles hit along the way** are recorded as ledger entries P56-P66 and
+lapses l4/l5 under [Pitfalls hit, and the fix for each](#pitfalls-hit-and-the-fix-for-each):
 a leakage-check keying bug, Track B training on the wrong (unfrozen,
 un-augmented) file, Track A's first merges scoring bit-identical to the
-untuned base because the merge loaded the wrong model class (lapse l4), and
-a GPU-memory-vs-page-cache measurement hazard on unified memory (P64). See
-also [Choosing a configuration on
+untuned base because the merge loaded the wrong model class (lapse l4), a
+GPU-memory-vs-page-cache measurement hazard on unified memory (P64), a
+related but distinct Mamba-cache sizing failure at 4K (P65), and a Track B
+scorer measured without `--scorer` scoring as a broken generative model
+instead of refusing (lapse l5, P66). See also [Choosing a configuration on
 validation](#choosing-a-configuration-on-validation-track-a-and-track-b)
 for how each recipe was picked, and
 [Troubleshooting](#troubleshooting-symptoms-and-causes) for what each
@@ -822,7 +818,7 @@ $P --env qwen.env measure-val stock --scorer in-process
 21 of 32 right proposals, abstain recall 1 of 16, precision (strict) 100%,
 false-positive tool calls 31 of 34, ECE 0.164, Brier 0.765, warm 81 ms. This
 is the "stock (exact scorer)" row in the validation table under [Where the
-run stands](#where-the-run-stands-2026-09-24-about-08h40) and repeated in the
+run stands](#where-the-run-stands-2026-09-24-about-09h00) and repeated in the
 [run log](#2026-09-24-0530-0720-t22t23-first-runs-three-pipeline-bugs-lapse-l4).
 
 **A dead server fails the run** (P49). Before the first entry, `measure.py`
@@ -951,7 +947,7 @@ class correctly but wrote doubled key prefixes
 latency comparison between them (see [Not verified
 yet](#not-verified-yet)).
 
-### 11. Train Track B on spark2 (b1-b3 done; b4 running; b1 so far)
+### 11. Train Track B on spark2 (b1-b4 done; b1 chosen)
 
 spark2 needs its own env file: its own work-directory paths, its own private
 `HF_HOME` (step 1: the shared cache is root-owned), `HF_HUB_OFFLINE=1`, and
@@ -1023,12 +1019,30 @@ validation 52 of 66 (78.8%), mean confidence 0.83 — both lower than `b1`'s
 overfitting and `b3` (2 epochs) undertraining, 3 epochs (`b1`) is Track B's
 best epoch count so far.
 
-Track B selection so far: **`b1`**, committed as the default
+**`b4` = `b1` with lr 1e-4: same decisions as `b1`, better calibration, but
+loses on the pre-registered rule.** 1,522 s to train, 2.83 GB peak memory,
+revision `2f1ed0f6...`. Served: 28 of 32 right proposals, abstain recall 12
+of 16, precision 85.7%, false-positive tool calls 0 of 34, 0 wrong
+mutating, 4 not grounded, warm 24 ms. Exact in-process scoring gives the
+*same decisions* as the served run, with ECE 0.072 and Brier 0.132 (against
+`b1`'s exact ECE 0.097, Brier 0.162, precision 92.3% — `b4` calibrates
+better). Against the selection rule fixed before any of these runs (0 wrong
+mutating, then abstention, then right proposals): the two tie on wrong
+mutating (0 each) and are close on right proposals, but `b1` leads on
+abstention precision by one entry (92.3% vs 85.7%) — **`b1` wins on the
+rule as written.** To be plain about it: the rule was not moved after
+seeing `b4`'s better calibration; that is reported here as a separate
+finding, not used to override the pre-registered order — **a lower
+learning rate gave better calibration at essentially the same decisions**,
+which is worth knowing even though it didn't change which checkpoint
+Track B ships.
+
+**t23 decision: Track B = `b1`.** Chosen for the pre-registered reasons
+above; `b4`'s calibration finding is recorded for later but is not itself a
+reason to switch. `b1`'s recipe is committed as the default
 `TRAIN_SCORER_ARGS` in
 [`pipeline-qwen.env.example`](../scripts/lfm-finetune/pipeline-qwen.env.example):
-`--epochs 3 --lr 2e-4 --rank 16 --alpha 32 --batch 8 --seed 46`. `b4` = `b1`
-with lr 1e-4 (3 epochs) is training next on spark2; it has not been measured
-yet.
+`--epochs 3 --lr 2e-4 --rank 16 --alpha 32 --batch 8 --seed 46`.
 
 **Freeing memory for training and measurement.** Once the training data was
 frozen (t19, step 7), no serving model already running on the training or
@@ -1060,6 +1074,20 @@ in-process` (exact calibration, since the served scorer cannot return a
 complete label distribution — d15) under separate labels; both are needed
 for the full picture on one checkpoint. If the watchdog trips, `run_capped`
 returns 3 and `mem.log` records why.
+
+**Moving a checkpoint between the two training machines.** t24's single
+final run needs both tracks' chosen checkpoints reachable from wherever it
+runs, which can mean copying a merged model from one training machine to
+the other. A direct point-to-point link between the two machines' own
+network interfaces (no switch, no VPN hop) copied a 1.5 GB merged model in
+about 2 seconds; the same copy over the machines' usual Wi-Fi/VPN path took
+about 88 seconds — roughly 44x slower. If both machines have a spare
+high-speed network interface, a direct cable between them on its own
+static, point-to-point subnet, added as a route with a low priority and
+never set as the default route, moves large checkpoints fast without
+disturbing either machine's existing internet or mesh routing. No
+hostnames or addresses are recorded here since they are specific to this
+pair of machines, not to reproducing the run.
 
 ### Choosing a configuration on validation (Track A and Track B)
 
@@ -1101,7 +1129,7 @@ as what was limiting `a2`.
 | `b1` | baseline: all-linear LoRA, 3 epochs | 90.9% | 0.957 | baseline — **best so far** |
 | `b2` | `b1` + 5 epochs (3 → 5) | 84.8% | 0.947 | worse: **overfits** — accuracy and abstain recall (7/16 on the harness) drop while confidence barely moves |
 | `b3` | `b1` with 2 epochs (3 → 2) | 78.8% | 0.83 | worse the other way: **underfits** — both accuracy and confidence drop together |
-| `b4` | `b1` with lr 1e-4 (2e-4 → 1e-4), 3 epochs | *(training)* | *(training)* | pending |
+| `b4` | `b1` with lr 1e-4 (2e-4 → 1e-4), 3 epochs | — (measured only on the harness) | — | same decisions as `b1` on validation, better calibration (exact ECE 0.072 vs 0.097, Brier 0.132 vs 0.162), but abstention precision one entry lower (85.7% vs 92.3%) — loses on the pre-registered rule; **not chosen**, but recorded as a finding: lower lr helped calibration without changing the decisions |
 
 **Reading over-fit versus under-fit from these numbers:** Track B's
 scorer reports its own mean confidence alongside its trainer-side
@@ -1130,6 +1158,26 @@ signal that actually matters is the *validation*-side numbers: the
 trainer's own validation accuracy and (for Track B) mean confidence during
 training, and then the full harness metrics (abstention, wrong mutating,
 ECE, Brier) after merging — never the training loss alone.
+
+**A rule fixed before looking still decides ties, even against a result you
+would have preferred (`b4`).** `b4` scored the *same decisions* as `b1` but
+with visibly better calibration; the honest way to report that is as a
+separate finding about learning rate, not as grounds to move the
+already-fixed selection rule after seeing the result. `b1` still wins
+Track B on the rule as written (abstention precision, by one entry). Had
+the rule not been fixed beforehand, this is exactly the kind of comparison
+where it would be tempting to rationalize a switch after the fact — fixing
+the rule first is what prevents that.
+
+**t22's optional check: does the chosen Track A recipe hold at a longer
+context?** `a3` was also measured at 4K (`MEASURE_GPU_FRACTION=0.12`, to
+avoid P65's Mamba-cache shortfall): 29 of 32 right proposals, abstain
+recall 14 of 16, 0 wrong mutating, explain 18 of 18, warm 440-653 ms —
+close to `a3`'s own 2K numbers (31/32, 14/16, 0 wrong mutating) and still 0
+wrong mutating at both contexts. The final run stays at 2K per the original
+plan; the 4K numbers are informational, confirming `a3`'s behaviour does
+not fall apart at a longer context rather than changing which checkpoint is
+used.
 
 ### 12. Final measurement *(not yet run)*
 
@@ -1903,6 +1951,20 @@ committed now (`3df700c`).
   complete log on a failed start-up instead of only the tail; the pipeline
   passes `$WORK/measure/<label>.serve.log`. *Commit:* `6f65887`, merged in
   `45c5ae8`.
+- **P66 (lapse l5). A Track B scorer measured without `--scorer` scores as
+  a broken generative model, not as a scorer.** A `measure-val` call against
+  a Track B run, made without `--scorer served` or `--scorer in-process`,
+  ran the checkpoint as a generative tool-caller instead: 0 of 32 right
+  proposals and about 100 generated tokens per decision, where a scorer
+  should generate 0 (it only reads label log-probabilities). *Found:* the
+  lead, reading a result that looked like an untrained checkpoint on a
+  model that had trained and merged cleanly. *Cause:* nothing distinguished
+  a scorer run from a generative one at measurement time, so leaving out
+  `--scorer` silently measured the wrong thing rather than refusing.
+  *Fix:* `measure-val`/`measure-final` now check whether
+  `runs/<name>/train-log.json` carries `train_scorer.py`'s own training
+  objective, and refuse with a hint if so and no `--scorer` mode was given.
+  *Commit:* `d39c5e3`.
 
 ## Troubleshooting: symptoms and causes
 
@@ -1915,10 +1977,12 @@ above.
 | You see | Cause | Fix | Ledger |
 |---|---|---|---|
 | A served Track B measurement exits 2 with every metric "not measured" and no reason given | The repo's own `uv` environment has no `transformers`, and the tokenizer was being loaded from the served model *name* instead of the model directory | Put the training venv's site-packages on `PYTHONPATH` for any `--scorer` run and pass `--tokenizer <model dir>` (step 11) | P61 |
+| A Track B scorer measures at 0 of 32 right proposals with about 100 generated tokens per decision, on a checkpoint that trained and merged cleanly | The measurement left out `--scorer served`/`--scorer in-process`, so the checkpoint ran as a generative tool-caller instead of as a scorer (a scorer should generate 0 tokens) | Always pass `--scorer served` or `--scorer in-process` for a Track B run; `measure-val`/`measure-final` now refuse and hint instead of silently measuring the wrong thing | lapse l5, P66 |
 | A tuned checkpoint scores exactly like stock — 0/32 right proposals, identical latency, as if nothing had been trained | The merge loaded a different model class than unsloth trained, so PEFT matched no adapter key and only printed a warning ("Found missing adapter keys"), not an error; the merged file is bit-identical to the base | Before trusting any merge, diff a merged weight against the base and confirm it changed, and confirm 0 missing-key warnings; `train.py`'s merge now refuses to finish otherwise | lapse l4, P62 |
 | vLLM refuses to load a merged checkpoint: `There is no module or parameter named 'language_model' in Qwen3_5Model` | An earlier merge attempt saved into the vision-language class with doubled key prefixes (`model.language_model.language_model.*`) that vLLM's loader rejects | Merge into the text-only class with the adapter keys mapped onto its parameter names instead (f24) | P62 |
 | A measurement server fails to start ("Engine core initialization failed") or dies mid-run (a `tier_error`, "server unreachable") while something else is training | A GPU allocation failed on unified memory: training sinks *free* memory to a few GiB even while *available* stays high (page cache), and GB10 does not evict page cache to satisfy a GPU allocation the way it would evict it for ordinary RAM pressure | Measure only when nothing is training on that machine's GPU; check what else holds GPU memory (`nvidia-smi --query-compute-apps`) and stop anything unused first | P63, P64 |
 | A 4K measurement also fails to start with "Engine core initialization failed", but the *full* serve log ends with `ValueError: max_num_seqs (256) exceeds available Mamba cache blocks (254)` rather than an `NV_ERR_NO_MEMORY` line | Not memory pressure from another process: at 4K, the default `MEASURE_GPU_FRACTION` leaves too little room for the KV/Mamba cache to cover the default `max_num_seqs`, since each Gated-DeltaNet decode sequence needs one Mamba cache block | Read the full serve log's own root-cause line to tell this apart from P64 at a glance; raise `MEASURE_GPU_FRACTION` (about 0.12 for a 4K run) in a per-run env file — an exported value alone is not enough, since only `MEASURE_CTX` is export-first | P65 |
+| Every prediction in a run comes back a `tier_error` ("server unreachable mid-run"), right after the server itself reported ready | Not P64/P65's GPU cache pattern: the run overlapped a host network reconfiguration on the measurement machine, which briefly took the server's own network path down from under it | Re-run on a quiet host once the network change has settled; check for this before assuming a GPU-memory cause | (environment condition, not a code bug) |
 | Training crashes with `TypeError: string indices must be integers` (or similar) inside `apply_chat_template` | `FastLanguageModel.from_pretrained` returns a processor (`Qwen3VLProcessor`), not a plain tokenizer, for Qwen3.5; its chat template expects structured content, not the plain strings the dataset builder renders | Reach the processor's inner `.tokenizer` for rendering and encoding instead of the processor itself (f21, `text_tokenizer()`) | P60 |
 | A run recorded as "measured at 4K" actually served at `--max-model-len 2048` (visible in the server's own record) | A value set in the sourced env file silently overrode an exported shell variable of the same name | Export the variable and confirm the served model's reported `max_model_len` matches `--ctx` before trusting a result; the preflight now refuses a mismatch outright | lapse l3, P54 |
 | A served Track B scorer reports ECE/Brier as not available, with 0 lines carrying a complete label distribution | The other candidate labels' logprobs fell outside vLLM's returned top-k, so the result is marked incomplete and is never renormalised over a partial set | Score calibration with `--scorer in-process` instead of `--scorer served` (the two still agree on the actual decisions) | r8, d15 |
@@ -2552,20 +2616,28 @@ failures after the f10 merge.
 | `a1` | 32/32 | 12/16 (75%) | 100% | 3/34 | 2 | 18/18 | 420 ms |
 | `a2` | 32/32 | 13/16 (81%) | 100% | 2/34 | 1 | 18/18 | 419 ms |
 | `a3` (chosen, t22) | 31/32 | 14/16 (87.5%) | 100% | 1/34 | **0** | 18/18 | 400 ms |
+| `a3` at 4K (informational; final stays at 2K) | 29/32 | 14/16 (87.5%) | 100% | — | **0** | 18/18 | 440-653 ms |
 | `a4` | 32/32 | 12/16 (75%) | 100% | 3/34 | 1 | 17/18 | 476 ms |
-| `b1` (served / exact) | 28/32 (4 not grounded) | 12/16 (75%) | 92.3% | 0/34 | 0 | — | 76 ms served; exact ECE 0.097, Brier 0.162 |
+| `b1` (served / exact — **chosen, t23**) | 28/32 (4 not grounded) | 12/16 (75%) | 92.3% | 0/34 | 0 | — | 76 ms served; exact ECE 0.097, Brier 0.162 |
 | `b2` (exact, in-process only — served run lost its server mid-run) | 30/32 (7 invalid, not grounded) | 7/16 (43.8%) | 100% | 2/34 | 1 | — | 164 ms in-process; ECE 0.106, Brier 0.217 |
-| `b3` (trainer's own validation only: 52/66, confidence 0.83 — not yet harness-measured) | — | — | — | — | — | — | — |
+| `b3` (trainer's own validation only: 52/66, confidence 0.83 — not harness-measured) | — | — | — | — | — | — | — |
+| `b4` (served / exact — better calibration, not chosen) | 28/32 (4 not grounded) | 12/16 (75%) | 85.7% | 0/34 | 0 | — | 24 ms served; exact ECE 0.072, Brier 0.132 |
 
 `b2` is worse than `b1` on every axis (abstain recall, ECE, Brier, trainer
 validation and loss): 5 epochs overfits Track B; `b3`'s trainer-side numbers
-show the opposite failure, undertraining at 2 epochs. Track B selection
-stays `b1`; `b4` (lr 1e-4, 3 epochs) is training next.
+show the opposite failure, undertraining at 2 epochs. `b4` ties `b1` on
+decisions and wrong mutating but loses on abstention precision by one
+entry (85.7% vs 92.3%), so **Track B is `b1`** (t23 decision) — reported
+plainly: the pre-registered rule was not moved after seeing `b4`'s better
+calibration, which is recorded as a separate finding (lower lr, same
+decisions, better calibration).
 
 `a3` is the only Track A run with 0 wrong mutating proposals and is chosen
 (t22): rank 32 (`a4`) did not help over rank 16, but 5 epochs (`a3`) did
 over 3 (`a2`) — one more piece of evidence that epoch count, not adapter
-capacity, was the limit here. See [Choosing a configuration on
+capacity, was the limit here. `a3` was also checked at 4K and stayed at 0
+wrong mutating with close to the same other numbers; the final run still
+uses 2K, per plan. See [Choosing a configuration on
 validation](#choosing-a-configuration-on-validation-track-a-and-track-b)
 for the full comparison table and the reasoning between runs.
 
@@ -2735,3 +2807,46 @@ now committed as the default `TRAIN_ARGS`/`TRAIN_SCORER_ARGS` in
 7. **t28:** the report and this guide's final pass.
 8. **t29:** `/validate-delivery`, `/summarize-delivery`, a version bump, and
    the PR ("part of #46").
+
+### 2026-09-24 ~09:00: t22 and t23 both close out
+
+**t23 (Track B) closes: `b1` chosen.** `b4` (`b1` with lr 1e-4, 3 epochs)
+finished: 1,522 s to train, 2.83 GB peak memory, revision `2f1ed0f6...`.
+Served: 28 of 32 right proposals, abstain recall 12 of 16, precision 85.7%,
+false-positive tool calls 0 of 34, 0 wrong mutating, 4 not grounded, warm
+24 ms. Exact in-process scoring agrees with the served run's decisions and
+gives ECE 0.072, Brier 0.132 (against `b1`'s exact ECE 0.097, Brier 0.162,
+precision 92.3%). Against the rule fixed before any run (0 wrong mutating,
+then abstention, then right proposals), `b1` and `b4` tie on wrong mutating
+and are close on right proposals, but `b1` leads on abstention precision by
+one entry — `b1` wins. Reported plainly: the rule was **not** moved after
+seeing `b4`'s better calibration; that is a separate finding (a lower
+learning rate gave better calibration at essentially the same decisions),
+not a reason to switch checkpoints.
+
+**t22 (Track A) gets an optional 4K check.** `a3` was re-measured at 4K
+context (`MEASURE_GPU_FRACTION=0.12`, per P65, to avoid the Mamba-cache
+start-up failure): 29 of 32 right proposals, abstain recall 14 of 16, 0
+wrong mutating, explain 18 of 18, warm 440-653 ms — close to `a3`'s 2K
+numbers (31/32, 14/16, 0 wrong mutating) and still 0 wrong mutating at
+both. The final run stays at 2K, per the original plan; this was a check
+that `a3` holds up at a longer context, not a change of plan.
+
+**Ledger.** P66 (lapse l5): a Track B scorer measured without `--scorer`
+scores as a broken generative model (0 of 32, about 100 generated tokens
+per decision) instead of refusing outright; `measure-val`/`measure-final`
+now refuse a scorer run with a hint if no `--scorer` mode is given
+(`d39c5e3`). Two more troubleshooting entries recorded without new ledger
+ids: every prediction in a run coming back `tier_error` right after the
+server reported ready, caused by a host network reconfiguration overlapping
+the run rather than a GPU-memory cause (re-run once the network settles);
+and a practical tip for moving a merged checkpoint between the two training
+machines quickly over a direct, non-default point-to-point link when one is
+available (see [step 11](#11-train-track-b-on-spark2-b1-b4-done-b1-chosen)).
+
+**t24 is next:** stock, `a3` and `scorer-b1`, each measured exactly once —
+served and exact for `scorer-b1` — on the test side, the sealed held-out
+set and the missing-candidate slice, at 2K; Jetson skills at
+`MEASURE_CTX=8192` for `a3` and for `b1` if the skills harness can attach
+to a scorer by then; `track_a_calibration.py --final` for Track A's exact
+calibration on the final side.
