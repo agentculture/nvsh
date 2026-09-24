@@ -6,6 +6,8 @@ import importlib.util
 import json
 from pathlib import Path
 
+import pytest
+
 _SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "lfm-finetune" / "scan_bundle.py"
 
 
@@ -220,17 +222,67 @@ def test_non_utf8_file_is_an_unscanned_binary_finding(tmp_path):
     assert module_result == 1
 
 
-def test_expected_binary_extensions_are_listed_not_flagged(tmp_path):
-    """*.safetensors / *.gguf / *.bin are expected binaries: listed under scan.json's
-    'binaries' key, never reported as findings and never as unscanned_binary."""
+def _safetensors(header: dict, data: bytes = b"\x00\x01") -> bytes:
+    """A well-formed safetensors file: 8-byte LE header length, JSON header, data."""
+    raw = json.dumps(header).encode("utf-8")
+    return len(raw).to_bytes(8, "little") + raw + data
+
+
+def test_weight_files_that_prove_their_format_are_listed_not_flagged(tmp_path):
+    """A real *.safetensors header / *.gguf magic makes a file an expected binary:
+    listed under scan.json's 'binaries' key, never reported as a finding."""
     module = _module()
-    (tmp_path / "model.safetensors").write_bytes(b"\x00\x01\x02\x03")
-    (tmp_path / "adapter.gguf").write_bytes(b"\x00\x01\x02\x03")
-    (tmp_path / "weights.bin").write_bytes(b"\x00\x01\x02\x03")
+    (tmp_path / "model.safetensors").write_bytes(_safetensors({"__metadata__": {"format": "pt"}}))
+    (tmp_path / "adapter.gguf").write_bytes(b"GGUF\x03\x00\x00\x00")
     _write_file(tmp_path, "readme.txt", "harmless\n")
     findings = module.scan_folder(tmp_path, _load_scan_secrets())
     assert findings == []
     payload = module.write_scan(tmp_path, _load_scan_secrets())
     assert payload["clean"] is True
-    assert payload["binaries"] == ["adapter.gguf", "model.safetensors", "weights.bin"]
+    assert payload["binaries"] == ["adapter.gguf", "model.safetensors"]
     assert module.main(["scan", str(tmp_path)]) == 0
+
+
+@pytest.mark.parametrize(
+    ("name", "content"),
+    [
+        ("model.safetensors", b"\x00\x01\x02\x03"),
+        ("model.safetensors", (2).to_bytes(8, "little") + b"[]"),
+        ("model.safetensors", (1 << 40).to_bytes(8, "little") + b"{}"),
+        ("adapter.gguf", b"\x00\x01\x02\x03"),
+    ],
+)
+def test_a_weight_file_without_its_format_is_unrecognised(tmp_path, name, content):
+    """PR #52 review: the extension alone no longer exempts a file from the scan."""
+    module = _module()
+    (tmp_path / name).write_bytes(content)
+    findings = module.scan_folder(tmp_path, _load_scan_secrets())
+    assert [(f["path"], f["kind"]) for f in findings] == [(name, "unrecognised_binary")]
+    assert module.main(["scan", str(tmp_path)]) == 1
+
+
+def test_a_token_in_safetensors_metadata_is_found(tmp_path):
+    module = _module()
+    header = {"__metadata__": {"note": "hf_abcdefghijklmnopqrstuvwxyz0123456789"}}
+    (tmp_path / "model.safetensors").write_bytes(_safetensors(header))
+    findings = module.scan_folder(tmp_path, _load_scan_secrets())
+    assert any(f["kind"] == "redact" and f["detail"] == "hf_token" for f in findings)
+    assert all(f["path"] == "model.safetensors" for f in findings)
+
+
+def test_a_bin_file_is_scanned_like_any_other_file(tmp_path):
+    """*.bin is no longer an expected binary: a text file misnamed .bin is scanned
+    as text, and a pickled training_args.bin (which can hold hub_token) is an
+    unscanned_binary finding, so neither passes verify unseen."""
+    module = _module()
+    _write_file(tmp_path, "notes.bin", "token hf_abcdefghijklmnopqrstuvwxyz0123456789\n")
+    (tmp_path / "training_args.bin").write_bytes(b"PK\x03\x04\x80\x02\xff\xfe")
+    findings = module.scan_folder(tmp_path, _load_scan_secrets())
+    assert any(f["path"] == "notes.bin" and f["detail"] == "hf_token" for f in findings)
+    assert {
+        "path": "training_args.bin",
+        "line": 0,
+        "kind": "unscanned_binary",
+        "detail": "non-UTF-8 file",
+    } in findings
+    assert module.write_scan(tmp_path, _load_scan_secrets())["binaries"] == []

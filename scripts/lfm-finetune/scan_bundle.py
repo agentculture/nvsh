@@ -6,10 +6,15 @@ and anything else ``nvsh.redact`` would redact, producing a ``scan.json``
 that downstream CI and the stage-cache script can verify to be clean.
 ``.json``/``.jsonl`` files are also parsed and every decoded string value is
 scanned recursively, so an escape sequence hiding a credential from the raw
-byte scan does not slip through. Expected model-weight binaries
-(``*.safetensors``, ``*.gguf``, ``*.bin``) are listed under ``scan.json``'s
-``binaries`` key instead of being scanned; any other file that is not valid
-UTF-8 is reported as an ``unscanned_binary`` finding rather than skipped.
+byte scan does not slip through. Model-weight binaries (``*.safetensors``,
+``*.gguf``) are listed under ``scan.json``'s ``binaries`` key instead of being
+decoded as text, but only once their contents prove the format: a safetensors
+file needs a valid JSON header (whose string values are scanned like any JSON
+file's), a GGUF file the ``GGUF`` magic; either one without it is an
+``unrecognised_binary`` finding. Any other file that is not valid UTF-8 --
+``*.bin`` included, since a torch pickle such as ``training_args.bin`` can hold
+a Hub token -- is reported as an ``unscanned_binary`` finding rather than
+skipped.
 
     python scripts/lfm-finetune/scan_bundle.py scan <folder>
     python scripts/lfm-finetune/scan_bundle.py verify <folder>
@@ -22,6 +27,7 @@ import importlib.util
 import ipaddress
 import json
 import re
+import struct
 import sys
 from pathlib import Path
 
@@ -86,8 +92,61 @@ _PRIVATE_NAME_RE = re.compile(
 _CGNAT = ipaddress.ip_network("100.64.0.0/10")
 
 #: Model weight files are expected binaries: listed under scan.json's ``binaries``
-#: key rather than scanned for text-shaped findings or flagged as unreadable.
-_EXPECTED_BINARY_EXTS = {".safetensors", ".gguf", ".bin"}
+#: key rather than decoded as text -- once their contents prove the format
+#: (``_recognised_binary``), not by name alone (PR #52 review). ``.bin`` is not
+#: one: a torch pickle of weights cannot be told from one of training state.
+_EXPECTED_BINARY_EXTS = {".safetensors", ".gguf"}
+
+_GGUF_MAGIC = b"GGUF"
+
+#: The safetensors format caps its JSON header at 100 MB.
+_SAFETENSORS_MAX_HEADER = 100 * 1024 * 1024
+
+
+def _safetensors_header(path: Path) -> dict | None:
+    """The decoded JSON header of a well-formed safetensors file, else ``None``.
+
+    The format is an 8-byte little-endian header length, then that many bytes
+    of UTF-8 JSON (an object), then the tensor data."""
+    try:
+        with open(path, "rb") as handle:
+            prefix = handle.read(8)
+            if len(prefix) != 8:
+                return None
+            (size,) = struct.unpack("<Q", prefix)
+            if size > min(_SAFETENSORS_MAX_HEADER, path.stat().st_size - 8):
+                return None
+            header = json.loads(handle.read(size).decode("utf-8"))
+    except (OSError, UnicodeDecodeError, ValueError):
+        return None
+    return header if isinstance(header, dict) else None
+
+
+def _has_gguf_magic(path: Path) -> bool:
+    try:
+        with open(path, "rb") as handle:
+            return handle.read(len(_GGUF_MAGIC)) == _GGUF_MAGIC
+    except OSError:
+        return False
+
+
+def _scan_weight_file(rel: str, path: Path, scan_secrets: object) -> list[dict]:
+    """Findings for a ``*.safetensors`` / ``*.gguf`` file: one ``unrecognised_binary``
+    when its contents are not that format, else (safetensors) whatever its header's
+    string values hold -- ``__metadata__`` is free-form text."""
+    if path.suffix.lower() == ".gguf":
+        if _has_gguf_magic(path):
+            return []
+        detail = "named .gguf but has no GGUF magic"
+        return [{"path": rel, "line": 0, "kind": "unrecognised_binary", "detail": detail}]
+    header = _safetensors_header(path)
+    if header is None:
+        detail = "named .safetensors but has no valid safetensors header"
+        return [{"path": rel, "line": 0, "kind": "unrecognised_binary", "detail": detail}]
+    findings: list[dict] = []
+    for fragment in _iter_json_strings(header):
+        findings.extend(_scan_fragment(rel, 0, fragment, scan_secrets))
+    return findings
 
 
 def private_hosts(text: str) -> list[tuple[int, str]]:
@@ -196,11 +255,11 @@ def list_binaries(folder: Path) -> list[str]:
 def scan_folder(folder: Path, scan_secrets: object) -> list[dict]:
     """Return one finding dict per credential / endpoint / redact issue.
 
-    Scans UTF-8 decodable regular files, skipping ``scan.json`` and the expected
-    weight-file binaries (see ``list_binaries``). A file that is neither of
-    those but still fails UTF-8 decoding is reported as an ``unscanned_binary``
-    finding instead of being silently skipped, so an unexpected binary upload
-    stays visible.
+    Scans UTF-8 decodable regular files, skipping ``scan.json``. Weight files
+    (see ``list_binaries``) are checked by content instead (``_scan_weight_file``).
+    Any other file that fails UTF-8 decoding is reported as an
+    ``unscanned_binary`` finding instead of being silently skipped, so an
+    unexpected binary upload stays visible.
 
     Each dict has keys: ``path``, ``line``, ``kind``, ``detail`` — all
     ``path`` values are relative to *folder* as POSIX strings.
@@ -214,6 +273,7 @@ def scan_folder(folder: Path, scan_secrets: object) -> list[dict]:
         if rel == "scan.json":
             continue
         if path.suffix.lower() in _EXPECTED_BINARY_EXTS:
+            findings.extend(_scan_weight_file(rel, path, scan_secrets))
             continue
 
         try:

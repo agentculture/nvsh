@@ -1183,6 +1183,11 @@ def _process_variation(
         "reasoning_efforts": reasoning_efforts,
     }
     record.update(seed.corpus_fields)
+    if seed.seed_format == "skills":
+        # The capability description the reviewers judged against, so a
+        # --rereview can rebuild the same prompt (the record's own text is
+        # the request, not the description).
+        record["description"] = seed.seed_text
     if decide_by != "both":
         # Every verdict is kept when one reviewer is not deciding, so the
         # overruled opinion stays auditable on accepted records too.
@@ -1298,16 +1303,30 @@ def _seed_from_stored_record(record: dict[str, Any]) -> Seed:
     """Rebuild enough of a :class:`Seed` from a stored accepted/rejected
     record to build :func:`reviewer_prompt` again. The generator and
     corrector are never re-run -- the record's own ``text`` (already
-    generated and corrected) is reused as the request under review."""
+    generated and corrected) is reused as the request under review.
+
+    A skills record's reviewer prompt needs the capability description, not
+    the request: it comes from the record's stored ``description``, and a
+    skills record written before that field existed is refused (a
+    ``ValueError``, counted as an error) rather than reviewed against its own
+    text (PR #52 review)."""
     expect = record["expect"]
     seed_format = record.get("seed_format", "split")
     corpus_fields = {key: record[key] for key in ("kind", "source", "class") if key in record}
     needs_change_check = seed_format != "skills" and _needs_change_check(expect)
+    seed_text = record.get("text", "")
+    if seed_format == "skills":
+        seed_text = record.get("description")
+        if not isinstance(seed_text, str) or not seed_text:
+            raise ValueError(
+                "skills record has no stored capability description; generate it"
+                " again with this augment.py rather than re-reviewing it"
+            )
     return Seed(
         source_id=str(record.get("source_id", record.get("id", ""))),
         seed_format=seed_format,
         side=record.get("side"),
-        seed_text=record.get("text", ""),
+        seed_text=seed_text,
         expect=expect,
         needs_change_check=needs_change_check,
         corpus_fields=corpus_fields,

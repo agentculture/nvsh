@@ -526,6 +526,8 @@ def test_tools_json_seed_mode(tmp_path, monkeypatch, fake_server):
     assert "kind" not in record
     assert record["expect"] == {"skill": "jetson-diagnostic"}
     assert record["id"] == "jetson-diagnostic~v1"
+    # Stored so --rereview can rebuild the reviewer prompt (PR #52 review).
+    assert record["description"].startswith("Diagnose common Jetson boot")
     assert "Diagnose common Jetson boot" in seen_prompts["generator_user"]
 
 
@@ -1963,6 +1965,62 @@ def test_rereview_calls_only_reviewer_b_and_reuses_stored_text(tmp_path) -> None
     assert record["verdicts"]["reviewer_b"]["accept"] is True
     assert record["prior_verdicts"]["reviewer_a"] == {"accept": True, "reason": "matches"}
     assert not rejected_out.exists()
+
+
+def _stored_skill_candidate(**extra: Any) -> dict[str, Any]:
+    record = _stored_candidate(
+        record_id="jetson-diagnostic~v1",
+        source_id="jetson-diagnostic",
+        seed_format="skills",
+        text="Give me a health check of this Jetson",
+        expect={"skill": "jetson-diagnostic"},
+        no_verdicts=True,
+        **extra,
+    )
+    for key in ("kind", "source"):  # a skill seed is not a corpus entry
+        record.pop(key)
+    return record
+
+
+def test_rereview_of_a_skills_record_describes_the_capability_not_the_request(
+    tmp_path,
+) -> None:
+    """PR #52 review: the Description line carried the request itself."""
+    record = _stored_skill_candidate(description="Read-only Jetson health snapshot.")
+    candidates = _write_jsonl(tmp_path / "skills-accepted.jsonl", [record])
+    users: list[str] = []
+
+    def fake_caller(role, system, user):
+        users.append(user)
+        return "yes"
+
+    counts = aug.run_rereview(
+        candidate_files=[candidates],
+        role=_fake_reviewer_b(),
+        accepted_out=tmp_path / "out-accepted.jsonl",
+        rejected_out=tmp_path / "out-rejected.jsonl",
+        caller=fake_caller,
+    )
+    assert counts.as_dict()["errors"] == 0
+    [user] = users
+    assert "Description: Read-only Jetson health snapshot.\n" in user
+    assert "User request: Give me a health check of this Jetson" in user
+
+
+def test_rereview_refuses_a_skills_record_without_a_stored_description(tmp_path) -> None:
+    candidates = _write_jsonl(tmp_path / "skills-accepted.jsonl", [_stored_skill_candidate()])
+    calls: list[str] = []
+    counts = aug.run_rereview(
+        candidate_files=[candidates],
+        role=_fake_reviewer_b(),
+        accepted_out=tmp_path / "out-accepted.jsonl",
+        rejected_out=tmp_path / "out-rejected.jsonl",
+        caller=lambda role, system, user: calls.append(user) or "yes",
+    )
+    assert calls == []
+    assert counts.as_dict()["errors"] == 1
+    assert counts.as_dict()["accepted"] == 0
+    assert not (tmp_path / "out-accepted.jsonl").exists()
 
 
 def test_rereview_is_a_clean_slate_a_stored_rejection_can_be_accepted(tmp_path) -> None:

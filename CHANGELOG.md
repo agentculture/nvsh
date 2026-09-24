@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/). This project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.19.1] - 2026-09-24
+
+### Fixed
+
+- `pipeline.sh upload` could never run: it imported `huggingface_hub` in the repo environment, which has none, and called `update_repo_visibility`, which huggingface_hub 1.x removed. It now uploads through `hub_upload.py` with the training stack on `PYTHONPATH`, like `upload-bundle`, which adds the repository-namespace, symlink and byte-identical fetch-back checks (PR #52 review).
+- `scan_bundle.py` no longer exempts a file from the secret scan by its extension alone. A `*.safetensors` file needs a valid header, whose string values are now scanned. A `*.gguf` file needs the `GGUF` magic. Either one without it is an `unrecognised_binary` finding. `*.bin` is no longer an expected binary, so a pickled `training_args.bin` (which can hold `hub_token`) or a text file misnamed `.bin` can no longer pass `verify` unseen (PR #52 review).
+- `augment.py --rereview` on a skills record put the request itself on the reviewer prompt's `Description:` line. Skills records now store the capability `description`, and re-review uses it. A skills record written before this has no description, so re-review refuses it and counts it as an error rather than asking a meaningless question (PR #52 review).
+
 ## [0.19.0] - 2026-09-24
 
 ### Added

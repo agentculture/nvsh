@@ -1,7 +1,8 @@
 """Upload one scanned bundle to a PRIVATE Hub repository and fetch it back (issue 46, t27).
 
 This is the only place in the fine-tune pipeline that talks to the Hugging
-Face Hub, and ``pipeline.sh upload-bundle`` is the only caller. It refuses,
+Face Hub; ``pipeline.sh upload-bundle`` (a release bundle) and ``pipeline.sh
+upload`` (a run's merged checkpoint) are its only callers. It refuses,
 before any Hub call:
 
 - a repository id that is not ``jetson-ai-lab/qwen3.5-0.8b-nvsh-<suffix>``

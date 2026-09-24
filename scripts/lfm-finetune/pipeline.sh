@@ -83,12 +83,15 @@
 #                         healing is needed is quantize.py's heal_needed(), decided
 #                         by a separate run (issue 46, task t18), not by this stage.
 #                         Writes a generation_config.json into <run>/merged (deviation d3)
-#   upload <name>         push a run's merged checkpoint to REPO on the Hub, private.
-#                         Refuses without FINAL=1 set, a scan_bundle.py verify pass on
-#                         the exact folder, and a gen_config.py check pass on it
-#                         (deviation d3: no served model ships without greedy decoding
-#                         pinned); the token comes only from the env var HF_TOKEN_ENV
-#                         names, injected by the operator.
+#   upload <name>         push a run's merged checkpoint to REPO on the Hub, private,
+#                         through hub_upload.py (as upload-bundle does; REPO must be in
+#                         its jetson-ai-lab/qwen3.5-0.8b-nvsh- namespace). Refuses
+#                         without FINAL=1 set, a scan_bundle.py verify pass on the exact
+#                         folder, and a gen_config.py check pass on it (deviation d3: no
+#                         served model ships without greedy decoding pinned); fetches
+#                         the commit back and compares every file's sha256. The token
+#                         comes only from the env var HF_TOKEN_ENV names, injected by
+#                         the operator.
 #   bundle <kind> <build-name> <repo-suffix> <report.md>...   the upload folder
 #                         for one build of the Qwen3.5 run (issue 46, t27), written
 #                         to WORK/bundles/<repo-suffix>/ for the repository
@@ -740,20 +743,14 @@ case "$STAGE" in
     : "${HF_TOKEN_ENV:?}"
     [ -n "${!HF_TOKEN_ENV:-}" ] \
       || die "$HF_TOKEN_ENV is not set (e.g. grant run --inject $HF_TOKEN_ENV=<secret name> -- $0 ...)"
-    HF_TOKEN_ENV="$HF_TOKEN_ENV" REPO="$REPO" BUNDLE="$bundle" \
-      py - <<'PYEOF'
-import os
-
-from huggingface_hub import HfApi
-
-hf_token = os.environ[os.environ["HF_TOKEN_ENV"]]
-api = HfApi(token=hf_token)
-repo = os.environ["REPO"]
-api.create_repo(repo, private=True, exist_ok=True)
-api.update_repo_visibility(repo, private=True)
-api.upload_folder(folder_path=os.environ["BUNDLE"], repo_id=repo, repo_type="model")
-print(f"uploaded {os.environ['BUNDLE']} to {repo} (private)")
-PYEOF
+    # The same guarded path as upload-bundle: hub_upload.py refuses a REPO
+    # outside its namespace or a symlinked folder, sets the repo private with
+    # whichever call this huggingface_hub has, and fetches the commit back.
+    # huggingface_hub is the training environment's (the repo env has none).
+    site=$(train_site_packages)
+    FINAL=1 PYTHONPATH="$site${PYTHONPATH:+:$PYTHONPATH}" \
+      py scripts/lfm-finetune/hub_upload.py --bundle "$bundle" --repo "$REPO" \
+      --repo-type model --token-env "$HF_TOKEN_ENV"
     ;;
   bundle)
     usage="bundle <bf16|gguf|awq> <build-name> <repo-suffix> <report.md>..."

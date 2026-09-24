@@ -567,8 +567,14 @@ nvsh package. These files were added or changed for issue 46:
 `assemble`, `train`, `train-scorer`, `measure-val`, `measure-final`,
 `measure-skills`, `scan`, `quantize`, `heal`, `upload`, `status`. The
 `upload` stage refuses without `FINAL=1`, a passing `scan_bundle.py verify`
-on the exact folder and a passing `gen_config.py check`, and always creates
-the repository private.
+on the exact folder and a passing `gen_config.py check`. It uploads through
+`hub_upload.py`, like `upload-bundle`: `REPO` must be in the
+`jetson-ai-lab/qwen3.5-0.8b-nvsh-` namespace, the repository is always made
+private, and the commit is fetched back and compared file by file.
+`scan_bundle.py` accepts a `*.safetensors` or `*.gguf` file as a weight file
+only when its contents prove that format. It scans a safetensors header's
+strings, and treats any `*.bin` file (for example a pickled
+`training_args.bin`) like any other binary: as a finding.
 
 ## Data and split
 

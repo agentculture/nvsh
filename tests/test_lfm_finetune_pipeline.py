@@ -51,6 +51,11 @@ _BUNDLE_STAGES = ("bundle", "bundle-dataset", "upload-bundle")
 _GEN_CONFIG_STAGES = ("stock-copy",)
 
 
+#: A well-formed safetensors prefix (8-byte header length, then the JSON
+#: header): scan_bundle.py checks weight files by content, not by name.
+_SAFETENSORS = (2).to_bytes(8, "little") + b"{}"
+
+
 def _run(env_file: Path, tmp_path: Path, *stage_args: str) -> subprocess.CompletedProcess:
     """Invoke pipeline.sh from an isolated cwd, so $PWD in the env file never
     touches the real checkout (WORK/HF_CACHE/etc. land under *tmp_path*)."""
@@ -155,7 +160,7 @@ def test_upload_refuses_a_bundle_without_a_valid_generation_config(
     )
     bundle = tmp_path / work_rel / "runs" / "somerun" / "merged"
     bundle.mkdir(parents=True)
-    (bundle / "weights.safetensors").write_text("x", encoding="utf-8")
+    (bundle / "weights.safetensors").write_bytes(_SAFETENSORS)
 
     # Make scan_bundle.py verify pass on its own, so the refusal below isolates
     # to gen_config.py's check rather than scan_bundle's.
@@ -2497,7 +2502,7 @@ def test_bundle_dataset_needs_the_frozen_train_set(tmp_path: Path) -> None:
 def _scanned_bundle(pipe: "_Pipeline", suffix: str = "tool-jev", kind: str = "bf16") -> Path:
     bundle = _greedy_dir(pipe.work / "bundles" / suffix)
     (bundle / "README.md").write_text("# card\n", encoding="utf-8")
-    (bundle / "model.safetensors").write_bytes(b"\x00w\x01")
+    (bundle / "model.safetensors").write_bytes(_SAFETENSORS + b"\x00w\x01")
     scan_bundle = _load_scan_bundle()
     scan_bundle.write_scan(bundle, scan_bundle._get_scan_secrets())  # noqa: SLF001
     meta = {"kind": kind, "build": "a3-heal", "repo": _PREFIX + suffix, "repo_type": "model"}
@@ -2550,6 +2555,52 @@ def test_upload_bundle_uploads_privately_and_fetches_back_byte_identical(tmp_pat
     # hub_upload.py got the training stack's site-packages on PYTHONPATH
     ((pythonpath, _),) = pipe.calls("hub_upload.py")
     assert pythonpath.split(":")[0] == str(tmp_path / "fake-site")
+
+
+def _scanned_run(pipe: "_Pipeline", run: str = "a3-heal") -> Path:
+    merged = _greedy_dir(pipe.work / "runs" / run / "merged")
+    (merged / "model.safetensors").write_bytes(_SAFETENSORS + b"\x00w\x01")
+    scan_bundle = _load_scan_bundle()
+    scan_bundle.write_scan(merged, scan_bundle._get_scan_secrets())  # noqa: SLF001
+    return merged
+
+
+def test_upload_goes_through_hub_upload_privately_and_fetches_back(tmp_path: Path) -> None:
+    """PR #52 review: `upload` used to import huggingface_hub in the repo env
+    (which has none) and call update_repo_visibility; it now runs hub_upload.py
+    with the training stack on PYTHONPATH, exactly like upload-bundle."""
+    pipe = _bundle_pipeline(tmp_path)
+    merged = _scanned_run(pipe)
+    result = pipe.run("upload", "a3-heal", **_upload_env(tmp_path))
+    assert result.returncode == 0, result.stderr
+    assert "private=True" in result.stdout
+    assert "byte-identical" in result.stdout
+    assert _FAKE_TOKEN not in result.stdout + result.stderr
+    calls = _hub_calls(tmp_path)
+    assert [call[0] for call in calls] == [
+        "HfApi",
+        "create_repo",
+        "update_repo_visibility",
+        "upload_folder",
+        "snapshot_download",
+        "list_repo_files",
+        "repo_info",
+    ]
+    assert calls[1][1] == _PREFIX + "tool-jev"
+    assert calls[1][2]["private"] is True
+    ((pythonpath, argv),) = pipe.calls("hub_upload.py")
+    assert pythonpath.split(":")[0] == str(tmp_path / "fake-site")
+    assert _option(argv, "--bundle") == [str(merged)]
+    assert _option(argv, "--repo-type") == ["model"]
+
+
+def test_upload_refuses_a_repo_outside_the_hub_upload_namespace(tmp_path: Path) -> None:
+    pipe = _bundle_pipeline(tmp_path, extra_env="REPO=jetson-ai-lab/lfm2.5-350m-nvsh-triage\n")
+    _scanned_run(pipe)
+    result = pipe.run("upload", "a3-heal", **_upload_env(tmp_path))
+    assert result.returncode != 0
+    assert "jetson-ai-lab/qwen3.5-0.8b-nvsh-" in result.stderr
+    assert _hub_calls(tmp_path) == []
 
 
 def test_upload_bundle_fails_loudly_on_a_changed_fetch_back(tmp_path: Path) -> None:

@@ -18,6 +18,9 @@ import pytest
 _DIR = Path(__file__).resolve().parents[1] / "scripts" / "lfm-finetune"
 _REPO = "jetson-ai-lab/qwen3.5-0.8b-nvsh-tool-jev"
 _TOKEN = "hf_fake_token_value_for_tests_only"
+#: A well-formed safetensors prefix (8-byte header length, then the JSON
+#: header): scan_bundle.py checks weight files by content, not by name.
+_SAFETENSORS = (2).to_bytes(8, "little") + b"{}"
 
 
 def _load(name: str):
@@ -87,7 +90,7 @@ def _bundle(tmp_path: Path) -> Path:
     bundle = tmp_path / "bundles" / "tool-jev"
     (bundle / "sub").mkdir(parents=True)
     (bundle / "README.md").write_text("---\nlicense: apache-2.0\n---\n# card\n")
-    (bundle / "model.safetensors").write_bytes(b"\x00weights\x01")
+    (bundle / "model.safetensors").write_bytes(_SAFETENSORS + b"\x00weights\x01")
     (bundle / "sub" / "tokenizer.json").write_text("{}")
     scan_bundle = _load("scan_bundle")
     scan_bundle.write_scan(bundle, scan_bundle._get_scan_secrets())  # noqa: SLF001
