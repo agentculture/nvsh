@@ -494,8 +494,14 @@ if sys.argv[1:2] == ["logs"]:
 _FAKE_CURL = """#!/usr/bin/env bash
 printf 'curl %s\\n' "${*: -1}" >> "$EVENT_LOG"
 [ "${FAKE_CURL_STATUS:-0}" = 0 ] || exit "$FAKE_CURL_STATUS"
+# FAKE_CURL_ONCE: a file; once a model list has been served, every later
+# call fails (a server that goes away right after answering).
+if [ -n "${FAKE_CURL_ONCE:-}" ] && [ -f "$FAKE_CURL_ONCE" ]; then exit 7; fi
 # What the fake llama-server (or a stale server, in a test) lists.
-if [ -n "${LLAMA_MODELS:-}" ] && [ -f "$LLAMA_MODELS" ]; then cat "$LLAMA_MODELS"; fi
+if [ -n "${LLAMA_MODELS:-}" ] && [ -f "$LLAMA_MODELS" ]; then
+  cat "$LLAMA_MODELS"
+  if [ -n "${FAKE_CURL_ONCE:-}" ]; then touch "$FAKE_CURL_ONCE"; fi
+fi
 exit 0
 """
 
@@ -1432,10 +1438,22 @@ python3 -c 'import json, sys; print(json.dumps(sys.argv[1:]))' "$@" >> "$LLAMA_L
 echo "llama-server start" >> "$EVENT_LOG"
 echo "fake-llama: the last log line"
 if [ -n "${FAKE_LLAMA_DIE:-}" ]; then sleep 0.5; exit 1; fi
-alias=''; previous=''
-for arg in "$@"; do [ "$previous" = --alias ] && alias=$arg; previous=$arg; done
+alias=''; port=''; previous=''
+for arg in "$@"; do
+  [ "$previous" = --alias ] && alias=$arg
+  [ "$previous" = --port ] && port=$arg
+  previous=$arg
+done
+# Listen on the port like the real server (a child of this process, bounded).
+listener=''
+if [ -z "${FAKE_LLAMA_NO_LISTEN:-}" ]; then
+  python3 -c 'import socket, sys, time
+s = socket.socket(); s.bind(("127.0.0.1", int(sys.argv[1]))); s.listen(); time.sleep(30)' \
+    "$port" &
+  listener=$!
+fi
 printf '{"object": "list", "data": [{"id": "%s"}]}\n' "$alias" > "$LLAMA_MODELS"
-trap 'echo "llama-server stop" >> "$EVENT_LOG"; exit 0' TERM
+trap '[ -z "$listener" ] || kill "$listener"; echo "llama-server stop" >> "$EVENT_LOG"; exit 0' TERM
 for _ in $(seq 300); do sleep 0.1; done
 """
 
@@ -1843,6 +1861,7 @@ def _impostor(tmp_path: Path, argv: list[str]) -> subprocess.Popen:
     """The fake llama-server started outside the helper, e.g. by someone else."""
     env = {**os.environ, **_fake_llama_server(tmp_path), "EVENT_LOG": str(tmp_path / "x.log")}
     env["LLAMA_MODELS"] = str(tmp_path / "impostor-models.json")
+    env["FAKE_LLAMA_NO_LISTEN"] = "1"
     proc = subprocess.Popen(argv, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     deadline = time.time() + 10
     while str(argv[0]) not in Path(f"/proc/{proc.pid}/cmdline").read_text(errors="replace"):
@@ -2126,3 +2145,72 @@ def test_a_served_scorer_gguf_build_needs_its_base_runs_tokenizer(tmp_path: Path
     assert "runs/a1/merged" in result.stderr
     assert not pipe.calls("measure.py")
     assert not _llama_calls(tmp_path)
+
+
+def test_serve_wait_returns_as_soon_as_llama_server_is_ready(tmp_path: Path) -> None:
+    """Codex P2: a ready native server must not fall through into the vLLM
+    readiness loop, where a later failed probe turned it into exit 2."""
+    model = _gguf(tmp_path)
+    port = _free_port()
+    env = _llama_env(tmp_path, FAKE_CURL_ONCE=str(tmp_path / "curl-once"))
+    started = _serve(tmp_path, "start", str(model), str(port), **env)
+    try:
+        assert started.returncode == 0, started.stderr
+        waited = _serve(
+            tmp_path, "wait", str(port), MEASURE_WAIT_SECONDS="3", MEASURE_POLL_SECONDS="0.1", **env
+        )
+        assert waited.returncode == 0, waited.stderr
+        assert "is ready" in waited.stderr
+        assert not [c for c in _docker_calls(tmp_path) if c[0] == "inspect"]
+    finally:
+        _serve(tmp_path, "stop", str(port), **env)
+
+
+def test_serve_wait_needs_the_listener_to_belong_to_its_llama_server(tmp_path: Path) -> None:
+    """Codex P2: an answer listing the alias from a living child is not enough
+    when another process holds the port -- the listening socket must be the
+    child's (or its descendants')."""
+    model = _gguf(tmp_path)
+    port = _free_port()
+    env = _llama_env(tmp_path, FAKE_LLAMA_NO_LISTEN="1")
+    started = _serve(tmp_path, "start", str(model), str(port), **env)
+    assert started.returncode == 0, started.stderr
+    pid = int((tmp_path / "run" / f"q46-measure-{port}.pid").read_text().split()[0])
+    try:
+        with socket.socket() as squatter:
+            squatter.bind(("127.0.0.1", port))
+            squatter.listen()
+            result = _serve(
+                tmp_path,
+                "wait",
+                str(port),
+                MEASURE_WAIT_SECONDS="1",
+                MEASURE_POLL_SECONDS="0.2",
+                **env,
+            )
+        assert result.returncode == 2
+        assert "is ready" not in result.stderr
+        assert _wait_gone(pid)
+    finally:
+        _serve(tmp_path, "stop", str(port), **env)
+
+
+def test_serve_start_refuses_while_another_start_holds_the_lock(tmp_path: Path) -> None:
+    """Codex P2: the stale-file check, removal and claim run under one lock, so
+    a second start never removes a claim the first has just made."""
+    model = _gguf(tmp_path)
+    port = _free_port()
+    run_dir = tmp_path / "run"
+    gone = subprocess.Popen(["true"])
+    gone.wait()
+    _claim_for(run_dir, port, gone.pid, "1", _expected_argv(tmp_path, model, port))
+    (run_dir / f"q46-measure-{port}.lock").mkdir()
+    result = _serve(tmp_path, "start", str(model), str(port), **_llama_env(tmp_path))
+    assert result.returncode != 0
+    assert "lock" in result.stderr and f"stop {port}" in result.stderr
+    assert not _running_with(str(model))
+    assert (run_dir / f"q46-measure-{port}.pid").read_text(encoding="utf-8") == f"{gone.pid}\n1\n"
+    stopped = _serve(tmp_path, "stop", str(port), MEASURE_RUN_DIR=str(run_dir))
+    assert stopped.returncode == 0, stopped.stderr
+    assert not (run_dir / f"q46-measure-{port}.lock").exists()
+    assert not (run_dir / f"q46-measure-{port}.pid").exists()
