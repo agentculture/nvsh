@@ -400,6 +400,91 @@ def test_redecide_can_turn_a_propose_line_into_abstain_uncertain(sweep, gate):
 
 
 # ---------------------------------------------------------------------------
+# sweep_gate: redecide() never invents {} arguments for an invalid original
+# (issue 53, P2)
+# ---------------------------------------------------------------------------
+
+
+def test_redecide_keeps_an_invalid_line_invalid_under_disabled_thresholds(sweep, gate):
+    """A complete distribution whose winning operation could not be grounded stays invalid.
+
+    Before the fix, disabling every threshold still turned this into a
+    fabricated ``propose`` with ``{}`` arguments -- with a complete
+    distribution and nothing overriding the argmax, ``gate.decide`` always
+    proposes it, and ``redecide`` used to trust that blindly.
+    """
+    candidates = {READ_ONLY_OP: 0.93, READ_ONLY_OP_2: 0.05, "(explain)": 0.02}
+    prediction = sweep.metrics.Prediction.from_dict(
+        _line("invalid-1", _op(READ_ONLY_OP), "invalid", None, None, candidates)
+    )
+    result = sweep.redecide(prediction, gate.Thresholds())
+    assert result.outcome == "invalid"
+    assert result.operation is None
+    assert result.arguments is None
+    assert result.invalid_reason == sweep.metrics.invalid_reason(prediction)
+
+
+def test_redecide_keeps_a_functionally_invalid_propose_invalid(sweep, gate):
+    """A "propose" line whose own arguments already fail the operation table stays invalid.
+
+    ``metrics.invalid_reason`` calls this kind of line invalid even though
+    its stored ``outcome`` field says ``"propose"``; redecide must not
+    launder it into a clean propose just because the gate's argmax agrees
+    with its operation.
+    """
+    candidates = {MUTATING_OP: 0.9, "(escalate)": 0.1}
+    prediction = sweep.metrics.Prediction.from_dict(
+        _line(
+            "invalid-2", _op(MUTATING_OP, **MUTATING_ARGS), "propose", MUTATING_OP, {}, candidates
+        )
+    )
+    assert sweep.metrics.invalid_reason(prediction) is not None  # bad args: {} for power_set
+    result = sweep.redecide(prediction, gate.Thresholds())
+    assert result.outcome == "invalid"
+    assert result.operation is None
+    assert result.arguments is None
+    assert result.invalid_reason == sweep.metrics.invalid_reason(prediction)
+
+
+def test_redecide_marks_not_grounded_by_sweep_for_a_different_operation(sweep, gate):
+    """The gate picking a different operation than the original never invents arguments.
+
+    The stored line disagrees with its own candidates' argmax (a
+    corrupted/tie-broken record) -- an edge case, but redecide must still
+    refuse to attach the *original*'s arguments to the operation the gate
+    actually picked, or to invent new ones.
+    """
+    candidates = {READ_ONLY_OP: 0.7, READ_ONLY_OP_2: 0.3}
+    prediction = sweep.metrics.Prediction.from_dict(
+        _line("mismatch", _op(READ_ONLY_OP_2), "propose", READ_ONLY_OP_2, {}, candidates)
+    )
+    result = sweep.redecide(prediction, gate.Thresholds())
+    assert result.outcome == "invalid"
+    assert result.operation is None
+    assert result.arguments is None
+    assert result.invalid_reason == sweep.NOT_GROUNDED_BY_SWEEP
+
+
+def test_sweep_reproduces_an_invalid_line_exactly_when_disabled(sweep, gate):
+    """The scorer-b1-shaped fixture plus an invalid line: 100% outcome+operation match."""
+    lines = _scorer_b1_style_fixture() + [
+        _line(
+            "b1-06-invalid",
+            _op(READ_ONLY_OP),
+            "invalid",
+            None,
+            None,
+            {READ_ONLY_OP: 0.93, READ_ONLY_OP_2: 0.05, "(explain)": 0.02},
+        ),
+    ]
+    originals = [sweep.metrics.Prediction.from_dict(line) for line in lines]
+    for original in originals:
+        redecided = sweep.redecide(original, gate.Thresholds())
+        assert redecided.outcome == original.outcome, original.id
+        assert redecided.operation == original.operation, original.id
+
+
+# ---------------------------------------------------------------------------
 # sweep_gate: the exact-reproduction acceptance test
 # ---------------------------------------------------------------------------
 
