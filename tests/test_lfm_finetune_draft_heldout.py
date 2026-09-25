@@ -36,3 +36,9 @@ def test_the_prompts_show_the_table_and_nothing_from_the_corpus() -> None:
 def test_a_json_reply_in_a_code_fence_is_parsed() -> None:
     reply = 'Here:\n```json\n[{"text": "a", "args": {}}]\n```'
     assert _module().parse_json_list(reply) == [{"text": "a", "args": {}}]
+
+
+def test_the_seed_defaults_to_issue_46s_and_can_be_overridden() -> None:
+    assert _module().parse_args(["out"]) == (Path("out"), 46)
+    assert _module().parse_args(["--seed", "53", "out"]) == (Path("out"), 53)
+    assert _module().parse_args(["out", "--seed", "7"]) == (Path("out"), 7)

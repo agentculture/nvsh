@@ -10,7 +10,11 @@ this script prints counts and a hash, never entry text.
 
 Usage (the training environment on the path, the model already in the HF cache)::
 
-    PYTHONPATH=<training site-packages>:. python scripts/lfm-finetune/draft_heldout.py OUT_DIR
+    PYTHONPATH=<training site-packages>:. python scripts/lfm-finetune/draft_heldout.py \
+        OUT_DIR [--seed N]
+
+The seed defaults to 46 (issue 46's sealed draft); issue 53 drafts a fresh held-out with its own
+seed.
 """
 
 from __future__ import annotations
@@ -86,16 +90,27 @@ def parse_json_list(raw: str):
     return json.loads(raw[start : end + 1])
 
 
+def parse_args(argv: list[str]) -> tuple[Path, int]:
+    """``OUT_DIR [--seed N]`` -> (out_dir, seed); the seed defaults to :data:`SEED`."""
+    args = list(argv)
+    seed = SEED
+    if "--seed" in args:
+        at = args.index("--seed")
+        seed = int(args[at + 1])
+        del args[at : at + 2]
+    return Path(args[0]), seed
+
+
 def main(argv: list[str] | None = None) -> int:
-    out_dir = Path((argv if argv is not None else sys.argv[1:])[0])
+    out_dir, seed = parse_args(argv if argv is not None else sys.argv[1:])
     import torch
     from huggingface_hub import snapshot_download
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
     from nvsh.ops import table
 
-    random.seed(SEED)
-    torch.manual_seed(SEED)
+    random.seed(seed)
+    torch.manual_seed(seed)
     snap = Path(snapshot_download(MODEL, revision=REVISION, local_files_only=True))
     tok = AutoTokenizer.from_pretrained(snap, revision=REVISION)
     model = AutoModelForCausalLM.from_pretrained(
@@ -155,7 +170,7 @@ def main(argv: list[str] | None = None) -> int:
         "header": (
             "Issue 46 sealed held-out draft (task t17, decision c51): drafted by Qwen/Qwen3.5-4B "
             f"(snapshot {snap.name}, Apache-2.0, not a pipeline teacher) from the nvsh operation "
-            f"table only, seed {SEED}, temperature 0.7, thinking off. Awaiting operator review; "
+            f"table only, seed {seed}, temperature 0.7, thinking off. Awaiting operator review; "
             "the lead agent has not read these entries."
         ),
         "entries": entries,
