@@ -2,7 +2,7 @@
   "plan_slug": "tool-jev-calibration-cycle-issue-53",
   "schema_version": 2,
   "created": "2026-09-24T23:49:55Z",
-  "updated": "2026-09-25T02:48:52Z",
+  "updated": "2026-09-25T04:08:11Z",
   "deviations": [
     {
       "id": "d1",
@@ -33,7 +33,7 @@
         "c11"
       ],
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "classification": "acceptable",
       "seq": 2
     }
