@@ -521,3 +521,68 @@ def test_fit_params_raises_when_no_fit_candidates(calibration_fit, tmp_path):
     )
     with pytest.raises(calibration_fit.CalibrationError):
         calibration_fit.fit_params(predictions_path, {"seed": 1, "fit_ids": ["a"]})
+
+
+# ---------------------------------------------------------------------------
+# Evaluate (issue 53 t17): raw vs temperature vs temperature+vector on one fold
+# ---------------------------------------------------------------------------
+
+
+def _overconfident_rows() -> list[dict]:
+    rows = []
+    for n in range(20):
+        right = n % 2 == 0
+        expected = {"operation": "gpu_stats", "args": {}}
+        top = "gpu_stats" if right else "disk_stats"
+        other = "disk_stats" if right else "gpu_stats"
+        rows.append(_prediction_line(f"id{n}", expected, {top: 0.95, other: 0.05}))
+    return rows
+
+
+def test_evaluate_uses_only_the_named_fold_and_reports_three_variants(calibration_fit, tmp_path):
+    preds = _write_predictions(tmp_path / "p.jsonl", _overconfident_rows())
+    folds = {"fit_ids": [f"id{n}" for n in range(10)], "selection_ids": ["id10", "id11"]}
+    params = {"temperature": 3.0, "vector": {"gpu_stats": 1.0, "disk_stats": 1.0}}
+    report = calibration_fit.evaluate(preds, params, folds, "selection")
+    assert report["n"] == 2
+    assert list(report["variants"]) == list(calibration_fit.EVALUATED_VARIANTS)
+    raw = report["variants"]["raw"]["ece"]
+    tempered = report["variants"]["temperature"]["ece"]
+    assert tempered < raw  # a 50%-right model at 0.95 confidence is overconfident
+
+
+def test_evaluate_refuses_an_empty_or_unknown_fold(calibration_fit, tmp_path):
+    preds = _write_predictions(tmp_path / "p.jsonl", _overconfident_rows())
+    with pytest.raises(calibration_fit.CalibrationError):
+        calibration_fit.evaluate(preds, {"temperature": 1.0}, {"fit_ids": ["id0"]}, "selection")
+    with pytest.raises(calibration_fit.CalibrationError):
+        calibration_fit.evaluate(preds, {"temperature": 1.0}, {"fit_ids": ["id0"]}, "test")
+    with pytest.raises(calibration_fit.CalibrationError):
+        calibration_fit.evaluate(
+            preds, {"temperature": 1.0}, {"selection_ids": ["nope"]}, "selection"
+        )
+
+
+def test_evaluate_cli_writes_the_report(calibration_fit, tmp_path, capsys):
+    preds = _write_predictions(tmp_path / "p.jsonl", _overconfident_rows())
+    (tmp_path / "params.json").write_text(json.dumps({"temperature": 2.0, "vector": {}}))
+    (tmp_path / "folds.json").write_text(
+        json.dumps({"fit_ids": ["id0"], "selection_ids": [f"id{n}" for n in range(1, 20)]})
+    )
+    out = tmp_path / "eval.json"
+    code = calibration_fit.main(
+        [
+            "evaluate",
+            "--predictions",
+            str(preds),
+            "--params",
+            str(tmp_path / "params.json"),
+            "--folds",
+            str(tmp_path / "folds.json"),
+            "--out",
+            str(out),
+        ]
+    )
+    assert code == 0
+    assert json.loads(out.read_text())["n"] == 19
+    assert "temperature+vector: ece=" in capsys.readouterr().out

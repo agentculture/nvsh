@@ -58,6 +58,7 @@ import math
 import random
 import re
 import sys
+from dataclasses import replace
 from pathlib import Path
 from typing import Callable, Iterable, Mapping, Sequence
 
@@ -520,6 +521,58 @@ def apply_to_predictions(predictions_path: Path, params: Mapping[str, object]) -
 
 
 # ---------------------------------------------------------------------------
+# Evaluate: raw vs temperature vs temperature + vector on one fold
+# ---------------------------------------------------------------------------
+
+#: The three variants :func:`evaluate` compares, in this order.
+EVALUATED_VARIANTS = ("raw", "temperature", "temperature+vector")
+
+
+def evaluate(
+    predictions_path: Path, params: Mapping[str, object], folds: Mapping[str, object], fold: str
+) -> dict:
+    """ECE/Brier (``metrics.compute_calibration``, bootstrap CIs) on *fold*'s ids only.
+
+    Three variants of the same lines: the model's own distributions, the
+    fitted temperature alone, and temperature then vector -- so the
+    selection fold decides whether vector scaling earns its extra
+    parameters (issue 53 t17/t19). Evaluating on the fit fold is allowed but
+    reported as such; it says nothing about generalisation.
+    """
+    key = {"fit": "fit_ids", "selection": "selection_ids"}.get(fold)
+    if key is None:
+        raise CalibrationError(f"--fold must be fit or selection, not {fold!r}")
+    ids = set(folds.get(key) or [])
+    if not ids:
+        raise CalibrationError(f"the folds file has no {key}")
+    predictions = [p for p in metrics.read_predictions(predictions_path) if p.id in ids]
+    if not predictions:
+        raise CalibrationError(f"no predictions line has an id in the {fold} fold")
+    temperature = float(params.get("temperature", 1.0))
+    vector = params.get("vector") or {}
+    scalings = {
+        "raw": (1.0, {}),
+        "temperature": (temperature, {}),
+        "temperature+vector": (temperature, vector),
+    }
+    report: dict = {"fold": fold, "n": len(predictions), "temperature": temperature, "variants": {}}
+    for name in EVALUATED_VARIANTS:
+        t, v = scalings[name]
+        scaled = [
+            (
+                p
+                if p.candidates is None
+                else replace(p, candidates=apply_scaling(p.candidates, t, v))
+            )
+            for p in predictions
+        ]
+        block = metrics.compute_calibration(scaled)
+        block.pop("bins", None)
+        report["variants"][name] = block
+    return report
+
+
+# ---------------------------------------------------------------------------
 # I/O helpers
 # ---------------------------------------------------------------------------
 
@@ -594,6 +647,24 @@ def _cmd_apply(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_evaluate(args: argparse.Namespace) -> int:
+    with open(args.params, encoding="utf-8") as handle:
+        params = json.load(handle)
+    with open(args.folds, encoding="utf-8") as handle:
+        folds = json.load(handle)
+    try:
+        report = evaluate(Path(args.predictions), params, folds, args.fold)
+    except (CalibrationError, ValueError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    if args.out:
+        write_json(Path(args.out), report)
+    for name in EVALUATED_VARIANTS:
+        block = report["variants"][name]
+        print(f"{name}: ece={block['ece']:.4f} brier={block['brier']:.4f} n={block['n']}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="command", required=True)
@@ -616,6 +687,16 @@ def main(argv: list[str] | None = None) -> int:
     apply_parser.add_argument("--params", required=True)
     apply_parser.add_argument("--out", required=True)
     apply_parser.set_defaults(func=_cmd_apply)
+
+    eval_parser = sub.add_parser(
+        "evaluate", help="ECE/Brier on one fold: raw vs temperature vs temperature+vector"
+    )
+    eval_parser.add_argument("--predictions", required=True)
+    eval_parser.add_argument("--params", required=True)
+    eval_parser.add_argument("--folds", required=True)
+    eval_parser.add_argument("--fold", default="selection", choices=("fit", "selection"))
+    eval_parser.add_argument("--out", default=None)
+    eval_parser.set_defaults(func=_cmd_evaluate)
 
     args = parser.parse_args(argv)
     return args.func(args)
