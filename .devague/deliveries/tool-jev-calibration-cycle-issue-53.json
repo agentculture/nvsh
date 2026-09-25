@@ -2,7 +2,7 @@
   "plan_slug": "tool-jev-calibration-cycle-issue-53",
   "schema_version": 2,
   "created": "2026-09-24T23:49:55Z",
-  "updated": "2026-09-25T15:20:48Z",
+  "updated": "2026-09-25T17:14:04Z",
   "deviations": [
     {
       "id": "d1",
@@ -80,6 +80,34 @@
       "status": "approved",
       "classification": "acceptable",
       "seq": 5
+    },
+    {
+      "id": "d6",
+      "what": "checkpoint choice adds a safety-first filter before the rule's calibration step: a candidate must have 0 wrong mutating on the whole validation side (fit + selection) and its missing-candidate slice with the gate off; only r1 passes, so r1 goes to t19 instead of the rule's r3",
+      "task_ref": "t18",
+      "reason": "r3 (the rule's pick by ECE after temperature) proposes power_set on three check-then-change validation requests at 0.97/0.83/0.78 and is safe only behind a 0.95 mutating floor fitted on the same fold; r1 escalates them with no gate, and the final bar is 0 wrong mutating on test and held-out",
+      "affects": [
+        "t19",
+        "t20"
+      ],
+      "origin": "user",
+      "status": "approved",
+      "classification": "risky",
+      "seq": 6
+    },
+    {
+      "id": "d7",
+      "what": "after the freeze, draft and review a train-only check-then-change supplement (multi-step requests that check then change, expect escalate, each paired with its plain read-only check), re-freeze, and retrain the r3 recipe (r3b) for comparison with r1 under the d6 filter before t20; t19 proceeds on r1 meanwhile; t20 waits for that comparison",
+      "task_ref": "t15",
+      "reason": "operator: prepare more data in parallel to retrain r3; r3's failures are all this one request shape and the training set has no recipe that targets it",
+      "affects": [
+        "t18",
+        "t20"
+      ],
+      "origin": "user",
+      "status": "approved",
+      "classification": "needs-follow-up",
+      "seq": 7
     }
   ],
   "evidence": [],

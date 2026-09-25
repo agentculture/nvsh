@@ -735,3 +735,68 @@ def test_diagnosis_explain_prompt_forbids_writing_an_identifier() -> None:
     and were dropped by the guard (same cause as D30's hard negatives)."""
     _, user = ta.dx_prompt(4)
     assert "Never write an operation identifier" in user
+
+
+# ---------------------------------------------------------------------------
+# check-then-change (issue 53, deviation d7)
+# ---------------------------------------------------------------------------
+
+
+def _ctc_generator(user: str) -> str:
+    if ta.CTC_MARKER not in user or not _asks_for(user, "power_set"):
+        return "[]"
+    return json.dumps(
+        [
+            {
+                "check": "How hot is the board right now?",
+                "operation": "thermal_stats",
+                "args": {},
+                "conditional": "check the board temperature and if it's over 80C go to low power",
+            },
+            {  # the check half must be read-only
+                "check": "switch to balanced",
+                "operation": "power_set",
+                "args": {"mode": "balanced"},
+                "conditional": "check swap and if it's full switch to balanced",
+            },
+            {  # the check half must validate against the table
+                "check": "status of it",
+                "operation": "service_status",
+                "args": {},
+                "conditional": "check the web service and restart it if it's down",
+            },
+        ]
+    )
+
+
+def test_check_then_change_pairs_a_read_only_check_with_an_escalation(tmp_path) -> None:
+    """t18 (d7): r3 proposed power_set on check-then-change requests whose gold
+    is escalate; each pair teaches the check alone vs the conditional change."""
+    summary, doc = _run(
+        tmp_path, ["check-then-change"], caller=FakeCaller(generator=_ctc_generator), per_recipe=3
+    )
+    entries = doc["entries"]
+    assert len(entries) == 2
+    check, conditional = entries
+    assert check["expect"] == {"operation": "thermal_stats", "args": {}}
+    assert conditional["expect"] == {"escalate": True}
+    assert conditional["class"] == "decline:multi_step"
+    assert check["source_id"] == conditional["source_id"]
+    assert check["source_id"].startswith("t15-ctc-p")
+    assert {e["source"] for e in entries} == {"t15-check-then-change"}
+    rejected = summary["recipes"]["check-then-change"]["rejected"]
+    assert rejected["invalid_item"] == 2
+
+
+def test_check_then_change_prompt_names_the_change_but_forbids_identifiers() -> None:
+    _, user = ta.check_then_change_prompt("power_set", 3)
+    assert ta.CTC_MARKER in user
+    assert "the operation power_set" in user
+    assert "Never write an operation identifier" in user
+
+
+def test_check_then_change_asks_once_per_mutating_operation() -> None:
+    mutating = [op for op in table.OPERATIONS if not op.read_only]
+    assert mutating
+    assert ta.planned_teacher_calls("check-then-change", 3) == len(mutating)
+    assert ta.planned_candidates("check-then-change", 3) == 3 * len(mutating) * 2

@@ -39,11 +39,18 @@ items 2-6) names five shapes the frozen training set lacks. Each is one
 ``hard-negative`` (item 6)
     Per operation, knowledge questions that mention what the operation deals
     with only in passing but want an answer in words (explain + answer).
+``check-then-change`` (issue 53, deviation d7)
+    Per operation that changes the machine, teacher-drafted pairs: a
+    read-only check alone (its operation and arguments validated, and the
+    operation must be read-only) against the same check followed by a
+    conditional change ("check X and if it is over a limit, change Y"),
+    which escalates as ``decline:multi_step``. Kept or dropped whole. Added
+    after r3 proposed the change directly on such requests (t18).
 
 Every entry is in corpus format (``id``, ``kind``, ``text``, ``expect``,
 ``class`` where it has one, ``source: "t15-<recipe>"``, ``source_id``), ids
 prefixed per recipe (``t15-marg-0001``, ``t15-dx-...``, ``t15-pset-...``,
-``t15-disamb-...``, ``t15-hneg-...``). A contrastive pair shares one
+``t15-disamb-...``, ``t15-hneg-...``, ``t15-ctc-...``). A contrastive pair shares one
 ``source_id`` (``t15-dx-p0001``, or the original's for a stripped request);
 ``merge_variations.py --supplement`` keeps an entry's own ``source_id``. The
 output's header names the train side (``Split 'train' of <train file>``), so
@@ -108,6 +115,7 @@ RECIPES: tuple[str, ...] = (
     "power-set",
     "disambiguation",
     "hard-negative",
+    "check-then-change",
 )
 ID_TAGS: dict[str, str] = {
     "missing-argument": "marg",
@@ -115,6 +123,7 @@ ID_TAGS: dict[str, str] = {
     "power-set": "pset",
     "disambiguation": "disamb",
     "hard-negative": "hneg",
+    "check-then-change": "ctc",
 }
 #: The recipes a teacher drafts (``missing-argument`` is rule-based).
 GENERATED = frozenset(RECIPES) - {"missing-argument"}
@@ -145,6 +154,7 @@ CHOICE_MARKER = "explicitly ask to set"
 DISAMBIGUATION_MARKER = "could plausibly be mistaken"
 HARD_NEGATIVE_MARKER = "only in passing"
 MOST_NATURAL_MARKER = "most natural reading"
+CTC_MARKER = "check-then-change pairs"
 
 
 # ---------------------------------------------------------------------------
@@ -398,6 +408,25 @@ _HARD_NEGATIVE_ASK = (
 )
 
 
+_CTC_ASK = (
+    "Write {k} {marker} of user messages about the operation {name}, which changes the "
+    'machine. "check" asks only to look at one thing that a read-only operation from the list '
+    'answers; give that operation\'s name as "operation" and its arguments as "args". '
+    '"conditional" asks to look at that same thing and then, depending on what it shows, to do '
+    "what {name} does (for example: check X, and if it is over some limit, change Y). A "
+    "conditional needs several steps with a decision between them, so the assistant must hand "
+    "it back to a human instead of making the change; do not ask for the hand-off in so many "
+    "words. Never write an operation identifier from the list in either message: name the "
+    "subject the way a user would (for example 'GPU usage', not the identifier). Reply as a "
+    'JSON list of objects with keys "check", "operation", "args" and "conditional".'
+)
+
+
+def check_then_change_prompt(op_name: str, k: int) -> tuple[str, str]:
+    ask = _CTC_ASK.format(k=k, marker=CTC_MARKER, name=op_name)
+    return ds.GENERATOR_SYSTEM, _table_head() + ask
+
+
 def dx_prompt(k: int) -> tuple[str, str]:
     return ds.GENERATOR_SYSTEM, _table_head() + _DX_ASK.format(k=k, marker=DX_MARKER)
 
@@ -585,7 +614,55 @@ def hard_negative_units(
     return units
 
 
+def check_then_change_units(
+    role: aug.RoleConfig, k: int, caller: aug.RoleCaller, rejects: dict[str, int]
+) -> list[Unit]:
+    """Issue 53 (d7): a read-only check paired with the same check followed by a
+    conditional change, which escalates as ``decline:multi_step``."""
+    units = []
+    for op in (op for op in table.OPERATIONS if not op.read_only):
+
+        def prompt(size: int, op=op) -> tuple[str, str]:
+            return check_then_change_prompt(op.name, size)
+
+        for item in _ask(role, prompt, k, caller, rejects):
+            check, conditional = _text(item, "check"), _text(item, "conditional")
+            name, args = item.get("operation"), item.get("args")
+            read_only = table.get(name) if isinstance(name, str) else None
+            if (
+                not (check and conditional)
+                or read_only is None
+                or not read_only.read_only
+                or table.validate(name, args) is not None
+            ):
+                _bump(rejects, "invalid_item")
+                continue
+            check_expect = {"operation": name, "args": dict(args)}
+            escalate_expect = {"escalate": True}
+            units.append(
+                Unit(
+                    "check-then-change",
+                    [
+                        Item(check, check_expect, None, [ds.reviewer_prompt(check, check_expect)]),
+                        Item(
+                            conditional,
+                            escalate_expect,
+                            "decline:multi_step",
+                            [
+                                ds.reviewer_prompt(
+                                    conditional, escalate_expect, "decline:multi_step"
+                                )
+                            ],
+                            extra={"changes": op.name},
+                        ),
+                    ],
+                )
+            )
+    return units
+
+
 _DRAFTERS = {
+    "check-then-change": check_then_change_units,
     "diagnosis-explain": dx_units,
     "power-set": choice_units,
     "disambiguation": disambiguation_units,
@@ -599,6 +676,8 @@ def _units_per_round(recipe: str) -> int:
         return 1
     if recipe == "power-set":
         return len(choice_targets())
+    if recipe == "check-then-change":
+        return sum(1 for op in table.OPERATIONS if not op.read_only)
     return len(table.OPERATIONS)
 
 
@@ -613,7 +692,7 @@ def planned_candidates(recipe: str, k: int) -> int:
     """Items a recipe asks the generator for, at most (a pair counts two)."""
     if recipe == "missing-argument":
         return 0
-    per_item = 2 if recipe == "diagnosis-explain" else 1
+    per_item = 2 if recipe in ("diagnosis-explain", "check-then-change") else 1
     return max(k, 0) * _units_per_round(recipe) * per_item
 
 
