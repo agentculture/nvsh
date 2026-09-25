@@ -50,6 +50,10 @@
 #                         build of a run (`quantize <run>` first; t25):
 #                           <run>.awq     WORK/quant/<run>/awq, served by vLLM like any
 #                                         model dir (it must pass gen_config.py check)
+#                           <run>.bf16_gguf  WORK/quant/<run>/model-bf16.gguf (quantize's
+#                                         unquantized export), served like .q4_k_m; used to
+#                                         check the served readout against in-process
+#                                         (issue 53 t17)
 #                           <run>.q4_k_m  WORK/quant/<run>/model-q4_k_m.gguf, served by
 #                                         the native llama-server LLAMA_SERVER names
 #                                         (required for it), greedy by --temp 0 --top-k 1
@@ -230,21 +234,26 @@ ground_snapshot() {
 
 build_base() {
   # The run a measured <name> belongs to: <run> for a quantized build
-  # (<run>.awq, <run>.q4_k_m -- what `quantize <run>` wrote), else <name>.
+  # (<run>.awq, <run>.q4_k_m, <run>.bf16_gguf -- what `quantize <run>` wrote),
+  # else <name>.
   case $1 in
-    *.awq | *.q4_k_m) echo "${1%.*}" ;;
+    *.awq | *.q4_k_m | *.bf16_gguf) echo "${1%.*}" ;;
     *) echo "$1" ;;
   esac
 }
 
-is_gguf_build() { [[ $1 == *.q4_k_m ]]; }
+is_gguf_build() { [[ $1 == *.q4_k_m || $1 == *.bf16_gguf ]]; }
 
 quant_build() {
   # quant_build NAME: the served path of a quantized build (the AWQ dir or the
   # GGUF file), after checking `quantize <run>` finished for it.
   local name=$1 base kind path
   base=$(build_base "$name"); kind=${name##*.}
-  if [ "$kind" = awq ]; then path="$WORK/quant/$base/awq"; else path="$WORK/quant/$base/model-q4_k_m.gguf"; fi
+  case $kind in
+    awq) path="$WORK/quant/$base/awq" ;;
+    bf16_gguf) path="$WORK/quant/$base/model-bf16.gguf" ;;
+    *) path="$WORK/quant/$base/model-q4_k_m.gguf" ;;
+  esac
   if [ "$kind" = awq ]; then
     [ -d "$path" ] || die "no $path; run quantize $base first"
   else

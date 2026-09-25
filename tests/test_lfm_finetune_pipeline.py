@@ -2972,3 +2972,31 @@ def test_measure_reasons_refuses_an_unknown_value(tmp_path: Path) -> None:
     assert result.returncode != 0
     assert "MEASURE_REASONS" in result.stderr
     assert not pipe.calls("measure.py")
+
+
+def test_measure_val_of_a_bf16_gguf_build_serves_the_bf16_file(tmp_path: Path) -> None:
+    """Issue 53 t17: <run>.bf16_gguf serves quantize's unquantized GGUF with
+    llama-server, so the served readout can be checked against in-process."""
+    port = _free_port()
+    pipe = _Pipeline(tmp_path, f"MEASURE_PORT={port}\n")
+    pipe.ready(stock=False)
+    quant = _quantized(pipe)
+    (quant / "model-bf16.gguf").write_bytes(b"GGUF fake bf16")
+    llama = _fake_llama_server(tmp_path)
+    result = pipe.run("measure-final", "a1.bf16_gguf", **llama)
+    assert result.returncode == 0, result.stderr
+    [served] = _llama_calls(tmp_path)
+    assert _option(served, "--model") == [str(quant / "model-bf16.gguf")]
+    assert _option(served, "--alias") == ["a1.bf16_gguf"]
+    [(_, argv)] = pipe.calls("measure.py")
+    assert _option(argv, "--label") == ["final-a1.bf16_gguf"]
+    assert _option(argv, "--revision") == [_build_revision(quant)]
+
+
+def test_a_bf16_gguf_build_without_its_file_is_refused(tmp_path: Path) -> None:
+    pipe = _Pipeline(tmp_path)
+    pipe.ready(stock=False)
+    _quantized(pipe)
+    result = pipe.run("measure-final", "a1.bf16_gguf")
+    assert result.returncode != 0
+    assert "model-bf16.gguf" in result.stderr
