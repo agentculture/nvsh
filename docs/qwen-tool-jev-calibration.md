@@ -484,9 +484,20 @@ lapses, all posted on issue #61 when they happened.
 
   | Build | Right proposals | Abstention recall | False-positive calls | Wrong mutating | Invalid | ECE | Brier |
   |---|---|---|---|---|---|---|---|
-  | in-process (exact) | 54 / 84 | 70 / 84 | 16 / 120 | 0 | 14 | 0.081 | 0.240 |
-  | served bf16 GGUF | — | 70 / 84 | — | 0 | 14 | 0.078 | 0.241 |
-  | served `Q4_K_M` | — | 70 / 84 | 16 / 120 | 1 | 13 | 0.097 | 0.258 |
+  | in-process (exact) | 59 / 84 | 70 / 84 | 16 / 120 | 0 | 1 | 0.081 | 0.240 |
+  | served bf16 GGUF | 59 / 84 | 70 / 84 | 16 / 120 | 0 | 1 | 0.078 | 0.241 |
+  | served `Q4_K_M` | 59 / 84 | 70 / 84 | 16 / 120 | 1 | 2 | 0.097 | 0.258 |
+
+  **Re-measured with the v2 grounding snapshot (lapse l9, D34).** The first
+  t17 pass, with issue 46's snapshot, read 54 / 84 right proposals and 14
+  (Q4: 13) `not_grounded` invalid outputs on every build: 13 of those 14
+  were names missing from the old snapshot. Distributions, ECE, Brier, the
+  fitted temperature and vector (refitted: identical) and the permutation
+  probe are unaffected by grounding. The old pages are kept under
+  `t17-snap46/`. **Accuracy floor for the rule (step 2):** `scorer-b1`
+  in-process on the selection fold, 17 of 24 right proposals (70.8%; the
+  old snapshot read 16 of 24), so a candidate needs at least 65.8%. With 24
+  operation entries on the fold, one entry is 4.2 points.
 
   Every readout was complete (204 / 204). Readout fidelity: served bf16
   GGUF vs in-process differs by more than 0.01 on 22 of 204 entries (max
