@@ -530,6 +530,7 @@ def test_v2_fold_assignment_keeps_source_id_groups_on_one_side(tmp_path) -> None
     corpus.write_text(json.dumps({"header": "h", "entries": entries}), encoding="utf-8")
     # --seed 3 lands the whole "sib" group in val for this fixture (confirmed
     # by direct enumeration); vary --fold-seed to hit the buggy per-id shuffle.
+    saw_sib_in_val = False
     for fold_seed in range(15):
         out_dir = tmp_path / f"out{fold_seed}"
         module.main(
@@ -554,9 +555,13 @@ def test_v2_fold_assignment_keeps_source_id_groups_on_one_side(tmp_path) -> None
         sib_ids_in_val = {e["id"] for e in val_payload["entries"] if e["source_id"] == "sib"}
         if not sib_ids_in_val:
             continue
+        saw_sib_in_val = True
         fit_ids = set(val_payload["header"]["fit_ids"])
         selection_ids = set(val_payload["header"]["selection_ids"])
         assert sib_ids_in_val <= fit_ids or sib_ids_in_val <= selection_ids, fold_seed
+    # Guard against this test passing vacuously (e.g. if the fixture ever
+    # changes and --seed 3 stops putting the "sib" group in val at all).
+    assert saw_sib_in_val, '"sib" source_id group never landed in val across any swept fold-seed'
 
 
 def test_v2_stratifies_a_rare_class_across_val_and_test(tmp_path) -> None:
