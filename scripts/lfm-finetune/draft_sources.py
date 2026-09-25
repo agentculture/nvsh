@@ -63,7 +63,7 @@ import random
 import sys
 import urllib.request
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Sequence
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import augment as aug  # noqa: E402
@@ -373,13 +373,34 @@ def _op_candidates(
     return out
 
 
+def _split_reasons(text: str | None) -> list[str] | None:
+    """``--only-reasons``' comma-separated value as a list, or ``None`` when unset."""
+    if text is None:
+        return None
+    return [part.strip() for part in text.split(",") if part.strip()]
+
+
+def check_reasons(only: Sequence[str] | None) -> tuple[str, ...]:
+    """The decline reasons a draft covers: *only* (validated, table order) or all of them."""
+    if only is None:
+        return REASONS
+    unknown = sorted(set(only) - set(REASONS))
+    if unknown or not only:
+        raise ValueError(f"unknown decline reason(s) {unknown}; choose from {', '.join(REASONS)}")
+    return tuple(reason for reason in REASONS if reason in set(only))
+
+
 def _decline_candidates(
-    role: aug.RoleConfig, k: int, caller: RoleCaller, rejects: dict[str, int]
+    role: aug.RoleConfig,
+    k: int,
+    caller: RoleCaller,
+    rejects: dict[str, int],
+    reasons: Sequence[str] = REASONS,
 ) -> list[Candidate]:
     out: list[Candidate] = []
     if k <= 0:
         return out
-    for reason in REASONS:
+    for reason in reasons:
         system, user = decline_prompt(reason, k)
         for item in _generate_list(role, system, user, caller, rejects):
             text = str(item.get("text", "")).strip()
@@ -610,9 +631,11 @@ def run_draft(
     caller: RoleCaller | None = None,
     roles: dict[str, aug.RoleConfig] | None = None,
     dev_texts: list[str] | None = None,
+    only_reasons: Sequence[str] | None = None,
 ) -> dict[str, Any]:
     if pool not in POOLS:
         raise ValueError(f"--pool must be one of {POOLS}, got {pool!r}")
+    reasons = check_reasons(only_reasons)
     random.seed(seed)
     # ``random.seed`` above only covers this process's local ``random`` use;
     # it never reaches the generator/reviewer HTTP calls. Left unspecified,
@@ -626,7 +649,7 @@ def run_draft(
     rejects: dict[str, int] = {}
     candidates: list[Candidate] = []
     candidates += _op_candidates(roles["GENERATOR"], per_op, caller, rejects)
-    candidates += _decline_candidates(roles["GENERATOR"], per_reason, caller, rejects)
+    candidates += _decline_candidates(roles["GENERATOR"], per_reason, caller, rejects, reasons)
     candidates += _explain_candidates(roles["GENERATOR"], explain, caller, rejects)
 
     candidates = dedupe_candidates(candidates, dev_texts, rejects)
@@ -670,6 +693,7 @@ def run_draft(
         "seed": seed,
         "per_op": per_op,
         "per_reason": per_reason,
+        "reasons": list(reasons),
         "explain": explain,
         "models": models,
         "sampling": {
@@ -787,6 +811,11 @@ def _add_draft_parser(sub: Any) -> None:
     p.add_argument("--per-op", type=int, default=3, help="requests per operation")
     p.add_argument("--per-reason", type=int, default=4, help="requests per decline reason")
     p.add_argument("--explain", type=int, default=6, help="knowledge questions to draft")
+    p.add_argument(
+        "--only-reasons",
+        default=None,
+        help="comma-separated decline reasons to draft (default: all 8), for a top-up",
+    )
     p.add_argument("--dry-run", action="store_true", help="build prompts and print counts only")
 
 
@@ -805,6 +834,10 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.command == "draft":
+        try:
+            check_reasons(_split_reasons(args.only_reasons))
+        except ValueError as exc:
+            parser.error(str(exc))
         if args.dry_run:
             print(
                 json.dumps(
@@ -814,7 +847,8 @@ def main(argv: list[str] | None = None) -> int:
                         "seed": args.seed,
                         "planned": {
                             "operations": len(table.OPERATIONS) * max(args.per_op, 0),
-                            "reasons": len(REASONS) * max(args.per_reason, 0),
+                            "reasons": len(check_reasons(_split_reasons(args.only_reasons)))
+                            * max(args.per_reason, 0),
                             "explain": max(args.explain, 0),
                         },
                     }
@@ -835,6 +869,7 @@ def main(argv: list[str] | None = None) -> int:
                 per_reason=args.per_reason,
                 explain=args.explain,
                 roles=roles,
+                only_reasons=_split_reasons(args.only_reasons),
             )
         except ValueError as exc:
             print(f"error: {exc}", file=sys.stderr)

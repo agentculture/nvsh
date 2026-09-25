@@ -692,3 +692,48 @@ def test_post_chat_completion_seeded_sends_a_top_level_seed(
     assert captured["body"]["seed"] == 12345
     assert captured["body"]["model"] == role.model
     assert captured["body"]["messages"][1]["content"] == "usr"
+
+
+def test_only_reasons_limits_the_decline_draft(tmp_path: Path) -> None:
+    """``--only-reasons`` (issue 53 top-ups): only the named classes are drafted."""
+    ds.run_draft(
+        out_dir=tmp_path,
+        pool="eval",
+        seed=1,
+        per_op=0,
+        per_reason=1,
+        explain=0,
+        caller=FakeCaller(),
+        roles=ROLES,
+        dev_texts=[],
+        only_reasons=["not_a_request", "missing_argument"],
+    )
+    doc = json.loads((tmp_path / "draft.json").read_text())
+    classes = {entry["class"] for entry in doc["entries"]}
+    assert classes and classes <= {"decline:not_a_request", "decline:missing_argument"}
+    assert doc["header"]["reasons"] == ["missing_argument", "not_a_request"]
+
+
+def test_only_reasons_refuses_an_unknown_reason() -> None:
+    with pytest.raises(ValueError, match="unknown decline reason"):
+        ds.check_reasons(["repair", "nonsense"])
+    assert ds.check_reasons(None) == ds.REASONS
+
+
+def test_only_reasons_cli_dry_run_counts_the_named_reasons(capsys) -> None:
+    ds.main(
+        [
+            "draft",
+            "out",
+            "--pool",
+            "eval",
+            "--seed",
+            "1",
+            "--per-reason",
+            "5",
+            "--only-reasons",
+            "repair,injection",
+            "--dry-run",
+        ]
+    )
+    assert json.loads(capsys.readouterr().out)["planned"]["reasons"] == 10
