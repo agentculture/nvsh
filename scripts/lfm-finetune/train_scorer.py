@@ -190,6 +190,21 @@ def _example(entry, item: dict) -> Example:
     )
 
 
+def example_messages(example: Example) -> list[dict]:
+    """The prompt messages *example* is trained on: its own map, else today's fixed one.
+
+    ``measure.py`` (``scorer_request``) must render byte-identical messages
+    for the same candidate list and order; a test pins the two together.
+    """
+    permutation = example.permutation
+    return scorer.prompt_messages(
+        example.request,
+        labels=permutation.labels if permutation is not None else None,
+        order=permutation.order if permutation is not None else None,
+        descriptions=example.descriptions,
+    )
+
+
 def encode(tokenizer, examples: list[Example], max_length: int) -> list[dict]:
     """``{"input_ids", "target", "letters"}`` per example, from that example's own map.
 
@@ -204,13 +219,7 @@ def encode(tokenizer, examples: list[Example], max_length: int) -> list[dict]:
         permutation = example.permutation
         order = permutation.order if permutation is not None else fixed_names
         labels = permutation.labels if permutation is not None else fixed_labels
-        messages = scorer.prompt_messages(
-            example.request,
-            labels=permutation.labels if permutation is not None else None,
-            order=permutation.order if permutation is not None else None,
-            descriptions=example.descriptions,
-        )
-        prompt = scorer.render_prompt(tokenizer, messages)
+        prompt = scorer.render_prompt(tokenizer, example_messages(example))
         input_ids = list(tokenizer.encode(prompt, add_special_tokens=False))
         if len(input_ids) > max_length:
             raise ValueError(

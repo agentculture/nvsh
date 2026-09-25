@@ -316,11 +316,15 @@ def test_v2_writes_versioned_header_with_seed_and_source_hashes(tmp_path) -> Non
     expected_hash = module.sha256_file(corpus)
     for name in module.SPLIT_NAMES:
         payload = json.loads((out_dir / f"{name}.json").read_text(encoding="utf-8"))
-        header = payload["header"]
-        assert header["version"] == "v2"
-        assert header["seed"] == 39
-        assert header["sources"] == [{"path": str(corpus), "sha256": expected_hash}]
-        assert header["sizes"] == {"train": 13, "val": 4, "test": 4}
+        # The header stays split.py's v1-style string note (every downstream
+        # reader parses it); the structured metadata sits under "split".
+        assert payload["header"].startswith(f"Split '{name}' of corpus-v2 (seed=39). ")
+        metadata = payload["split"]
+        assert metadata["side"] == name
+        assert metadata["version"] == "v2"
+        assert metadata["seed"] == 39
+        assert metadata["sources"] == [{"path": str(corpus), "sha256": expected_hash}]
+        assert metadata["sizes"] == {"train": 13, "val": 4, "test": 4}
 
 
 def test_v2_target_sizes_are_absolute_and_stratified_by_kind(tmp_path) -> None:
@@ -382,7 +386,7 @@ def test_v2_records_fold_assignment_in_val_header_and_folds_json(tmp_path) -> No
         ]
     )
     val_payload = json.loads((out_dir / "val.json").read_text())
-    val_header = val_payload["header"]
+    val_header = val_payload["split"]
     val_ids = [e["id"] for e in val_payload["entries"]]
     assert val_header["fold_seed"] == 11
     assert sorted(val_header["fit_ids"] + val_header["selection_ids"]) == sorted(val_ids)
@@ -392,7 +396,7 @@ def test_v2_records_fold_assignment_in_val_header_and_folds_json(tmp_path) -> No
     assert folds["selection_ids"] == val_header["selection_ids"]
     # train/test headers carry no fold assignment -- val-only, per the brief.
     for name in ("train", "test"):
-        assert "fit_ids" not in json.loads((out_dir / f"{name}.json").read_text())["header"]
+        assert "fit_ids" not in json.loads((out_dir / f"{name}.json").read_text())["split"]
 
 
 def test_v2_merges_multiple_corpora_deduped_by_id(tmp_path) -> None:
@@ -427,8 +431,8 @@ def test_v2_merges_multiple_corpora_deduped_by_id(tmp_path) -> None:
         all_ids += [e["id"] for e in payload["entries"]]
     assert len(all_ids) == len(set(all_ids))
     assert len(all_ids) == len(entries_a) + 4
-    header = json.loads((out_dir / "train.json").read_text())["header"]
-    assert [source["path"] for source in header["sources"]] == [str(corpus_a), str(corpus_b)]
+    metadata = json.loads((out_dir / "train.json").read_text())["split"]
+    assert [source["path"] for source in metadata["sources"]] == [str(corpus_a), str(corpus_b)]
 
 
 def test_v2_refuses_held_out_among_multiple_corpora(tmp_path) -> None:
@@ -556,8 +560,8 @@ def test_v2_fold_assignment_keeps_source_id_groups_on_one_side(tmp_path) -> None
         if not sib_ids_in_val:
             continue
         saw_sib_in_val = True
-        fit_ids = set(val_payload["header"]["fit_ids"])
-        selection_ids = set(val_payload["header"]["selection_ids"])
+        fit_ids = set(val_payload["split"]["fit_ids"])
+        selection_ids = set(val_payload["split"]["selection_ids"])
         assert sib_ids_in_val <= fit_ids or sib_ids_in_val <= selection_ids, fold_seed
     # Guard against this test passing vacuously (e.g. if the fixture ever
     # changes and --seed 3 stops putting the "sib" group in val at all).
@@ -660,3 +664,59 @@ def test_every_side_keeps_the_corpus_world(tmp_path) -> None:
     split.main(["--corpus", str(corpus), "--out-dir", str(tmp_path / "out")])
     for name in ("train", "val", "test"):
         assert json.loads((tmp_path / "out" / f"{name}.json").read_text())["world"] == world
+
+
+@pytest.mark.parametrize("version", ["v 2", "test", "v2-val", "held-out-v2", "-v2"])
+def test_v2_refuses_a_version_that_breaks_or_names_a_side(tmp_path, capsys, version) -> None:
+    """The version lands in every side's ``Split '<side>' of corpus-<version>`` note:
+    whitespace would end the readers' corpus match early, and a side word would
+    make every side read as that side (e.g. every side refused as test)."""
+    module = _module()
+    corpus = _fixture_corpus(tmp_path)
+    with pytest.raises(SystemExit):
+        module.main(
+            [
+                "--corpus",
+                str(corpus),
+                "--version",
+                version,
+                "--val-size",
+                "4",
+                "--test-size",
+                "4",
+                "--fold-seed",
+                "1",
+                "--out-dir",
+                str(tmp_path / "o"),
+            ]
+        )
+    assert "--version" in capsys.readouterr().err
+    assert not (tmp_path / "o").exists()
+
+
+def test_v2_header_note_names_the_version_not_an_input_path(tmp_path) -> None:
+    """Several inputs merge into one v2 corpus, so the note names
+    ``corpus-<version>``; input paths (which could contain "test" or
+    "held-out") stay out of the header and live under "split"."""
+    module = _module()
+    corpus = _fixture_corpus(tmp_path, name="test-held-out-drafts.json")
+    out_dir = tmp_path / "out"
+    module.main(
+        [
+            "--corpus",
+            str(corpus),
+            "--version",
+            "v2.1",
+            "--val-size",
+            "4",
+            "--test-size",
+            "4",
+            "--fold-seed",
+            "1",
+            "--out-dir",
+            str(out_dir),
+        ]
+    )
+    header = json.loads((out_dir / "train.json").read_text())["header"]
+    assert header.startswith("Split 'train' of corpus-v2.1 (seed=39). ")
+    assert "drafts" not in header and "test" not in header and "held" not in header

@@ -40,12 +40,20 @@ as absolute target sizes rather than fractions (the rest goes to train),
 still stratified by expectation kind, and additionally interleaves entries
 by their ``class`` field (present on escalation entries) so a contiguous
 slice draws from every class roughly evenly where counts allow. Every v2
-output's ``header`` is a JSON object (not the plain string the legacy path
-writes) naming the corpus ``version``, the ``seed``, each input's path and
-sha256, and the resulting side sizes. After ``val.json`` is written, its
-ids are handed to ``calibration_fit.make_folds`` (task t4) with
-``--fold-seed``, and the resulting ``{fold_seed, fit_ids, selection_ids}``
-are folded into ``val.json``'s own header and also written standalone to
+output's ``header`` is still a plain string carrying the legacy path's own
+note, ``Split '<side>' of corpus-<version> (seed=N).``, because every
+downstream reader (train_scorer, build_dataset, merge_variations, measure,
+quantize, augment, dataset_bundle, and the test/held-out refusals in
+calibration_fit and permutation_probe) finds a side and seed there. A v2
+split merges several corpora, so the note names ``corpus-<version>`` (e.g.
+``corpus-v2``) rather than one input's file name; ``--version`` must be a
+plain name that says nothing about a side. The structured metadata sits
+beside the header under a top-level ``split`` object: the corpus
+``version``, the ``seed``, each input's path and sha256, and the resulting
+side sizes. After ``val.json`` is written, its ids are handed to
+``calibration_fit.make_folds`` (task t4) with ``--fold-seed``, and the
+resulting ``{fold_seed, fit_ids, selection_ids}`` are folded into
+``val.json``'s own ``split`` object and also written standalone to
 ``folds.json`` next to it, ready for ``calibration_fit``'s own ``fit``
 subcommand. v2 refuses to write to any path that resolves inside ``nvsh/``
 (the committed corpus lives there; a v2 corpus never does -- operator
@@ -61,6 +69,7 @@ import importlib.util
 import json
 import math
 import random
+import re
 import sys
 from collections import Counter
 from pathlib import Path
@@ -86,6 +95,9 @@ SPLIT_NAMES = ("train", "val", "test")
 #: Every expectation kind the corpus schema knows about, in report order.
 #: "explain" is new (see docs/lfm-finetune.md); dev.json has none yet.
 EXPECTATION_KINDS = ("operation", "escalate", "explain")
+
+#: A v2 ``--version``: it lands in every side's header note, which has no spaces.
+_VERSION_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 
 
 def expectation_kind(expect: dict) -> str:
@@ -419,20 +431,60 @@ def _write_side(
     return out_path
 
 
+def v2_corpus_name(version: str) -> str:
+    """The corpus name a v2 side's header note uses: ``corpus-<version>``.
+
+    A v2 split merges several ``--corpus`` inputs, so no one input's file
+    name describes it; the version name is stable and deterministic, and the
+    inputs themselves are listed (with sha256) under the ``split`` object.
+    """
+    return f"corpus-{version}"
+
+
+def check_version(version: str) -> None:
+    """Refuse a ``--version`` the side readers could misread.
+
+    The version lands inside every side's ``Split '<side>' of
+    corpus-<version> (seed=N).`` note, which readers match with ``\\S+``
+    (no whitespace) and scan for the words ``test``/``val``/``train`` and
+    ``held-out``: a version naming a side would make every side look like it.
+    """
+    if not _VERSION_RE.fullmatch(version):
+        raise ValueError(
+            f"--version {version!r} must be letters, digits, '.', '_' or '-' (e.g. v2)"
+        )
+    words = {word for word in re.split(r"[^a-z0-9]+", version.lower()) if word}
+    compact = re.sub(r"[^a-z0-9]", "", version.lower())
+    if words & set(SPLIT_NAMES) or "heldout" in compact:
+        raise ValueError(f"--version {version!r} must not name a split side")
+
+
 def _write_side_v2(
     out_dir: Path,
     name: str,
     entries: list[dict],
-    header: dict,
+    metadata: dict,
     world: dict | None = None,
 ) -> Path:
-    """Like :func:`_write_side`, but the header is a structured object (v2).
+    """Like :func:`_write_side`, plus a structured ``split`` object (v2).
 
-    v2's header carries ``version``, ``seed``, every input's ``sources``
-    (path + sha256) and the resulting ``sizes`` on every side, plus
-    ``fold_seed``/``fit_ids``/``selection_ids`` on the val side only.
+    ``header`` stays a string holding exactly :func:`_write_side`'s note
+    (so every reader's ``Split '<side>' of ... (seed=N).`` match still
+    works), followed by a sentence pointing at ``split``. *metadata* --
+    ``version``, ``seed``, every input's ``sources`` (path + sha256) and
+    the resulting ``sizes``, plus ``fold_seed``/``fit_ids``/``selection_ids``
+    on the val side only -- goes under the top-level ``split`` key. Paths
+    stay out of the header: a side reader scans it for ``test`` and
+    ``held-out``, and an input path could innocently contain either.
     """
-    payload: dict = {"header": {**header, "side": name}, "entries": entries}
+    corpus_name = v2_corpus_name(metadata["version"])
+    note = f"Split '{name}' of {corpus_name} (seed={metadata['seed']})."
+    header = (
+        f"{note} Corpus {metadata['version']}, merged by split.py from "
+        f"{len(metadata['sources'])} corpus file(s); its version, seed, sources "
+        'and sizes are under "split".'
+    )
+    payload: dict = {"header": header, "split": {**metadata, "side": name}, "entries": entries}
     if world is not None:
         payload["world"] = world
     out_path = out_dir / f"{name}.json"
@@ -464,6 +516,7 @@ def _main_v2(
     version = args.version or "v2"
 
     try:
+        check_version(version)
         entries, sources = merge_corpora(corpus_paths)
         sides, missing_kinds = stratified_split_sized(
             entries, args.seed, args.val_size, args.test_size
@@ -496,17 +549,17 @@ def _main_v2(
     )
 
     for name in SPLIT_NAMES:
-        header = {
+        metadata = {
             "version": version,
             "seed": args.seed,
             "sources": sources,
             "sizes": sizes,
         }
         if name == "val":
-            header["fold_seed"] = args.fold_seed
-            header["fit_ids"] = fit_ids
-            header["selection_ids"] = selection_ids
-        _write_side_v2(out_dir, name, sides[name], header, world)
+            metadata["fold_seed"] = args.fold_seed
+            metadata["fit_ids"] = fit_ids
+            metadata["selection_ids"] = selection_ids
+        _write_side_v2(out_dir, name, sides[name], metadata, world)
 
     write_json(
         out_dir / "folds.json",

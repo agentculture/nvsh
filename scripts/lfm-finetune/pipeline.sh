@@ -71,7 +71,13 @@
 #                         measure.py also gets --ground-snapshot GROUND_SNAPSHOT
 #                         (required; see `measure.py snapshot`) and --max-logprobs
 #                         MEASURE_MAX_LOGPROBS, and measure-val hands any further
-#                         [args] to it (e.g. --scorer served).
+#                         [args] to it (e.g. --scorer served). MEASURE_REASONS=1
+#                         (env or env file; default 0) adds measure.py --reasons to
+#                         every --scorer call of measure-val/-final/-heldout: set it
+#                         for a scorer trained with SCORER_BUILD_ARGS containing
+#                         --reasons, so it is measured on the pool (8 escalate:<reason>
+#                         candidates, no bare escalate) and prompt it was trained on
+#                         (issue 53). It refuses a call without --scorer.
 #   scan <name>           scan a trained run's merged checkpoint for secrets/binaries
 #                         (scan_bundle.py scan; writes scan.json next to it)
 #   quantize <name>       Q4_K_M GGUF + INT4 AWQ export of a merged checkpoint
@@ -279,14 +285,24 @@ scorer_measure_args() {
   # Track B (--scorer): measure.py's scorer loads a tokenizer (transformers,
   # the training environment's) from a path, not from the served name (issue
   # 46, t23). Prints the extra measure.py args; the caller sets PYTHONPATH.
+  # MEASURE_REASONS=1 adds --reasons: a scorer trained with SCORER_BUILD_ARGS
+  # containing --reasons must be measured on that same candidate pool (issue 53).
   local arg dir
+  case ${MEASURE_REASONS:-0} in
+    0 | 1) ;;
+    *) die "MEASURE_REASONS must be 0 or 1, not '${MEASURE_REASONS}'" ;;
+  esac
   for arg in "$@"; do
     if [ "$arg" = --scorer ] || [[ $arg == --scorer=* ]]; then
       dir=$(tokenizer_dir "$1")
       printf '%s\n' --tokenizer "$dir"
+      if [ "${MEASURE_REASONS:-0}" = 1 ]; then printf '%s\n' --reasons; fi
       return 0
     fi
   done
+  if [ "${MEASURE_REASONS:-0}" = 1 ]; then
+    die "MEASURE_REASONS=1 needs --scorer: reasons mode is a Track B candidate pool"
+  fi
 }
 
 measure_pythonpath() {

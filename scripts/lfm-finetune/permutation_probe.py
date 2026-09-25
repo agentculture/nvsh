@@ -55,6 +55,13 @@ Split guard: refuses a split file that looks like the test or held-out
 side (:func:`calibration_fit.split_markers`, mirrored from
 ``measure.py``'s own guard) unless ``--final`` is given -- the same rule
 ``measure.py`` and ``calibration_fit.py`` already apply.
+
+``--reasons`` probes a scorer trained with ``build_dataset.py --reasons``:
+the pool is ``scorer.candidate_pool(True)`` (the 8 ``escalate:<reason>``
+candidates in place of the bare escalate), the baseline letters each
+candidate by its position in that pool, every prompt carries the reason
+candidates' ``data/reasons.json`` descriptions, and an escalation's gold is
+its own reason (``scorer.reason_for_class``). The report records it.
 """
 
 from __future__ import annotations
@@ -104,17 +111,22 @@ class ProbeError(ValueError):
 # ---------------------------------------------------------------------------
 
 
-def gold_name(expect: Mapping[str, object]) -> str:
+def gold_name(
+    expect: Mapping[str, object], *, reasons: bool = False, cls: str | None = None
+) -> str:
     """The candidate *name* (never a calibration label) the corpus entry expects.
 
     Mirrors ``metrics.expected_label`` but returns the scorer's own candidate
     name (``scorer.Scored.choice``'s vocabulary: an operation name, or
     ``tier_lfm.EXPLAIN_TOOL`` / ``tier_lfm.ESCALATE_TOOL``), never bench's
     calibration label -- ``scorer.same_choice`` compares choices by name.
+    With *reasons*, an escalation's gold is its ``escalate:<reason>``
+    candidate, read from the entry's *cls* (``scorer.reason_for_class``, as
+    ``build_dataset.py --reasons`` does).
     """
     kind = metrics.expect_kind(expect)
     if kind == "escalate":
-        return tier_lfm.ESCALATE_TOOL
+        return scorer.reason_for_class(cls) if reasons else tier_lfm.ESCALATE_TOOL
     if kind == "explain":
         return tier_lfm.EXPLAIN_TOOL
     return str(expect["operation"])
@@ -285,15 +297,29 @@ def probe_entry(
     seed: object,
     paraphrases: Mapping[str, Sequence[str]] | None,
     kinds: Sequence[str] = KINDS,
+    reasons: bool = False,
 ) -> EntryOutcome:
-    """Baseline plus *per_entry* trials of each of *kinds* for one corpus entry."""
+    """Baseline plus *per_entry* trials of each of *kinds* for one corpus entry.
+
+    With *reasons*, *pool* is ``scorer.candidate_pool(True)``: the baseline
+    letters each candidate by its position in it (``build_dataset.py
+    --reasons``' default map) and every prompt carries the reason
+    candidates' descriptions (a paraphrase trial's own overrides on top).
+    """
     request_text = tier_lfm.request_message(
         tier_bench.request_for(entry), tier_bench.context_for(entry)
     )
-    gold = gold_name(entry.expect)
-    baseline_labels = scorer.labels_for(pool)
+    gold = gold_name(entry.expect, reasons=reasons, cls=entry.phrasing)
+    if reasons:
+        baseline_labels = scorer.positional_labels(pool, pool)
+        base_descriptions: dict[str, str] | None = scorer.reason_descriptions(pool)
+    else:
+        baseline_labels = scorer.labels_for(pool)
+        base_descriptions = None
     baseline_order = list(pool)
-    baseline = _score(scorer_obj, render, request_text, baseline_order, baseline_labels, None)
+    baseline = _score(
+        scorer_obj, render, request_text, baseline_order, baseline_labels, base_descriptions
+    )
     baseline_incomplete = _incomplete(baseline)
     outcome = EntryOutcome(entry_id=entry.id, gold=gold, baseline_choice=baseline.choice)
     for kind in kinds:
@@ -312,8 +338,11 @@ def probe_entry(
                 baseline.choice,
                 paraphrases,
             )
+            descriptions = trial.descriptions
+            if base_descriptions is not None:
+                descriptions = {**base_descriptions, **(trial.descriptions or {})}
             scored = _score(
-                scorer_obj, render, request_text, trial.order, trial.labels, trial.descriptions
+                scorer_obj, render, request_text, trial.order, trial.labels, descriptions
             )
             # A baseline or trial the scorer could not fully read is not evidence of an
             # answer change either way -- tallied separately (kind_report), never scored.
@@ -427,9 +456,14 @@ def run_probe(
     seed: object = DEFAULT_SEED,
     paraphrases: Mapping[str, Sequence[str]] | None = None,
     bootstrap_seed: int = metrics.DEFAULT_BOOTSTRAP_SEED,
+    reasons: bool = False,
 ) -> dict:
-    """The full probe report: every kind's aggregate, plus per-entry detail."""
-    resolved_pool = tuple(scorer.candidates() if pool is None else pool)
+    """The full probe report: every kind's aggregate, plus per-entry detail.
+
+    *reasons* probes a scorer trained with ``build_dataset.py --reasons``: the
+    default pool is then ``scorer.candidate_pool(True)`` (no bare escalate).
+    """
+    resolved_pool = tuple(scorer.candidate_pool(reasons) if pool is None else pool)
     outcomes = [
         probe_entry(
             scorer_obj,
@@ -439,6 +473,7 @@ def run_probe(
             per_entry=per_entry,
             seed=seed,
             paraphrases=paraphrases,
+            reasons=reasons,
         )
         for entry in entries
     ]
@@ -453,6 +488,7 @@ def run_probe(
         "entries": len(entries),
         "kinds": kinds_report,
         "canonicalised_order": False,
+        "reasons": reasons,
     }
 
 
@@ -573,6 +609,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--scorer-kind", default="in-process", choices=("served", "in-process"), dest="scorer_kind"
     )
     parser.add_argument("--config", default=None, help="nvsh config.toml (default: XDG path)")
+    parser.add_argument(
+        "--reasons",
+        action="store_true",
+        help="probe the pool build_dataset.py --reasons trains on (8 escalate:<reason>"
+        " candidates, no bare escalate), for a scorer trained that way",
+    )
     args = parser.parse_args(argv)
 
     split_path = Path(args.split)
@@ -619,6 +661,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             seed=args.seed,
             paraphrases=paraphrases,
             bootstrap_seed=args.bootstrap_seed,
+            reasons=args.reasons,
         )
     finally:
         close()  # pragma: no cover

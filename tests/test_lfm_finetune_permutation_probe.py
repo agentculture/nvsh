@@ -627,3 +627,79 @@ def test_cli_final_allows_test_split_to_reach_model_check(tmp_path, probe, capsy
     err = capsys.readouterr().err
     assert "looks like the test" not in err
     assert "--model" in err
+
+
+# ---------------------------------------------------------------------------
+# --reasons: probe the pool build_dataset.py --reasons trains on (issue 53)
+# ---------------------------------------------------------------------------
+
+
+class _RecordingIdentityScorer(_IdentityScorer):
+    def __init__(self, target: str) -> None:
+        super().__init__(target)
+        self.prompts: list[str] = []
+
+    def score_next_token(self, prompt: str, *, top: int = 20) -> dict[str, float]:
+        self.prompts.append(prompt)
+        return super().score_next_token(prompt, top=top)
+
+
+def _escalation(entry_id: str, cls: str | None) -> CorpusEntry:
+    return CorpusEntry(
+        id=entry_id,
+        kind="explicit",
+        text="reflash the bootloader",
+        expect={"escalate": True},
+        source="test",
+        phrasing=cls,
+    )
+
+
+def test_reasons_probe_offers_the_reason_pool_and_its_gold(probe):
+    """Without --reasons the probe's baseline (scorer.labels_for) refuses the
+    reason candidates outright; with it, every trial draws from the 25-name
+    reasons pool, the gold is the entry's own escalate:<reason>, and the
+    reason candidates carry their data/reasons.json descriptions."""
+    scorer_obj = _RecordingIdentityScorer("escalate:repair")
+    report = probe.run_probe(
+        scorer_obj,
+        _render,
+        [_escalation("e1", "decline:repair")],
+        per_entry=6,
+        seed="reasons",
+        reasons=True,
+    )
+    kinds = {row["kind"]: row for row in report["kinds"]}
+    for kind in ("order", "letters", "subset", "all"):
+        assert kinds[kind]["changes"] == 0, kind
+        assert kinds[kind]["incomplete"]["trials"] == 0, kind
+    pool = probe.scorer.candidate_pool(True)
+    baseline = scorer_obj.prompts[0]
+    assert list(_lines(baseline)) == list(pool)
+    assert _lines(baseline) == probe.scorer.positional_labels(pool, pool)
+    assert "escalate" not in _lines(baseline)
+    for prompt in scorer_obj.prompts:
+        assert "escalate:repair" in _lines(prompt)  # the gold is never dropped
+        for name in _lines(prompt):
+            if name in probe.scorer.REASON_DESCRIPTIONS:
+                assert f") {name}: {probe.scorer.REASON_DESCRIPTIONS[name]}" in prompt
+    assert report["reasons"] is True
+
+
+def test_reasons_probe_gold_rolls_an_unclassed_escalation_up(probe):
+    assert probe.gold_name({"escalate": True}, reasons=True, cls=None) == (
+        probe.scorer.DEFAULT_REASON
+    )
+    assert probe.gold_name({"escalate": True}, reasons=True, cls="decline:injection") == (
+        "escalate:injection"
+    )
+    assert probe.gold_name({"operation": "gpu_stats"}, reasons=True) == "gpu_stats"
+
+
+def test_probe_without_reasons_keeps_the_default_pool(probe):
+    scorer_obj = _RecordingIdentityScorer("gpu_stats")
+    report = probe.run_probe(
+        scorer_obj, _render, [_entry("e1", "gpu_stats")], per_entry=1, seed="plain"
+    )
+    assert list(_lines(scorer_obj.prompts[0])) == list(probe.scorer.candidates())
+    assert report["reasons"] is False

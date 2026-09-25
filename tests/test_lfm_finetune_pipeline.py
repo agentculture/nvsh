@@ -2910,3 +2910,65 @@ def test_train_scorer_without_a_scorer_file_trains_on_the_training_set(tmp_path:
     assert _option(argv, "--train") == [str(data / "train-augmented.json")]
     assert _option(argv, "--val") == [str(pipe.work / "splits" / "val.json")]
     assert f"train-scorer: training on {data / 'train-augmented.json'}" in result.stdout
+
+
+# -- MEASURE_REASONS: a --reasons scorer is measured on its own pool (issue 53) --
+
+
+def _scorer_stack_pipeline(tmp_path: Path, extra_env: str = "") -> "_Pipeline":
+    site = tmp_path / "train-site-packages"
+    site.mkdir()
+    train_py = tmp_path / "train-python"
+    train_py.write_text(f'#!/usr/bin/env bash\necho "{site}"\n', encoding="utf-8")
+    train_py.chmod(0o755)
+    pipe = _Pipeline(
+        tmp_path, f"TRAIN_PY={train_py}\nHELDOUT_SPLIT={_held_out(tmp_path)}\n" + extra_env
+    )
+    pipe.ready()
+    _mark_scorer_run(pipe)
+    return pipe
+
+
+@pytest.mark.parametrize("stage", ["measure-val", "measure-final", "measure-heldout"])
+def test_measure_reasons_adds_reasons_to_every_scorer_stage(stage: str, tmp_path: Path) -> None:
+    pipe = _scorer_stack_pipeline(tmp_path)
+    result = pipe.run(stage, "a1", "--scorer", "served", MEASURE_REASONS="1")
+    assert result.returncode == 0, result.stderr
+    [(_, argv)] = pipe.calls("measure.py")
+    assert argv.count("--reasons") == 1
+    assert _option(argv, "--tokenizer") == [str(pipe.work / "runs" / "a1" / "merged")]
+
+
+def test_measure_reasons_can_come_from_the_env_file(tmp_path: Path) -> None:
+    pipe = _scorer_stack_pipeline(tmp_path, "MEASURE_REASONS=1\n")
+    result = pipe.run("measure-final", "a1", "--scorer=in-process")
+    assert result.returncode == 0, result.stderr
+    [(_, argv)] = pipe.calls("measure.py")
+    assert "--reasons" in argv
+
+
+@pytest.mark.parametrize("value", ["", "0"])
+def test_without_measure_reasons_a_scorer_stage_is_unchanged(value: str, tmp_path: Path) -> None:
+    pipe = _scorer_stack_pipeline(tmp_path)
+    result = pipe.run("measure-final", "a1", "--scorer", "served", MEASURE_REASONS=value)
+    assert result.returncode == 0, result.stderr
+    [(_, argv)] = pipe.calls("measure.py")
+    assert "--reasons" not in argv
+
+
+def test_measure_reasons_refuses_a_generative_run(tmp_path: Path) -> None:
+    pipe = _Pipeline(tmp_path)
+    pipe.ready()
+    result = pipe.run("measure-val", "a1", MEASURE_REASONS="1")
+    assert result.returncode != 0
+    assert "MEASURE_REASONS" in result.stderr
+    assert not pipe.calls("measure.py")
+    assert not [c for c in _docker_calls(tmp_path) if c[0] == "run"]
+
+
+def test_measure_reasons_refuses_an_unknown_value(tmp_path: Path) -> None:
+    pipe = _scorer_stack_pipeline(tmp_path)
+    result = pipe.run("measure-final", "a1", "--scorer", "served", MEASURE_REASONS="yes")
+    assert result.returncode != 0
+    assert "MEASURE_REASONS" in result.stderr
+    assert not pipe.calls("measure.py")
