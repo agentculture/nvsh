@@ -431,6 +431,14 @@ lapses, all posted on issue #61 when they happened.
   the recipe re-runs (seed 54). t15 so far: power-set 45, disambiguation 74,
   hard-negative 24 (first pass), missing-argument 5 (first pass, before
   D26).
+- **D31.** **A mid-sentence "but" is the reason in a missing-argument
+  verdict (lapse l8).** Evidence: the missing-argument rerun kept 20 of 69;
+  re-parsing reviewer B's stored replies showed 20 of its 37 rejects were
+  clear yeses using "but" ("says 'that service' but does not name it").
+  The other recipes lost none this way. Choice (lead): allow "but" in both
+  missing-argument questions only, make a hedge word that leads the yes
+  reject even when allowed (0 of 281 stored accepts affected), re-run into
+  `sup-marg3.json`. Record: l8 on #61, commit `34928e5`.
 
 ## Where the run stands
 
@@ -486,8 +494,9 @@ lapses, all posted on issue #61 when they happened.
   hard-negative 24 and missing-argument 5 (both first passes, before the
   D26/D30 fixes). Diagnosis-explain done: 26 kept (13 whole pairs; 16
   rejected by reviewer B, 10 by the identifier guard, 1 near-duplicate of a
-  protected side; sha256 `5a091e53b289…`). Running: the missing-argument
-  rerun and the hard-negative rerun (seed 54).
+  protected side; sha256 `5a091e53b289…`). Missing-argument rerun: 20
+  kept, then D31 found 20 more real yeses lost to the parser; running
+  again as `sup-marg3.json`, beside the hard-negative rerun (seed 54).
 - **Assembly prepared (D29):** issue 46's reviewed variations copied into
   the run's `aug/`; `SUPPLEMENT` and `SCORER_BUILD_ARGS` set in the cycle's
   env. Next: combined supplement, `assemble`, freeze hashes, then r1-r3.
@@ -930,6 +939,14 @@ redaction rule).
   packages `train-augmented.json`, not `scorer-train.json`, and no stage
   adds calibration parameters or thresholds to a model bundle; t21 handles
   both by hand. None changes a result so far.
+- **P21, "but" read as a hedge in missing-argument verdicts (lapse l8).**
+  **Symptom:** the missing-argument rerun still kept only 20 of 69.
+  **Cause:** `parse_verdict` rejects any standalone "but"; reviewer B's
+  yeses explain the missing argument with one ("mentions 'the service' but
+  does not name which service"). No pilot ran before the rerun. **Fix:**
+  `MARG_ALLOWED_HEDGES = ("but",)` for both missing-argument questions;
+  `_YES_HEDGE_RE` rejects a hedge word leading the yes regardless.
+  Re-run as `sup-marg3.json`.
 - **Throughput note (not a bug).** Reviewer B (Qwen3.8-27B) thinks at
   about 42 tokens/s with up to 8192 tokens per verdict and serves 2
   requests at once, so reviews run at about 2-3 teacher calls a minute; the
