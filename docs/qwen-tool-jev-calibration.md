@@ -390,6 +390,21 @@ lapses, all posted on issue #61 when they happened.
   4); D25's vector scaling is a t19 deployment choice, not a selection
   criterion.
 
+- **D28.** **For `scorer-b1`, calibration does the gating work; the gate adds
+  nothing measurable.** Evidence: the offline sweep of 5,184 threshold sets
+  on `Q4_K_M`'s calibrated (temperature + vector) validation predictions:
+  on the fit fold (143) the best set (read-only margin 0.1) turns one
+  missed escalation into an abstention; on the selection fold (61) every
+  set, including no gate at all, gives 0 wrong mutating, 16 of 24 right
+  proposals and 21 of 24 escalations. The one wrong mutating proposal the
+  raw `Q4_K_M` made (the check-then-change request, `power_set` at 0.69)
+  becomes an escalation (0.56) under calibration, because the vector fitted
+  on the other fold gives escalate a weight of 5.3. Choice: t17 is closed;
+  the thresholds that matter are fitted for the new checkpoint in t19, on
+  its own `Q4_K_M` predictions and on the missing-candidate slice (which
+  v2 validation does not contain, so the sweep's missing-candidate recall
+  was n/a here).
+
 ## Where the run stands
 
 **Latest, 2026-09-25 afternoon.**
@@ -424,8 +439,8 @@ lapses, all posted on issue #61 when they happened.
   mutating proposal: a check-then-change request ("check swap usage, and if
   it's over 50%, switch to low power") that the exact build answers with
   the read-only `swap_status` and `Q4_K_M` with `power_set`. Calibration
-  fits and the selection-fold result are decision D25 above; the gate sweep
-  is running.
+  fits and the selection-fold result are decision D25 above; the gate
+  sweep is decision D28. **t17 done.**
 - **t17 permutation probe, `scorer-b1` in-process on v2 validation** (D27):
 
   | Kind | Trials | Changes | Rate | 95% CI (entries) |
