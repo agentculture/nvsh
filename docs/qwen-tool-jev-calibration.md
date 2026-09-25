@@ -439,6 +439,14 @@ lapses, all posted on issue #61 when they happened.
   missing-argument questions only, make a hedge word that leads the yes
   reject even when allowed (0 of 281 stored accepts affected), re-run into
   `sup-marg3.json`. Record: l8 on #61, commit `34928e5`.
+- **D33.** **A diagnosis-explain top-up, using reviewer B's free slot.**
+  Evidence: diagnosis-explain kept only 13 whole pairs; 10 candidates were
+  dropped for writing an operation identifier (D30's cause); the operator
+  prefers more data. Choice (lead): the diagnosis-explain ask gets D30's
+  identifier-free rule (`f75f414`), and a seed-54 top-up
+  (`sup-dx2.json`, 40 requested) runs while the hard-negative rerun holds
+  the other slot. The combined supplement keeps or drops each pair whole.
+  Record: guide.
 - **D32.** **Lapses l5-l8 approved.** The operator approved l5 (split v2
   header), l6 (reviewer policy), l7 with its naturalness addendum (verdict
   parser) and l8 (mid-sentence "but"). Every lapse of this cycle, l1-l8,
@@ -505,7 +513,7 @@ lapses, all posted on issue #61 when they happened.
   read all 24 remaining reviewer rejects: every one is a genuine "no"
   (fragments such as "that service logs", stripping that left the service
   named, awkward phrasings), none a parser artifact. Still running: the
-  hard-negative rerun (seed 54).
+  hard-negative rerun (seed 54) and a diagnosis-explain top-up (D33).
 - **Assembly prepared (D29):** issue 46's reviewed variations copied into
   the run's `aug/`; `SUPPLEMENT` and `SCORER_BUILD_ARGS` set in the cycle's
   env. Next: combined supplement, `assemble`, freeze hashes, then r1-r3.
