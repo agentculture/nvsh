@@ -306,18 +306,23 @@ NVSH_DRAFT_GENERATOR_MAX_TOKENS=12000
   throughput collapses (issue 46, P52).
 - **The verdict parser** (`augment.parse_verdict`) is strict: the first
   word must be "yes", and the reply must pass a check for a verdict-like
-  "no" and a check for hedge words. Two false rejects we hit:
+  "no" and a check for hedge words. Three false rejects we hit:
   - "no-argument" was read as a no;
   - "ambiguous" was treated as a hedge, but it is the very reason an
-    escalation is right.
+    escalation is right;
+  - "but" was treated as a hedge in "says 'that service' but does not
+    name it", which is the reason for the yes.
 
-  Escalation verdicts may now contain `ambiguous`/`unclear`, and the
-  naturalness question may contain `might`/`could`/`may`/`though` (P17,
-  P19).
+  Escalation verdicts may now contain `ambiguous`/`unclear`. The
+  naturalness question may contain `might`/`could`/`may`/`though`. Both
+  missing-argument questions may contain a mid-sentence `but`. A hedge
+  word right after the yes ("yes, but ...") always rejects (P17, P19,
+  P21). Better still, when you port the pipeline, ask reviewers for a
+  structured verdict (for example JSON) instead of parsing free text.
 - **Pilot before every large pass.** Review about 20 known-good and 20
   known-bad items, and read the verdict *reasons* for every reject. Each
-  of issue 53's four yield problems (P12, P16, P17, P19) would have shown
-  up in a 40-item pilot. Two of them cost hours of re-review because no
+  of issue 53's five yield problems (P12, P16, P17, P19, P21) would have
+  shown up in a 40-item pilot. Several cost hours of re-review because no
   pilot ran.
 
 ## Step 4: draft and seal the held-out set
