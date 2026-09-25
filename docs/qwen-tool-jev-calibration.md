@@ -118,15 +118,18 @@ this cycle's PRs. Marked *(planned)* until the task's PR merges.
 | `metrics.py` | **Merged** (`6ea1105`). Per-slice results: read-only vs mutating (by the gold operation's `Operation.read_only`), `escalate_or_explain`, each carrying calibration, candidate-count and missing-candidate rate. Every rate and ECE/Brier carries n and a seeded percentile bootstrap 95% CI (1000 resamples, seed 0 default; precision uses a stratified bootstrap). New outcome `abstain_uncertain` is counted separately from semantic escalate but still counts as "escalated" for escalation bars. Escalation-reason labels use the form `escalate:<reason>` and roll up to plain `escalate` everywhere. `reliability_markdown()` renders the bin tables per slice. | t5 |
 | `gate.py` | **Merged, new.** `decide(distribution, offered, thresholds)` -> `propose` / `explain` / `escalate` / `abstain_uncertain`: escalate if the argmax or the rolled-up escalate mass clears its threshold; else explain if top1 is explain; else a per-`Operation.read_only` threshold set (a `p_top1` floor, the top1-top2 margin, and normalized entropy) decides `abstain_uncertain`; any threshold set to `None` disables that check. Thresholds are keyed only by `Operation.read_only`, never an operation name. | t6 |
 | `sweep_gate.py` | **Merged, new.** Re-decides stored `predictions.jsonl` rows offline, over a threshold grid, per fold; refuses test/held-out/final-labelled paths unless `--final`. Sanity-checked against `scorer-b1`'s own exact test-side predictions with every threshold disabled: 61 of 64 decisions reproduced exactly; the other 3 were recorded `invalid` there because `scorer-b1`'s argument grounding failed on them — a step the gate (distribution only) never sees, so this is expected, not a bug. | t6 |
-| `permutation_probe.py` | *(planned, new)* Runs the permutation seam at least 10 times per entry per perturbation kind (order, letters, subset, paraphrase) and reports the operation-level answer-change rate with n and a bootstrap 95% CI; never canonicalises runtime order. | t7 |
+| `permutation_probe.py` | **Merged, new.** Kinds: `order`, `letters`, `subset` (keeps the gold candidate; also reports how often the *baseline's own choice* would have been the one removed), `paraphrase`, and `all` (order + letters + subset drawn together in one `scorer.permute` call, OpenJev-style). Per-trial seeding is `"<seed>:<entry id>:<kind>:<i>"`; an answer change is the op-level choice differing from the baseline (default map) choice. The bootstrap CI resamples *entries*, not trials, since trials of one entry are correlated. Also splits change rates by lowercase vs uppercase letters (park v3's residual risk). Never canonicalises runtime order; refuses test/held-out without `--final`. The real scorer is built through `measure.py`'s `Seams().build_scorer`. | t7 |
 | `measure.py` | **Merged, closes #57.** `--calibration PARAMS` applies the fitted temperature then vector to a line's candidates before metrics/predictions are computed (refuses a params file fitted on test/held-out by name, or a malformed one). The report gains 95% bootstrap CI rows, a "Scorer readouts, complete / incomplete (never renormalised)" row, an "ECE / Brier before `--calibration`" row for comparison, and a "Per-slice calibration" section with reliability tables. Preflight now requires `--max-logprobs >= READOUT_TOP` (d1). **Issue #57 fixed:** a run where every server start-up failed now writes a page explicitly marked "nothing measured", which a re-run under the same label freely replaces; a page that measured anything, even partially, still refuses to be silently overwritten; a "nothing measured" page is never counted as a final run. **Caveat recorded for later tasks:** vector scaling can change which candidate is top-1 even though the recorded *decision* stays whatever the model actually chose before scaling — so any thresholded decision (the gate, t6) must be re-made on the calibrated distribution, never read off the pre-calibration argmax. | t8 |
 | `docs/tool-jev-calibration-rule.md` | **Merged** (commit `b1c6cb6`). The pre-registered checkpoint-selection rule — selection fold, ordered criteria, tie-breaks, and the calibration-aware-stage trigger — confirmed by the operator before any training. See [below](#the-pre-registered-checkpoint-decision-rule-t9). | t9 |
 | `docs/qwen-tool-jev-calibration.md` | This file. | t10 |
 | `docs/qwen-tool-jev-finetune.md`, `docs/benchmarks/2026-09-24-qwen-tool-jev-comparison.md`, `release_bundle.py` (model-card text) | **Merged.** Track A is now described as a specialized generative tool router and Track B as the Jev-style candidate scorer; no text calls them equally Jev-like. | t11 |
 | `split.py` | **Merged.** New v2 mode: repeatable `--corpus`, `--version`, `--val-size`/`--test-size` as counts, `--fold-seed`. The header is a JSON object `{version, seed, sources: [{path, sha256}], sizes, side}`; the validation header additionally carries `fold_seed`/`fit_ids`/`selection_ids`, and a `folds.json` is written for `calibration_fit`. Refuses any output path under `nvsh/` and refuses `held-out.json` as input. Assembly is class-balanced round-robin by the corpus's `class` field; requested totals can land 1-2 off target per answer kind, from largest-remainder rounding. | t12 |
-| `draft_heldout.py` | Reused from issue 46, extended with a `--seed` option (default 46) so this cycle can draft its own fresh held-out set independent of issue 46's. See [ledger P5](#ledger-symptom---cause---fix) for the seed-53 draft's parse gap and the fix in progress. | t13 |
-| `build_dataset.py`, `merge_variations.py` | *(planned)* Store each rendered example's offered candidates, order and letter map; generate deterministic missing-candidate / no-valid-option train examples from train entries only (`eval_slices.py`'s shape); an optional mode renders the corpus's 8 decline classes as distinct escalate-reason candidates, described from a scripts-side JSON, rolling up to escalate in gold labels. | t14 |
-| `data/reasons.json`, `data/paraphrases.json` | *(planned, new)* Scripts-side descriptions for escalation-reason candidates and for the paraphrase permutation probe — never read from `nvsh/`. | t14 |
+| `draft_heldout.py` | Reused from issue 46, extended with a `--seed` option (default 46) so this cycle can draft its own fresh held-out set independent of issue 46's. See [ledger P7](#ledger-symptom---cause---fix) for the seed-53 draft's parse gap and the fix in progress. | t13 |
+| `draft_sources.py` | **Merged, new** (a second t13 tool, alongside `draft_heldout.py`). `draft OUT --pool eval\|heldout --seed N --per-op K --per-reason K --explain K`: a table-only generator producing per-operation requests with validated arguments, per-decline-reason escalate prompts for all 8 classes, and explain Q/A pairs. `review IN OUT`: two independent reviewers give a strict yes/no; only what both accept is kept; exact and near-duplicate (Jaccard >= 0.8) dedupe against `dev.json` and within the draft, reusing `leakage_check.py`. Prints counts and hashes only; `review.jsonl` omits entry text entirely for the `heldout` pool. Reviewer roles are configured through `NVSH_DRAFT_<ROLE>_*` environment variables — no literal URL, key or model name is hard-coded. | t13 |
+| `build_dataset.py` | **Merged.** Every rendered example is enriched with its `permutation` (`{order, labels}`), `gold`, `perm_seed` (a sha256 of `"<perm-seed>:<example id>"`), and `descriptions` (only when reason candidates are offered). New flags: `--randomize-labels`, `--perm-seed`, `--min-subset` (default 6), `--full-set-probability` (default 0.3), `--missing-candidate-rate` (train side only — derives `<id>-nocand` examples with the gold operation removed and gold retargeted to `escalate` / `escalate:outside_table`), `--reasons` (16 operations + `explain` + 8 `escalate:<reason>` = 25 candidates; the reason is read from the entry's `class` field, `decline:<reason>`, falling back to `outside_table` when unrecognised; descriptions come from `scripts/lfm-finetune/data/reasons.json`). Default behaviour (no new flags passed) is unchanged. | t14 |
+| `merge_variations.py` | Existing issue-46 tool; test coverage extended alongside t14's `build_dataset.py` changes. | t14 |
+| `data/reasons.json` | **Merged, new.** Scripts-side descriptions for the 8 `escalate:<reason>` candidates — never read from `nvsh/`. | t14 |
+| `data/paraphrases.json` | **Merged, new.** At least 2 alternative descriptions per candidate, for `permutation_probe.py`'s `paraphrase` kind. | t14 |
 | `train_scorer.py` | **Merged.** Reads each row's own permutation, gold, descriptions and `perm_seed`, and renders that row's own prompt; per-row label columns are padded with `-inf` masks. `--label-readout` chooses `variants` (default, the shared `distribution()` definition) or `single` (reproduces `scorer-b1` bit-identically — reproducing `b1` now requires passing `--label-readout single` explicitly). `--label-smoothing` / `--brier-weight` (default 0, off) add the calibration-aware loss terms beside cross-entropy. `train-log.json` gains `label_variant_ids`, `letter_ids`, `calibration_loss` and `permutations`; each row's own map is written to `<out>/row-maps.json` (path + sha256), so a run can be replayed exactly. | t16 |
 | `quantize.py` | Reused unchanged tooling from issue 46 to build the chosen checkpoint's `Q4_K_M` (and optionally AWQ). | t19 |
 
@@ -260,10 +263,22 @@ review of every task merged so far surfaced review-fix work landed inside
 t3/t4 (see [ledger below](#ledger-symptom---cause---fix)) and lapse l3.
 Full suite: 4459 passed.
 
-**Wave 3 started**, 2026-09-25: t13 (drafting the fresh evaluation sides
-and sealed held-out) is running; see ledger P5 below for its first
-obstacle and the fix in progress. This section will be updated at each
-step as the lead forwards findings.
+**Wave 3 in progress**, 2026-09-25. **Merged (code):** t7 (`permutation_probe.py`),
+t14 (`build_dataset.py` enrichment, `data/reasons.json`, `data/paraphrases.json`)
+and the `draft_sources.py` tool for t13. Wave 3's code (t7, t14, t16) is now
+fully merged; full suite 4540 passed. **t13 running (data, not yet merged):**
+the seed-53 held-out pass (see [ledger P7](#ledger-symptom---cause---fix))
+was joined by a seed-54 pass (75 entries: 43 operation, 16 escalate, 16
+explain; 3 invalid args, 2 duplicates dropped); the two passes were combined
+into one 134-entry held-out draft (85 operation, 33 explain, 16 escalate),
+ids prefixed by seed, hash `767c5639b2ceef4f…` (partial, as forwarded), now
+under two-reviewer review (reviewer A Gemma-4-26B-A4B, reviewer B
+Qwen3.8-27B; the lead reads counts only). In parallel, the eval-pool draft
+is running: generator Qwen3.6-35B-A3B (temperature 0.8, thinking off), 10
+entries per operation, 8 per decline reason, 60 explain (284 entries before
+review), reviewed by the same two reviewers. All teachers used are
+Apache-2.0. This section will be updated at each step as the lead forwards
+findings.
 
 Cumulative issue **#61** records every deviation, lapse and status update
 for this cycle as it happens; this guide's ledger below is the narrative
@@ -376,7 +391,20 @@ redaction rule).
   specifically, merged into the seed-53 draft programmatically (the lead
   never reads either draft's text, only counts and hashes, per c51/q11).
   Held-out draft hash (seed 53, pre-merge): `385092216b1e9b74…` (partial,
-  as forwarded).
+  as forwarded). **Resolved:** the seed-54 pass produced 75 entries (43
+  operation, 16 escalate, 16 explain; 3 invalid args, 2 duplicates
+  dropped); combined with the seed-53 draft into one 134-entry held-out
+  draft (85 operation, 33 explain, 16 escalate), ids prefixed by seed,
+  hash `767c5639b2ceef4f…` (partial, as forwarded), now under two-reviewer
+  review.
+- **P8, a load-sensitive test flake (unrelated to this cycle's files).**
+  **Symptom:** a full-suite run under heavy load failed
+  `tests/test_readline_bash.py::test_bash_at_target_grammar_accepts_every_python_positive_row`
+  once. **Cause:** the failure did not reproduce in isolation (36 of 36
+  passed there), so it is a timing flake under load, not a real
+  regression. **Fix:** none needed in this cycle's own files; noted here
+  only so a future run does not mistake this specific test for evidence
+  of a regression this cycle introduced.
 
 ## Reproduce steps
 
