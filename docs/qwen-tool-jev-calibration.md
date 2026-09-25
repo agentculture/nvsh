@@ -603,6 +603,27 @@ lapses, all posted on issue #61 when they happened.
   `9ccb7a74092b561c`, leakage `2793f204f5fc4add`; splits unchanged. r3b (r3's
   recipe, lr 1e-4) trains on it on the training machine, cortex stopped
   for the run. Record: guide, #61.
+- **D46.** **r3b wins under the rule with d6; t19 moves to r3b.** r3b (r3's
+  recipe on the d7 set; 2503 rows), validation 204 in-process: right 76/84,
+  **wrong mutating 0 with the gate off**, abstention recall 94.0%,
+  false-positive calls 1/120, invalid 3, ECE 0.038, Brier 0.090;
+  missing-candidate slice 73.8% escalated with **0 wrong mutating**, its 19
+  proposals all read-only neighbours of the removed operation (for example
+  `gpu_stats` for `memory_stats`, `service_status` for `service_logs`).
+  Selection fold: raw 23/24, pooled permutation change **3.1%** (order 2.8%,
+  letters 2.6%, subset 3.3%, paraphrase 3.3%, all 3.6%), ECE raw 0.046,
+  after temperature 0.032 (favoured; with vector 0.037). **Gate fit
+  (lead):** the plan's t19 fits thresholds "including the missing-candidate
+  slice", so the objective is 0 wrong mutating, then missing-candidate
+  escalation >= 80%, then the most right proposals, on the fit fold: escalate
+  when escalate mass >= 0.1 (fit right 53 -> 51, missing-candidate
+  escalation 75% -> 90%, escalation recall 98.3%). Selection fold at that
+  gate: right 21/24, 0 wrong mutating, escalation recall 95.8%,
+  missing-candidate 19/24 (79.2%). **The rule with d6:** r3 fails the d6
+  filter; r1 and r3b pass it and the floor (78.3%); pooled permutation
+  change r3b 3.1% vs r1 5.0%, more than 1 point apart, so **r3b is chosen**
+  at step 3. r4 is not triggered (0.032). t19 re-runs on r3b; r1's t19
+  artifacts stay as the fallback. Record: guide, #61.
 - **D32.** **Lapses l5-l8 approved.** The operator approved l5 (split v2
   header), l6 (reviewer policy), l7 with its naturalness addendum (verdict
   parser) and l8 (mid-sentence "but"). Every lapse of this cycle, l1-l8,
