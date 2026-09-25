@@ -286,3 +286,12 @@ def test_a_bin_file_is_scanned_like_any_other_file(tmp_path):
         "detail": "non-UTF-8 file",
     } in findings
     assert module.write_scan(tmp_path, _load_scan_secrets())["binaries"] == []
+
+
+def test_documentation_addresses_are_not_private_hosts(tmp_path):
+    """RFC 5737's three documentation networks are never anyone's real host
+    (issue 53 t21: the data set publishes a drafted private address as one)."""
+    module = _module()
+    _write_file(tmp_path, "README.md", "ssh into 192.0.2.50, 198.51.100.7 or 203.0.113.9\n")
+    findings = module.scan_folder(tmp_path, _load_scan_secrets())
+    assert [f for f in findings if f["kind"] == "private_host"] == []
