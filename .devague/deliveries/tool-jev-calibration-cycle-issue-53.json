@@ -2,7 +2,7 @@
   "plan_slug": "tool-jev-calibration-cycle-issue-53",
   "schema_version": 2,
   "created": "2026-09-24T23:49:55Z",
-  "updated": "2026-09-24T23:49:55Z",
+  "updated": "2026-09-25T02:48:52Z",
   "deviations": [
     {
       "id": "d1",
@@ -19,6 +19,23 @@
       "status": "approved",
       "classification": "acceptable",
       "seq": 1
+    },
+    {
+      "id": "d2",
+      "what": "Wire t14's per-example data into Track B training: build_dataset.py gains --scorer-out writing a corpus-format scorer training file (original entries + derived -nocand entries, each with permutation/gold/perm_seed/descriptions); pipeline.sh assemble passes --randomize-labels/--reasons/--missing-candidate-rate/--perm-seed through (env vars) and train-scorer trains on the scorer file when present; an end-to-end test proves rows reaching train_scorer carry randomized maps and -nocand entries",
+      "task_ref": "t14",
+      "reason": "integration gap: t14 enriched the rendered nvsh-train.jsonl but train-scorer reads the corpus-format train-augmented.json, so r1-r3 would silently train on the fixed map without missing-candidate data; no task owned the hand-off",
+      "affects": [
+        "t16",
+        "t18",
+        "c10",
+        "h14",
+        "c11"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "classification": "acceptable",
+      "seq": 2
     }
   ],
   "evidence": [],
