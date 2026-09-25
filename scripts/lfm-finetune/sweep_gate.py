@@ -310,7 +310,8 @@ def _missing_candidate_recall(originals: Sequence, redecided: Sequence) -> dict:
 def evaluate(originals: Sequence, thresholds: "gate.Thresholds") -> dict:
     """One threshold set's report row, over *originals* (a list of ``metrics.Prediction``)."""
     redecided = [redecide(p, thresholds) for p in originals]
-    computed = metrics.compute(redecided)
+    # Point values only: the sweep reads no confidence interval (PR #65 review).
+    computed = metrics.compute(redecided, bootstrap_resamples=0)
     return {
         "thresholds": thresholds.to_json(),
         "right_proposals": computed["right_proposals"],

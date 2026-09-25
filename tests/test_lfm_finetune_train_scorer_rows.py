@@ -516,3 +516,70 @@ def test_the_parser_refuses_calibration_terms_out_of_range(flags: list[str]) -> 
         ["--train", "t", "--out", "o", "--label-smoothing", "0.1", "--brier-weight", "0.5"]
     )
     assert (ok.label_smoothing, ok.brier_weight) == (0.1, 0.5)
+
+
+# -- PR #65 review: validation in reasons mode --
+
+
+def test_reasons_mode_training_validates_on_the_reasons_pool(tmp_path) -> None:
+    """With reasons-mode training rows, a validation row with no stored map is
+    scored on the 25-candidate reasons pool (as measure.py --reasons does), its
+    escalate gold named by its class -- not on the fixed 18-label map."""
+    module = _module()
+    pool = module.scorer.candidate_pool(reasons=True)
+    train_perm = module.scorer.Permutation(
+        order=tuple(pool), labels=module.scorer.positional_labels(pool, pool)
+    ).to_json()
+    train = module.read_split(
+        _split(
+            tmp_path,
+            "train",
+            [
+                _entry(
+                    "t1",
+                    "restart it",
+                    {"escalate": True},
+                    **{
+                        "class": "decline:missing_argument",
+                        "permutation": train_perm,
+                        "gold": "escalate:missing_argument",
+                    },
+                ),
+            ],
+        ),
+        module.TRAIN_SIDE,
+    )
+    val = module.read_split(
+        _split(
+            tmp_path,
+            "val",
+            [
+                _entry(
+                    "v1", "restart it", {"escalate": True}, **{"class": "decline:missing_argument"}
+                ),
+                _entry("v2", "how busy is the gpu", {"operation": "gpu_stats", "args": {}}),
+            ],
+        ),
+        module.VAL_SIDE,
+    )
+    assert module.reasons_mode(train)
+    matched = module.match_validation(train, val)
+    assert matched[0].gold == "escalate:missing_argument"
+    assert tuple(matched[0].permutation.order) == tuple(pool)
+    assert matched[1].gold == "gpu_stats"
+    rows = module.encode(_Tokenizer(), matched, 100000)
+    assert len(rows[0]["letters"]) == len(pool)
+
+
+def test_plain_training_leaves_validation_unchanged(tmp_path) -> None:
+    module = _module()
+    train = module.read_split(
+        _split(tmp_path, "train", [_entry("t1", "gpu?", {"operation": "gpu_stats", "args": {}})]),
+        module.TRAIN_SIDE,
+    )
+    val = module.read_split(
+        _split(tmp_path, "val", [_entry("v1", "gpu?", {"operation": "gpu_stats", "args": {}})]),
+        module.VAL_SIDE,
+    )
+    assert not module.reasons_mode(train)
+    assert module.match_validation(train, val) == val

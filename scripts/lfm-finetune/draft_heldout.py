@@ -103,19 +103,49 @@ def parse_json_list(raw: str):
     return json.loads(raw[start : end + 1])
 
 
+def _take(args: list[str], flag: str) -> int | None:
+    """Remove ``flag N`` from *args* and return N; a usage error when N is missing."""
+    if flag not in args:
+        return None
+    at = args.index(flag)
+    if at + 1 >= len(args):
+        raise SystemExit(f"draft_heldout.py: {flag} needs a value")
+    value = int(args[at + 1])
+    del args[at : at + 2]
+    return value
+
+
 def parse_args(argv: list[str]) -> tuple[Path, int]:
-    """``OUT_DIR [--seed N]`` -> (out_dir, seed); the seed defaults to :data:`SEED`."""
+    """``OUT_DIR [--seed N] [--issue N]`` -> (out_dir, seed); seed defaults to :data:`SEED`."""
     args = list(argv)
-    seed = SEED
-    if "--seed" in args:
-        at = args.index("--seed")
-        seed = int(args[at + 1])
-        del args[at : at + 2]
-    return Path(args[0]), seed
+    seed = _take(args, "--seed")
+    _take(args, "--issue")
+    if not args:
+        raise SystemExit("usage: draft_heldout.py OUT_DIR [--seed N] [--issue N]")
+    return Path(args[0]), SEED if seed is None else seed
+
+
+def parse_issue(argv: list[str]) -> int:
+    """The issue a draft is for (``--issue N``; default 46, the one this tool began with)."""
+    issue = _take(list(argv), "--issue")
+    return 46 if issue is None else issue
+
+
+def draft_header(issue: int, snapshot: str, seed: int) -> str:
+    """The draft's header, naming the issue it was drafted for (PR #65 review)."""
+    origins = {46: " (task t17, decision c51)", 53: " (task t13)"}
+    return (
+        f"Issue {issue} sealed held-out draft{origins.get(issue, '')}: drafted by"
+        f" Qwen/Qwen3.5-4B (snapshot {snapshot}, Apache-2.0, not a pipeline teacher) from the"
+        f" nvsh operation table only, seed {seed}, temperature 0.7, thinking off. Awaiting"
+        " operator review; the lead agent has not read these entries."
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
-    out_dir, seed = parse_args(argv if argv is not None else sys.argv[1:])
+    argv = argv if argv is not None else sys.argv[1:]
+    out_dir, seed = parse_args(argv)
+    issue = parse_issue(argv)
     import torch
     from huggingface_hub import snapshot_download
     from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -180,12 +210,7 @@ def main(argv: list[str] | None = None) -> int:
             )
     out_dir.mkdir(parents=True, exist_ok=True)
     doc = {
-        "header": (
-            "Issue 46 sealed held-out draft (task t17, decision c51): drafted by Qwen/Qwen3.5-4B "
-            f"(snapshot {snap.name}, Apache-2.0, not a pipeline teacher) from the nvsh operation "
-            f"table only, seed {seed}, temperature 0.7, thinking off. Awaiting operator review; "
-            "the lead agent has not read these entries."
-        ),
+        "header": draft_header(issue, snap.name, seed),
         "entries": entries,
     }
     body = json.dumps(doc, indent=2, ensure_ascii=False) + "\n"

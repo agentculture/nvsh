@@ -268,11 +268,15 @@ def decide(
         return Decision("explain", EXPLAIN_LABEL)
 
     operation = ops_table.get(top1_label)
-    read_only = True if operation is None else operation.read_only
+    # An operation missing from the table is gated as mutating, the stricter
+    # set, as ``metrics.slice_name`` reports it (PR #65 review).
+    read_only = operation is not None and operation.read_only
     thresholds_for_class = thresholds.read_only if read_only else thresholds.mutating
 
     margin = p_top1 - _second_place(rolled, top1_label)
-    entropy = normalized_entropy(rolled, len(offered))
+    # Normalise over the offered candidates after the escalate:<reason> roll-up,
+    # so a uniform rolled distribution reads 1.0 in reasons mode too.
+    entropy = normalized_entropy(rolled, len({metrics.canonical_label(o) for o in offered}))
 
     if thresholds_for_class.floor is not None and p_top1 < thresholds_for_class.floor:
         return Decision("abstain_uncertain", top1_label, "floor")

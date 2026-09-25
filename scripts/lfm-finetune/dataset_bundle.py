@@ -276,6 +276,8 @@ def _teacher(role_models: dict[str, tuple[str, str]], alias: str) -> tuple[str, 
 _IPV4 = re.compile(r"(?<![\d.])(\d{1,3}(?:\.\d{1,3}){3})(?![\d.])")
 #: RFC 5737 TEST-NET-1: an address that is never anyone's real host.
 DOCUMENTATION_NET = "192.0.2."
+#: Carrier-grade NAT (Tailscale and friends): not ``is_private``, but scan_bundle flags it.
+_CGNAT = ipaddress.ip_network("100.64.0.0/10")
 
 
 def publishable_text(text: str) -> str:
@@ -288,7 +290,9 @@ def publishable_text(text: str) -> str:
             address = ipaddress.ip_address(match.group(1))
         except ValueError:
             return match.group(0)
-        if address.is_loopback or address.is_unspecified or not address.is_private:
+        if address.is_loopback or address.is_unspecified:
+            return match.group(0)
+        if not (address.is_private or address in _CGNAT):
             return match.group(0)
         return DOCUMENTATION_NET + match.group(1).rsplit(".", 1)[1]
 
@@ -361,7 +365,8 @@ def build(
 
     *scorer_train* (issue 53 t21) is the candidate scorer's own training file
     (``build_dataset.py --scorer-out``: per-row label maps and missing-candidate
-    rows); it ships byte for byte as ``data/scorer-train.json``.
+    rows); it ships as ``data/scorer-train.json`` with the same address
+    redaction as every published record (PR #65 review).
 
     *role_models* is this run's alias -> (name, licence) table (see
     ``load_role_models``). With *apache_only*, a teacher named by any
@@ -456,7 +461,14 @@ def build(
     (out / "manifest.json").write_text(json.dumps(manifest, indent=1) + "\n", encoding="utf-8")
     shutil.copyfile(licence, out / "LICENSE")
     if scorer_train is not None:
-        shutil.copyfile(scorer_train, out / "data" / "scorer-train.json")
+        # The same address redaction as every published record (PR #65 review).
+        scorer_doc = json.loads(scorer_train.read_text(encoding="utf-8"))
+        for entry in scorer_doc.get("entries", []):
+            if isinstance(entry.get("text"), str):
+                entry["text"] = publishable_text(entry["text"])
+        (out / "data" / "scorer-train.json").write_text(
+            json.dumps(scorer_doc, indent=1, ensure_ascii=False) + "\n", encoding="utf-8"
+        )
 
     counts = {
         "train": len(rows["train"]),

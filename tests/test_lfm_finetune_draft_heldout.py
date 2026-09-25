@@ -6,6 +6,8 @@ import importlib.util
 import sys
 from pathlib import Path
 
+import pytest
+
 from nvsh.ops import table
 
 _SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "lfm-finetune" / "draft_heldout.py"
@@ -49,3 +51,22 @@ def test_bare_string_items_become_text_only_items() -> None:
     assert module.as_item("reboot the box") == {"text": "reboot the box"}
     assert module.as_item({"text": "a", "args": {}}) == {"text": "a", "args": {}}
     assert module.as_item(7) == {}
+
+
+def test_a_seed_flag_without_a_value_is_a_usage_error() -> None:
+    """PR #65 review: '--seed' as the last argument raised IndexError."""
+    with pytest.raises(SystemExit):
+        _module().parse_args(["out", "--seed"])
+
+
+def test_the_draft_header_names_the_issue_it_was_drafted_for() -> None:
+    """PR #65 review: an issue-53 draft (its own --seed) was labelled issue 46's."""
+    module = _module()
+    assert module.parse_args(["out", "--seed", "53", "--issue", "53"]) == (Path("out"), 53, 53)[:2]
+    assert module.parse_issue(["out", "--seed", "53", "--issue", "53"]) == 53
+    assert module.parse_issue(["out"]) == 46
+    assert "Issue 53 sealed held-out draft" in module.draft_header(53, "snap", 53)
+    assert "t17" not in module.draft_header(53, "snap", 53)
+    assert "Issue 46 sealed held-out draft (task t17, decision c51)" in module.draft_header(
+        46, "s", 46
+    )

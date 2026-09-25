@@ -570,7 +570,8 @@ def test_the_scorer_training_file_ships_when_given(tmp_path) -> None:
     inputs["scorer_train"] = scorer_train
     _module().build(**inputs)
     out = tmp_path / "bundle"
-    assert (out / "data" / "scorer-train.json").read_bytes() == scorer_train.read_bytes()
+    shipped = json.loads((out / "data" / "scorer-train.json").read_text())
+    assert shipped == json.loads(scorer_train.read_text())
     assert "scorer-train.json" in (out / "README.md").read_text()
 
 
@@ -660,3 +661,31 @@ def test_a_private_address_is_published_as_a_documentation_address(tmp_path) -> 
     assert record["text"] == "ssh into 192.0.2.50 and check postgres, not 127.0.0.1"
     assert counts["redacted_hosts"] == 1
     assert "192.0.2" in (tmp_path / "bundle" / "README.md").read_text()
+
+
+def test_the_scorer_training_file_gets_the_same_address_redaction(tmp_path) -> None:
+    """PR #65 review: scorer-train.json was copied byte for byte, so a private
+    address the train records publish redacted still shipped there."""
+    inputs = _inputs(tmp_path)
+    scorer_train = tmp_path / "scorer-train.json"
+    scorer_train.write_text(
+        json.dumps(
+            {
+                "header": "Split 'train' of x",
+                "entries": [
+                    {"id": "a", "text": "ssh into 192.168.1.50 then 100.93.248.8", "expect": {}}
+                ],
+            }
+        )
+    )
+    inputs["scorer_train"] = scorer_train
+    _module().build(**inputs)
+    shipped = json.loads((tmp_path / "bundle" / "data" / "scorer-train.json").read_text())
+    assert shipped["entries"][0]["text"] == "ssh into 192.0.2.50 then 192.0.2.8"
+    assert shipped["header"] == "Split 'train' of x"
+
+
+def test_a_cgnat_address_is_published_as_a_documentation_address() -> None:
+    assert _module().publishable_text("tailnet 100.93.248.8 or 8.8.8.8") == (
+        "tailnet 192.0.2.8 or 8.8.8.8"
+    )

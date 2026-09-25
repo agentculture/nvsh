@@ -3013,6 +3013,7 @@ def test_bundle_dataset_names_bundle_issue_and_ships_the_scorer_file(tmp_path: P
     (pipe.work / "data").mkdir(parents=True)
     (pipe.work / "data" / "train-augmented.json").write_text("{}", encoding="utf-8")
     (pipe.work / "data" / "scorer-train.json").write_text("{}", encoding="utf-8")
+    os.utime(pipe.work / "data" / "train-augmented.json", (1000, 1000))
     result = pipe.run("bundle-dataset", "tool-jev-v2-dataset")
     assert result.returncode == 0, result.stderr
     ((_, argv),) = pipe.calls("dataset_bundle.py")
@@ -3057,3 +3058,16 @@ def test_bundle_refuses_a_missing_calibration_file(tmp_path: Path) -> None:
     result = pipe.run("bundle", "bf16", "scorer-r3b", "tool-jev-scorer-v2", str(_report(tmp_path)))
     assert result.returncode != 0
     assert "BUNDLE_CALIBRATION" in result.stderr
+
+
+def test_bundle_dataset_skips_a_stale_scorer_file(tmp_path: Path) -> None:
+    """PR #65 review: like train-scorer, only a scorer file newer than the frozen
+    training set is the one the scorer trained on."""
+    pipe = _bundle_pipeline(tmp_path)
+    (pipe.work / "data").mkdir(parents=True)
+    (pipe.work / "data" / "scorer-train.json").write_text("{}", encoding="utf-8")
+    (pipe.work / "data" / "train-augmented.json").write_text("{}", encoding="utf-8")
+    os.utime(pipe.work / "data" / "scorer-train.json", (1000, 1000))
+    assert pipe.run("bundle-dataset", "tool-jev-dataset").returncode == 0
+    ((_, argv),) = pipe.calls("dataset_bundle.py")
+    assert "--scorer-train" not in argv

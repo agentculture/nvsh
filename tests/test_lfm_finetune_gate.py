@@ -703,3 +703,40 @@ def test_main_fold_filters_the_report_count(sweep, tmp_path, capsys):
     out = json.loads(capsys.readouterr().out)
     assert out["n"] == 2
     assert out["fold"] == "fit"
+
+
+# PR #65 review: an unknown operation and reasons-mode entropy.
+
+
+def test_an_unknown_operation_gets_the_mutating_thresholds(gate):
+    """metrics.slice_name counts an operation missing from the table as
+    mutating; the gate must gate it the same, stricter way."""
+    candidates = {"not_in_the_table": 0.6, "(explain)": 0.2, "(escalate)": 0.2}
+    thresholds = gate.Thresholds(mutating=gate.ThresholdSet(floor=0.9))
+    decision = gate.decide(candidates, list(candidates), thresholds)
+    assert decision.outcome == "abstain_uncertain"
+
+
+def test_entropy_is_normalised_over_the_rolled_up_candidates(gate):
+    """Eight escalate:<reason> labels roll up to one; a uniform distribution
+    over the rolled candidates must still read entropy 1.0."""
+    reasons = [f"escalate:r{i}" for i in range(8)]
+    candidates = {READ_ONLY_OP: 1 / 3, "(explain)": 1 / 3}
+    candidates.update({r: (1 / 3) / 8 for r in reasons})
+    offered = [READ_ONLY_OP, "(explain)", *reasons]
+    thresholds = gate.Thresholds(read_only=gate.ThresholdSet(max_entropy=0.95))
+    decision = gate.decide(candidates, offered, thresholds)
+    assert decision.outcome == "abstain_uncertain"
+
+
+def test_a_sweep_computes_no_bootstrap_resamples(sweep, gate, monkeypatch):
+    """PR #65 review: every grid point reran ~20 x 1000 bootstrap resamples it
+    never reads; the sweep only reports point values."""
+    originals = [sweep.metrics.Prediction.from_dict(line) for line in _scorer_b1_style_fixture()]
+
+    def no_resampling(*_args, **_kwargs):
+        raise AssertionError("a sweep must not bootstrap")
+
+    monkeypatch.setattr(sweep.metrics, "_resample", no_resampling)
+    reports = sweep.run_sweep(originals, [gate.Thresholds()])
+    assert reports[0]["right_proposals"]["n"] >= 0

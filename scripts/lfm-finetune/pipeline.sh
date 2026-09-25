@@ -862,8 +862,11 @@ case "$STAGE" in
     read -r -a rejected <<<"${BUNDLE_REJECTED:-$WORK/aug/nvsh-rejected.jsonl}"
     read -r -a model_suffixes <<<"${DATASET_MODEL_REPOS:-}"
     scorer_train=()
-    # The candidate scorer's own training file (issue 53 t21), when assemble wrote one.
-    [ -s "$WORK/data/scorer-train.json" ] && scorer_train=(--scorer-train "$WORK/data/scorer-train.json")
+    # The candidate scorer's own training file (issue 53 t21), when assemble wrote
+    # one and it is newer than the frozen set -- train-scorer's own rule (PR #65).
+    if [ -s "$WORK/data/scorer-train.json" ] && [ "$WORK/data/scorer-train.json" -nt "$train" ]; then
+      scorer_train=(--scorer-train "$WORK/data/scorer-train.json")
+    fi
     # BUNDLE_DEFAULT_SOURCE (issue 53): the source for records that carry none
     # (draft_sources.py wrote no source field before t21).
     default_source=()

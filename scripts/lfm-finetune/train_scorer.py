@@ -63,6 +63,7 @@ import random
 import re
 import sys
 import time
+import dataclasses
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -118,6 +119,7 @@ class Example:
     permutation: scorer.Permutation | None = None
     descriptions: dict[str, str] | None = None
     perm_seed: int | None = None
+    cls: str | None = None
 
 
 def gold_candidate(expect: dict) -> str:
@@ -187,7 +189,49 @@ def _example(entry, item: dict) -> Example:
         permutation=permutation,
         descriptions=dict(descriptions) if descriptions is not None else None,
         perm_seed=perm_seed,
+        cls=item.get("class") if isinstance(item.get("class"), str) else None,
     )
+
+
+def reasons_mode(examples: list[Example]) -> bool:
+    """True when any row offers an ``escalate:<reason>`` candidate (``--reasons`` data)."""
+    return any(
+        example.permutation is not None
+        and any(name in scorer.REASON_CANDIDATES for name in example.permutation.order)
+        for example in examples
+    )
+
+
+def match_validation(train: list[Example], val: list[Example]) -> list[Example]:
+    """*val*, scored on the same candidate pool the train rows use (PR #65 review).
+
+    In reasons mode a validation row with no stored map gets the reasons pool's
+    default map, its reason descriptions, and an escalate gold named by its
+    class (:func:`scorer.reason_for_class`) -- what ``measure.py --reasons``
+    scores -- rather than the fixed map with a bare ``escalate`` the model never
+    trained on. Otherwise *val* is returned unchanged.
+    """
+    if not reasons_mode(train):
+        return val
+    pool = scorer.candidate_pool(reasons=True)
+    permutation = scorer.Permutation(order=tuple(pool), labels=scorer.positional_labels(pool, pool))
+    matched = []
+    for example in val:
+        if example.permutation is not None:
+            matched.append(example)
+            continue
+        gold = example.gold
+        if gold == lfm.ESCALATE_TOOL:
+            gold = scorer.reason_for_class(example.cls)
+        matched.append(
+            dataclasses.replace(
+                example,
+                gold=gold,
+                permutation=permutation,
+                descriptions={**scorer.reason_descriptions(pool), **(example.descriptions or {})},
+            )
+        )
+    return matched
 
 
 def example_messages(example: Example) -> list[dict]:
@@ -596,6 +640,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - needs a GP
 
     train_examples = read_split(args.train, TRAIN_SIDE)
     val_examples = read_split(args.val, VAL_SIDE) if args.val else []
+    val_examples = match_validation(train_examples, val_examples)
     train_rows = encode(tokenizer, train_examples, args.max_length)
     val_rows = encode(tokenizer, val_examples, args.max_length)
     readout_ids = letter_ids(
