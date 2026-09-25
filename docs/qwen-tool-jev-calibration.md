@@ -366,6 +366,16 @@ lapses, all posted on issue #61 when they happened.
   checkpoint; with n = 61 the CI is wide, so the fresh test side decides
   the claim.
 
+- **D26.** **The naturalness question gets its own allowed words.** Evidence:
+  t15's missing-argument recipe kept 5 of 69 stripped requests; probing
+  reviewer B directly showed it said yes to every one, but each "is this
+  natural?" yes read "a real user **might** ask it" or "**though** 'it'
+  depends on context", which the parser counts as hedges. Choice: `might`,
+  `could`, `may` and `though` are allowed in that one verdict only;
+  `but`/`however` and a standalone no still reject. The recipe re-runs
+  after stream A. Same class as l7 (recorded as its addendum on #61).
+  Ledger P19.
+
 ## Where the run stands
 
 **Latest, 2026-09-25 afternoon.**
@@ -824,6 +834,14 @@ redaction rule).
   generative result object, which a scorer run does not produce. **Fix
   (workaround):** t17 keeps `--predictions`, which carry every entry's
   distribution; the details gap itself is left as it is.
+- **P19, the naturalness verdict read user-describing modals as hedges.**
+  **Symptom:** `targeted_augment.py`'s missing-argument recipe kept 5 of
+  69 candidates, 56 rejected by reviewer B. **Cause:** the stripped requests
+  were good (for example "Is that service up?", "journalctl -u it") and B
+  answered yes to both questions, but its naturalness answers contain
+  "might"/"could"/"though", all in `augment.py`'s hedge list. **Fix:**
+  `NATURAL_ALLOWED_HEDGES` for the naturalness question only; the recipe
+  re-runs.
 - **Throughput note (not a bug).** Reviewer B (Qwen3.8-27B) thinks at
   about 42 tokens/s with up to 8192 tokens per verdict and serves 2
   requests at once, so reviews run at about 2-3 teacher calls a minute; the
