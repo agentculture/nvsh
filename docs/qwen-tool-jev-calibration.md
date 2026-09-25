@@ -624,6 +624,23 @@ lapses, all posted on issue #61 when they happened.
   change r3b 3.1% vs r1 5.0%, more than 1 point apart, so **r3b is chosen**
   at step 3. r4 is not triggered (0.032). t19 re-runs on r3b; r1's t19
   artifacts stay as the fallback. Record: guide, #61.
+- **D47.** **t19 on r3b: frozen for t20.** Served through `llama-server`,
+  204/204 complete readouts: bf16 GGUF right 77/84, `Q4_K_M` **79/84**; both
+  0 wrong mutating, abstention recall 94.0%, false-positive calls 1/120,
+  invalid 3, raw ECE 0.040 / 0.039; missing-candidate slice 73.8% escalated,
+  0 wrong mutating. `Q4_K_M`'s own calibration on the selection fold: ECE
+  raw 0.037, temperature **0.019** (T 1.54, kept), with the vector 0.034.
+  Gate, fitted on the fit fold with D46's objective (0 wrong mutating, then
+  missing-candidate escalation >= 80%, then most right proposals): a
+  read-only top-two margin of 0.2 (fit right 56 -> 53, missing-candidate
+  75% -> 80.0%, 3 abstentions). Selection fold at that gate: right 23/24, 0
+  wrong mutating, escalation recall 91.7% at precision 1.0,
+  missing-candidate 18/24 (75.0%). Considered and not taken: escalate at
+  >= 0.2 (fit right 52, missing-candidate 83.3%; selection 23/24 and 79.2%).
+  It would have been chosen after seeing the selection fold, so the stated
+  objective stands; the missing-candidate bar is therefore at risk on test.
+  Frozen: params `b07eb0f127acf5b6`, settings `dbba2f9bc1e41eb1`, `Q4_K_M`
+  `3568f660ab186887`. Record: guide, #61.
 - **D32.** **Lapses l5-l8 approved.** The operator approved l5 (split v2
   header), l6 (reviewer policy), l7 with its naturalness addendum (verdict
   parser) and l8 (mid-sentence "but"). Every lapse of this cycle, l1-l8,
