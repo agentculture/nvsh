@@ -383,6 +383,8 @@ _HARD_NEGATIVE_ASK = (
     "Write {k} different user questions that mention what the operation {name} deals with "
     "{marker}, but want an explanation in words -- what something means or how it works -- "
     "and not for the operation to be run or anything on the machine to be checked or changed. "
+    "Never write {name} or any other operation identifier from the list: name the subject the "
+    "way a user would (for example 'GPU usage', not the identifier). "
     'Reply as a JSON list of objects with keys "text" and "answer" (a one-sentence correct '
     "answer)."
 )

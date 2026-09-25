@@ -684,3 +684,9 @@ def test_user_modals_still_hedge_outside_the_naturalness_question() -> None:
     unit = ta.Unit(recipe="disambiguation", items=[item])
     ok, _ = ta.review_unit(unit, ROLES, lambda r, s, u: "yes, though it might be docker", "both")
     assert not ok
+
+
+def test_hard_negative_prompt_forbids_writing_the_identifier() -> None:
+    """t15 run: 104 of 129 hard negatives named the identifier and were dropped."""
+    _, user = ta.hard_negative_prompt("gpu_stats", 8)
+    assert "Never write gpu_stats or any other operation identifier" in user
