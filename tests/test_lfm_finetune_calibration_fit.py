@@ -223,6 +223,74 @@ def test_fit_vector_default_is_identity_when_already_matched(calibration_fit):
     assert vector["a"] >= vector["b"]
 
 
+def _reference_nll_temperature(candidates: dict, gold: str, temperature: float) -> float:
+    """A from-scratch (non-clipping) log-space NLL, independent of the module.
+
+    Floors the *input* probability once, never the renormalised output, so
+    it stays exact (no gradient-killing floor) no matter how small the
+    gold's rescaled probability gets -- used as the ground truth a fixed
+    ``fit_temperature`` must actually approach.
+    """
+    logs = {label: math.log(max(p, 1e-9)) / temperature for label, p in candidates.items()}
+    top = max(logs.values())
+    log_z = top + math.log(sum(math.exp(v - top) for v in logs.values()))
+    return log_z - logs[gold]
+
+
+def test_fit_temperature_does_not_clip_the_output_gold_probability(calibration_fit):
+    # 99 well-behaved rows plus one row whose gold sits at a genuinely tiny
+    # probability. A fitter that clips the *renormalised* gold probability
+    # to EPS finds no cost to sharpening T all the way down (the one bad
+    # row's contribution is capped either way), so it wrongly picks a very
+    # small T; the true (uncapped) NLL of that choice is far worse than not
+    # rescaling at all. The fix must land near the true minimum, not there.
+    rows = [({"a": 0.9, "b": 0.1}, "a")] * 99 + [({"a": 1 - 1e-9, "b": 1e-9}, "b")] * 1
+
+    def true_nll(temperature: float) -> float:
+        return sum(_reference_nll_temperature(c, g, temperature) for c, g in rows)
+
+    fitted = calibration_fit.fit_temperature(rows)
+    assert fitted == pytest.approx(1.0, abs=0.2)
+    assert true_nll(fitted) <= true_nll(1.0) + 1e-6
+
+
+def test_fit_temperature_rolls_up_escalate_reason_candidates_for_gold_match(calibration_fit):
+    # The gold is bench's bare "(escalate)" label, but the model's own
+    # candidates only offer a reasoned "escalate:repair" -- calibration must
+    # score that as escalate-family (metrics.canonical_label), not treat the
+    # gold as absent from the line's candidates (which would make the loss
+    # constant and let a single row send T wherever a flat search happens to
+    # drift, per the review's repro of T -> 20 / escalate mass falling to
+    # .53). With the rollup, escalate mass (already .9, the largest share)
+    # can only be preserved or sharpened, never diluted, by the fit.
+    metrics = calibration_fit.metrics
+    gold = metrics.canonical_label("escalate:repair")
+    candidates = {"escalate:repair": 0.9, "(explain)": 0.1}
+    rows = [(candidates, gold)]
+
+    fitted = calibration_fit.fit_temperature(rows)
+    assert fitted <= 1.0
+
+    scaled = calibration_fit.temperature_scale(candidates, fitted)
+    escalate_mass = sum(p for label, p in scaled.items() if metrics.canonical_label(label) == gold)
+    assert escalate_mass >= 0.9
+
+
+def test_fit_params_counts_gold_absent_rows_separately(calibration_fit, tmp_path):
+    # A row whose gold truly has no matching candidate carries no gradient
+    # and must not silently distort the fit as a fixed, T-independent EPS
+    # penalty; it is skipped and counted instead.
+    predictions_path = tmp_path / "run.predictions.jsonl"
+    rows = [
+        _prediction_line("a", {"operation": "op_a", "args": {}}, {"op_a": 0.9, "op_b": 0.1}),
+        _prediction_line("b", {"operation": "op_c", "args": {}}, {"op_a": 0.9, "op_b": 0.1}),
+    ]
+    _write_predictions(predictions_path, rows)
+    params = calibration_fit.fit_params(predictions_path, {"seed": 1, "fit_ids": ["a", "b"]})
+    assert params["skipped_gold_absent"] == 1
+    assert params["fit_examples"] == 1
+
+
 # ---------------------------------------------------------------------------
 # End-to-end fit / apply via the CLI
 # ---------------------------------------------------------------------------

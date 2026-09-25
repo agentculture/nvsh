@@ -33,7 +33,20 @@ would produce for that entry (an operation name, or ``nvsh.tiers.bench``'s
 ``"(escalate)"`` / ``"(explain)"``), same as the file already uses.
 
 Lines whose ``candidates`` is ``null`` are skipped and counted, never
-treated as a zero-confidence row.
+treated as a zero-confidence row. Likewise, a fit-fold line whose gold
+label has no matching candidate at all -- not even under
+``metrics.canonical_label``'s escalate-family rollup -- is skipped and
+counted (``skipped_gold_absent``) rather than charged a fixed,
+temperature-independent penalty: it carries no gradient for the fit.
+
+Fitting minimises NLL in log-space (see ``_row_nll``): a candidate
+probability is floored once, on input, and the gold's probability mass is
+the sum of every candidate label that rolls up (via
+``metrics.canonical_label``) to the gold's own canonical label -- so an
+``escalate:<reason>`` candidate counts towards a bare ``(escalate)`` gold.
+The renormalised *output* probability is never clipped, so a badly-off
+prediction keeps a real, unbounded gradient instead of bottoming out at a
+floor that makes it look no worse than one that is merely wrong.
 """
 
 from __future__ import annotations
@@ -208,13 +221,109 @@ def apply_scaling(
 # ---------------------------------------------------------------------------
 
 
-def _nll(rows: Sequence[tuple[Mapping[str, float], str]], transform: Callable) -> float:
-    """Total negative log-likelihood of each row's gold label under ``transform``."""
+def _logsumexp(values: Iterable[float]) -> float:
+    """``log(sum(exp(v) for v in values))``, computed without overflow."""
+    values = list(values)
+    top = max(values)
+    return top + math.log(math.fsum(math.exp(v - top) for v in values))
+
+
+def _gold_matches(label: str, gold_canonical: str) -> bool:
+    """Whether *label* rolls up (via :func:`metrics.canonical_label`) to *gold_canonical*."""
+    return metrics.canonical_label(label) == gold_canonical
+
+
+def _row_log_scores(
+    candidates: Mapping[str, float],
+    temperature: float,
+    vector: Mapping[str, float] | None,
+) -> dict[str, float]:
+    """Unnormalised log-score per label: ``log(max(p, EPS)) / T [+ log(vector)]``.
+
+    The probability floor is applied exactly once, to the *input* ``p`` --
+    never to a transformed/renormalised output -- so a candidate that is
+    already vanishingly small does not get an artificial, T-independent
+    floor imposed on its *rescaled* probability later. See
+    :func:`_row_nll`, which turns these into an exact NLL via
+    :func:`_logsumexp` instead of clipping a renormalised probability.
+    """
+    scores = {label: math.log(max(float(p), EPS)) / temperature for label, p in candidates.items()}
+    if vector:
+        for label in scores:
+            scores[label] += math.log(max(float(vector.get(label, 1.0)), EPS))
+    return scores
+
+
+def _row_nll(
+    candidates: Mapping[str, float],
+    gold: str,
+    temperature: float,
+    vector: Mapping[str, float] | None = None,
+) -> float | None:
+    """The exact NLL of *gold* under a temperature/vector-scaled *candidates*.
+
+    *gold*'s probability mass is the sum of every candidate label that rolls
+    up to the same canonical label (``metrics.canonical_label``) -- an
+    ``escalate:<reason>`` candidate counts towards a bare ``(escalate)``
+    gold, matching how :func:`metrics.rollup_escalate_candidates` scores
+    everywhere else. The whole computation is done in log-space via
+    :func:`_logsumexp`, so the renormalising constant (shared by every
+    label) never needs computing on its own and the gold probability is
+    never clipped after the fact -- only the raw input probabilities are
+    floored, once, in :func:`_row_log_scores`.
+
+    Returns ``None`` when *gold*'s canonical label has no matching
+    candidate at all (the line's model output never considered it):
+    such a row carries no gradient for *T*/vector and the caller should
+    skip and count it rather than charging a fixed, meaningless penalty.
+    """
+    gold_canonical = metrics.canonical_label(gold)
+    scores = _row_log_scores(candidates, temperature, vector)
+    matched = [value for label, value in scores.items() if _gold_matches(label, gold_canonical)]
+    if not matched:
+        return None
+    return _logsumexp(scores.values()) - _logsumexp(matched)
+
+
+def _nll(
+    rows: Sequence[tuple[Mapping[str, float], str]],
+    temperature: float,
+    vector: Mapping[str, float] | None = None,
+) -> float:
+    """Total negative log-likelihood of each row's gold label.
+
+    Rows whose gold has no matching candidate (see :func:`_row_nll`) are
+    skipped; callers that need that count should filter with
+    :func:`_rows_with_gold_present` up front, since presence does not
+    depend on *temperature* or *vector*.
+    """
     total = 0.0
     for candidates, gold in rows:
-        scaled = transform(candidates)
-        total += -math.log(max(scaled.get(gold, 0.0), EPS))
+        row_nll = _row_nll(candidates, gold, temperature, vector)
+        if row_nll is not None:
+            total += row_nll
     return total
+
+
+def _rows_with_gold_present(
+    rows: Sequence[tuple[Mapping[str, float], str]],
+) -> tuple[list[tuple[Mapping[str, float], str]], int]:
+    """``(kept_rows, skipped_count)``: drop rows whose gold has no matching candidate.
+
+    Presence is a structural property of a row's ``candidates`` keys and its
+    gold label (via :func:`metrics.canonical_label`), independent of any
+    fitted temperature or vector, so it is computed once up front rather
+    than inside the fitting objective's hot loop.
+    """
+    kept = []
+    skipped = 0
+    for candidates, gold in rows:
+        gold_canonical = metrics.canonical_label(gold)
+        if any(_gold_matches(label, gold_canonical) for label in candidates):
+            kept.append((candidates, gold))
+        else:
+            skipped += 1
+    return kept, skipped
 
 
 def _golden_section_min(
@@ -251,7 +360,7 @@ def fit_temperature(rows: Sequence[tuple[Mapping[str, float], str]]) -> float:
         return 1.0
 
     def objective(log_t: float) -> float:
-        return _nll(rows, lambda candidates: temperature_scale(candidates, math.exp(log_t)))
+        return _nll(rows, math.exp(log_t))
 
     return math.exp(_golden_section_min(objective, -_LOG_BOUND, _LOG_BOUND))
 
@@ -280,7 +389,7 @@ def fit_vector(
             def objective(log_s: float, label=label) -> float:
                 trial = dict(vector)
                 trial[label] = math.exp(log_s)
-                return _nll(rows, lambda candidates: vector_scale(candidates, trial))
+                return _nll(rows, 1.0, trial)
 
             best = math.exp(_golden_section_min(objective, -_LOG_BOUND, _LOG_BOUND))
             if abs(best - vector[label]) > tol:
@@ -332,6 +441,15 @@ def fit_params(predictions_path: Path, folds: Mapping[str, object]) -> dict:
         raise CalibrationError(
             f"no fit-fold prediction in {predictions_path} has a non-null candidates distribution"
         )
+    # A row whose gold label has no matching candidate at all (not even under
+    # metrics.canonical_label's escalate-family rollup) carries no gradient
+    # for temperature/vector fitting -- skip and count it rather than
+    # charging it a fixed, T-independent penalty. See _rows_with_gold_present.
+    rows, skipped_gold_absent = _rows_with_gold_present(rows)
+    if not rows:
+        raise CalibrationError(
+            f"no fit-fold prediction in {predictions_path} offers its gold label as a candidate"
+        )
     labels = sorted({label for candidates, _ in rows for label in candidates})
     temperature = fit_temperature(rows)
     # The vector is fit on top of the already-temperature-scaled rows, so it
@@ -349,6 +467,7 @@ def fit_params(predictions_path: Path, folds: Mapping[str, object]) -> dict:
         "vector": vector,
         "fit_examples": len(rows),
         "skipped_null": skipped_null,
+        "skipped_gold_absent": skipped_gold_absent,
         "fit_fold_size": considered,
         "predictions_source": str(predictions_path),
     }
