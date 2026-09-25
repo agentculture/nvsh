@@ -536,7 +536,17 @@ def reviewer_prompt(text: str, expect: dict[str, Any], cls: str | None = None) -
 EMPTY_REPLY_RETRIES = 2
 
 
-def _vote(role: aug.RoleConfig, system: str, user: str, caller: RoleCaller) -> tuple[bool, str]:
+#: Hedge words that are a reason, not doubt, in an escalation verdict (issue 53).
+ESCALATE_ALLOWED_HEDGES = ("ambiguous", "unclear")
+
+
+def _vote(
+    role: aug.RoleConfig,
+    system: str,
+    user: str,
+    caller: RoleCaller,
+    allowed_hedges: Sequence[str] = (),
+) -> tuple[bool, str]:
     """One reviewer's parsed verdict, re-asking up to :data:`EMPTY_REPLY_RETRIES`
     times while the reply is empty. Still empty after that: a reject whose
     reason says so, as ``aug.parse_verdict`` reports it."""
@@ -544,7 +554,7 @@ def _vote(role: aug.RoleConfig, system: str, user: str, caller: RoleCaller) -> t
         reply = caller(role, system, user)
         if reply.strip():
             break
-    return aug.parse_verdict(reply)
+    return aug.parse_verdict(reply, allowed_hedges)
 
 
 def judge(
@@ -557,8 +567,9 @@ def judge(
     """Ask REVIEWER_A and REVIEWER_B independently; ``votes`` records both,
     ``accepted`` is true only when both said yes."""
     system, user = reviewer_prompt(entry_text, expect, cls)
-    accept_a, reason_a = _vote(roles["REVIEWER_A"], system, user, caller)
-    accept_b, reason_b = _vote(roles["REVIEWER_B"], system, user, caller)
+    allowed = ESCALATE_ALLOWED_HEDGES if expect.get("escalate") else ()
+    accept_a, reason_a = _vote(roles["REVIEWER_A"], system, user, caller, allowed)
+    accept_b, reason_b = _vote(roles["REVIEWER_B"], system, user, caller, allowed)
     return {
         "accepted": accept_a and accept_b,
         "votes": {

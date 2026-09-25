@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-09-24T22:47:35Z",
-  "updated": "2026-09-25T04:43:26Z",
+  "updated": "2026-09-25T06:09:49Z",
   "claims": [
     {
       "id": "c1",
@@ -1202,6 +1202,17 @@
         "t12",
         "t14",
         "t8"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l6",
+      "code": "grader-unverified",
+      "what": "t13: reviewer B's system prompt offered 'answer in words' for any non-machine text, so it rejected every decline:not_a_request candidate (dev.json labels small talk escalate), and the missing_argument definition let the generator draft unsupported actions; eval drafts kept 0 not_a_request and 1 missing_argument across all seeds before s60's per-class verdict count exposed it",
+      "skipped_check": "per-class accept rate of the two-reviewer grader against dev.json's own labels before trusting the eval pool",
+      "refs": [
+        "t13"
       ],
       "origin": "llm",
       "status": "proposed"

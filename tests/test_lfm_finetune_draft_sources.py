@@ -751,3 +751,21 @@ def test_missing_argument_definition_requires_an_offered_action() -> None:
     definition = ds.REASON_DEFINITIONS["missing_argument"]
     assert "table DOES offer" in definition
     assert "does not offer is not this reason" in definition
+
+
+def test_judge_lets_ambiguous_justify_an_escalation_only() -> None:
+    reply = "yes. 'restart it' is ambiguous between service and container, so escalate."
+
+    def caller(role, system, user):
+        return reply
+
+    out = ds.judge("restart it", {"escalate": True}, "decline:missing_argument", ROLES, caller)
+    assert out["accepted"]
+    op = ds.judge(
+        "restart nginx",
+        {"operation": "service_restart", "args": {"service": "nginx"}},
+        None,
+        ROLES,
+        caller,
+    )
+    assert not op["accepted"]

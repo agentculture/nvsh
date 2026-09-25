@@ -654,12 +654,13 @@ def review_unit(
     must also say yes."""
     votes: list[dict[str, Any]] = []
     for item in unit.items:
+        allowed = ds.ESCALATE_ALLOWED_HEDGES if item.expect.get("escalate") else ()
         for system, user in item.reviews:
-            accept_b, reason_b = ds._vote(roles["REVIEWER_B"], system, user, caller)
+            accept_b, reason_b = ds._vote(roles["REVIEWER_B"], system, user, caller, allowed)
             vote: dict[str, Any] = {"reviewer_b": {"accept": accept_b, "reason": reason_b}}
             ok = accept_b
             if decide_by == "both":
-                accept_a, reason_a = ds._vote(roles["REVIEWER_A"], system, user, caller)
+                accept_a, reason_a = ds._vote(roles["REVIEWER_A"], system, user, caller, allowed)
                 vote["reviewer_a"] = {"accept": accept_a, "reason": reason_a}
                 ok = ok and accept_a
             votes.append(vote)

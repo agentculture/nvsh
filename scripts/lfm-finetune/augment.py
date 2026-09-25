@@ -112,7 +112,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterable
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # runnable from any directory
 
@@ -900,8 +900,8 @@ _YES_CERTAINTY_RE = re.compile(
 #: reject only loses a candidate, a false accept trains on a bad one
 #: (issue 46, d10: loosening this let real rejections through).
 _NO_RE = re.compile(
-    r"""(?:(?:^\s*|[\n.?!:;/]\s*)[*_`"']*no(?![a-z])"""
-    r"""|,\s*[*_`"']*no[*_`"']*\s*[,.;:!?\-\u2013\u2014]"""
+    r"""(?:(?:^\s*|[\n.?!:;/]\s*)[*_`"']*no(?![a-z]|-[a-z])"""
+    r"""|,\s*[*_`"']*no[*_`"']*\s*(?:[,.;:!?\u2013\u2014]|-(?![a-z]))"""
     r"""|(?<![a-z])no[*_`"'.!\s]*$)""",
     re.IGNORECASE,
 )
@@ -911,7 +911,12 @@ _YES_NOT_RE = re.compile(r"""^[\s*_`"',.:;\-\u2013\u2014]*not\b""", re.IGNORECAS
 _HEDGE_RE = re.compile(r"\b(" + "|".join(_HEDGE_WORDS) + r")\b", re.IGNORECASE)
 
 
-def parse_verdict(text: str) -> tuple[bool, str]:
+def _has_hedge(rest: str, allowed: Iterable[str]) -> bool:
+    ok = {word.lower() for word in allowed}
+    return any(match.group(1).lower() not in ok for match in _HEDGE_RE.finditer(rest))
+
+
+def parse_verdict(text: str, allowed_hedges: Iterable[str] = ()) -> tuple[bool, str]:
     """Parse a reviewer's free-text reply into ``(accepted, reason)``.
 
     A verdict is an accept ONLY if the first word is exactly "yes" (allowing
@@ -920,6 +925,12 @@ def parse_verdict(text: str) -> tuple[bool, str]:
     Anything else -- including a hedged "yes, but ..." -- is a reject, with
     the full reply kept as the reason so a rejection is auditable. An empty
     reply is a reject with reason "empty reply", never an accept.
+
+    *allowed_hedges* names hedge words that do not count as a hedge for this
+    verdict: for an escalation, "ambiguous" or "unclear" is usually the reason
+    itself ("ambiguous between two restarts, so escalate"), not doubt about
+    it (issue 53). A standalone "no" still rejects; so does a hyphenated
+    compound like "no-argument" no longer (it is a word, not a verdict).
     """
     stripped = text.strip()
     if not stripped:
@@ -931,7 +942,7 @@ def parse_verdict(text: str) -> tuple[bool, str]:
     rest = stripped[match.end() :]
     if (
         _NO_RE.search(rest)
-        or _HEDGE_RE.search(rest)
+        or _has_hedge(rest, allowed_hedges)
         or _YES_NOT_RE.match(rest)
         or _YES_CERTAINTY_RE.match(rest)
     ):
