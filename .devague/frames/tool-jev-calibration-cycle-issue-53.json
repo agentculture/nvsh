@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-09-24T22:47:35Z",
-  "updated": "2026-09-25T13:29:59Z",
+  "updated": "2026-09-25T15:20:48Z",
   "claims": [
     {
       "id": "c1",
@@ -1249,6 +1249,17 @@
       ],
       "origin": "llm",
       "status": "approved"
+    },
+    {
+      "id": "l10",
+      "code": "grader-unverified",
+      "what": "t13/t17: the fresh v2 eval pool's gold service arguments were never checked against the spelling grounding returns (bare 'rsyslog' vs 'rsyslog.service'), and metrics.py compares arguments by exact string; t17's right-proposal figures and floor were understated, found only when r1's mutating proposals came back 'wrong arguments'",
+      "skipped_check": "compare one grounded right proposal per argument kind against gold before t17",
+      "refs": [
+        "t17"
+      ],
+      "origin": "llm",
+      "status": "proposed"
     }
   ],
   "obligations": []

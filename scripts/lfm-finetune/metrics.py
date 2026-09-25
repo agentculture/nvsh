@@ -358,12 +358,42 @@ def _is_mutating_proposal(prediction: Prediction) -> bool:
     return operation is not None and not operation.read_only
 
 
+#: The unit suffix ``nvsh.ops.ground`` adds when it matches a service by name.
+_UNIT_SUFFIX = ".service"
+
+
+def _canonical_argument(name: str, value: object) -> object:
+    """*value* as grounding compares it (issue 53, deviation d5).
+
+    ``nvsh.ops.ground`` matches a service case-insensitively with the unit
+    suffix optional ('rsyslog' finds 'rsyslog.service') and a container
+    case-insensitively, so gold written either way names the same target.
+    Every other argument compares exactly.
+    """
+    if not isinstance(value, str) or name not in ("service", "container"):
+        return value
+    value = value.casefold()
+    if name == "service" and value.endswith(_UNIT_SUFFIX):
+        value = value[: -len(_UNIT_SUFFIX)]
+    return value
+
+
+def _same_arguments(got: object, expected: object) -> bool:
+    if not isinstance(got, dict) or not isinstance(expected, dict):
+        return got == expected
+    if got.keys() != expected.keys():
+        return False
+    return all(
+        _canonical_argument(key, got[key]) == _canonical_argument(key, expected[key]) for key in got
+    )
+
+
 def _right_proposal(prediction: Prediction) -> bool:
     expected = prediction.expected
     return (
         _proposed(prediction)
         and prediction.operation == expected.get("operation")
-        and prediction.arguments == expected.get("args", {})
+        and _same_arguments(prediction.arguments, expected.get("args", {}))
     )
 
 

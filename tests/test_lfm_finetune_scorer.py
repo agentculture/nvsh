@@ -914,3 +914,17 @@ def test_score_returns_which_operation_was_chosen_for_op_level_comparison() -> N
     fake = _FakeScorer(_favouring(module, "explain"))
     scored = module.score(fake, "p", "x", runner=world_runner(_WORLD))
     assert scored.choice == "explain"  # the operation name, never a letter
+
+
+def test_sentence_punctuation_after_a_name_does_not_hide_it_from_grounding() -> None:
+    """Issue 53 t18: 'restart systemd-networkd.' kept the full stop, so only the
+    other unit the sentence mentioned ('networking') grounded -- a wrong target."""
+    module = _module()
+    operation = ops_table.get(_operation_with_arg("str", "service"))
+    runner = world_runner({**_WORLD, "services": ["networking.service", "vllm.service"]})
+    assert module.ground_arguments(operation, "restart vllm.", runner) == {
+        "service": "vllm.service"
+    }
+    result = module.ground_arguments(operation, "refresh networking, restart vllm.", runner)
+    assert isinstance(result, str)
+    assert "ambiguous" in result

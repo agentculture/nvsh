@@ -582,7 +582,11 @@ def _choice_value(name: str, choices: Sequence[str], text: str) -> str:
 def _grounded_value(operation: Operation, name: str, text: str, runner: ops_ground.Runner) -> str:
     """The one value the request's words ground to for argument *name*."""
     found: list[str] = []
-    for word in dict.fromkeys(_WORD_RE.findall(text)):
+    # A name that ends a sentence keeps the full stop ("restart vllm."), which
+    # then grounds to nothing while another unit the sentence mentions does:
+    # a wrong target (issue 53, t18). Sentence punctuation is not a name.
+    words = (word.rstrip(".:") for word in _WORD_RE.findall(text))
+    for word in dict.fromkeys(word for word in words if word):
         grounded = ops_ground.ground(operation, {name: word}, runner)
         if isinstance(grounded, ops_ground.GroundDecline):
             if grounded.code == "lookup_failed":

@@ -670,3 +670,55 @@ def test_main_reports_a_bad_file_on_stderr(metrics, tmp_path, capsys):
     captured = capsys.readouterr()
     assert captured.out == ""
     assert "line 1" in captured.err
+
+
+def test_a_service_argument_compares_as_grounding_matches_it(metrics, tmp_path):
+    """Issue 53 (d5): gold 'rsyslog' and the grounded unit 'rsyslog.service' name
+    one service; a different unit is still wrong arguments."""
+    rows = [
+        _rec(
+            "s1",
+            _op("service_restart", service="rsyslog"),
+            "propose",
+            "service_restart",
+            {"service": "rsyslog.service"},
+        ),
+        _rec(
+            "s2",
+            _op("service_status", service="Docker.service"),
+            "propose",
+            "service_status",
+            {"service": "docker"},
+        ),
+        _rec(
+            "s3",
+            _op("service_restart", service="systemd-networkd"),
+            "propose",
+            "service_restart",
+            {"service": "networking.service"},
+        ),
+        _rec(
+            "c1",
+            _op("container_restart", container="Trainer"),
+            "propose",
+            "container_restart",
+            {"container": "trainer"},
+        ),
+    ]
+    result = metrics.compute(metrics.read_predictions(_write(tmp_path, rows)))
+    assert result["right_proposals"]["n"] == 3
+    assert result["wrong_mutating"]["wrong_arguments"] == 1
+
+
+def test_a_service_suffix_is_not_dropped_from_other_arguments(metrics, tmp_path):
+    rows = [
+        _rec(
+            "m1",
+            _op("power_set", mode="low_power"),
+            "propose",
+            "power_set",
+            {"mode": "low_power.service"},
+        ),
+    ]
+    result = metrics.compute(metrics.read_predictions(_write(tmp_path, rows)))
+    assert result["right_proposals"]["n"] == 0

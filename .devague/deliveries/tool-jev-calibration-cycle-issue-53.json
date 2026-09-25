@@ -2,7 +2,7 @@
   "plan_slug": "tool-jev-calibration-cycle-issue-53",
   "schema_version": 2,
   "created": "2026-09-24T23:49:55Z",
-  "updated": "2026-09-25T14:15:22Z",
+  "updated": "2026-09-25T15:20:48Z",
   "deviations": [
     {
       "id": "d1",
@@ -66,6 +66,20 @@
       "status": "approved",
       "classification": "acceptable",
       "seq": 4
+    },
+    {
+      "id": "d5",
+      "what": "metrics.py compares a service argument the way grounding matches it (case-insensitive, '.service' unit suffix optional; containers case-insensitive) instead of by exact string; every figure so far is recomputed or remeasured",
+      "task_ref": "t18",
+      "reason": "the fresh v2 eval sides (and very likely the sealed held-out) write bare service names while grounding returns the systemd unit, so exact comparison scored every right service proposal as wrong arguments (b1 val 59 exact vs 73 canonical; r1 52 vs 71, and 4 of r1's 5 'wrong mutating' were the same unit spelled two ways)",
+      "affects": [
+        "t17",
+        "t20"
+      ],
+      "origin": "user",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 5
     }
   ],
   "evidence": [],
