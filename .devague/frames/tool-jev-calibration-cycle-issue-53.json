@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-09-24T22:47:35Z",
-  "updated": "2026-09-25T00:04:30Z",
+  "updated": "2026-09-25T02:39:32Z",
   "claims": [
     {
       "id": "c1",
@@ -1177,6 +1177,18 @@
       "refs": [
         "t3",
         "c38"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l4",
+      "code": "grader-unverified",
+      "what": "t13: the two-reviewer check ran with the default 1024-token reply budget; reviewer B (a thinking model) often spent it all and replied empty, which counted as a reject \u2014 the empty-reply rate was not checked before trusting the eval (164 kept) and held-out (86 kept) reviews",
+      "skipped_check": "check the reviewers' empty-reply rate on a pilot batch before the full review",
+      "refs": [
+        "t13",
+        "h15"
       ],
       "origin": "llm",
       "status": "proposed"
