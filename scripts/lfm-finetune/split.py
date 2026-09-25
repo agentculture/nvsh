@@ -59,6 +59,14 @@ subcommand. v2 refuses to write to any path that resolves inside ``nvsh/``
 (the committed corpus lives there; a v2 corpus never does -- operator
 decisions q10/q11) and, like the legacy path, refuses the held-out split as
 an input.
+
+``--train-only CORPUS`` (repeatable, v2; issue 53 deviation d3) appends a
+corpus's entries to the train side only: the validation and test sides are
+split from the ``--corpus`` inputs alone, exactly as without the flag. Issue
+53 passes ``dev.json`` this way, so scorer-b1's own training data and the
+issue-46 sides the lead has read never land on the fresh evaluation sides.
+Each such entry carries ``train_only: true``; its file is listed in
+``sources`` with ``"train_only": true``.
 """
 
 from __future__ import annotations
@@ -292,6 +300,37 @@ def merge_corpora(paths: list[Path]) -> tuple[list[dict], list[dict]]:
     return merged, sources
 
 
+def add_train_only(
+    sides: dict[str, list[dict]], sources: list[dict], paths: list[Path]
+) -> tuple[dict[str, list[dict]], list[dict]]:
+    """*sides* with every *paths* corpus entry appended to train only (deviation d3).
+
+    Issue 53's corpus v2 keeps ``dev.json`` -- scorer-b1's own training data and
+    the issue-46 validation/test sides the lead has read -- off the fresh
+    validation and test sides: those come only from the corpora that were
+    split. A train-only entry whose ``id`` is already on any side is refused
+    (it would put one source on two sides); each carries ``train_only: true``
+    and its own ``source_id`` (default: its ``id``). Returns the new sides and
+    *sources* extended with each train-only file, marked ``"train_only": true``.
+    """
+    taken = {entry["id"] for side in sides.values() for entry in side}
+    extra, merged_sources = [], []
+    for path in paths:
+        more, more_sources = merge_corpora([path])
+        for entry in more:
+            if entry["id"] in taken:
+                raise ValueError(
+                    f"train-only entry {entry['id']!r} ({path}) is already on a split side"
+                )
+            taken.add(entry["id"])
+            extra.append(
+                {**entry, "source_id": entry.get("source_id", entry["id"]), "train_only": True}
+            )
+        merged_sources.extend({**src, "train_only": True} for src in more_sources)
+    train = sorted([*sides["train"], *extra], key=lambda entry: entry["id"])
+    return {**sides, "train": train}, [*sources, *merged_sources]
+
+
 def _class_of(entry: dict) -> object:
     return entry.get("class")
 
@@ -515,12 +554,16 @@ def _main_v2(
         parser.error("v2 mode requires --fold-seed (passed to calibration_fit.make_folds)")
     version = args.version or "v2"
 
+    train_only_paths = [Path(p) for p in (args.train_only or [])]
     try:
         check_version(version)
         entries, sources = merge_corpora(corpus_paths)
         sides, missing_kinds = stratified_split_sized(
             entries, args.seed, args.val_size, args.test_size
         )
+        if train_only_paths:
+            sides, sources = add_train_only(sides, sources, train_only_paths)
+            entries = entries + [e for e in sides["train"] if e.get("train_only")]
     except ValueError as exc:
         parser.error(str(exc))
     gaps = absent_from_sides(sides)
@@ -601,6 +644,15 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--version", default=None, help="v2: corpus version name, e.g. v2")
     parser.add_argument(
+        "--train-only",
+        action="append",
+        default=None,
+        help=(
+            "v2: corpus file whose entries go to the train side only, never val/test "
+            "(repeatable; issue 53 deviation d3)"
+        ),
+    )
+    parser.add_argument(
         "--fold-seed",
         type=int,
         default=None,
@@ -622,6 +674,7 @@ def main(argv: list[str] | None = None) -> int:
         or args.val_size is not None
         or args.test_size is not None
         or len(corpus_paths) > 1
+        or bool(args.train_only)
     )
     if v2_mode:
         return _main_v2(parser, args, corpus_paths, out_dir)

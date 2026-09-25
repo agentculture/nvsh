@@ -2,7 +2,7 @@
   "plan_slug": "tool-jev-calibration-cycle-issue-53",
   "schema_version": 2,
   "created": "2026-09-24T23:49:55Z",
-  "updated": "2026-09-25T04:08:11Z",
+  "updated": "2026-09-25T05:17:34Z",
   "deviations": [
     {
       "id": "d1",
@@ -36,6 +36,22 @@
       "status": "approved",
       "classification": "acceptable",
       "seq": 2
+    },
+    {
+      "id": "d3",
+      "what": "corpus v2 split: nvsh/tiers/corpus/dev.json (all 431, incl. the issue-46 val/test sides) goes to the v2 train side only; the new validation (~150) and test (~140) sides come only from this cycle's teacher drafts (eval pool), unseen by scorer-b1 and by the lead; split.py gains a --train-only CORPUS flag for this",
+      "task_ref": "t12",
+      "reason": "a plain re-split (c29) would place scorer-b1 training entries and issue-46 validation entries the lead read per entry into the new val/test sides, inflating the t17 baseline and making the fresh test side not fresh; operator chose fresh-only eval sides 2026-09-25",
+      "affects": [
+        "t13",
+        "t17",
+        "t15",
+        "t20"
+      ],
+      "origin": "user",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 3
     }
   ],
   "evidence": [],

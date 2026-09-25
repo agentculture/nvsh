@@ -720,3 +720,79 @@ def test_v2_header_note_names_the_version_not_an_input_path(tmp_path) -> None:
     header = json.loads((out_dir / "train.json").read_text())["header"]
     assert header.startswith("Split 'train' of corpus-v2.1 (seed=39). ")
     assert "drafts" not in header and "test" not in header and "held" not in header
+
+
+def _train_only_corpus(tmp_path: Path, ids: list[str], name: str = "dev-like.json") -> Path:
+    path = tmp_path / name
+    entries = [_operation_entry(i) for i in ids]
+    path.write_text(json.dumps({"header": "Train-only corpus.", "entries": entries}))
+    return path
+
+
+def _v2_args(corpus: Path, out_dir: Path, *extra: str) -> list[str]:
+    return [
+        "--corpus",
+        str(corpus),
+        "--version",
+        "v2",
+        "--seed",
+        "39",
+        "--val-size",
+        "4",
+        "--test-size",
+        "4",
+        "--fold-seed",
+        "7",
+        "--out-dir",
+        str(out_dir),
+        *extra,
+    ]
+
+
+def test_v2_train_only_corpus_lands_on_train_and_never_on_val_or_test(tmp_path) -> None:
+    """Deviation d3 (issue 53): dev.json-like data never reaches the fresh sides."""
+    module = _module()
+    corpus = _fixture_corpus(tmp_path)
+    dev_like = _train_only_corpus(tmp_path, ["dev-a", "dev-b", "dev-c"])
+    out_dir = tmp_path / "out"
+    assert module.main(_v2_args(corpus, out_dir, "--train-only", str(dev_like))) == 0
+    sides = {
+        name: json.loads((out_dir / f"{name}.json").read_text(encoding="utf-8"))
+        for name in module.SPLIT_NAMES
+    }
+    train_ids = {entry["id"] for entry in sides["train"]["entries"]}
+    assert {"dev-a", "dev-b", "dev-c"} <= train_ids
+    for name in ("val", "test"):
+        ids = {entry["id"] for entry in sides[name]["entries"]}
+        assert not ids & {"dev-a", "dev-b", "dev-c"}
+    # The val/test sides are exactly what a split without --train-only gives.
+    plain_dir = tmp_path / "plain"
+    assert module.main(_v2_args(corpus, plain_dir)) == 0
+    for name in ("val", "test"):
+        plain = json.loads((plain_dir / f"{name}.json").read_text(encoding="utf-8"))
+        assert [e["id"] for e in plain["entries"]] == [e["id"] for e in sides[name]["entries"]]
+    sources = sides["train"]["split"]["sources"]
+    assert [src.get("train_only", False) for src in sources] == [False, True]
+    assert sides["train"]["split"]["sizes"]["train"] == len(train_ids)
+    marked = [e for e in sides["train"]["entries"] if e.get("train_only")]
+    assert sorted(e["id"] for e in marked) == ["dev-a", "dev-b", "dev-c"]
+    assert all(e["source_id"] == e["id"] for e in marked)
+
+
+def test_v2_train_only_refuses_an_id_already_on_a_side(tmp_path, capsys) -> None:
+    module = _module()
+    corpus = _fixture_corpus(tmp_path)
+    clash_id = _fixture_entries()[0]["id"]
+    dev_like = _train_only_corpus(tmp_path, [clash_id])
+    with pytest.raises(SystemExit):
+        module.main(_v2_args(corpus, tmp_path / "out", "--train-only", str(dev_like)))
+    assert "already on a split side" in capsys.readouterr().err
+
+
+def test_v2_train_only_refuses_the_held_out_file(tmp_path, capsys) -> None:
+    module = _module()
+    corpus = _fixture_corpus(tmp_path)
+    held_out = _train_only_corpus(tmp_path, ["h-1"], name="held-out.json")
+    with pytest.raises(SystemExit):
+        module.main(_v2_args(corpus, tmp_path / "out", "--train-only", str(held_out)))
+    assert "held-out" in capsys.readouterr().err
