@@ -14,6 +14,7 @@ GPU is needed. Two fakes exercise the invariant the probe is built to catch:
 
 from __future__ import annotations
 
+import argparse
 import importlib.util
 import json
 import math
@@ -57,28 +58,37 @@ def _lines(prompt: str) -> dict[str, str]:
 
 
 class _IdentityScorer:
-    """Always answers *target*'s current label, wherever it landed."""
+    """Always answers *target*'s current label, wherever it landed.
+
+    Returns a logprob for every offered label (not just the winner), the
+    way a real top-K readout does for a small candidate pool -- so the
+    result is always complete, never ``incomplete`` (issue 53).
+    """
 
     def __init__(self, target: str) -> None:
         self.target = target
 
     def score_next_token(self, prompt: str, *, top: int = 20) -> dict[str, float]:
         names = _lines(prompt)
-        label = names.get(self.target)
-        if label is None:
-            return {}
-        return {label: math.log(0.9)}
+        return {
+            label: math.log(0.9 if name == self.target else 0.01) for name, label in names.items()
+        }
 
 
 class _FirstListedScorer:
-    """Always answers whichever candidate's line comes first in the prompt."""
+    """Always answers whichever candidate's line comes first in the prompt.
+
+    Returns a logprob for every offered label, so the result is always
+    complete (issue 53) -- only the winner's identity, not the label set,
+    depends on listing order.
+    """
 
     def score_next_token(self, prompt: str, *, top: int = 20) -> dict[str, float]:
-        match = _LINE_RE.search(prompt)
-        if match is None:
+        names = _lines(prompt)
+        if not names:
             return {}
-        label, _name = match.groups()
-        return {label: math.log(0.9)}
+        first_label = _LINE_RE.search(prompt).group(1)
+        return {label: math.log(0.9 if label == first_label else 0.01) for label in names.values()}
 
 
 def _entry(entry_id: str, operation: str, text: str = "show me the machine") -> CorpusEntry:
@@ -229,13 +239,13 @@ def test_kind_report_bootstraps_over_entries(probe):
         entry_id="a",
         gold="machine_status",
         baseline_choice="machine_status",
-        trials={"order": [(True, False, None)] * 10},
+        trials={"order": [(True, False, None, False)] * 10},
     )
     outcome_same = probe.EntryOutcome(
         entry_id="b",
         gold="machine_status",
         baseline_choice="machine_status",
-        trials={"order": [(False, False, None)] * 10},
+        trials={"order": [(False, False, None, False)] * 10},
     )
     report = probe.kind_report([outcome_changed, outcome_same], "order", bootstrap_seed=0)
     assert report["trials"] == 20
@@ -251,7 +261,13 @@ def test_kind_report_label_case_counts(probe):
         entry_id="a",
         gold="machine_status",
         baseline_choice="machine_status",
-        trials={"letters": [(True, True, None), (False, False, None), (True, False, None)]},
+        trials={
+            "letters": [
+                (True, True, None, False),
+                (False, False, None, False),
+                (True, False, None, False),
+            ]
+        },
     )
     report = probe.kind_report([outcome], "letters", bootstrap_seed=0)
     case = report["label_case"]
@@ -266,6 +282,100 @@ def test_kind_report_returns_none_when_no_trials(probe):
         entry_id="a", gold="machine_status", baseline_choice="machine_status", trials={}
     )
     assert probe.kind_report([outcome], "paraphrase", bootstrap_seed=0) is None
+
+
+# ---------------------------------------------------------------------------
+# Incomplete trials (issue 53): tallied separately, never scored as an answer
+# ---------------------------------------------------------------------------
+
+
+def test_kind_report_counts_incomplete_separately_from_changes(probe):
+    outcome = probe.EntryOutcome(
+        entry_id="a",
+        gold="machine_status",
+        baseline_choice="machine_status",
+        trials={
+            "letters": [
+                (True, False, None, False),  # a real, scored answer change
+                (False, False, None, False),  # a real, scored non-change
+                (True, True, None, True),  # incomplete: must not count as a change
+                (False, True, None, True),  # incomplete: must not count as a non-change either
+            ]
+        },
+    )
+    report = probe.kind_report([outcome], "letters", bootstrap_seed=0)
+    # Only the two scored trials feed trials/changes/rate/label_case.
+    assert report["trials"] == 2
+    assert report["changes"] == 1
+    assert report["rate"] == 0.5
+    assert report["label_case"]["lowercase_trials"] == 0
+    assert report["label_case"]["uppercase_trials"] == 2
+    # The incomplete pair is tallied on its own, out of all 4 raw trials.
+    assert report["incomplete"] == {"trials": 2, "of": 4, "rate": 0.5}
+
+
+def test_kind_report_reports_when_every_trial_is_incomplete(probe):
+    outcome = probe.EntryOutcome(
+        entry_id="a",
+        gold="machine_status",
+        baseline_choice="machine_status",
+        trials={"letters": [(True, False, None, True)] * 5},
+    )
+    report = probe.kind_report([outcome], "letters", bootstrap_seed=0)
+    assert report is not None
+    assert report["trials"] == 0
+    assert report["changes"] == 0
+    assert report["rate"] is None
+    assert report["incomplete"] == {"trials": 5, "of": 5, "rate": 1.0}
+
+
+class _NarrowAlphabetScorer:
+    """Mimics the pre-fix in-process scorer: only ever reads labels A, B and C.
+
+    A trial whose letter draw puts an offered candidate outside A-C is
+    missing that label entirely, the same way ``TransformersScorer`` built
+    from the fixed A-R training map cannot read a letter it was never told
+    about (issue 53).
+    """
+
+    def __init__(self, target: str) -> None:
+        self.target = target
+
+    def score_next_token(self, prompt: str, *, top: int = 20) -> dict[str, float]:
+        names = _lines(prompt)
+        result = {}
+        for name, label in names.items():
+            if label.upper() not in ("A", "B", "C"):
+                continue
+            result[label] = math.log(0.9) if name == self.target else math.log(0.01)
+        return result
+
+
+def test_narrow_alphabet_scorer_incomplete_trials_are_not_scored_as_changes(probe):
+    """A scorer too narrow for the letters a trial draws must never look like an answer change.
+
+    With a 3-candidate pool the baseline always lands on A/B/C (fully
+    readable), but ``letters`` redraws each candidate's letter from the
+    full 52-letter alphabet, so most trials assign at least one candidate a
+    letter outside A-C and become incomplete under the fix. Before the fix
+    (no ``incomplete`` tracking) those trials would have been compared to
+    the baseline anyway and inflated the answer-change rate.
+    """
+    pool = ("machine_status", "memory_stats", "gpu_stats")
+    entries = [_entry("e1", "machine_status")]
+    scorer_obj = _NarrowAlphabetScorer("machine_status")
+    report = probe.run_probe(
+        scorer_obj, _render, entries, pool=pool, per_entry=40, seed="narrow-alphabet"
+    )
+    kinds = {row["kind"]: row for row in report["kinds"]}
+    letters = kinds["letters"]
+    assert letters["incomplete"]["of"] == 40
+    assert letters["incomplete"]["trials"] > 0
+    # Every trial the scorer *could* fully read still agrees with the identity-like
+    # baseline choice, so the scored (non-incomplete) rate is exactly 0 -- none of
+    # the incomplete trials leaked into "changes".
+    assert letters["trials"] + letters["incomplete"]["trials"] == 40
+    assert letters["changes"] == 0
 
 
 # ---------------------------------------------------------------------------
@@ -330,6 +440,134 @@ def test_scorer_sees_the_drawn_order_verbatim(probe):
     # nothing normalised it back to the default listing first.
     first_names = [_LINE_RE.search(p).group(2) for p in seen_prompts]
     assert len(set(first_names)) > 1
+
+
+# ---------------------------------------------------------------------------
+# full_alphabet_labels (issue 53, P1): the in-process scorer must read every
+# letter a permutation trial can draw, not just the fixed A-R training map.
+# ---------------------------------------------------------------------------
+
+
+def test_full_alphabet_labels_covers_every_letter(probe):
+    labels = probe.full_alphabet_labels()
+    assert set(labels) == set(probe.scorer.LABEL_ALPHABET)
+    assert all(name == letter for name, letter in labels.items())
+    assert len(labels) == len(probe.scorer.LABEL_ALPHABET) == 52
+
+
+class _VocabTokenizer:
+    """A small fake tokenizer: each label is its own token, spaced and tabbed, plus junk."""
+
+    pad_token_id = 0
+
+    def __init__(self, labels) -> None:
+        self.texts = ["<pad>", "the", "Restart", "\n"]
+        for label in labels:
+            self.texts += [label, " " + label, "\t" + label]
+        self.texts += ["AB", " the"]
+
+    def get_vocab(self) -> dict[str, int]:
+        return {f"tok{index}": index for index in range(len(self.texts))}
+
+    def decode(self, ids, skip_special_tokens=False):
+        return "".join(self.texts[index] for index in ids)
+
+    def encode(self, text, add_special_tokens=False):
+        if text in self.texts:
+            return [self.texts.index(text)]
+        return [1, 2, 3]
+
+    def __len__(self) -> int:
+        return len(self.texts)
+
+
+def _fake_torch_model(torch, size: int):
+    """A model whose last-position logits are a fixed, deterministic ramp over *size*."""
+
+    class _Model(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.anchor = torch.nn.Parameter(torch.zeros(1))
+            self.fixed = torch.tensor([[float(index) for index in range(size)]])
+
+        def forward(self, input_ids, attention_mask=None, logits_to_keep=0):
+            positions = input_ids.shape[1] if not logits_to_keep else logits_to_keep
+            out = self.fixed.unsqueeze(1).expand(input_ids.shape[0], positions, -1)
+            return type("Out", (), {"logits": out + self.anchor})()
+
+    return _Model()
+
+
+def test_build_real_scorer_passes_full_alphabet_only_for_in_process(probe, monkeypatch):
+    """The CLI glue: in-process asks for every letter; served needs none (issue 53)."""
+    measure = probe._sibling("measure")
+    original_sibling = probe._sibling
+
+    def fake_sibling(name):
+        # _build_real_scorer calls _sibling("measure") itself, which by default reloads
+        # the module from scratch -- pin it to the one instance this test patches.
+        return measure if name == "measure" else original_sibling(name)
+
+    monkeypatch.setattr(probe, "_sibling", fake_sibling)
+
+    seen: list[tuple[object, object]] = []
+
+    def fake_build_scorer(spec, labels=None):
+        seen.append((spec, labels))
+        return "handle"
+
+    monkeypatch.setattr(measure.Seams, "load_config", lambda self, path: object())
+    monkeypatch.setattr(measure.Seams, "detect_platform", lambda self: "fake-platform")
+    # Seams.build_scorer's default lambda calls the *module-level* build_scorer by name,
+    # resolved at call time -- patching that global is what actually reroutes it here.
+    monkeypatch.setattr(measure, "build_scorer", fake_build_scorer)
+
+    args = argparse.Namespace(
+        model="scorer-b1",
+        revision="main",
+        tokenizer=None,
+        config=None,
+        scorer_kind=measure.SCORER_IN_PROCESS,
+    )
+    result = probe._build_real_scorer(args)
+    assert result == "handle"
+    assert len(seen) == 1
+    _spec, labels = seen[0]
+    assert labels == probe.full_alphabet_labels()
+
+    seen.clear()
+    args.scorer_kind = measure.SCORER_SERVED
+    probe._build_real_scorer(args)
+    _spec, labels = seen[0]
+    assert labels is None
+
+
+def test_full_alphabet_scorer_reads_letters_outside_the_default_a_to_r_map(probe):
+    """The P1 repro: a scorer built for only A-R cannot read letters a trial draws outside it.
+
+    ``scorer.labels_for(scorer.candidates())`` (the training default measure.build_scorer
+    used to always pass) only spans as many letters as there are candidates -- A-R for
+    today's 18. :func:`probe.full_alphabet_labels` must cover every letter instead, so a
+    ``TransformersScorer`` built from it reads a trial's letters regardless of which one a
+    permutation drew.
+    """
+    torch = pytest.importorskip("torch")
+    scorer = probe.scorer
+
+    default_labels = scorer.labels_for(scorer.candidates())
+    assert "S" not in default_labels.values()  # confirms the bug's premise: A-R only
+
+    full_labels = probe.full_alphabet_labels()
+    tokenizer = _VocabTokenizer(full_labels.values())
+    ids = scorer.label_token_ids(tokenizer, full_labels)
+    model = _fake_torch_model(torch, len(tokenizer))
+    in_process = scorer.TransformersScorer(model, tokenizer, full_labels, ids)
+
+    logprobs = in_process.score_next_token("anything")
+    seen = {text.strip() for text in logprobs}
+    # Letters well outside the default A-R training map are read.
+    for letter in ("S", "Z", "a", "z"):
+        assert letter in seen, letter
 
 
 # ---------------------------------------------------------------------------

@@ -239,8 +239,12 @@ class EntryOutcome:
     entry_id: str
     gold: str
     baseline_choice: str | None
-    #: kind -> list of (changed, has_lowercase, baseline_choice_dropped-or-None)
-    trials: dict[str, list[tuple[bool, bool, bool | None]]] = field(default_factory=dict)
+    #: kind -> list of (changed, has_lowercase, baseline_choice_dropped-or-None, incomplete)
+    #: ``incomplete`` is true when the trial's (or the baseline's) result was missing
+    #: labels or made no choice at all -- it is tallied separately, never folded into
+    #: ``changed`` (issue 53: a scorer that cannot read a trial's letters is not evidence
+    #: of an answer change).
+    trials: dict[str, list[tuple[bool, bool, bool | None, bool]]] = field(default_factory=dict)
 
 
 def _score(
@@ -256,6 +260,19 @@ def _score(
     )
     prompt = render(messages)
     return scorer.score(scorer_obj, prompt, request_text, offered=order, labels=labels, order=order)
+
+
+def _incomplete(scored) -> bool:
+    """True when *scored* made no comparable choice: missing labels, or no label had mass.
+
+    A scorer that cannot read the letters a trial actually offered (e.g. an
+    in-process scorer built for a narrower alphabet than the trial's draw --
+    issue 53) reports this via ``Scored.incomplete`` (some labels missing) or
+    ``Scored.choice is None`` (no label had any mass, or the call failed). A
+    trial like this is not evidence either way about the model's answer, so
+    it is never compared to the baseline.
+    """
+    return scored.choice is None or scored.incomplete is not None
 
 
 def probe_entry(
@@ -277,9 +294,10 @@ def probe_entry(
     baseline_labels = scorer.labels_for(pool)
     baseline_order = list(pool)
     baseline = _score(scorer_obj, render, request_text, baseline_order, baseline_labels, None)
+    baseline_incomplete = _incomplete(baseline)
     outcome = EntryOutcome(entry_id=entry.id, gold=gold, baseline_choice=baseline.choice)
     for kind in kinds:
-        trials: list[tuple[bool, bool, bool | None]] = []
+        trials: list[tuple[bool, bool, bool | None, bool]] = []
         for index in range(per_entry):
             if kind == "paraphrase" and not paraphrases:
                 break
@@ -297,9 +315,12 @@ def probe_entry(
             scored = _score(
                 scorer_obj, render, request_text, trial.order, trial.labels, trial.descriptions
             )
-            changed = not scorer.same_choice(scored, baseline)
+            # A baseline or trial the scorer could not fully read is not evidence of an
+            # answer change either way -- tallied separately (kind_report), never scored.
+            incomplete = baseline_incomplete or _incomplete(scored)
+            changed = False if incomplete else not scorer.same_choice(scored, baseline)
             has_lowercase = any(letter.islower() for letter in trial.labels.values())
-            trials.append((changed, has_lowercase, trial.baseline_choice_dropped))
+            trials.append((changed, has_lowercase, trial.baseline_choice_dropped, incomplete))
         if trials:
             outcome.trials[kind] = trials
     return outcome
@@ -320,19 +341,35 @@ def _rate_stat(pairs: Sequence[tuple[int, int]]) -> float | None:
 
 
 def kind_report(outcomes: Sequence[EntryOutcome], kind: str, *, bootstrap_seed: int) -> dict | None:
-    """One kind's report: trials, changes, rate with a bootstrap CI over entries, label case."""
+    """One kind's report: trials, changes, rate with a bootstrap CI over entries, label case.
+
+    A trial the scorer could not fully read (``incomplete`` -- missing labels, or no label
+    had mass at all) never enters ``trials``/``changes``/``rate``/``label_case``: it is
+    tallied on its own under ``incomplete`` instead, so a scorer built for too narrow an
+    alphabet cannot masquerade as a real answer-change rate (issue 53).
+    """
     per_entry_pairs: list[tuple[int, int]] = []
     lowercase_trials = lowercase_changes = 0
     uppercase_trials = uppercase_changes = 0
     baseline_dropped = 0
     subset_trials_seen = 0
+    incomplete_count = 0
+    raw_trial_count = 0
     for outcome in outcomes:
         trials = outcome.trials.get(kind)
         if not trials:
             continue
-        changes = sum(1 for changed, _, _ in trials if changed)
-        per_entry_pairs.append((len(trials), changes))
-        for changed, has_lowercase, dropped in trials:
+        raw_trial_count += len(trials)
+        incomplete_count += sum(1 for *_, incomplete in trials if incomplete)
+        scored_trials = [
+            (changed, has_lowercase, dropped)
+            for changed, has_lowercase, dropped, incomplete in trials
+            if not incomplete
+        ]
+        if scored_trials:
+            changes = sum(1 for changed, _, _ in scored_trials if changed)
+            per_entry_pairs.append((len(scored_trials), changes))
+        for changed, has_lowercase, dropped in scored_trials:
             if has_lowercase:
                 lowercase_trials += 1
                 lowercase_changes += int(changed)
@@ -342,7 +379,7 @@ def kind_report(outcomes: Sequence[EntryOutcome], kind: str, *, bootstrap_seed: 
             if dropped is not None:
                 subset_trials_seen += 1
                 baseline_dropped += int(dropped)
-    if not per_entry_pairs:
+    if raw_trial_count == 0:
         return None
     ci = metrics.bootstrap_ci(per_entry_pairs, _rate_stat, seed=bootstrap_seed)
     total_trials = sum(t for t, _ in per_entry_pairs)
@@ -357,6 +394,11 @@ def kind_report(outcomes: Sequence[EntryOutcome], kind: str, *, bootstrap_seed: 
         "ci_high": ci["ci_high"],
         "bootstrap_note": "95% CI is a bootstrap over entries, not trials (trials of one"
         " entry are correlated)",
+        "incomplete": {
+            "trials": incomplete_count,
+            "of": raw_trial_count,
+            "rate": (incomplete_count / raw_trial_count) if raw_trial_count else None,
+        },
         "label_case": {
             "lowercase_trials": lowercase_trials,
             "lowercase_changes": lowercase_changes,
@@ -428,8 +470,9 @@ def render_markdown(report: Mapping[str, object]) -> str:
         "The scorer is never canonicalised: each kind's draw is rendered and scored exactly as"
         " drawn.",
         "",
-        "| kind | trials | changes | rate | 95% CI | lowercase rate | uppercase rate |",
-        "| --- | --- | --- | --- | --- | --- | --- |",
+        "| kind | trials | changes | rate | 95% CI | lowercase rate | uppercase rate |"
+        " incomplete |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for kind_data in report["kinds"]:  # type: ignore[index]
 
@@ -437,11 +480,13 @@ def render_markdown(report: Mapping[str, object]) -> str:
             return f"{value:.3f}" if isinstance(value, float) else "n/a"
 
         case = kind_data["label_case"]
+        incomplete = kind_data["incomplete"]
         ci = f"[{_fmt(kind_data['ci_low'])}, {_fmt(kind_data['ci_high'])}]"
         lines.append(
             f"| {kind_data['kind']} | {kind_data['trials']} | {kind_data['changes']} |"
             f" {_fmt(kind_data['rate'])} | {ci}"
-            f" | {_fmt(case['lowercase_rate'])} | {_fmt(case['uppercase_rate'])} |"
+            f" | {_fmt(case['lowercase_rate'])} | {_fmt(case['uppercase_rate'])}"
+            f" | {incomplete['trials']}/{incomplete['of']} |"
         )
         if kind_data["kind"] == "subset":
             dropped = kind_data["baseline_choice_removed"]
@@ -457,6 +502,30 @@ def render_markdown(report: Mapping[str, object]) -> str:
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
+
+
+def full_alphabet_labels() -> dict[str, str]:
+    """Every letter in ``scorer.LABEL_ALPHABET``, mapped to itself.
+
+    The training scorer's default candidate -> label map (``scorer.labels_for
+    (scorer.candidates())``) is fixed to as many letters as there are
+    candidates -- A-R today -- because that is what a served/trained model
+    was calibrated against. A permutation trial's ``letters``/``all`` draw
+    (:func:`scorer.permute`) is not so constrained: it draws each offered
+    candidate's letter from the *whole* alphabet without replacement, so any
+    candidate can land on any of the 52 letters.
+
+    An in-process :class:`scorer.TransformersScorer` only ever reads token
+    variants for the letters in the labels map it was built with
+    (``label_variant_ids`` keys purely on letter text, never on which
+    candidate holds it -- see its own docstring). Building it from this
+    full-alphabet map, instead of the training default, means every letter a
+    trial can draw already has its variant token ids precomputed, so no
+    trial's answer goes unread regardless of which candidate the draw gave
+    it (issue 53: a repro against the default A-R map excluded 12 of the 18
+    offered labels and undercounted every answer-change rate).
+    """
+    return {letter: letter for letter in scorer.LABEL_ALPHABET}
 
 
 def _build_real_scorer(args: argparse.Namespace):
@@ -476,7 +545,11 @@ def _build_real_scorer(args: argparse.Namespace):
         memory_floor_mb=int(tiers.get("memory_floor_mb", 1024)),
         tokenizer=args.tokenizer,
     )
-    return seams.build_scorer(spec)  # pragma: no cover
+    # A served model's own top-K readout already covers whatever letters a trial draws
+    # (measure.build_scorer's docstring); only the in-process scorer needs a labels map
+    # wide enough for every letter a trial can assign, not just the fixed training slots.
+    labels = full_alphabet_labels() if args.scorer_kind == measure.SCORER_IN_PROCESS else None
+    return seams.build_scorer(spec, labels)  # pragma: no cover
 
 
 def main(argv: Sequence[str] | None = None) -> int:

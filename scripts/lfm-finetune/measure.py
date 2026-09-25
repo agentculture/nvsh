@@ -368,7 +368,9 @@ class Seams:
     clock: Callable[[], float] = time.monotonic
     uid: Callable[[], int] = os.getuid
     load_config: Callable[[Path | None], object] = nvsh_config.load
-    build_scorer: Callable[["ScorerSpec"], "ScorerHandle"] = lambda spec: build_scorer(spec)
+    build_scorer: Callable[..., "ScorerHandle"] = lambda spec, labels=None: build_scorer(
+        spec, labels
+    )
     #: ``GET <base_url>/models`` before the first entry; raises MeasureError on failure.
     preflight: Callable[..., None] = preflight_models
 
@@ -1589,11 +1591,22 @@ def scorer_labels_needed() -> int:
     return scorer.READOUT_TOP
 
 
-def build_scorer(spec: ScorerSpec) -> ScorerHandle:  # pragma: no cover - a model server or GPU
+def build_scorer(
+    spec: ScorerSpec, labels: Mapping[str, str] | None = None
+) -> ScorerHandle:  # pragma: no cover - a model server or GPU
     """The Track B scorer for *spec*: a served model through ``ToolChat``, or in-process.
 
     Both render prompts with the model's own chat template at *spec.revision*
     (thinking off when the template has that switch, ``scorer.render_prompt``).
+
+    *labels* overrides the in-process scorer's candidate -> label map; the
+    default is ``scorer.labels_for(scorer.candidates())``, the fixed A-R
+    training labels. A served model ignores it: ``ToolChat.score_next_token``
+    already asks for :data:`scorer.READOUT_TOP` log-probabilities regardless
+    of which labels are offered, so nothing needs pre-declaring. The
+    permutation probe (issue 53, t16) passes a labels map covering every
+    letter in :data:`scorer.LABEL_ALPHABET`, since its trials draw letters a
+    fixed A-R map would not cover.
     """
     from transformers import AutoTokenizer
 
@@ -1624,7 +1637,7 @@ def build_scorer(spec: ScorerSpec) -> ScorerHandle:  # pragma: no cover - a mode
     if torch.cuda.is_available():
         model = model.to("cuda")
     model.eval()
-    labels = scorer.labels_for(scorer.candidates())
+    labels = dict(labels) if labels is not None else scorer.labels_for(scorer.candidates())
     ids = scorer.label_token_ids(tokenizer, labels)
     in_process = scorer.TransformersScorer(model, tokenizer, labels, ids)
     return ScorerHandle(scorer=in_process, render=render, close=lambda: None)

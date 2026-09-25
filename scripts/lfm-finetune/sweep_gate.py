@@ -197,39 +197,90 @@ def build_threshold_grid(
 # ---------------------------------------------------------------------------
 
 
+#: redecide()'s invalid_reason when the gate would propose an operation the original line
+#: never actually chose (schema forces "invalid"'s own operation field to null, so this is
+#: the only place that mismatch can be recorded).
+NOT_GROUNDED_BY_SWEEP = "not grounded by the sweep"
+
+
+def _original_choice(prediction) -> str | None:
+    """The operation/control label *prediction*'s own decision was about, win or lose.
+
+    A ``"propose"`` line names it directly. Any other outcome -- including
+    ``"invalid"``, whose ``operation`` field the schema forces to ``null``
+    even when grounding failed on a real winning operation -- never
+    recorded that label directly, so this reproduces it the same way
+    :func:`redecide` would under every threshold disabled (the module's own
+    guarantee: :func:`gate.decide`'s top1 is computed before any threshold
+    check, so it never depends on *thresholds*).
+    """
+    if prediction.outcome == "propose":
+        return prediction.operation
+    if prediction.candidates is None:
+        return None
+    offered = list(prediction.candidates.keys())
+    baseline = gate.decide(prediction.candidates, offered, gate.Thresholds())
+    return baseline.label if baseline.outcome == "propose" else None
+
+
 def redecide(prediction, thresholds: "gate.Thresholds"):
     """*prediction*, a ``metrics.Prediction``, with its outcome/operation re-decided.
 
     Lines with no recorded distribution (``candidates`` is ``null``) cannot
     be gated -- the gate has nothing to score -- so they pass through
-    unchanged. Every field but ``outcome``/``operation``/``arguments`` is
-    kept as recorded; ``arguments`` is kept when the re-decided outcome is
-    still ``propose`` for the same label (the gate never re-grounds
-    arguments, it only decides whether to trust the argmax the scorer
-    already grounded), and cleared otherwise.
+    unchanged. Every field but ``outcome``/``operation``/``arguments``/
+    ``invalid_reason`` is kept as recorded.
+
+    The gate never re-grounds arguments, it only decides whether to trust
+    an already-grounded argmax, so ``arguments`` are kept only when the
+    re-decided outcome is ``propose`` for the exact operation an *original,
+    valid* ``propose`` line already grounded. Two other ``propose``-shaped
+    cases never fabricate ``{}`` arguments instead (issue 53 review): when
+    the gate's pick is the same operation the original line's own argmax
+    already named but that line was invalid (its arguments could not be
+    grounded, or it failed the operation table's own validation), the
+    result stays ``invalid`` with the original's ``invalid_reason``
+    -- the sweep did not fix what made it invalid. When the gate's pick
+    names a *different* operation than the one the original line actually
+    decided, nothing here grounds it either, so the result is ``invalid``
+    with reason :data:`NOT_GROUNDED_BY_SWEEP`.
     """
     if prediction.candidates is None:
         return prediction
     offered = list(prediction.candidates.keys())
     decision = gate.decide(prediction.candidates, offered, thresholds)
-    if decision.outcome == "propose":
-        same_label = prediction.outcome == "propose" and prediction.operation == decision.label
-        arguments = dict(prediction.arguments) if same_label and prediction.arguments else {}
-        operation = decision.label
+    invalid_reason = None
+    if decision.outcome != "propose":
+        outcome, operation, arguments = decision.outcome, None, None
+    elif prediction.outcome == "propose" and prediction.operation == decision.label:
+        original_reason = metrics.invalid_reason(prediction)
+        if original_reason is None:
+            outcome, operation = "propose", decision.label
+            arguments = dict(prediction.arguments) if prediction.arguments else {}
+        else:
+            # An original "propose" whose own arguments already failed the operation
+            # table's validation: still invalid, for the same reason as before.
+            outcome, operation, arguments, invalid_reason = "invalid", None, None, original_reason
+    elif _original_choice(prediction) == decision.label:
+        # Same operation the original line's argmax named, but that line never grounded
+        # it (typically an "invalid" line: schema forces its own operation to null).
+        outcome, operation, arguments = "invalid", None, None
+        invalid_reason = metrics.invalid_reason(prediction) or NOT_GROUNDED_BY_SWEEP
     else:
-        arguments = None
-        operation = None
+        # A different operation than whatever the original line actually decided --
+        # nothing here has grounded arguments for it.
+        outcome, operation, arguments, invalid_reason = "invalid", None, None, NOT_GROUNDED_BY_SWEEP
     return metrics.Prediction(
         id=prediction.id,
         expected=prediction.expected,
-        outcome=decision.outcome,
+        outcome=outcome,
         operation=operation,
         arguments=arguments,
         candidates=prediction.candidates,
         tokens=prediction.tokens,
         ttfd_ms=prediction.ttfd_ms,
         latency_ms=prediction.latency_ms,
-        invalid_reason=None,
+        invalid_reason=invalid_reason,
     )
 
 
