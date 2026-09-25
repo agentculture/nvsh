@@ -55,6 +55,7 @@ peft (docs/lfm-finetune.md). Its helpers import them lazily.
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import hashlib
 import importlib.util
 import json
@@ -63,7 +64,6 @@ import random
 import re
 import sys
 import time
-import dataclasses
 from dataclasses import dataclass
 from pathlib import Path
 
