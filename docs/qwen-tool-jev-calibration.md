@@ -588,6 +588,21 @@ lapses, all posted on issue #61 when they happened.
   0 wrong mutating. Frozen for t20: `calib/scorer-r1-q4.params.json`
   (`2567a370e933cc73`) and `calib/scorer-r1-q4.FROZEN.json`
   (`5fafad796f914166`). Record: guide, #61.
+- **D45.** **d7 data and the r3b re-freeze.** `check-then-change` full run
+  (seeds 61 and 62, 20 per mutating operation each): 44 + 37 pairs kept
+  (losses: 15 duplicates, 13 exact and 1 near matches of protected sides, 7
+  train repeats, 3 reviewer B). The lead read every reviewer reject: two are
+  genuine, and one is a clear yes lost to "may" ("may require both
+  `power_get` and `power_set`"), one pair, left as it is. Combined across
+  seeds (5 duplicate pairs dropped): 76 pairs, 152 entries, so supplement v3
+  = 491 entries. A separate work directory keeps r1's freeze untouched.
+  `assemble` (same flags and protected sides as D37): 1000 sources, 1195
+  variations kept, `leakage_check` 4 of 2195 dropped (the same 4 against
+  issue 46's held-out), **2503 scorer rows**. Hashes: supplement v3
+  `893d895bec9690b2`, train-augmented `5ef3df76d6d0586e`, scorer-train
+  `9ccb7a74092b561c`, leakage `2793f204f5fc4add`; splits unchanged. r3b (r3's
+  recipe, lr 1e-4) trains on it on the training machine, cortex stopped
+  for the run. Record: guide, #61.
 - **D32.** **Lapses l5-l8 approved.** The operator approved l5 (split v2
   header), l6 (reviewer policy), l7 with its naturalness addendum (verdict
   parser) and l8 (mid-sentence "but"). Every lapse of this cycle, l1-l8,
