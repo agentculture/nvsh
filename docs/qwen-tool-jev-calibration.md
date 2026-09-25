@@ -376,6 +376,20 @@ lapses, all posted on issue #61 when they happened.
   after stream A. Same class as l7 (recorded as its addendum on #61).
   Ledger P19.
 
+- **D27.** **The permutation baseline is the target the new training must
+  close.** Evidence: the probe of `scorer-b1` on v2 validation (204
+  entries, 10 trials per entry and kind, seed 53, no incomplete trials)
+  pools to 1,917 changes in 10,200 trials, **18.8%**, next to OpenJev's
+  *base* model (18.5%) and far from the 2.3% bar. The letters kind alone
+  changes 40.6% of answers, and in the combined draw uppercase-only trials
+  change 13.5% against 37.8% once lowercase letters appear: `scorer-b1`
+  learned its fixed `A`-`R` map, the shortcut issue 53 suspected. Choice:
+  nothing changes in the plan; r1-r3 train with per-example randomized
+  labels over the whole 52-letter alphabet, and the rule's step 3 (pooled
+  rate) ranks them. Note: the rule ranks by ECE after *temperature* (step
+  4); D25's vector scaling is a t19 deployment choice, not a selection
+  criterion.
+
 ## Where the run stands
 
 **Latest, 2026-09-25 afternoon.**
@@ -411,7 +425,20 @@ lapses, all posted on issue #61 when they happened.
   it's over 50%, switch to low power") that the exact build answers with
   the read-only `swap_status` and `Q4_K_M` with `power_set`. Calibration
   fits and the selection-fold result are decision D25 above; the gate sweep
-  and the permutation probe are running.
+  is running.
+- **t17 permutation probe, `scorer-b1` in-process on v2 validation** (D27):
+
+  | Kind | Trials | Changes | Rate | 95% CI (entries) |
+  |---|---|---|---|---|
+  | order | 2040 | 105 | 5.1% | 3.2-7.5% |
+  | letters | 2040 | 828 | 40.6% | 35.8-45.1% |
+  | subset | 2040 | 160 | 7.8% | 5.2-10.5% |
+  | paraphrase | 2040 | 80 | 3.9% | 1.9-6.2% |
+  | all (order + letters + subset) | 2040 | 744 | 36.5% | 31.7-41.0% |
+  | **pooled** | 10200 | 1917 | **18.8%** | |
+
+  Subset trials dropped the baseline's own choice in 135 of 2040. No
+  incomplete trials.
 - **t15 generating:** `targeted_augment.py` in two parallel streams
   (missing-argument and power-set, then diagnosis-explain; disambiguation
   and hard-negative), every protected side excluded.
