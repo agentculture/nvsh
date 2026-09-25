@@ -641,6 +641,29 @@ lapses, all posted on issue #61 when they happened.
   objective stands; the missing-candidate bar is therefore at risk on test.
   Frozen: params `b07eb0f127acf5b6`, settings `dbba2f9bc1e41eb1`, `Q4_K_M`
   `3568f660ab186887`. Record: guide, #61.
+- **D48.** **t20: the final run, once, on `scorer-r3b.q4_k_m`.** Served
+  through `llama-server` on the training machine and on the AGX Orin (pinned
+  Jetson llama.cpp image; the operator approved stopping the Orin's resident
+  model, restarted healthy after), with the frozen calibration (temperature
+  1.54) and gate (read-only margin 0.2) applied offline to the raw
+  predictions. Every readout complete. Results, training machine / Orin:
+
+  | Bar | Test (198) | Sealed held-out (149) |
+  |---|---|---|
+  | 0 wrong mutating, full side and missing-candidate slice | **0 / 0**, met | **0 / 0**, met |
+  | ECE <= 0.10 after calibration [95% CI] | **0.016 [0.011, 0.042] / 0.009 [0.009, 0.036]**, met | **0.044 [0.024, 0.092] / 0.046 [0.023, 0.090]**, met |
+  | Missing-candidate escalation >= 80% | **85.5% (71/83) / 84.3%**, met | **76.7% (46/60) / 76.7%**, missed |
+  | Pooled permutation change <= 2.3% (test, in-process, 10 per entry and kind) | **2.07%** (205/9900), met | not measured |
+
+  Also: right proposals 79/83 (95.2%) on test and 49/60 (81.7%) on the
+  held-out, on both machines; escalation recall / precision 94.9% / 98.7%
+  (test) and 97.1% / 85.0% (held-out); Brier 0.049 and 0.135; warm decision
+  latency on the Orin about 355 ms (p95 369 ms). Permutation kinds on test:
+  order 2.5%, letters 1.0%, subset 1.6%, paraphrase 2.5%, all 2.8%. The one
+  missed bar: missing-candidate escalation on the held-out, 3 entries short
+  of 80%, where the model proposes a related read-only operation instead
+  (0 wrong mutating). Pages: `docs/benchmarks/2026-09-25-lfm-final-scorer-r3b*`,
+  `...-heldout-scorer-r3b*` and the Orin's `edge-orin-*`. Record: guide, #61.
 - **D32.** **Lapses l5-l8 approved.** The operator approved l5 (split v2
   header), l6 (reviewer policy), l7 with its naturalness addendum (verdict
   parser) and l8 (mid-sentence "but"). Every lapse of this cycle, l1-l8,
