@@ -81,7 +81,11 @@ DECIDED_BY_BOTH = "both"
 DECIDED_BY_REVIEWER_B = "reviewer_b"
 
 #: Where each issue's run log lives in the nvsh repository.
-RUN_LOGS = {39: "docs/lfm-finetune.md", 46: "docs/qwen-tool-jev-finetune.md"}
+RUN_LOGS = {
+    39: "docs/lfm-finetune.md",
+    46: "docs/qwen-tool-jev-finetune.md",
+    53: "docs/qwen-tool-jev-calibration.md",
+}
 
 _SEED_RE = re.compile(r"\(seed=(\d+)\)")
 
@@ -296,8 +300,13 @@ def build(
     apache_only: bool = False,
     issue: int = 39,
     model_repos: list[str] | None = None,
+    scorer_train: Path | None = None,
 ) -> dict[str, Any]:
     """Write the data set folder to *out*; return the counts shown in the card.
+
+    *scorer_train* (issue 53 t21) is the candidate scorer's own training file
+    (``build_dataset.py --scorer-out``: per-row label maps and missing-candidate
+    rows); it ships byte for byte as ``data/scorer-train.json``.
 
     *role_models* is this run's alias -> (name, licence) table (see
     ``load_role_models``). With *apache_only*, a teacher named by any
@@ -389,6 +398,8 @@ def build(
                 handle.write(json.dumps(record, ensure_ascii=False) + "\n")
     (out / "manifest.json").write_text(json.dumps(manifest, indent=1) + "\n", encoding="utf-8")
     shutil.copyfile(licence, out / "LICENSE")
+    if scorer_train is not None:
+        shutil.copyfile(scorer_train, out / "data" / "scorer-train.json")
 
     counts = {
         "train": len(rows["train"]),
@@ -401,17 +412,27 @@ def build(
         "rejected": rejected_count,
         "answers": _answer_counts(rows["train"]),
     }
-    (out / "README.md").write_text(
-        card(
-            counts,
-            summary,
-            issue=issue,
-            model_repos=model_repos,
-            seed=split_seed(splits / "val.json"),
-        ),
-        encoding="utf-8",
+    text = card(
+        counts,
+        summary,
+        issue=issue,
+        model_repos=model_repos,
+        seed=split_seed(splits / "val.json"),
     )
+    if scorer_train is not None:
+        text += SCORER_TRAIN_NOTE
+    (out / "README.md").write_text(text, encoding="utf-8")
     return counts
+
+
+#: The card's note on ``data/scorer-train.json`` (issue 53 t21).
+SCORER_TRAIN_NOTE = (
+    "\n## Candidate-scorer training file\n\n"
+    "`data/scorer-train.json` is the file the candidate scorer trained on: the train\n"
+    "records above, each with its own offered candidates, letter map and gold label,\n"
+    "plus missing-candidate rows (the right operation removed, answer: escalate), as\n"
+    "written by nvsh's `scripts/lfm-finetune/build_dataset.py --scorer-out`.\n"
+)
 
 
 def _answer_counts(records: list[dict[str, Any]]) -> dict[str, int]:
@@ -453,6 +474,8 @@ GROUNDING = {
     "  measurement's ground snapshot); values that depend on the machine, such\n"
     "  as power modes and service names, may differ on another device.",
 }
+#: Issue 53 grounded the same way, against a snapshot rebuilt from its own splits.
+GROUNDING[53] = GROUNDING[46]
 
 
 def card(
@@ -623,6 +646,9 @@ def main(argv: list[str] | None = None) -> int:
         "--issue", type=int, default=39, help="the nvsh issue the data set belongs to"
     )
     parser.add_argument(
+        "--scorer-train", type=Path, help="the candidate scorer's own training file (issue 53)"
+    )
+    parser.add_argument(
         "--model-repo",
         action="append",
         dest="model_repos",
@@ -643,6 +669,7 @@ def main(argv: list[str] | None = None) -> int:
             apache_only=args.apache_only,
             issue=args.issue,
             model_repos=args.model_repos,
+            scorer_train=args.scorer_train,
         )
     except ValueError as exc:
         parser.error(str(exc))

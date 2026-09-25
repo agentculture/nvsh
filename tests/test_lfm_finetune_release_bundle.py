@@ -694,3 +694,33 @@ def test_main_needs_the_accepted_and_train_files_with_teacher_models(tmp_path) -
     module = _module()
     with pytest.raises(SystemExit):
         module.main(argv)
+
+
+def test_a_scorer_bundle_ships_its_frozen_calibration_and_gate(tmp_path) -> None:
+    """Issue 53 t21: the served probabilities are only reproducible with the
+    temperature and gate thresholds fitted for this exact build."""
+    calibration = tmp_path / "params.json"
+    calibration.write_text('{"temperature": 1.5, "vector": {}}')
+    gate = tmp_path / "gate.json"
+    gate.write_text('{"gate": {"escalate": null}}')
+    _qwen_build(
+        tmp_path,
+        scorer=True,
+        repo=_QWEN_REPO + "-scorer",
+        run="scorer-r3b",
+        calibration=calibration,
+        gate=gate,
+    )
+    out = tmp_path / "bundle"
+    assert (out / "calibration.json").read_bytes() == calibration.read_bytes()
+    assert (out / "gate.json").read_bytes() == gate.read_bytes()
+    card = (out / "README.md").read_text()
+    assert "## Calibration and gate" in card
+    assert "calibration.json" in card and "gate.json" in card
+
+
+def test_calibration_and_gate_are_for_a_scorer_only(tmp_path) -> None:
+    calibration = tmp_path / "params.json"
+    calibration.write_text("{}")
+    with pytest.raises(ValueError, match="scorer"):
+        _qwen_build(tmp_path, calibration=calibration)

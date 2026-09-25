@@ -833,6 +833,14 @@ case "$STAGE" in
     if [ "$kind" != bf16 ] && [[ $suffix == *-$kind ]]; then
       extra+=(--quantized-from "$BUNDLE_REPO_PREFIX${suffix%-"$kind"}")
     fi
+    # BUNDLE_CALIBRATION / BUNDLE_GATE (issue 53 t21, optional): a scorer's
+    # frozen calibration parameters and gate settings, shipped in the bundle.
+    for key in BUNDLE_CALIBRATION BUNDLE_GATE; do
+      value=${!key:-}
+      [ -z "$value" ] && continue
+      [ -s "$value" ] || die "$key=$value does not exist or is empty"
+      if [ "$key" = BUNDLE_CALIBRATION ]; then extra+=(--calibration "$value"); else extra+=(--gate "$value"); fi
+    done
     out="$WORK/bundles/$suffix"
     mkdir -p "$WORK/bundles"
     py scripts/lfm-finetune/release_bundle.py --kind "$kind" "${extra[@]}" --merged "$merged" \
@@ -853,6 +861,9 @@ case "$STAGE" in
     [ -s "$train" ] || die "no $train; run assemble first (the frozen training set)"
     read -r -a rejected <<<"${BUNDLE_REJECTED:-$WORK/aug/nvsh-rejected.jsonl}"
     read -r -a model_suffixes <<<"${DATASET_MODEL_REPOS:-}"
+    scorer_train=()
+    # The candidate scorer's own training file (issue 53 t21), when assemble wrote one.
+    [ -s "$WORK/data/scorer-train.json" ] && scorer_train=(--scorer-train "$WORK/data/scorer-train.json")
     model_repos=()
     for model in "${model_suffixes[@]}"; do
       check_suffix "$model"
@@ -863,7 +874,7 @@ case "$STAGE" in
     py scripts/lfm-finetune/dataset_bundle.py --splits "$WORK/splits" --train-augmented "$train" \
       --accepted "${BUNDLE_ACCEPTED:-$WORK/aug/nvsh-accepted.jsonl}" --rejected "${rejected[@]}" \
       --licence "$REPO_ROOT/LICENSE" --teacher-models "$TEACHER_MODELS" --apache-only \
-      --issue 46 "${model_repos[@]}" --out "$out"
+      --issue "${BUNDLE_ISSUE:-46}" "${scorer_train[@]}" "${model_repos[@]}" --out "$out"
     write_bundle_record "$suffix" dataset "$suffix" dataset
     py scripts/lfm-finetune/scan_bundle.py scan "$out"
     ;;

@@ -548,3 +548,27 @@ def test_main_takes_several_rejected_files_the_issue_and_model_repos(tmp_path, c
     assert json.loads(capsys.readouterr().out)["rejected"] == 2
     card = (tmp_path / "bundle-cli" / "README.md").read_text()
     assert "qwen3.5-0.8b-nvsh-tool-jev" in card
+
+
+def test_an_issue_53_card_names_its_guide_and_grounding(tmp_path) -> None:
+    inputs = _inputs(tmp_path)
+    inputs["issue"] = 53
+    _module().build(**inputs)
+    card = (tmp_path / "bundle" / "README.md").read_text()
+    assert "nvsh issue 53" in card
+    assert "docs/qwen-tool-jev-calibration.md" in card
+    assert "cannot be rendered there" not in card
+    assert "one fixed snapshot" in card
+
+
+def test_the_scorer_training_file_ships_when_given(tmp_path) -> None:
+    """Issue 53 t21: the scorer trained on scorer-train.json (per-row label maps
+    and missing-candidate rows), not only on train-augmented.json."""
+    inputs = _inputs(tmp_path)
+    scorer_train = tmp_path / "scorer-train.json"
+    scorer_train.write_text('{"header": "h", "entries": []}')
+    inputs["scorer_train"] = scorer_train
+    _module().build(**inputs)
+    out = tmp_path / "bundle"
+    assert (out / "data" / "scorer-train.json").read_bytes() == scorer_train.read_bytes()
+    assert "scorer-train.json" in (out / "README.md").read_text()

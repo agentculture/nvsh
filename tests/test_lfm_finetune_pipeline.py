@@ -3000,3 +3000,56 @@ def test_a_bf16_gguf_build_without_its_file_is_refused(tmp_path: Path) -> None:
     result = pipe.run("measure-final", "a1.bf16_gguf")
     assert result.returncode != 0
     assert "model-bf16.gguf" in result.stderr
+
+
+# Issue 53 t21: the bundle stages carry the cycle's own issue, the scorer's
+# training file and its frozen calibration and gate.
+
+
+def test_bundle_dataset_names_bundle_issue_and_ships_the_scorer_file(tmp_path: Path) -> None:
+    pipe = _bundle_pipeline(tmp_path, extra_env="BUNDLE_ISSUE=53\n")
+    (pipe.work / "data").mkdir(parents=True)
+    (pipe.work / "data" / "train-augmented.json").write_text("{}", encoding="utf-8")
+    (pipe.work / "data" / "scorer-train.json").write_text("{}", encoding="utf-8")
+    result = pipe.run("bundle-dataset", "tool-jev-v2-dataset")
+    assert result.returncode == 0, result.stderr
+    ((_, argv),) = pipe.calls("dataset_bundle.py")
+    assert _option(argv, "--issue") == ["53"]
+    assert _option(argv, "--scorer-train") == [str(pipe.work / "data" / "scorer-train.json")]
+
+
+def test_bundle_dataset_without_a_scorer_file_passes_none(tmp_path: Path) -> None:
+    pipe = _bundle_pipeline(tmp_path)
+    (pipe.work / "data").mkdir(parents=True)
+    (pipe.work / "data" / "train-augmented.json").write_text("{}", encoding="utf-8")
+    assert pipe.run("bundle-dataset", "tool-jev-dataset").returncode == 0
+    ((_, argv),) = pipe.calls("dataset_bundle.py")
+    assert "--scorer-train" not in argv
+
+
+def test_bundle_of_a_scorer_passes_its_frozen_calibration_and_gate(tmp_path: Path) -> None:
+    calibration, gate = tmp_path / "params.json", tmp_path / "gate.json"
+    calibration.write_text("{}", encoding="utf-8")
+    gate.write_text("{}", encoding="utf-8")
+    pipe = _bundle_pipeline(
+        tmp_path, extra_env=f"BUNDLE_CALIBRATION={calibration}\nBUNDLE_GATE={gate}\n"
+    )
+    pipe.ready(stock=False, run="scorer-r3b")
+    _mark_scorer_run(pipe, "scorer-r3b")
+    _quant(pipe, "scorer-r3b")
+    result = pipe.run(
+        "bundle", "gguf", "scorer-r3b.q4_k_m", "tool-jev-scorer-v2-gguf", str(_report(tmp_path))
+    )
+    assert result.returncode == 0, result.stderr
+    ((_, argv),) = pipe.calls("release_bundle.py")
+    assert _option(argv, "--calibration") == [str(calibration)]
+    assert _option(argv, "--gate") == [str(gate)]
+
+
+def test_bundle_refuses_a_missing_calibration_file(tmp_path: Path) -> None:
+    pipe = _bundle_pipeline(tmp_path, extra_env=f"BUNDLE_CALIBRATION={tmp_path}/nope.json\n")
+    pipe.ready(stock=False, run="scorer-r3b")
+    _mark_scorer_run(pipe, "scorer-r3b")
+    result = pipe.run("bundle", "bf16", "scorer-r3b", "tool-jev-scorer-v2", str(_report(tmp_path)))
+    assert result.returncode != 0
+    assert "BUNDLE_CALIBRATION" in result.stderr
