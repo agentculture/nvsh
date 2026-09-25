@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/). This project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.20.0] - 2026-09-25
+
+### Added
+
+- Tool-Jev calibration cycle tooling for issue 53 under `scripts/lfm-finetune/`: one shared label-probability readout (`scorer.distribution()`, `READOUT_TOP` 20000) and a permutation seam; `calibration_fit.py` (seeded folds, temperature and vector scaling, `evaluate`); an uncertainty gate keyed by `Operation.read_only` (`gate.py`) with an offline sweep (`sweep_gate.py`); `permutation_probe.py`; per-slice calibration with bootstrap CIs and an `abstain_uncertain` outcome in `metrics.py`; `measure.py --calibration/--reasons`; `split.py` v2 (`--train-only`, validation folds); `draft_sources.py` (two-reviewer fresh evaluation and held-out drafting); `targeted_augment.py` (missing-argument, diagnosis-explain, power-set, disambiguation, hard-negative and check-then-change recipes); per-row letter maps, missing-candidate rows and escalation-reason candidates in `build_dataset.py --scorer-out` and `train_scorer.py`; a `<run>.bf16_gguf` build for served-readout fidelity checks.
+- Bundles for a scorer ship its frozen `calibration.json` and `gate.json` (`BUNDLE_CALIBRATION`, `BUNDLE_GATE`); data set bundles name `BUNDLE_ISSUE`, ship `data/scorer-train.json`, record drafted and targeted records' real provenance (`BUNDLE_DEFAULT_SOURCE`), and publish a private IP address as an RFC 5737 documentation address.
+- Docs: `docs/qwen-tool-jev-calibration.md` (the cycle's guide, decision path and ledger), `docs/tool-jev-calibration-rule.md` (pre-registered checkpoint rule), `docs/scorer-finetune-playbook.md` (domain-general calibrated scorer playbook) and the cycle report `docs/benchmarks/2026-09-25-tool-jev-calibration-cycle.md`, with Spark and AGX Orin result pages for `scorer-r3b`.
+
+### Changed
+
+- Right proposals compare a service argument the way grounding matches it (case-insensitive, `.service` suffix optional) and a container case-insensitively (issue 53, deviation d5).
+- The reviewer verdict parser no longer reads a hyphenated `no-` compound as a no; escalation, naturalness and missing-argument verdicts may use their own reason words, while a hedge word leading the yes always rejects.
+- `MEASURE_MAX_LOGPROBS` defaults to 20000 everywhere (was 22).
+
+### Fixed
+
+- Scorer grounding ignores sentence punctuation after a name, so 'restart systemd-networkd.' no longer grounds to a different service the sentence also mentions.
+- `measure.py`: a run whose every server start failed writes a page marked 'nothing measured' that a re-run may replace (#57).
+- `scan_bundle.py` accepts RFC 5737 documentation addresses.
+
 ## [0.19.1] - 2026-09-24
 
 ### Fixed
