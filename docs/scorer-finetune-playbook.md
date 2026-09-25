@@ -10,9 +10,8 @@ cycle). Those runs' guides are the case study behind every step:
 [`qwen-tool-jev-calibration.md`](qwen-tool-jev-calibration.md).
 
 Every step below says what to run, what a healthy result looks like, and
-what went wrong for us at that step. Steps nvsh has not finished yet in
-issue 53 are marked **(first run in progress)**. Their tooling exists and is
-tested, but no nvsh result backs them yet.
+what went wrong for us at that step. Every step has now run end to end
+in issue 53; its results close this page.
 
 ## What you get
 
@@ -561,7 +560,7 @@ checkpoint. The defaults that worked for nvsh are 3 epochs and lr
 
 ## Step 9: choose a checkpoint on the selection fold
 
-**(First run in progress.)** For each candidate, in process:
+For each candidate, in process:
 
 ```bash
 $P/pipeline.sh --env run.env measure-val scorer-r1 --scorer in-process --predictions "$WORK/pred"
@@ -583,6 +582,23 @@ Then add the missing-candidate slice (`--slice missing-candidate`, or
 down every candidate's numbers, including the losers'. Run a conditional
 extra candidate only under the condition you wrote in step 1, for example
 `--label-smoothing 0.1 --brier-weight 0.5` if ECE is still above 0.10.
+
+Three things issue 53 learned here:
+
+- **Fit each candidate's gate before judging it.** A candidate can look
+  safe on the small selection fold and still make confident wrong
+  mutating proposals on the fit fold. nvsh's r3 answered "check the GPU
+  temperature and if it's above 80C switch to low power" with the power
+  change itself, at 0.97 confidence. Fit the gate on the fit fold (0 wrong
+  mutating first), then judge the selection fold at those thresholds.
+- **Consider a safety filter before the calibration step.** nvsh's
+  operator added one mid-run (a recorded deviation): 0 wrong mutating
+  on the whole validation side, gate off.
+- **A failure class is a data request.** Instead of shipping r3 behind a
+  0.95 gate, nvsh drafted 76 check-then-change pairs (a read-only check
+  next to the same check plus a conditional change, labelled escalate).
+  The retrained r3b had 0 wrong mutating with the gate off, and the best
+  robustness of any candidate.
 
 ## Step 10: quantize, then calibrate the deployed build
 
@@ -622,7 +638,7 @@ python $P/sweep_gate.py --predictions "$WORK/calib/r1-q4-val.calibrated.predicti
 
 ## Step 11: measure once on test and the held-out set
 
-**(First run in progress.)** Run each final measurement once, after the
+Run each final measurement once, after the
 choice. The final stages take only `--slice` and `--scorer`, so they
 record raw predictions. Then apply the frozen calibration with
 `calibration_fit.py apply`, and evaluate the one frozen threshold set with
@@ -708,11 +724,36 @@ teachers and their licences. The held-out set never ships.
 - **Keep a guide and ledger live.** Every step, obstacle, fix and
   decision goes in the moment it happens. This page was written from
   those ledgers.
+- **Check the instrument against the data.** Two issue-53 measurement
+  bugs moved results by several points: a grounding snapshot built from
+  an older run's splits, and gold arguments spelled `rsyslog` against
+  grounding's `rsyslog.service` under an exact-string compare. Before
+  trusting a baseline, compare one grounded right proposal per argument
+  kind against gold, and rebuild the snapshot from the current splits.
+- **Strip sentence punctuation before grounding.** "restart
+  systemd-networkd." once grounded to a different service that the same
+  sentence mentioned.
+- **Publishing is its own review.** The bundle tools caught drafted
+  records with no `source`, provenance that credited the wrong file, and
+  a teacher-invented private IP address. Build and read the cards before
+  uploading, not after.
 
 ## Where nvsh stands
 
-Issue 53's run is at step 7 (the final targeted supplements are being
-reviewed). Steps 8-12 have tested tooling but no issue-53 result yet.
-This page will be updated with that run's numbers. The decision path,
-ledger and live status are in
-[`qwen-tool-jev-calibration.md`](qwen-tool-jev-calibration.md).
+Issue 53 ran every step. The chosen checkpoint, `scorer-r3b` served as
+`Q4_K_M` with a frozen temperature and a read-only margin gate, measured
+once on the fresh test side (198) and a sealed held-out set (149), on a
+DGX Spark and an AGX Orin:
+
+| Bar | Test | Held-out |
+|---|---|---|
+| 0 wrong mutating (full and missing-candidate) | 0, met | 0, met |
+| ECE <= 0.10 after calibration | 0.016, met | 0.044, met |
+| Missing-candidate escalation >= 80% | 85.5%, met | 76.7%, missed |
+| Pooled permutation change <= 2.3% | 2.07%, met | not measured |
+
+Right proposals were 79 of 83 on test and 49 of 60 on the held-out, and
+decisions took about 355 ms on the Orin. The starting point, `scorer-b1`,
+changed its answer in 18.8% of permutation trials and escalated 31% of
+missing-candidate requests. The decision path, ledger and every figure
+are in [`qwen-tool-jev-calibration.md`](qwen-tool-jev-calibration.md).
