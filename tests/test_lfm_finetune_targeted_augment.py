@@ -793,6 +793,8 @@ def test_check_then_change_prompt_names_the_change_but_forbids_identifiers() -> 
     assert ta.CTC_MARKER in user
     assert "the operation power_set" in user
     assert "Never write an operation identifier" in user
+    # t18 pilot: the generator split check and conditional into two objects
+    assert "ONE object per pair" in user
 
 
 def test_check_then_change_asks_once_per_mutating_operation() -> None:

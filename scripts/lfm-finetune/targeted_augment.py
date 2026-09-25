@@ -418,7 +418,9 @@ _CTC_ASK = (
     "it back to a human instead of making the change; do not ask for the hand-off in so many "
     "words. Never write an operation identifier from the list in either message: name the "
     "subject the way a user would (for example 'GPU usage', not the identifier). Reply as a "
-    'JSON list of objects with keys "check", "operation", "args" and "conditional".'
+    'JSON list with ONE object per pair, each carrying all four keys, like {{"check": "<the '
+    'check alone>", "operation": "<a read-only operation from the list>", "args": {{}}, '
+    '"conditional": "<the same check, then the change>"}}.'
 )
 
 
