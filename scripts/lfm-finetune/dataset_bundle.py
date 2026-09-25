@@ -9,9 +9,9 @@ reviewed it. The folder holds:
   train-only supplement and the accepted variations (``train-augmented.json``
   from ``merge_variations.py``);
 - ``data/validation.jsonl`` and ``data/test.jsonl``: the seeded split's other
-  two sides, corpus entries only;
-- ``manifest.json``: one row per record: split, origin (corpus, supplement or
-  variation), source, source entry, source file and licence, and for a
+  two sides (corpus entries, or for issue 53 fresh teacher-drafted requests);
+- ``manifest.json``: one row per record: split, origin (corpus, supplement,
+  draft or variation), source, source entry, source file and licence, and for a
   variation the generator, corrector and reviewer models;
 - ``README.md``: the data set card, with every count computed here;
 - ``LICENSE``: nvsh's own Apache-2.0 licence file.
@@ -280,12 +280,41 @@ def _record(entry: dict[str, Any], split: str) -> dict[str, Any]:
     return record
 
 
+#: Issue 53: records written by the pipeline's own drafting tools, by source prefix.
+DRAFT_SOURCE_PREFIX = "draft-"
+TARGETED_SOURCE_PREFIX = "t15-"
+DRAFT_FILE = "scripts/lfm-finetune/draft_sources.py"
+TARGETED_FILE = "scripts/lfm-finetune/targeted_augment.py"
+
+
 def _origin(entry: dict[str, Any]) -> str:
+    source = str(entry.get("source", ""))
     if "~v" in entry["id"]:
         return "variation"
-    if str(entry.get("source", "")).startswith("supplement"):
+    if source.startswith(DRAFT_SOURCE_PREFIX):
+        return "draft"
+    if source.startswith(("supplement", TARGETED_SOURCE_PREFIX)):
         return "supplement"
     return "corpus"
+
+
+def _source_file(origin: str, source: str) -> str:
+    """Which nvsh file (or tool) a record comes from."""
+    if origin == "draft":
+        return DRAFT_FILE
+    if origin == "supplement":
+        return TARGETED_FILE if source.startswith(TARGETED_SOURCE_PREFIX) else SUPPLEMENT_FILE
+    return CORPUS_FILE
+
+
+def _with_source(entry: dict[str, Any], default_source: str | None) -> dict[str, Any]:
+    """*entry*, labelled *default_source* when it carries no source (issue 53:
+    ``draft_sources.py`` wrote none before t21); refuses one with neither."""
+    if entry.get("source"):
+        return entry
+    if not default_source:
+        raise ValueError(f"{entry['id']}: every published record needs a 'source' field")
+    return {**entry, "source": default_source}
 
 
 def build(
@@ -301,6 +330,7 @@ def build(
     issue: int = 39,
     model_repos: list[str] | None = None,
     scorer_train: Path | None = None,
+    default_source: str | None = None,
 ) -> dict[str, Any]:
     """Write the data set folder to *out*; return the counts shown in the card.
 
@@ -314,8 +344,11 @@ def build(
     *rejected* is one file or several (their records are counted together).
     *issue* and *model_repos* name what the card says the data set trained.
     """
-    train = _entries(train_augmented)
-    sides = {"validation": _entries(splits / "val.json"), "test": _entries(splits / "test.json")}
+    train = [_with_source(e, default_source) for e in _entries(train_augmented)]
+    sides = {
+        side: [_with_source(e, default_source) for e in _entries(splits / name)]
+        for side, name in (("validation", "val.json"), ("test", "test.json"))
+    }
     accepted_rows = {row["id"]: row for row in _jsonl(accepted)}
     rejected_files = [rejected] if isinstance(rejected, Path) else list(rejected)
     rejected_count = sum(len(_jsonl(path)) for path in rejected_files)
@@ -350,7 +383,7 @@ def build(
             "origin": origin,
             "source": source,
             "source_id": entry.get("source_id", entry["id"]),
-            "source_file": SUPPLEMENT_FILE if origin == "supplement" else CORPUS_FILE,
+            "source_file": _source_file(origin, source),
             "licence": CORPUS_LICENCE,
             "transformed": origin == "variation",
         }
@@ -365,17 +398,16 @@ def build(
         for entry in entries:
             if "~v" in entry["id"]:
                 raise ValueError(f"{entry['id']}: variations never leave the train side")
-            source = entry.get("source")
-            if not source:
-                raise ValueError(f"{entry['id']}: every published record needs a 'source' field")
+            source = entry["source"]
+            origin = _origin(entry)
             manifest.append(
                 {
                     "id": entry["id"],
                     "split": split,
-                    "origin": "corpus",
+                    "origin": origin,
                     "source": source,
                     "source_id": entry.get("source_id", entry["id"]),
-                    "source_file": CORPUS_FILE,
+                    "source_file": _source_file(origin, source),
                     "licence": CORPUS_LICENCE,
                     "transformed": False,
                     "teachers": {},
@@ -408,6 +440,10 @@ def build(
         "corpus": origins["corpus"],
         "supplement": origins["supplement"],
         "variation": origins["variation"],
+        "draft": origins["draft"],
+        "side_origins": {
+            side: sorted({_origin(e) for e in entries}) for side, entries in sides.items()
+        },
         "accepted": len(accepted_rows),
         "rejected": rejected_count,
         "answers": _answer_counts(rows["train"]),
@@ -433,6 +469,16 @@ SCORER_TRAIN_NOTE = (
     "plus missing-candidate rows (the right operation removed, answer: escalate), as\n"
     "written by nvsh's `scripts/lfm-finetune/build_dataset.py --scorer-out`.\n"
 )
+
+
+def _side_kind(counts: dict[str, Any], side: str) -> str:
+    """What a held-apart side holds, for the card (issue 53: fresh drafts)."""
+    origins = counts.get("side_origins", {}).get(side, ["corpus"])
+    if origins == ["draft"]:
+        return "fresh teacher-drafted requests only (two reviewers each)"
+    if origins == ["corpus"]:
+        return "corpus entries only"
+    return "corpus entries and fresh teacher-drafted requests"
 
 
 def _answer_counts(records: list[dict[str, Any]]) -> dict[str, int]:
@@ -517,6 +563,9 @@ def card(
         f"{counts['corpus']} corpus entries, {counts['supplement']} supplement entries,"
         f" {counts['variation']} synthetic variations"
     )
+    if counts.get("draft"):
+        train_parts += f", {counts['draft']} fresh teacher-drafted requests"
+    val_kind, test_kind = _side_kind(counts, "validation"), _side_kind(counts, "test")
     return f"""---
 license: apache-2.0
 language:
@@ -553,8 +602,8 @@ in words, or **escalate** to a full agent. {_intro(issue, model_repos)}
 | Split | Records | Contents |
 |---|---|---|
 | train | {counts['train']} | {train_parts} |
-| validation | {counts['validation']} | corpus entries only; runs were chosen on this side |
-| test | {counts['test']} | corpus entries only; never trained on or used to choose a run |
+| validation | {counts['validation']} | {val_kind}; runs were chosen on this side |
+| test | {counts['test']} | {test_kind}; never trained on or used to choose a run |
 
 The train side's answers: {answers.get('propose', 0)} propose,
 {answers.get('escalate', 0)} escalate, {answers.get('explain', 0)} explain.
@@ -649,6 +698,10 @@ def main(argv: list[str] | None = None) -> int:
         "--scorer-train", type=Path, help="the candidate scorer's own training file (issue 53)"
     )
     parser.add_argument(
+        "--default-source",
+        help="the source recorded for records that carry none (issue 53: draft-sources)",
+    )
+    parser.add_argument(
         "--model-repo",
         action="append",
         dest="model_repos",
@@ -670,6 +723,7 @@ def main(argv: list[str] | None = None) -> int:
             issue=args.issue,
             model_repos=args.model_repos,
             scorer_train=args.scorer_train,
+            default_source=args.default_source,
         )
     except ValueError as exc:
         parser.error(str(exc))

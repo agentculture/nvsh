@@ -3007,7 +3007,9 @@ def test_a_bf16_gguf_build_without_its_file_is_refused(tmp_path: Path) -> None:
 
 
 def test_bundle_dataset_names_bundle_issue_and_ships_the_scorer_file(tmp_path: Path) -> None:
-    pipe = _bundle_pipeline(tmp_path, extra_env="BUNDLE_ISSUE=53\n")
+    pipe = _bundle_pipeline(
+        tmp_path, extra_env="BUNDLE_ISSUE=53\nBUNDLE_DEFAULT_SOURCE=draft-sources\n"
+    )
     (pipe.work / "data").mkdir(parents=True)
     (pipe.work / "data" / "train-augmented.json").write_text("{}", encoding="utf-8")
     (pipe.work / "data" / "scorer-train.json").write_text("{}", encoding="utf-8")
@@ -3015,6 +3017,7 @@ def test_bundle_dataset_names_bundle_issue_and_ships_the_scorer_file(tmp_path: P
     assert result.returncode == 0, result.stderr
     ((_, argv),) = pipe.calls("dataset_bundle.py")
     assert _option(argv, "--issue") == ["53"]
+    assert _option(argv, "--default-source") == ["draft-sources"]
     assert _option(argv, "--scorer-train") == [str(pipe.work / "data" / "scorer-train.json")]
 
 
@@ -3025,6 +3028,7 @@ def test_bundle_dataset_without_a_scorer_file_passes_none(tmp_path: Path) -> Non
     assert pipe.run("bundle-dataset", "tool-jev-dataset").returncode == 0
     ((_, argv),) = pipe.calls("dataset_bundle.py")
     assert "--scorer-train" not in argv
+    assert "--default-source" not in argv
 
 
 def test_bundle_of_a_scorer_passes_its_frozen_calibration_and_gate(tmp_path: Path) -> None:

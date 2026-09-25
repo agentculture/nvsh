@@ -588,12 +588,14 @@ def _make_id(pool: str, kind_tag: str, n: int) -> str:
     return f"v2-{pool}-{kind_tag}-{n:03d}"
 
 
-def _entry_from_candidate(entry_id: str, candidate: Candidate) -> dict[str, Any]:
+def _entry_from_candidate(entry_id: str, candidate: Candidate, pool: str) -> dict[str, Any]:
     entry: dict[str, Any] = {
         "id": entry_id,
         "kind": "explicit",
         "text": candidate.text,
         "expect": candidate.expect,
+        # provenance for a published data set (issue 53 t21: drafts carried none)
+        "source": f"draft-{pool}",
         "source_id": entry_id,
     }
     if candidate.cls:
@@ -679,7 +681,7 @@ def run_draft(
         if outcome["accepted"]:
             counters[candidate.kind_tag] = counters.get(candidate.kind_tag, 0) + 1
             entry_id = _make_id(pool, candidate.kind_tag, counters[candidate.kind_tag])
-            entries.append(_entry_from_candidate(entry_id, candidate))
+            entries.append(_entry_from_candidate(entry_id, candidate, pool))
         else:
             if not outcome["votes"]["reviewer_a"]["accept"]:
                 rejects["reviewer_a"] = rejects.get("reviewer_a", 0) + 1

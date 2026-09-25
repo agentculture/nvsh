@@ -240,6 +240,8 @@ def test_id_shape_and_source_id(tmp_path: Path) -> None:
         assert entry["id"].startswith("v2-eval-op-")
         assert entry["source_id"] == entry["id"]
         assert entry["kind"] == "explicit"
+        # issue 53 t21: a published record needs its provenance
+        assert entry["source"] == "draft-eval"
 
 
 def test_decline_entries_carry_the_class(tmp_path: Path) -> None:

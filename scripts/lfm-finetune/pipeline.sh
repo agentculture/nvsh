@@ -864,6 +864,10 @@ case "$STAGE" in
     scorer_train=()
     # The candidate scorer's own training file (issue 53 t21), when assemble wrote one.
     [ -s "$WORK/data/scorer-train.json" ] && scorer_train=(--scorer-train "$WORK/data/scorer-train.json")
+    # BUNDLE_DEFAULT_SOURCE (issue 53): the source for records that carry none
+    # (draft_sources.py wrote no source field before t21).
+    default_source=()
+    [ -n "${BUNDLE_DEFAULT_SOURCE:-}" ] && default_source=(--default-source "$BUNDLE_DEFAULT_SOURCE")
     model_repos=()
     for model in "${model_suffixes[@]}"; do
       check_suffix "$model"
@@ -874,7 +878,8 @@ case "$STAGE" in
     py scripts/lfm-finetune/dataset_bundle.py --splits "$WORK/splits" --train-augmented "$train" \
       --accepted "${BUNDLE_ACCEPTED:-$WORK/aug/nvsh-accepted.jsonl}" --rejected "${rejected[@]}" \
       --licence "$REPO_ROOT/LICENSE" --teacher-models "$TEACHER_MODELS" --apache-only \
-      --issue "${BUNDLE_ISSUE:-46}" "${scorer_train[@]}" "${model_repos[@]}" --out "$out"
+      --issue "${BUNDLE_ISSUE:-46}" "${scorer_train[@]}" "${default_source[@]}" \
+      "${model_repos[@]}" --out "$out"
     write_bundle_record "$suffix" dataset "$suffix" dataset
     py scripts/lfm-finetune/scan_bundle.py scan "$out"
     ;;
