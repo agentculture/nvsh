@@ -61,8 +61,9 @@ import hashlib
 import json
 import random
 import sys
+import urllib.request
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import augment as aug  # noqa: E402
@@ -167,6 +168,94 @@ def load_roles(
 
 RoleCaller = aug.RoleCaller
 default_caller = aug.default_caller
+
+
+# ---------------------------------------------------------------------------
+# per-call request seeding (issue 53 P2: ``random.seed(seed)`` alone only
+# seeds this process's local ``random`` module -- it never reaches the
+# generator/reviewer HTTP calls, so replaying a recorded run seed did not
+# reproduce drafts. Every call below instead carries a deterministic
+# top-level ``"seed"`` in its own request body, derived from the run seed
+# plus a stable call key (role + prompt + attempt), which an OpenAI-
+# compatible vLLM endpoint honours directly.)
+# ---------------------------------------------------------------------------
+
+
+def call_seed(run_seed: int, role: str, prompt_key: str, attempt: int) -> int:
+    """A deterministic non-negative per-call seed: the same ``(run_seed,
+    role, prompt_key, attempt)`` always derives the same integer, and a
+    different call key derives a (practically) different one. This is what
+    lets a recorded run seed be replayed -- reproducible only on an
+    endpoint that actually honours the request ``"seed"``; a gateway or
+    engine change can still alter outputs even when this value matches."""
+    digest = hashlib.sha256(f"{run_seed}:{role}:{prompt_key}:{attempt}".encode("utf-8")).hexdigest()
+    return int(digest[:8], 16)
+
+
+def _prompt_key(system: str, user: str) -> str:
+    """A stable identifier for one generator/reviewer prompt, used only to
+    key the per-call seed (never sent anywhere)."""
+    return hashlib.sha256((system + "\x00" + user).encode("utf-8")).hexdigest()
+
+
+def chat_payload_with_seed(
+    role: aug.RoleConfig, system: str, user: str, seed_value: int
+) -> dict[str, Any]:
+    """``augment.chat_payload``'s own request body (reused by import, never
+    copied) plus a top-level ``"seed"``."""
+    payload = aug.chat_payload(role, system, user)
+    payload["seed"] = seed_value
+    return payload
+
+
+def _post_chat_completion_seeded(
+    role: aug.RoleConfig, system: str, user: str, seed_value: int
+) -> str:
+    """The same HTTP call ``augment.default_caller`` makes, plus the
+    per-call ``"seed"`` -- reusing ``augment``'s payload builder and reply
+    extractor by import since ``augment.default_caller`` itself has no room
+    for an extra body field."""
+    payload = chat_payload_with_seed(role, system, user, seed_value)
+    headers = {"Content-Type": "application/json"}
+    if role.key:
+        headers["Authorization"] = f"Bearer {role.key}"
+    request = urllib.request.Request(
+        role.url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST"
+    )
+    with urllib.request.urlopen(request, timeout=role.timeout) as response:
+        body = json.loads(response.read().decode("utf-8"))
+    choices = body.get("choices")
+    if not choices or "message" not in choices[0]:
+        raise ValueError(f"malformed reply from {role.model!r}: no choices in response")
+    return aug._extract_content(choices[0]["message"])
+
+
+#: A raw, seed-aware call: like :data:`RoleCaller` but with the computed
+#: per-call seed as a fourth argument. Tests inject a fake here to observe
+#: the seed a call would carry, without any network I/O.
+RawSeededCaller = Callable[[aug.RoleConfig, str, str, int], str]
+
+
+def make_seeded_caller(
+    run_seed: int, raw_caller: RawSeededCaller = _post_chat_completion_seeded
+) -> RoleCaller:
+    """Build a :data:`RoleCaller` (the fixed ``(role, system, user) -> str``
+    shape every call site here already uses) that derives each call's seed
+    from *run_seed* and calls *raw_caller* with it. A prompt repeated in the
+    same run (a parse-failure retry, or two independent reviewer votes on
+    the same text) is tracked by an attempt counter keyed on the prompt
+    itself, so repeats get distinct-but-reproducible seeds too."""
+    attempts: dict[tuple[str, str], int] = {}
+
+    def _caller(role: aug.RoleConfig, system: str, user: str) -> str:
+        prompt_key = _prompt_key(system, user)
+        key = (role.role, prompt_key)
+        attempt = attempts.get(key, 0)
+        attempts[key] = attempt + 1
+        seed_value = call_seed(run_seed, role.role, prompt_key, attempt)
+        return raw_caller(role, system, user, seed_value)
+
+    return _caller
 
 
 # ---------------------------------------------------------------------------
@@ -518,13 +607,19 @@ def run_draft(
     per_op: int,
     per_reason: int,
     explain: int,
-    caller: RoleCaller = default_caller,
+    caller: RoleCaller | None = None,
     roles: dict[str, aug.RoleConfig] | None = None,
     dev_texts: list[str] | None = None,
 ) -> dict[str, Any]:
     if pool not in POOLS:
         raise ValueError(f"--pool must be one of {POOLS}, got {pool!r}")
     random.seed(seed)
+    # ``random.seed`` above only covers this process's local ``random`` use;
+    # it never reaches the generator/reviewer HTTP calls. Left unspecified,
+    # *caller* defaults to a per-call-seeded caller (see call_seed/
+    # make_seeded_caller above) so those requests are reproducible too, not
+    # to the plain ``augment.default_caller``.
+    caller = caller if caller is not None else make_seeded_caller(seed)
     roles = roles if roles is not None else load_roles(ROLES)
     dev_texts = dev_texts if dev_texts is not None else load_dev_texts()
 
@@ -577,6 +672,13 @@ def run_draft(
         "per_reason": per_reason,
         "explain": explain,
         "models": models,
+        "sampling": {
+            "per_call_seed": True,
+            "note": (
+                "reproducible only on endpoints that honour the request seed; a "
+                "gateway/engine change can still alter outputs"
+            ),
+        },
         "counts": {"kept": len(entries), "by_kind": by_kind, "by_reason": by_reason, **rejects},
     }
     sha256 = _sha256_of_entries(entries)

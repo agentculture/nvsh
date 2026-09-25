@@ -537,3 +537,158 @@ def test_a_reviewer_that_stays_empty_is_a_reject_after_the_retries() -> None:
     out = ds.judge("restart it", {"escalate": True}, "decline:missing_argument", ROLES, caller)
     assert out["accepted"] is False
     assert out["votes"]["reviewer_a"]["reason"] == "empty reply"
+
+
+# ---------------------------------------------------------------------------
+# per-call request seeding (issue 53 P2: random.seed(seed) alone never
+# reached the generator/reviewer HTTP calls -- see call_seed/
+# make_seeded_caller)
+# ---------------------------------------------------------------------------
+
+
+def test_call_seed_is_the_same_for_the_same_call_key_across_runs() -> None:
+    # Two independent computations with the same (run_seed, role, prompt_key,
+    # attempt) simulate two separate runs recording the same seed.
+    a = ds.call_seed(53, "GENERATOR", "prompt-abc", 0)
+    b = ds.call_seed(53, "GENERATOR", "prompt-abc", 0)
+    assert a == b
+
+
+def test_call_seed_differs_for_different_call_keys() -> None:
+    base = ds.call_seed(53, "GENERATOR", "prompt-abc", 0)
+    assert base != ds.call_seed(53, "REVIEWER_A", "prompt-abc", 0)  # different role
+    assert base != ds.call_seed(53, "GENERATOR", "prompt-xyz", 0)  # different prompt
+    assert base != ds.call_seed(53, "GENERATOR", "prompt-abc", 1)  # different attempt
+    assert base != ds.call_seed(99, "GENERATOR", "prompt-abc", 0)  # different run seed
+
+
+def test_make_seeded_caller_passes_the_same_seed_for_the_same_call_across_runs() -> None:
+    """A fake raw caller (in place of real HTTP) observes the seed each call
+    would carry; the same run seed on two independent caller instances --
+    standing in for two separate runs -- must produce the same sequence of
+    per-call seeds for the same sequence of calls."""
+
+    def make_recorder():
+        seen: list[int] = []
+
+        def raw(role, system, user, seed_value):
+            seen.append(seed_value)
+            return "yes"
+
+        return seen, raw
+
+    seen1, raw1 = make_recorder()
+    seen2, raw2 = make_recorder()
+    caller1 = ds.make_seeded_caller(53, raw_caller=raw1)
+    caller2 = ds.make_seeded_caller(53, raw_caller=raw2)
+
+    caller1(ROLES["REVIEWER_A"], "system prompt", "please check the vllm service")
+    caller1(ROLES["REVIEWER_B"], "system prompt", "please check the vllm service")
+    caller2(ROLES["REVIEWER_A"], "system prompt", "please check the vllm service")
+    caller2(ROLES["REVIEWER_B"], "system prompt", "please check the vllm service")
+
+    assert seen1 == seen2
+    assert seen1[0] != seen1[1]  # different roles -> different seeds
+
+
+def test_make_seeded_caller_gives_repeated_calls_distinct_seeds() -> None:
+    """A prompt asked twice in the same run (e.g. a parse-failure retry)
+    gets a distinct, but still reproducible, seed per attempt."""
+    seen: list[int] = []
+
+    def raw(role, system, user, seed_value):
+        seen.append(seed_value)
+        return "[]"
+
+    caller = ds.make_seeded_caller(53, raw_caller=raw)
+    caller(ROLES["GENERATOR"], "system prompt", "same prompt text")
+    caller(ROLES["GENERATOR"], "system prompt", "same prompt text")
+
+    assert len(seen) == 2
+    assert seen[0] != seen[1]
+    # Reproducible: a fresh caller with the same run seed replays the same
+    # per-attempt sequence.
+    replay: list[int] = []
+
+    def raw_replay(role, system, user, seed_value):
+        replay.append(seed_value)
+        return "[]"
+
+    caller_replay = ds.make_seeded_caller(53, raw_caller=raw_replay)
+    caller_replay(ROLES["GENERATOR"], "system prompt", "same prompt text")
+    caller_replay(ROLES["GENERATOR"], "system prompt", "same prompt text")
+    assert replay == seen
+
+
+def test_run_draft_defaults_to_a_seeded_caller_when_none_is_given(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Left unspecified, run_draft's caller must be built from the run seed
+    (not plain augment.default_caller), so real requests carry a per-call
+    seed."""
+    built_with_seed = []
+
+    def fake_make_seeded_caller(run_seed, raw_caller=None):
+        built_with_seed.append(run_seed)
+        return FakeCaller()
+
+    monkeypatch.setattr(ds, "make_seeded_caller", fake_make_seeded_caller)
+    ds.run_draft(
+        out_dir=tmp_path,
+        pool="eval",
+        seed=53,
+        per_op=1,
+        per_reason=0,
+        explain=0,
+        roles=ROLES,
+        dev_texts=[],
+    )
+    assert built_with_seed == [53]
+
+
+def test_run_draft_records_the_sampling_header(tmp_path: Path) -> None:
+    ds.run_draft(
+        out_dir=tmp_path,
+        pool="eval",
+        seed=1,
+        per_op=1,
+        per_reason=0,
+        explain=0,
+        caller=FakeCaller(),
+        roles=ROLES,
+        dev_texts=[],
+    )
+    doc = json.loads((tmp_path / "draft.json").read_text())
+    sampling = doc["header"]["sampling"]
+    assert sampling["per_call_seed"] is True
+    assert isinstance(sampling["note"], str) and sampling["note"]
+
+
+def test_post_chat_completion_seeded_sends_a_top_level_seed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The real (non-fake) network path must add "seed" to the request body
+    on top of augment.chat_payload's own fields, never replacing them."""
+    captured = {}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def read(self):
+            return json.dumps({"choices": [{"message": {"content": "hi"}}]}).encode("utf-8")
+
+    def fake_urlopen(request, timeout=None):
+        captured["body"] = json.loads(request.data.decode("utf-8"))
+        return FakeResponse()
+
+    monkeypatch.setattr(ds.urllib.request, "urlopen", fake_urlopen)
+    role = ROLES["GENERATOR"]
+    result = ds._post_chat_completion_seeded(role, "sys", "usr", 12345)
+    assert result == "hi"
+    assert captured["body"]["seed"] == 12345
+    assert captured["body"]["model"] == role.model
+    assert captured["body"]["messages"][1]["content"] == "usr"
