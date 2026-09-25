@@ -13,6 +13,7 @@ import http.server
 import importlib.util
 import itertools
 import json
+import re
 import sys
 import threading
 from pathlib import Path
@@ -2347,3 +2348,172 @@ def test_a_final_page_that_measured_nothing_is_not_counted(measure, tmp_path):
     harness = Harness(measure, tmp_path, FakeDocker())
     assert measure.main(_argv(split, out, "--final"), seams=harness.seams) == 0
     assert "- Final runs on the test side, including this one: 1" in out.read_text(encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
+# Issue 53: reasons mode (--reasons) scores the pool build_dataset.py --reasons
+# trains with, and an escalate:<reason> choice is an escalation
+# ---------------------------------------------------------------------------
+
+_LETTER_LINE_RE = re.compile(r"^([A-Za-z])\) (\S+): ", re.MULTILINE)
+
+
+def _load_script(name: str, script: str):
+    spec = importlib.util.spec_from_file_location(name, _SCRIPT.parent / script)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _escalated_entry_and_scored(measure, tmp_path, choice: str):
+    split = _split(tmp_path)
+    entry = next(e for e in tier_bench.load_corpus(split).entries if e.id == "esc1")
+    scored = measure.scorer.Scored(
+        distribution={choice: 0.8, "gpu_stats": 0.2}, choice=choice, confidence=0.8, mass=0.9
+    )
+    return entry, scored
+
+
+@pytest.mark.parametrize("choice", ["escalate", "escalate:repair", "escalate:outside_table"])
+def test_scorer_line_scores_every_escalate_family_choice_as_escalate(
+    measure, metrics, tmp_path, choice
+):
+    """A reasons-mode choice (``escalate:<reason>``) is an escalation, not an
+    ungrounded operation: it used to fall through to ``invalid``/``not_grounded``."""
+    entry, scored = _escalated_entry_and_scored(measure, tmp_path, choice)
+    line = measure.scorer_line(entry, scored, 1.0)
+    assert line["outcome"] == "escalate"
+    assert line["operation"] is None
+    assert line.get("invalid_reason") is None
+    metrics.Prediction.from_dict(line)
+
+
+def _reasons_train_split(tmp_path: Path) -> Path:
+    """A train side with argument-free operations, classed escalations and an explanation."""
+    world = json.loads((_SCRIPT.parents[2] / "nvsh" / "tiers" / "corpus" / "dev.json").read_text())[
+        "world"
+    ]
+    entries = [
+        _entry(f"op{i}", f"s-op{i}", {"operation": op, "args": {}})
+        for i, op in enumerate(("gpu_stats", "thermal_stats", "disk_stats"))
+    ]
+    for i, cls in enumerate(("decline:repair", "decline:injection", None)):
+        entry = _entry(f"esc{i}", f"s-esc{i}", {"escalate": True})
+        if cls:
+            entry["class"] = cls
+        entries.append(entry)
+    entries.append(_entry("exp0", "s-exp0", {"explain": True, "answer": "It sets power."}))
+    path = tmp_path / "train-augmented.json"
+    header = "Fixture corpus. Split 'train' of corpus-v2 (seed=39)."
+    path.write_text(json.dumps({"header": header, "entries": entries, "world": world}))
+    return path
+
+
+def test_reasons_prompt_is_byte_identical_to_the_training_prompt(measure, tmp_path):
+    """measure.py --reasons renders exactly the messages train_scorer.py trains a
+    build_dataset.py --reasons row on (default letters and order), including a
+    missing-candidate (-nocand) row's reduced offer."""
+    build_dataset = _load_script("lfm_reasons_build_dataset", "build_dataset.py")
+    train_scorer = _load_script("lfm_reasons_train_scorer", "train_scorer.py")
+    split = _reasons_train_split(tmp_path)
+    _, entries = build_dataset.build_with_scorer_entries(
+        split, is_split=True, reasons=True, missing_candidate_rate=1.0
+    )
+    scorer_file = tmp_path / "scorer-train.json"
+    scorer_file.write_text(
+        json.dumps(build_dataset.scorer_file(split, entries, {})), encoding="utf-8"
+    )
+    examples = train_scorer.read_split(scorer_file, "train")
+    assert any(example.entry_id.endswith("-nocand") for example in examples)
+    operations = measure.ops_table.names()
+    for example in examples:
+        offered = None
+        if example.entry_id.endswith("-nocand"):
+            # The missing-candidate slice offers the operations minus the gold one.
+            offered = tuple(name for name in operations if name in example.permutation.order)
+        messages, _ = measure.scorer_request(example.request, offered, reasons=True)
+        assert messages == train_scorer.example_messages(example), example.entry_id
+        system = messages[0]["content"]
+        assert "escalate:repair" in system
+        assert not re.search(r"^[A-Za-z]\) escalate: ", system, re.MULTILINE)
+
+
+def test_the_default_prompt_is_unchanged_without_reasons(measure):
+    request = "show me the gpu"
+    messages, kwargs = measure.scorer_request(request, None, reasons=False)
+    assert messages == measure.scorer.prompt_messages(request, None)
+    assert kwargs == {"offered": None}
+
+
+def _pick_by_name(measure, prompt: str, winner: str) -> dict[str, float]:
+    """Log-probabilities putting 0.9 on *winner*'s letter in the rendered prompt."""
+    system = json.loads(prompt)[0]["content"]
+    letters = {name: letter for letter, name in _LETTER_LINE_RE.findall(system)}
+    rest = 0.1 / (len(letters) - 1)
+    return {letter: _lp(0.9 if name == winner else rest) for name, letter in letters.items()}
+
+
+def test_reasons_mode_scores_the_reason_pool_end_to_end(measure, metrics, tmp_path):
+    entries = [
+        _entry("op1", "s1", {"operation": "gpu_stats", "args": {}}),
+        {**_entry("esc1", "s2", {"escalate": True}), "class": "decline:repair"},
+        _entry("exp1", "s3", {"explain": True}),
+    ]
+    entries[0]["text"] = "show the gpu"
+    entries[1]["text"] = "reflash the bootloader"
+    entries[2]["text"] = "what is nvpmodel"
+    split = tmp_path / "splits" / "val.json"
+    split.parent.mkdir(parents=True)
+    header = "Fixture corpus. Split 'val' of corpus-v2 (seed=39)."
+    split.write_text(json.dumps({"header": header, "entries": entries}), encoding="utf-8")
+
+    def pick(prompt: str) -> dict[str, float]:
+        request = json.loads(prompt)[-1]["content"]
+        if "gpu" in request:
+            return _pick_by_name(measure, prompt, "gpu_stats")
+        if "bootloader" in request:
+            return _pick_by_name(measure, prompt, "escalate:repair")
+        return _pick_by_name(measure, prompt, "explain")
+
+    fake = _FakeScorer(pick)
+    harness = Harness(measure, tmp_path, FakeDocker(), lfm={"engine": "vllm", "mode": "attach"})
+    built: list = []
+
+    def build_scorer(spec, labels=None):
+        built.append((spec, labels))
+        return measure.ScorerHandle(
+            scorer=fake, render=lambda messages: json.dumps(messages), close=lambda: None
+        )
+
+    harness.seams.build_scorer = build_scorer
+    predictions = tmp_path / "p"
+    out = tmp_path / "r.md"
+    argv = _argv(split, out, "--scorer", "served", "--max-logprobs", _READOUT, models=(STOCK,))
+    argv += ["--reasons", "--predictions", str(predictions)]
+    argv += ["--ground-snapshot", str(_snapshot(tmp_path))]
+    assert measure.main(argv, seams=harness.seams) == 0
+    # A scorer is built with a label map covering the whole 25-candidate reasons pool.
+    [(_, labels)] = built
+    assert len(labels) == len(measure.scorer.candidate_pool(True)) == 25
+    for prompt in fake.prompts:
+        system = json.loads(prompt)[0]["content"]
+        names = [name for _, name in _LETTER_LINE_RE.findall(system)]
+        assert names == list(measure.scorer.candidate_pool(True))
+    op1, esc1, exp1 = _prediction_lines(_predictions_files(predictions)[0])
+    for row in (op1, esc1, exp1):
+        metrics.Prediction.from_dict(row)
+    assert (op1["outcome"], op1["operation"]) == ("propose", "gpu_stats")
+    assert esc1["outcome"] == "escalate"
+    assert esc1["candidates"]["escalate:repair"] == pytest.approx(0.9)
+    assert "(escalate)" not in esc1["candidates"]
+    assert exp1["outcome"] == "explain"
+    assert "reasons mode" in out.read_text(encoding="utf-8")
+
+
+def test_reasons_mode_needs_the_scorer(measure, tmp_path, capsys):
+    split = _split(tmp_path)
+    harness = Harness(measure, tmp_path, FakeDocker())
+    argv = _argv(split, tmp_path / "r.md", "--reasons", models=(STOCK,))
+    assert measure.main(argv, seams=harness.seams) == 1
+    assert "--reasons" in capsys.readouterr().err

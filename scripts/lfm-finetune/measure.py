@@ -112,6 +112,16 @@ calibration are shown next to the calibrated ones. Params whose recorded
 ``predictions_source`` names the test or held-out split are refused, as is a
 malformed params file, before any model starts.
 
+``--reasons`` (with ``--scorer``) measures a scorer trained with
+``build_dataset.py --reasons``: every entry is offered that build's pool
+(``scorer.candidate_pool``: the operations, explain and the 8
+``escalate:<reason>`` candidates, no bare escalate), lettered by position in
+it and described from ``data/reasons.json`` -- the prompt such a row was
+trained on, byte for byte (:func:`scorer_request`). A choice of any
+``escalate:<reason>`` is an escalation (``metrics.canonical_label``), and
+its mass stays under its own label in the predictions file (metrics.py rolls
+it up). The report's decision mode names reasons mode.
+
 The report carries metrics.py's 95% bootstrap CIs next to each rate and the
 ECE / Brier, and a per-slice section (read-only / mutating /
 escalate-or-explain): a summary row per slice plus
@@ -1682,7 +1692,8 @@ def scorer_line(
         outcome = ("invalid", None, None, TIER_ERROR_REASON if call_error else "no_label_mass")
     elif choice == tier_lfm.EXPLAIN_TOOL:
         outcome = ("explain", None, None, None)
-    elif choice == tier_lfm.ESCALATE_TOOL:
+    elif metrics.canonical_label(choice) in (tier_lfm.ESCALATE_TOOL, tier_bench.ESCALATE_LABEL):
+        # Bare ``escalate``, or a reasons-mode ``escalate:<reason>`` (metrics' roll-up).
         outcome = ("escalate", None, None, None)
     elif scored.arguments is not None:
         outcome = ("propose", choice, dict(scored.arguments), None)
@@ -1696,6 +1707,36 @@ def scorer_line(
         ttfd_ms=elapsed_ms,
         latency_ms=elapsed_ms,
     )
+
+
+def scorer_request(
+    request_text: str, offered: Sequence[str] | None, *, reasons: bool
+) -> tuple[list[dict], dict]:
+    """``(prompt messages, scorer.score keyword arguments)`` for one request.
+
+    *offered* is the missing-candidate slice's operations (``None``: every
+    candidate). Without *reasons* this is today's prompt: the default pool
+    (bare ``escalate``), fixed letters, default descriptions. With *reasons*
+    it is the pool ``build_dataset.py --reasons`` trains on
+    (:func:`scorer.candidate_pool`: operations + explain + the 8
+    ``escalate:<reason>`` candidates), lettered by position in that pool and
+    described from ``data/reasons.json`` -- byte-identical to what
+    ``train_scorer.example_messages`` renders for such a row with the default
+    order and letters (and, sliced, for its ``-nocand`` row).
+    """
+    if not reasons:
+        candidates = None if offered is None else tuple(offered) + scorer.CONTROLS
+        return scorer.prompt_messages(request_text, candidates), {"offered": candidates}
+    full = scorer.candidate_pool(True)
+    keep = None if offered is None else set(offered)
+    order = tuple(
+        name for name in full if keep is None or ops_table.get(name) is None or name in keep
+    )
+    labels = scorer.positional_labels(order, full)
+    messages = scorer.prompt_messages(
+        request_text, labels=labels, order=order, descriptions=scorer.reason_descriptions(order)
+    )
+    return messages, {"labels": labels, "order": order}
 
 
 def scorer_predictions(
@@ -1715,14 +1756,13 @@ def scorer_predictions(
         request_text = tier_lfm.request_message(
             tier_bench.request_for(entry), tier_bench.context_for(entry)
         )
-        offered = plan.offered.get(entry.id)
-        candidates = None if offered is None else tuple(offered) + scorer.CONTROLS
-        prompt = handle.render(scorer.prompt_messages(request_text, candidates))
+        messages, offer = scorer_request(
+            request_text, plan.offered.get(entry.id), reasons=plan.reasons
+        )
+        prompt = handle.render(messages)
         started = clock()
         before = watched.errors
-        scored = scorer.score(
-            handle.scorer, prompt, request_text, offered=candidates, runner=plan.runner
-        )
+        scored = scorer.score(handle.scorer, prompt, request_text, runner=plan.runner, **offer)
         elapsed_ms = (clock() - started) * 1000.0
         call_error = watched.errors > before
         if call_error:
@@ -1899,6 +1939,8 @@ class RunPlan:
     scorer_kind: str = ""
     #: ``--tokenizer``: where a scorer loads its tokenizer; ``None`` is the model.
     tokenizer: str | None = None
+    #: ``--reasons``: score the ``build_dataset.py --reasons`` pool (:func:`scorer_request`).
+    reasons: bool = False
 
 
 def _offered_by_request(plan: RunPlan) -> dict[tuple, tuple[str, ...]]:
@@ -2001,7 +2043,13 @@ def score_one(plan: RunPlan, model: str, revision: str, seams: Seams) -> RunReco
     )
     started = seams.clock()
     try:
-        handle = seams.build_scorer(spec)
+        if plan.reasons:
+            # An in-process scorer reads only the letters it was built for: the
+            # reasons pool needs 25 (A-Y), not the default map's 18.
+            pool = scorer.candidate_pool(True)
+            handle = seams.build_scorer(spec, scorer.positional_labels(pool, pool))
+        else:
+            handle = seams.build_scorer(spec)
     except (RuntimeUnavailable, toolchat.ToolChatError, OSError, ValueError, ImportError) as exc:
         record.failure = f"scorer start-up failed: {exc}"
         return record
@@ -2692,6 +2740,13 @@ def _parser() -> argparse.ArgumentParser:
         help="with --scorer: load the tokenizer (and an in-process model) from this path "
         "instead of --model, which for a served model is only its served name",
     )
+    parser.add_argument(
+        "--reasons",
+        action="store_true",
+        help="with --scorer: offer the pool build_dataset.py --reasons trains on (operations,"
+        " explain and 8 escalate:<reason> candidates, no bare escalate), for a scorer trained"
+        " that way",
+    )
     return parser
 
 
@@ -2780,6 +2835,12 @@ def _check_issue46_flags(args: argparse.Namespace, lfm_settings: Mapping[str, ob
             check_ctx(args.ctx)
         except RuntimeUnavailable as exc:
             raise MeasureError(EXIT_USER, f"--ctx: {exc}") from exc
+    if args.reasons and not args.scorer:
+        raise MeasureError(
+            EXIT_USER,
+            "--reasons is a Track B candidate pool; a generative run offers nvsh's own tools",
+            "pass --scorer served or --scorer in-process with --reasons",
+        )
     if args.scorer != SCORER_SERVED:
         return
     needed = scorer_labels_needed()
@@ -2832,9 +2893,15 @@ def _mode_note(args: argparse.Namespace) -> str:
         else "max-logprobs not given (engine default)"
     )
     if args.scorer:
+        reasons = (
+            "; reasons mode: operations, explain and 8 escalate:<reason> candidates, no bare"
+            " escalate (build_dataset.py --reasons)"
+            if args.reasons
+            else ""
+        )
         return (
             f"candidate scorer ({args.scorer}) through scorer.py, {engine_max};"
-            f" asks for {scorer_labels_needed()} per request"
+            f" asks for {scorer_labels_needed()} per request{reasons}"
         )
     return f"generative (LfmTier through nvsh.tiers.bench), {engine_max}"
 
@@ -2946,6 +3013,7 @@ def _run(
         ),
         scorer_kind=args.scorer or "",
         tokenizer=args.tokenizer,
+        reasons=args.reasons,
     )
     for model, revision in zip(args.model, args.revision):  # refuse before any run starts
         if args.scorer:
