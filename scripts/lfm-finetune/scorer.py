@@ -99,8 +99,10 @@ LABEL_ALPHABET = string.ascii_uppercase + string.ascii_lowercase
 
 #: How many next-token log-probabilities a served request asks for. The
 #: 2026-09-25 probe found the top 22 missing 10-15 labels on every prompt and
-#: the top 5000 complete on 6/6; anything still missing is marked incomplete.
-READOUT_TOP = 5000
+#: the top 5000 complete on 6/6; on all 64 spent-test prompts the Q4_K_M GGUF still missed labels
+#: on 5 at top 5000 and on none at top 20000 (0.25 s a request on CPU). Anything still
+#: missing is marked incomplete.
+READOUT_TOP = 20000
 
 #: The pre-issue-53 margin above the candidate count. :func:`score` no longer
 #: uses it (it asks for :data:`READOUT_TOP`); measure.py's ``--max-logprobs``

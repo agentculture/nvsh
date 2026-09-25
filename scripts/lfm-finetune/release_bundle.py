@@ -153,13 +153,13 @@ def _scorer_max_logprobs() -> int:
 
     Derived from ``scorer.READOUT_TOP`` (the count the scorer itself
     requests, issue 53 t3) the same way ``dataset_bundle`` is loaded above;
-    falls back to the literal 5000 -- kept equal to ``scorer.READOUT_TOP`` --
+    falls back to the literal 20000 -- kept equal to ``scorer.READOUT_TOP`` --
     if scorer.py cannot be imported standalone.
     """
     try:
         return int(_sibling("scorer").READOUT_TOP)
     except Exception:  # pragma: no cover -- defensive fallback
-        return 5000
+        return 20000
 
 
 #: A served Track B scorer needs this many next-token log-probabilities, as

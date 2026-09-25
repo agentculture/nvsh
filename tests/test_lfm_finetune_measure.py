@@ -31,7 +31,7 @@ UID = 4242
 OWN = f"nvsh-tier2-{UID}"
 STOCK = "LiquidAI/LFM2.5-350M"
 #: --max-logprobs a served scorer needs: scorer.READOUT_TOP (issue 53, deviation d1).
-_READOUT = "5000"
+_READOUT = "20000"
 TUNED = "jetson-ai-lab/lfm2.5-350m-nvsh-triage"
 
 

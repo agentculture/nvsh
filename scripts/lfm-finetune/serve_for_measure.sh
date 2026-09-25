@@ -406,7 +406,7 @@ start() {
     return
   fi
   MEASURE_GPU_FRACTION=${MEASURE_GPU_FRACTION:-0.08}
-  MEASURE_MAX_LOGPROBS=${MEASURE_MAX_LOGPROBS:-5000}
+  MEASURE_MAX_LOGPROBS=${MEASURE_MAX_LOGPROBS:-20000}
   check_settings
   [ -d "$model_dir" ] || die "MODEL_DIR $model_dir is not a directory"
   model_dir=$(cd "$model_dir" && pwd -P)

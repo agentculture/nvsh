@@ -522,10 +522,10 @@ def _torch_model(torch, logits, calls: list):
 # -- the one readout definition (issue 53, t1) --
 
 
-def test_readout_top_is_a_named_constant_of_at_least_5000() -> None:
+def test_readout_top_is_a_named_constant_of_at_least_20000() -> None:
     module = _module()
     assert isinstance(module.READOUT_TOP, int)
-    assert module.READOUT_TOP >= 5000
+    assert module.READOUT_TOP >= 20000
 
 
 def test_label_variant_ids_are_every_vocabulary_token_that_strips_to_the_label() -> None:
