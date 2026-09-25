@@ -112,10 +112,10 @@ this cycle's PRs. Marked *(planned)* until the task's PR merges.
 
 | File | What it does | Task |
 |---|---|---|
-| `scorer.py` | **Merged** (`0b48c79`). One shared label-probability definition, `distribution()`: a candidate's mass is the sum of next-token probabilities over every vocabulary token whose whitespace-stripped text equals its label (3 variants per letter on Qwen3.5-0.8B: `'A'`, `' A'`, `'\tA'`), normalised over offered candidates. New `label_variant_ids()` scans the vocabulary for those variants (~0.4 s over ~248k tokens); `TransformersScorer` now reads all variant ids and goes through `distribution()`, the same function a served model uses; new `label_logits_from_vocab()` is a differentiable log-sum-exp over variant ids, for training. `READOUT_TOP = 5000` is what `score()` requests from a server. Incomplete results are still never renormalised. The permutation seam (order, letter map, subsets, description overrides) is *(still planned)*, t2. | t1, t2 |
+| `scorer.py` | **Merged** (`0b48c79`, permutation seam `6ea1105`). One shared label-probability definition, `distribution()`: a candidate's mass is the sum of next-token probabilities over every vocabulary token whose whitespace-stripped text equals its label (3 variants per letter on Qwen3.5-0.8B: `'A'`, `' A'`, `'\tA'`), normalised over offered candidates. New `label_variant_ids()` scans the vocabulary for those variants (~0.4 s over ~248k tokens); `TransformersScorer` now reads all variant ids and goes through `distribution()`, the same function a served model uses; new `label_logits_from_vocab()` is a differentiable log-sum-exp over variant ids, for training. `READOUT_TOP = 5000` is what `score()` requests from a server. Incomplete results are still never renormalised. **Permutation seam (t2):** a frozen `Permutation` dataclass (`order`, `labels`, with `to_json`/`from_json` round-trip); `permute(seed, pool, subset=, keep=)` draws a seeded order and letter permutation without replacement from `LABEL_ALPHABET`, with an optional subset that always keeps the gold candidate; `same_choice()` compares by operation name, never by letter; description overrides let a name outside the operations table (for example `escalate:repair`) supply its own text; `prompt_messages`/`score` take explicit `labels`/`order`/`descriptions`. The default (no permutation given) is pinned byte-identical to before, so `scorer-b1`'s own decisions stay reproducible. | t1, t2 |
 | `serve_for_measure.sh`, `pipeline.env.example`, `pipeline-qwen.env.example` | **Merged.** `MEASURE_MAX_LOGPROBS` now defaults to 5000 (was 22) in the script and both pipeline env examples. `llama-server` has no max-logprobs flag, so nothing there caps the readout. | t3 |
 | `calibration_fit.py` | **Merged.** New, stdlib only. Three subcommands: `folds` (writes `{seed, source, fit_ids, selection_ids}`, disjoint and sorted, default 70/30 split); `fit` (fits a temperature `T` by golden-section search on log T minimising NLL on the fit fold, bounds `T` in `[1/20, 20]`, then a per-label vector by coordinate descent on the temperature-scaled rows); `apply` (applies temperature then vector, renormalising over each line's offered labels; null-candidate lines pass through and are counted). Refuses test/held-out inputs by file name and split header — predictions files carry no header, so the fit refusal is name-based only (a documented limit, not a full guarantee). | t4 |
-| `metrics.py` | *(planned)* Per-slice ECE/Brier/reliability bins (read-only vs mutating, candidate count, missing-candidate, confidence bucket); every rate and ECE carries n and a bootstrap 95% CI; `abstain_uncertain` counted as its own outcome, separate from semantic escalate, both rolling into the escalation bar. | t5 |
+| `metrics.py` | **Merged** (`6ea1105`). Per-slice results: read-only vs mutating (by the gold operation's `Operation.read_only`), `escalate_or_explain`, each carrying calibration, candidate-count and missing-candidate rate. Every rate and ECE/Brier carries n and a seeded percentile bootstrap 95% CI (1000 resamples, seed 0 default; precision uses a stratified bootstrap). New outcome `abstain_uncertain` is counted separately from semantic escalate but still counts as "escalated" for escalation bars. Escalation-reason labels use the form `escalate:<reason>` and roll up to plain `escalate` everywhere. `reliability_markdown()` renders the bin tables per slice. | t5 |
 | `gate.py` | *(planned, new)* The uncertainty-abstention gate: decides propose / explain / escalate / `abstain_uncertain` from `p_escalate`, a `p_top1` floor, the top1-top2 margin and normalized entropy; thresholds keyed only by `Operation.read_only`, never an operation name. | t6 |
 | `sweep_gate.py` | *(planned, new)* Offline threshold sweep over stored `predictions.jsonl` files, no GPU needed; refuses test/held-out without `--final`. | t6 |
 | `permutation_probe.py` | *(planned, new)* Runs the permutation seam at least 10 times per entry per perturbation kind (order, letters, subset, paraphrase) and reports the operation-level answer-change rate with n and a bootstrap 95% CI; never canonicalises runtime order. | t7 |
@@ -249,15 +249,18 @@ choice.
 **Wave 1 done**, 2026-09-25. **Merged:** t1 (readout core, `0b48c79`), t3
 (served readout cap), t4 (calibration-fit module, `86f1504`), t9
 (pre-registered decision rule, `b1c6cb6`), t10 (this guide) and t11 (Track
-A/B documentation relabel). t5 (per-slice metrics) is still running. No
-training run has happened yet — t9's rule is committed and
-operator-confirmed ahead of the cycle's first training command, as
-required.
+A/B documentation relabel). No training run has happened yet — t9's rule is
+committed and operator-confirmed ahead of the cycle's first training
+command, as required.
 
-**Wave 2 in progress**, 2026-09-25: t2 (permutation seam in `scorer.py`) and
-t12 (corpus v2 split tooling) are running; t6 and t8 wait on t5 (per-slice
-metrics), which is still running. This section will be updated at each step
-as the lead forwards findings.
+**Wave 2 in progress**, 2026-09-25. **Merged:** t2 (permutation seam,
+`6ea1105`) and t5 (per-slice metrics, `6ea1105`). **Started:** t6 (`gate.py`
+and `sweep_gate.py`) and t8 (`measure.py` wiring: `--calibration`, per-slice
+report, complete/incomplete counts, the P71/issue-#57 fix, preflight moved
+to `READOUT_TOP` per d1) — both were waiting on t5, now unblocked. **Still
+running:** t12 (corpus v2 split tooling). A Codex review of every task
+merged so far in this cycle is also running. This section will be updated
+at each step as the lead forwards findings.
 
 Cumulative issue **#61** records every deviation, lapse and status update
 for this cycle as it happens; this guide's ledger below is the narrative
