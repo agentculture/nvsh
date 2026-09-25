@@ -737,3 +737,17 @@ def test_only_reasons_cli_dry_run_counts_the_named_reasons(capsys) -> None:
         ]
     )
     assert json.loads(capsys.readouterr().out)["planned"]["reasons"] == 10
+
+
+def test_reviewer_policy_hands_off_small_talk_not_answers_it() -> None:
+    """dev.json labels small talk ``decline:not_a_request`` -> escalate; the
+    reviewer must be told the same policy or it rejects every such entry."""
+    system = ds.REVIEWER_SYSTEM
+    assert "only for technical knowledge questions" in system
+    assert "greetings, thanks" in system and "handed off, not answered" in system
+
+
+def test_missing_argument_definition_requires_an_offered_action() -> None:
+    definition = ds.REASON_DEFINITIONS["missing_argument"]
+    assert "table DOES offer" in definition
+    assert "does not offer is not this reason" in definition

@@ -95,9 +95,10 @@ REASON_DEFINITIONS: dict[str, str] = {
         "the request asks to investigate or figure out the cause of a problem, not run one check"
     ),
     "missing_argument": (
-        "the request names a kind of action that needs a target, such as restarting or "
-        "reading logs, but gives no target value at all (no service or container name), "
-        "e.g. 'restart it' or 'pull up its logs'"
+        "the request asks for an action the table DOES offer and that needs a target -- "
+        "restarting, checking the status of, or reading the logs of a service or container -- "
+        "but gives no target value at all (no service or container name), e.g. 'restart it' "
+        "or 'pull up its logs'; an action the table does not offer is not this reason"
     ),
     "not_a_request": (
         "the text is small talk or about the assistant itself rather than the machine: "
@@ -489,7 +490,11 @@ def dedupe_candidates(
 REVIEWER_SYSTEM = (
     "You are a strict reviewer for a training dataset that teaches a small assistant when to run "
     "one of a fixed set of operations, when to hand a request off to a human, and when to just "
-    "answer a question in words. Given the operation table and a request, judge whether the "
+    "answer a question in words. Answering in words is only for technical knowledge questions "
+    "about the machine, its hardware, software, tools or concepts; any other text that is not a "
+    "request about the machine -- greetings, thanks, jokes, farewells, questions or remarks about "
+    "the assistant itself -- is handed off, not answered. Given the operation table and a "
+    "request, judge whether the "
     "stated handling is exactly correct. Answer strictly 'yes' or 'no', then a short reason. "
     "Start your reply with the single word 'yes' or 'no'."
 )
