@@ -1270,6 +1270,14 @@ redaction rule).
   and crashed on a bare `--seed`. None changes a shipped result: the uploaded
   bundle scanned clean, the frozen gate uses no entropy threshold and every
   proposed operation is in the table.
+- **P28, a flaky runtime test on the PR runner.** **Symptom:** after the
+  review fixes, one CI `test` job failed
+  `tests/test_agent_agy.py::test_warm_cancel_signals_the_child_not_just_a_flag`
+  ("cancel() never reached the child") while the other `test` job passed
+  on the same commit. **Cause:** a timing race under `pytest -n auto`; the
+  test and `nvsh/agent/agy.py` are unchanged by this cycle (last touched in
+  0.14.0), and it passed 5 of 5 runs locally. **Fix:** the failed job was
+  re-run and passed; the flake itself is left for a runtime follow-up.
 - **Throughput note (not a bug).** Reviewer B (Qwen3.8-27B) thinks at
   about 42 tokens/s with up to 8192 tokens per verdict and serves 2
   requests at once, so reviews run at about 2-3 teacher calls a minute; the
