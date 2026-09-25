@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import sys
 from pathlib import Path
 
 import pytest
@@ -585,6 +586,18 @@ def test_an_awq_bundle_copies_the_compressed_folder_and_names_its_vllm_args(tmp_
     assert "compressed-tensors" in card
 
 
+def test_scorer_max_logprobs_matches_scorer_readout_top() -> None:
+    """Issue 53 t3: the served-instructions cap must not truncate scorer.py's own ask."""
+    scorer_path = _SCRIPT.parent / "scorer.py"
+    spec = importlib.util.spec_from_file_location("t3_release_bundle_scorer", scorer_path)
+    scorer = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = scorer  # its dataclasses look their module up there
+    spec.loader.exec_module(scorer)
+    module = _module()
+    assert module.SCORER_MAX_LOGPROBS == scorer.READOUT_TOP
+    assert module.SCORER_MAX_LOGPROBS >= 5000
+
+
 def test_an_awq_bundle_needs_its_quantize_record(tmp_path) -> None:
     awq = _awq(tmp_path)
     (awq.parent / "quantize-run.json").unlink()
@@ -606,6 +619,7 @@ def test_a_scorer_card_describes_a_candidate_scorer_not_a_tool_caller(tmp_path) 
     assert "log-probabilities" in card
     assert "tool_call_parser" not in card
     assert "train_scorer.py" in card
+    assert f"--max-logprobs {_module().SCORER_MAX_LOGPROBS}" in card
 
 
 def test_main_builds_a_gguf_bundle_from_the_command_line(tmp_path, capsys) -> None:
