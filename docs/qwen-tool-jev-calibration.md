@@ -124,7 +124,7 @@ this cycle's PRs. Marked *(planned)* until the task's PR merges.
 | `docs/qwen-tool-jev-calibration.md` | This file. | t10 |
 | `docs/qwen-tool-jev-finetune.md`, `docs/benchmarks/2026-09-24-qwen-tool-jev-comparison.md`, `release_bundle.py` (model-card text) | **Merged.** Track A is now described as a specialized generative tool router and Track B as the Jev-style candidate scorer; no text calls them equally Jev-like. | t11 |
 | `split.py` | **Merged.** New v2 mode: repeatable `--corpus`, `--version`, `--val-size`/`--test-size` as counts, `--fold-seed`. The header is a JSON object `{version, seed, sources: [{path, sha256}], sizes, side}`; the validation header additionally carries `fold_seed`/`fit_ids`/`selection_ids`, and a `folds.json` is written for `calibration_fit`. Refuses any output path under `nvsh/` and refuses `held-out.json` as input. Assembly is class-balanced round-robin by the corpus's `class` field; requested totals can land 1-2 off target per answer kind, from largest-remainder rounding. | t12 |
-| `draft_heldout.py` | Reused from issue 46, extended with a `--seed` option (default 46) so this cycle can draft its own fresh held-out set independent of issue 46's. See [ledger P7](#ledger-symptom---cause---fix) for the seed-53 draft's parse gap and the fix in progress. | t13 |
+| `draft_heldout.py` | Reused from issue 46, extended with a `--seed` option (default 46) so this cycle can draft its own fresh held-out set independent of issue 46's; gained a new `as_item()` fix (see [ledger P9](#ledger-symptom---cause---fix)) that turns a bare-string model reply into a text-only item instead of crashing. See [ledger P7](#ledger-symptom---cause---fix) for the seed-53 draft's original parse gap. | t13 |
 | `draft_sources.py` | **Merged, new** (a second t13 tool, alongside `draft_heldout.py`). `draft OUT --pool eval\|heldout --seed N --per-op K --per-reason K --explain K`: a table-only generator producing per-operation requests with validated arguments, per-decline-reason escalate prompts for all 8 classes, and explain Q/A pairs. `review IN OUT`: two independent reviewers give a strict yes/no; only what both accept is kept; exact and near-duplicate (Jaccard >= 0.8) dedupe against `dev.json` and within the draft, reusing `leakage_check.py`. Prints counts and hashes only; `review.jsonl` omits entry text entirely for the `heldout` pool. Reviewer roles are configured through `NVSH_DRAFT_<ROLE>_*` environment variables — no literal URL, key or model name is hard-coded. | t13 |
 | `build_dataset.py` | **Merged.** Every rendered example is enriched with its `permutation` (`{order, labels}`), `gold`, `perm_seed` (a sha256 of `"<perm-seed>:<example id>"`), and `descriptions` (only when reason candidates are offered). New flags: `--randomize-labels`, `--perm-seed`, `--min-subset` (default 6), `--full-set-probability` (default 0.3), `--missing-candidate-rate` (train side only — derives `<id>-nocand` examples with the gold operation removed and gold retargeted to `escalate` / `escalate:outside_table`), `--reasons` (16 operations + `explain` + 8 `escalate:<reason>` = 25 candidates; the reason is read from the entry's `class` field, `decline:<reason>`, falling back to `outside_table` when unrecognised; descriptions come from `scripts/lfm-finetune/data/reasons.json`). Default behaviour (no new flags passed) is unchanged. | t14 |
 | `merge_variations.py` | Existing issue-46 tool; test coverage extended alongside t14's `build_dataset.py` changes. | t14 |
@@ -266,19 +266,39 @@ Full suite: 4459 passed.
 **Wave 3 in progress**, 2026-09-25. **Merged (code):** t7 (`permutation_probe.py`),
 t14 (`build_dataset.py` enrichment, `data/reasons.json`, `data/paraphrases.json`)
 and the `draft_sources.py` tool for t13. Wave 3's code (t7, t14, t16) is now
-fully merged; full suite 4540 passed. **t13 running (data, not yet merged):**
-the seed-53 held-out pass (see [ledger P7](#ledger-symptom---cause---fix))
-was joined by a seed-54 pass (75 entries: 43 operation, 16 escalate, 16
-explain; 3 invalid args, 2 duplicates dropped); the two passes were combined
-into one 134-entry held-out draft (85 operation, 33 explain, 16 escalate),
-ids prefixed by seed, hash `767c5639b2ceef4f…` (partial, as forwarded), now
-under two-reviewer review (reviewer A Gemma-4-26B-A4B, reviewer B
-Qwen3.8-27B; the lead reads counts only). In parallel, the eval-pool draft
-is running: generator Qwen3.6-35B-A3B (temperature 0.8, thinking off), 10
-entries per operation, 8 per decline reason, 60 explain (284 entries before
-review), reviewed by the same two reviewers. All teachers used are
-Apache-2.0. This section will be updated at each step as the lead forwards
-findings.
+fully merged; full suite 4540 passed.
+
+**t13 running (data, not yet merged).** Held-out side: the combined
+134-entry draft (seeds 53+54) went through two-reviewer review — **kept
+86** (65 operation, 13 explain, 8 escalate), rejected by reviewer B (38),
+reviewer A (16) and exact duplicates (4), hash `1cd89cdb5caaf1be…` (partial,
+as forwarded). 8 escalates is too few to measure escalation on the held-out
+side, so a top-up followed: seeds 53 and 55 each produced 0 escalates again
+(the same single-reply parse gap, see [ledger P7](#ledger-symptom---cause---fix)),
+and seeds 56/58 crashed outright until the `as_item()` fix (ledger P9,
+below); reruns after the fix gave seed 56 16 escalate/16 explain, seed 57
+16/16, seed 58 17/16. A top-up draft from seeds 55-58 (113 entries: 64
+explain, 49 escalate) is now under the same two-reviewer review; once that
+review lands, a cross-draft near-duplicate filter runs over the union
+(counts only).
+
+Eval-pool side: the seed-53 draft (10 per operation, 8 per reason, 60
+explain) went through review — **kept 164** (142 operation, 22 escalate, 0
+explain); by decline reason: `outside_table` 6, repair 7, diagnosis 3,
+injection 1, `over_time` 5, and none for `missing_argument`,
+`not_a_request` or `multi_step`. Rejects: reviewer B 50, reviewer A 31,
+parse failures 3, exact duplicates 3, near duplicates 3. The pass took
+about 2.5 hours at roughly 3 teacher calls a minute. Vote pattern:
+operations were accepted by both reviewers 142 of 154 times; declines only
+22 of 64 (23 rejected by both reviewers). The whole 60-Q/A explain request
+never parsed in one reply (likely the generator's own token limit), and
+some reason prompts failed too. A top-up is running now: seeds 54-56, 6
+per reason and 20 explain per seed, generator max tokens raised to 12000,
+no operation requests this round.
+
+All teachers used across both drafts are Apache-2.0 (generator
+Qwen3.6-35B-A3B, reviewer A Gemma-4-26B-A4B, reviewer B Qwen3.8-27B). This
+section will be updated at each step as the lead forwards findings.
 
 Cumulative issue **#61** records every deviation, lapse and status update
 for this cycle as it happens; this guide's ledger below is the narrative
@@ -391,12 +411,52 @@ redaction rule).
   specifically, merged into the seed-53 draft programmatically (the lead
   never reads either draft's text, only counts and hashes, per c51/q11).
   Held-out draft hash (seed 53, pre-merge): `385092216b1e9b74…` (partial,
-  as forwarded). **Resolved:** the seed-54 pass produced 75 entries (43
+  as forwarded). **Update:** the seed-54 pass produced 75 entries (43
   operation, 16 escalate, 16 explain; 3 invalid args, 2 duplicates
   dropped); combined with the seed-53 draft into one 134-entry held-out
   draft (85 operation, 33 explain, 16 escalate), ids prefixed by seed,
-  hash `767c5639b2ceef4f…` (partial, as forwarded), now under two-reviewer
-  review.
+  hash `767c5639b2ceef4f…` (partial, as forwarded). **Still not fully
+  resolved:** review of that 134-entry draft kept only 8 escalates (see
+  [P10](#ledger-symptom---cause---fix) below), too few to measure
+  escalation on the held-out side, so a further top-up round is running.
+- **P9, `draft_heldout.py` crashing outright on a bare-string reply.**
+  **Symptom:** while chasing P7's escalate shortfall, seeds 53 and 55 again
+  produced 0 escalates (the same single-reply parse gap), and seeds 56 and
+  58 crashed with `AttributeError` instead of merely producing zero
+  entries. **Cause:** `Qwen/Qwen3.5-4B` sometimes answers with a list of
+  bare strings instead of a list of item objects, and the parser assumed
+  every reply item was an object. **Fix:** a new `as_item()` helper turns a
+  bare string into a text-only item; a bare-string reply for an operation
+  request then correctly fails argument validation (as it should, since a
+  bare string carries no arguments) rather than crashing. A test was added.
+  Reruns after the fix: seed 56 gave 16 escalate/16 explain, seed 57 16/16,
+  seed 58 17/16.
+- **P10, the held-out review's escalate shortfall (in progress).**
+  **Symptom:** two-reviewer review of the combined 134-entry held-out draft
+  (seeds 53+54) kept only 86 entries (65 operation, 13 explain, **8
+  escalate**) — rejected by reviewer B (38), reviewer A (16) and exact
+  duplicates (4); hash `1cd89cdb5caaf1be…` (partial, as forwarded). **Cause:**
+  8 escalates is too few to measure escalation reliably on the held-out
+  side. **Fix in progress:** a top-up draft from seeds 55-58 (113 entries:
+  64 explain, 49 escalate, drafted after the P9 fix) is under the same
+  two-reviewer review; once that lands, a cross-draft near-duplicate filter
+  runs over the union of everything kept so far (counts only, as always).
+- **P11, the eval-pool draft's explain gap (in progress).**
+  **Symptom:** the seed-53 eval-pool draft (10 per operation, 8 per decline
+  reason, 60 explain) kept 164 of 284 on review (142 operation, 22
+  escalate, **0 explain**); by reason: `outside_table` 6, repair 7,
+  diagnosis 3, injection 1, `over_time` 5, and none at all for
+  `missing_argument`, `not_a_request` or `multi_step`. Rejects: reviewer B
+  50, reviewer A 31, parse failures 3, exact duplicates 3, near duplicates
+  3 (vote pattern: operations agreed-accepted 142 of 154 times; declines
+  agreed-accepted only 22 of 64, with 23 rejected by both reviewers). The
+  pass took about 2.5 hours at roughly 3 teacher calls a minute. **Cause:**
+  the entire 60-Q/A explain request never parsed in one reply, most likely
+  because the reply hit the generator's own token limit; some reason
+  prompts failed for the same reason. **Fix in progress:** top-up drafts
+  from seeds 54-56, 6 per reason and 20 explain per seed (smaller requests),
+  generator max tokens raised to 12000, no operation requests this round
+  (the operation slice is already well covered).
 - **P8, a load-sensitive test flake (unrelated to this cycle's files).**
   **Symptom:** a full-suite run under heavy load failed
   `tests/test_readline_bash.py::test_bash_at_target_grammar_accepts_every_python_positive_row`
