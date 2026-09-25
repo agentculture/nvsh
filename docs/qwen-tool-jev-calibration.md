@@ -499,6 +499,8 @@ lapses, all posted on issue #61 when they happened.
   before grounding (`527e5ad`). r1 and all three `scorer-b1` builds are
   re-measured; distributions, calibration fits and probes stand. Record:
   d5, l10, #61.
+- **D39.** **Lapse l10 approved** by the operator. All lapses l1-l10 and
+  deviations d1-d5 are approved. Record: devague, #61.
 - **D32.** **Lapses l5-l8 approved.** The operator approved l5 (split v2
   header), l6 (reviewer policy), l7 with its naturalness addendum (verdict
   parser) and l8 (mid-sentence "but"). Every lapse of this cycle, l1-l8,
