@@ -15,11 +15,14 @@ This page is a long-lived guide and ledger, owned only by the documentation
 subagent for plan task t10. It is updated in the same step as every run,
 obstacle or fix, in the style of `docs/qwen-tool-jev-finetune.md`.
 
-**Status: in progress, 2026-09-25.** Wave 1 of the plan has begun. t9, t10
-and t11 are merged; t1, t3, t4 and t5 are in progress. See [Where the run
-stands](#where-the-run-stands) for the live picture, and the [pre-registered
-decision rule](#the-pre-registered-checkpoint-decision-rule-t9) for how the
-chosen checkpoint will be picked.
+**Status: in progress, 2026-09-25.** Code waves 1-3 are merged; the t13
+data is sealed (fresh evaluation pool, private held-out) and corpus v2 is
+built; the t17 baseline on `scorer-b1` is running and t15's targeted
+augmentation is generating. No training run has started. See the
+[decision path](#decision-path) for every choice made so far and why,
+[Where the run stands](#where-the-run-stands) for the live picture, and the
+[pre-registered decision rule](#the-pre-registered-checkpoint-decision-rule-t9)
+for how the chosen checkpoint will be picked.
 
 ## What this cycle is
 
@@ -114,7 +117,7 @@ this cycle's PRs. Marked *(planned)* until the task's PR merges.
 |---|---|---|
 | `scorer.py` | **Merged** (`0b48c79`, permutation seam `6ea1105`). One shared label-probability definition, `distribution()`: a candidate's mass is the sum of next-token probabilities over every vocabulary token whose whitespace-stripped text equals its label (3 variants per letter on Qwen3.5-0.8B: `'A'`, `' A'`, `'\tA'`), normalised over offered candidates. New `label_variant_ids()` scans the vocabulary for those variants (~0.4 s over ~248k tokens); `TransformersScorer` now reads all variant ids and goes through `distribution()`, the same function a served model uses; new `label_logits_from_vocab()` is a differentiable log-sum-exp over variant ids, for training. `READOUT_TOP` is what `score()` requests from a server — raised from 5000 to **20000** in the P13 rework below (still >= the c38 floor of 5000). Incomplete results are still never renormalised. **Permutation seam (t2):** a frozen `Permutation` dataclass (`order`, `labels`, with `to_json`/`from_json` round-trip); `permute(seed, pool, subset=, keep=)` draws a seeded order and letter permutation without replacement from `LABEL_ALPHABET`, with an optional subset that always keeps the gold candidate; `same_choice()` compares by operation name, never by letter; description overrides let a name outside the operations table (for example `escalate:repair`) supply its own text; `prompt_messages`/`score` take explicit `labels`/`order`/`descriptions`. The default (no permutation given) is pinned byte-identical to before, so `scorer-b1`'s own decisions stay reproducible. | t1, t2 |
 | `serve_for_measure.sh`, `pipeline.env.example`, `pipeline-qwen.env.example`, `pipeline.sh`, `release_bundle.py` | **Merged.** `MEASURE_MAX_LOGPROBS` now defaults to **20000** (raised from an initial 5000, itself up from 22) in the script, both pipeline env examples, `pipeline.sh`'s own default and `release_bundle.py`'s serving instructions — all derived from `scorer.READOUT_TOP` rather than a separately hard-coded number (P5 fixed the derivation; P13 below raised the number itself). `llama-server` has no max-logprobs flag, so nothing there caps the readout. | t3 |
-| `calibration_fit.py` | **Merged**, then reworked in the review-fix pass on `#61`. New, stdlib only. Three subcommands: `folds` (writes `{seed, source, fit_ids, selection_ids}`, disjoint and sorted, default 70/30 split); `fit` (fits a temperature `T` by golden-section search on log T minimising NLL on the fit fold, bounds `T` in `[1/20, 20]`, then a per-label vector by coordinate descent on the temperature-scaled rows); `apply` (applies temperature then vector, renormalising over each line's offered labels; null-candidate lines pass through and are counted). Refuses test/held-out inputs by file name and split header — predictions files carry no header, so the fit refusal is name-based only (a documented limit, not a full guarantee). Review fix: NLL is now computed in log space without clipping the gold probability, `escalate:<reason>` mass rolls up to `escalate` before NLL, and rows whose gold has no candidate are skipped and counted (`skipped_gold_absent`) instead of corrupting the fit. **P14 fix (merged):** `make_folds` gained an optional `group_of` so a whole source's stored variations fold together, never splitting across fit and selection. | t4 |
+| `calibration_fit.py` | **Merged**, then reworked in the review-fix pass on `#61`. New, stdlib only. Three subcommands: `folds` (writes `{seed, source, fit_ids, selection_ids}`, disjoint and sorted, default 70/30 split); `fit` (fits a temperature `T` by golden-section search on log T minimising NLL on the fit fold, bounds `T` in `[1/20, 20]`, then a per-label vector by coordinate descent on the temperature-scaled rows); `apply` (applies temperature then vector, renormalising over each line's offered labels; null-candidate lines pass through and are counted). Refuses test/held-out inputs by file name and split header — predictions files carry no header, so the fit refusal is name-based only (a documented limit, not a full guarantee). Review fix: NLL is now computed in log space without clipping the gold probability, `escalate:<reason>` mass rolls up to `escalate` before NLL, and rows whose gold has no candidate are skipped and counted (`skipped_gold_absent`) instead of corrupting the fit. **P14 fix (merged):** `make_folds` gained an optional `group_of` so a whole source's stored variations fold together, never splitting across fit and selection. **t17 (merged):** `evaluate --predictions --params --folds [--fold selection]` reports ECE and Brier with bootstrap CIs for raw, temperature-only and temperature+vector on one fold, so the selection fold decides whether vector scaling is kept. | t4 |
 | `metrics.py` | **Merged** (`6ea1105`). Per-slice results: read-only vs mutating (by the gold operation's `Operation.read_only`), `escalate_or_explain`, each carrying calibration, candidate-count and missing-candidate rate. Every rate and ECE/Brier carries n and a seeded percentile bootstrap 95% CI (1000 resamples, seed 0 default; precision uses a stratified bootstrap). New outcome `abstain_uncertain` is counted separately from semantic escalate but still counts as "escalated" for escalation bars. Escalation-reason labels use the form `escalate:<reason>` and roll up to plain `escalate` everywhere. `reliability_markdown()` renders the bin tables per slice. | t5 |
 | `gate.py` | **Merged, new.** `decide(distribution, offered, thresholds)` -> `propose` / `explain` / `escalate` / `abstain_uncertain`: escalate if the argmax or the rolled-up escalate mass clears its threshold; else explain if top1 is explain; else a per-`Operation.read_only` threshold set (a `p_top1` floor, the top1-top2 margin, and normalized entropy) decides `abstain_uncertain`; any threshold set to `None` disables that check. Thresholds are keyed only by `Operation.read_only`, never an operation name. | t6 |
 | `sweep_gate.py` | **Merged, new.** Re-decides stored `predictions.jsonl` rows offline, over a threshold grid, per fold; refuses test/held-out/final-labelled paths unless `--final`. Sanity-checked against `scorer-b1`'s own exact test-side predictions with every threshold disabled: 61 of 64 decisions reproduced exactly; the other 3 were recorded `invalid` there because `scorer-b1`'s argument grounding failed on them — a step the gate (distribution only) never sees, so this is expected, not a bug. **P14 fix (merged):** an argument-grounding failure it finds itself is now kept as `invalid` (same operation) or reported as "not grounded by the sweep" (a different operation), instead of being turned into a proposal with invented `{}` arguments. | t6 |
@@ -123,16 +126,17 @@ this cycle's PRs. Marked *(planned)* until the task's PR merges.
 | `docs/tool-jev-calibration-rule.md` | **Merged** (commit `b1c6cb6`). The pre-registered checkpoint-selection rule — selection fold, ordered criteria, tie-breaks, and the calibration-aware-stage trigger — confirmed by the operator before any training. See [below](#the-pre-registered-checkpoint-decision-rule-t9). | t9 |
 | `docs/qwen-tool-jev-calibration.md` | This file. | t10 |
 | `docs/qwen-tool-jev-finetune.md`, `docs/benchmarks/2026-09-24-qwen-tool-jev-comparison.md`, `release_bundle.py` (model-card text) | **Merged.** Track A is now described as a specialized generative tool router and Track B as the Jev-style candidate scorer; no text calls them equally Jev-like. | t11 |
-| `split.py` | **Merged.** New v2 mode: repeatable `--corpus`, `--version`, `--val-size`/`--test-size` as counts, `--fold-seed`. The header is a string opening with the v1 side note (`Split '<side>' of corpus-<version> (seed=N).`) so every existing reader and the test/held-out guards still parse it; the structured metadata `{version, seed, sources: [{path, sha256}], sizes, side}` sits under a top-level `"split"` key, which on the validation side also carries `fold_seed`/`fit_ids`/`selection_ids`, and a `folds.json` is written for `calibration_fit`. **l5 fix (merged):** an earlier revision put the metadata in a dict `header`, which broke `train_scorer`, `build_dataset`, `merge_variations`, `measure` and the refusal guards; the agy review found it before any v2 split was built. Refuses any output path under `nvsh/` and refuses `held-out.json` as input. **P14 fix (merged):** assembly now allocates per class across sides with source groups kept intact, instead of the earlier contiguous round-robin slicing that could starve validation/test of rare decline classes; a non-vacuity assertion guards the fold test. Requested totals can still land 1-2 off target per answer kind, from largest-remainder rounding. | t12 |
+| `split.py` | **Merged.** New v2 mode: repeatable `--corpus`, `--version`, `--val-size`/`--test-size` as counts, `--fold-seed`. The header is a string opening with the v1 side note (`Split '<side>' of corpus-<version> (seed=N).`) so every existing reader and the test/held-out guards still parse it; the structured metadata `{version, seed, sources: [{path, sha256}], sizes, side}` sits under a top-level `"split"` key, which on the validation side also carries `fold_seed`/`fit_ids`/`selection_ids`, and a `folds.json` is written for `calibration_fit`. **l5 fix (merged):** an earlier revision put the metadata in a dict `header`, which broke `train_scorer`, `build_dataset`, `merge_variations`, `measure` and the refusal guards; the agy review found it before any v2 split was built. Refuses any output path under `nvsh/` and refuses `held-out.json` as input. **P14 fix (merged):** assembly now allocates per class across sides with source groups kept intact, instead of the earlier contiguous round-robin slicing that could starve validation/test of rare decline classes; a non-vacuity assertion guards the fold test. Requested totals can still land 1-2 off target per answer kind, from largest-remainder rounding. **d3 (merged):** `--train-only CORPUS` (repeatable) appends a corpus to the train side only; val and test are split from the `--corpus` inputs alone, each such entry carries `train_only: true` and its file is listed in `sources` with `"train_only": true`. | t12 |
 | `draft_heldout.py` | Reused from issue 46, extended with a `--seed` option (default 46) so this cycle can draft its own fresh held-out set independent of issue 46's; gained a new `as_item()` fix (see [ledger P9](#ledger-symptom---cause---fix)) that turns a bare-string model reply into a text-only item instead of crashing. See [ledger P7](#ledger-symptom---cause---fix) for the seed-53 draft's original parse gap. | t13 |
-| `draft_sources.py` | **Merged, new** (a second t13 tool, alongside `draft_heldout.py`). `draft OUT --pool eval\|heldout --seed N --per-op K --per-reason K --explain K`: a table-only generator producing per-operation requests with validated arguments, per-decline-reason escalate prompts for all 8 classes, and explain Q/A pairs. `review IN OUT`: two independent reviewers give a strict yes/no; only what both accept is kept; exact and near-duplicate (Jaccard >= 0.8) dedupe against `dev.json` and within the draft, reusing `leakage_check.py`. Prints counts and hashes only; `review.jsonl` omits entry text entirely for the `heldout` pool. Reviewer roles are configured through `NVSH_DRAFT_<ROLE>_*` environment variables — no literal URL, key or model name is hard-coded. **Reworked (P12 below):** a reviewer's empty reply is now retried up to twice before being counted as a genuine reject (reason `"empty reply"`); the per-reviewer reply budget was raised to 8192 tokens; the escalate-reason definitions (`missing_argument`, `not_a_request`, `multi_step`, `injection`) were tightened to match the corpus's own decline classes exactly. **P14 fix (merged):** `--seed` now actually controls generation via a deterministic per-call request seed (a sha256 of the run seed, role, prompt key and attempt number), recorded as `"sampling": {"per_call_seed": true}` with a note that reproducibility only holds on endpoints that honour the request seed. | t13 |
+| `draft_sources.py` | **Merged, new** (a second t13 tool, alongside `draft_heldout.py`). `draft OUT --pool eval\|heldout --seed N --per-op K --per-reason K --explain K`: a table-only generator producing per-operation requests with validated arguments, per-decline-reason escalate prompts for all 8 classes, and explain Q/A pairs. `review IN OUT`: two independent reviewers give a strict yes/no; only what both accept is kept; exact and near-duplicate (Jaccard >= 0.8) dedupe against `dev.json` and within the draft, reusing `leakage_check.py`. Prints counts and hashes only; `review.jsonl` omits entry text entirely for the `heldout` pool. Reviewer roles are configured through `NVSH_DRAFT_<ROLE>_*` environment variables — no literal URL, key or model name is hard-coded. **Reworked (P12 below):** a reviewer's empty reply is now retried up to twice before being counted as a genuine reject (reason `"empty reply"`); the per-reviewer reply budget was raised to 8192 tokens; the escalate-reason definitions (`missing_argument`, `not_a_request`, `multi_step`, `injection`) were tightened to match the corpus's own decline classes exactly. **P14 fix (merged):** `--seed` now actually controls generation via a deterministic per-call request seed (a sha256 of the run seed, role, prompt key and attempt number), recorded as `"sampling": {"per_call_seed": true}` with a note that reproducibility only holds on endpoints that honour the request seed. **l6/l7 (merged):** `draft --only-reasons a,b` drafts a top-up for named decline classes; the reviewer system prompt states the corpus policy (only technical knowledge questions are answered in words; small talk is handed off); `missing_argument` requires an action the table offers; `ambiguous`/`unclear` may justify an escalation verdict. | t13 |
 | `build_dataset.py` | **Merged**, then reworked for the d2 integration fix (below). Every rendered example is enriched with its `permutation` (`{order, labels}`), `gold`, `perm_seed` (a sha256 of `"<perm-seed>:<example id>"`), and `descriptions` (only when reason candidates are offered). Flags: `--randomize-labels`, `--perm-seed`, `--min-subset` (default 6), `--full-set-probability` (default 0.3), `--reasons` (16 operations + `explain` + 8 `escalate:<reason>` = 25 candidates; the reason is read from the entry's `class` field, `decline:<reason>`, falling back to `outside_table` when unrecognised; descriptions come from `scripts/lfm-finetune/data/reasons.json`). **`--missing-candidate-rate` no longer touches the rendered Track A file** (`nvsh-train.jsonl`): its `<id>-nocand` examples (gold operation removed, gold retargeted to `escalate` / `escalate:outside_table`) are now written **only** into a new corpus-format scorer training file, and only when `--scorer-out PATH` is also given — see the d2 entry below for why. Default behaviour (no new flags passed) is unchanged. | t14 |
 | `merge_variations.py` | Existing issue-46 tool; test coverage extended alongside t14's `build_dataset.py` changes. | t14 |
 | `targeted_augment.py` | **New** (t15 tooling). `--train TRAIN.json --out SUPPLEMENT.json --recipes ... --per-recipe N --seed N [--exclude SIDES...] [--decide-by reviewer_b\|both] [--roles-from augment\|draft] [--review-out R.jsonl] [--dry-run]`. Five recipes for the comparison doc's data-set recommendations 2-6: `missing-argument` (rule-based: a train-side request's argument value replaced by a vague reference, deterministic under the seed, expect escalate `decline:missing_argument`, linked by `pair_of` and the original's `source_id`; reviewer asked "is the argument left unspecified?" and "is it a natural request?"), `diagnosis-explain` (teacher-drafted contrastive pairs, explain vs `decline:diagnosis`, kept or dropped whole, one shared `source_id`), `power-set` (explicit positives for every choice of every table operation with a choice argument), `disambiguation` (validated gold plus the `confusable` operation; reviewer must agree the gold is the most natural reading) and `hard-negative` (explain questions that name an operation's subject in passing). Reuses `augment.py`'s roles, retry, verdict parser and guards and `draft_sources.py`'s seeded client, JSON parsing and reviewer prompt. Drops exact repeats of train texts and exact or near-duplicate repeats of `--exclude` texts before any review; `leakage_check.py` stays the gate. The output's header names the train side, so `merge_variations.py --supplement` accepts it; prints counts and a sha256 only. | t15 |
 | `merge_variations.py` (t15) | `--supplement` now keeps an entry's own `source_id` when it has one, so a t15 pair stays one group. | t15 |
 | `data/reasons.json` | **Merged, new.** Scripts-side descriptions for the 8 `escalate:<reason>` candidates — never read from `nvsh/`. | t14 |
 | `data/paraphrases.json` | **Merged, new.** At least 2 alternative descriptions per candidate, for `permutation_probe.py`'s `paraphrase` kind. | t14 |
-| `pipeline.sh` | **Reworked for d2 (below).** The `assemble` stage takes `SCORER_BUILD_ARGS`, which adds `--scorer-out $WORK/data/scorer-train.json` to the `build_dataset.py` call, producing the corpus-format scorer training file alongside the rendered Track A file. | t14/t16 (d2) |
+| `augment.py` (verdict parser) | **l7 (merged).** `parse_verdict` no longer reads a hyphenated `no-` compound (`no-argument`) as a no, and takes `allowed_hedges`: `draft_sources.py` and `targeted_augment.py` pass `ambiguous`/`unclear` for escalation verdicts only. Every other hedge and any standalone no still reject. | t13 |
+| `pipeline.sh` | **Reworked for d2 (below).** The `assemble` stage takes `SCORER_BUILD_ARGS`, which adds `--scorer-out $WORK/data/scorer-train.json` to the `build_dataset.py` call, producing the corpus-format scorer training file alongside the rendered Track A file. **l5/t17 (merged):** `MEASURE_REASONS=1` adds `--reasons` to every scorer measure stage; `<run>.bf16_gguf` measures quantize's unquantized GGUF through llama-server, for the served-vs-in-process readout check. | t14/t16 (d2) |
 | `train_scorer.py` | **Merged.** Reads each row's own permutation, gold, descriptions and `perm_seed`, and renders that row's own prompt; per-row label columns are padded with `-inf` masks. `--label-readout` chooses `variants` (default, the shared `distribution()` definition) or `single` (reproduces `scorer-b1` bit-identically — reproducing `b1` now requires passing `--label-readout single` explicitly). `--label-smoothing` / `--brier-weight` (default 0, off) add the calibration-aware loss terms beside cross-entropy. `train-log.json` gains `label_variant_ids`, `letter_ids`, `calibration_loss` and `permutations`; each row's own map is written to `<out>/row-maps.json` (path + sha256), so a run can be replayed exactly. **Fixed by d2 (below):** now trains on the new corpus-format scorer file (`scorer-train.json`) when it exists and is newer than `train-augmented.json`, and prints which file it used — closing an integration gap where randomized-label runs would otherwise have trained on the fixed label map with no missing-candidate rows at all. | t16 |
 | `quantize.py` | Reused unchanged tooling from issue 46 to build the chosen checkpoint's `Q4_K_M` (and optionally AWQ). | t19 |
 
@@ -250,7 +254,157 @@ choice.
   `r4` is not triggered, the selection-fold ECE that kept it off is
   recorded as evidence.
 
+## Decision path
+
+Every choice that shaped this cycle, in the order it was made: the
+evidence that forced it, what was chosen, who decided, and where it is
+recorded. Operator decisions come from the scope/think/challenge passes
+(`.devague/` frame, exported spec); `dN` are approved deviations and `lN`
+lapses, all posted on issue #61 when they happened.
+
+### Scope (before any code)
+
+- **D1.** **Runtime wiring is out of scope.** Evidence: the issue's own order puts
+   measurement and retraining first. Choice: the gate this cycle produces is
+   wired into nvsh by issue #54, not here; no file under `nvsh/` changes.
+   Operator, q1.
+- **D2.** **The bar is OpenJev's level.** OpenJev reports about 2.3% answer change
+   under shuffled options. Choice: judge the permutation answer-change rate
+   on the point estimate (<= 2.3%) with its 95% CI reported, at least 10
+   permutations per entry on a ~150-entry fresh test side. "Missing data is
+   not an explanation - it's a target to fill." Operator, q2 and q12.
+- **D3.** **Robustness by training, not by a trick.** Forcing one strict candidate
+   order at runtime would hide order sensitivity instead of removing it.
+   Choice: avoid it; order is never canonicalised. Operator note, c33.
+- **D4.** **No `logit_bias` readout.** The pre-challenge probe showed it leaves
+   llama-server's returned probabilities unchanged. Choice: complete
+   readout comes from a large top-k instead. Operator, q8.
+- **D5.** **The 8 escalation reasons only if they help.** Choice: an ablation
+   (candidate r2) decides. Operator, q3.
+- **D6.** **Re-split, and add new sources where data is short.** Operator, q4;
+   refined by d3 below.
+- **D7.** **Track B is the subject.** Track A gets only the documentation relabel;
+   its improvements are issue #56. Operator, q5.
+- **D8.** **Corpus v2 lives scripts-side and in the private data repo;**
+   `nvsh/tiers/corpus` stays untouched. Operator, q10.
+- **D9.** **A new, teacher-drafted, private held-out;** the lead sees counts and
+   hashes only. Operator, q11.
+- **D10.** **No RLCD.** TypeSafe did not publish the method; a conditional
+  calibration-aware stage of this cycle's own (r4, label smoothing plus a
+  Brier term) runs only if the chosen checkpoint's ECE is above 0.10.
+- **D11.** **Checkpoint choice is pre-registered** (t9, `tool-jev-calibration-rule.md`)
+  before any training: r1 randomized labels, r2 plus the 8 reasons, r3 at
+  lr 1e-4; judged on the validation selection fold in a fixed order (0
+  wrong mutating, accuracy floor, lowest permutation change, lowest ECE
+  after temperature, highest missing-candidate escalation). Operator:
+  "Rule ok".
+
+### During the run
+
+- **D12.** **d1** (t1): `train_scorer`'s adoption of the shared label-probability
+  definition moved to t16. Approved.
+- **D13.** **`READOUT_TOP` 5000 -> 20000.** Evidence: at 5000 the deployed Q4
+  GGUF missed labels on 5 of 64 prompts; 20000 missed none at 0.25 s per
+  request on CPU. Ledger P13.
+- **D14.** **d2** (t14): the per-example randomized data reaches Track B training
+  through a separate corpus-format scorer file (`--scorer-out`); it had
+  only reached the Track A file. Approved.
+- **D15.** **Reviewer reply budget 1024 -> 8192 tokens, empty reply retried.**
+  Evidence: reviewer B (a thinking model) often spent the whole budget
+  reasoning and replied empty, counted as a reject. Lapse l4; ledger P12.
+- **D16.** **Use Codex, agy and kiro as reviewers.** Operator permission. agy
+  headless denies every tool, so it runs with skip-permissions inside its
+  sandbox under a read-only prompt (operator-approved); the checkout is
+  checked unchanged afterwards.
+- **D17.** **l5: split v2's header back to a string.** Evidence: the agy review
+  found v2 wrote a dict header that every reader, including the
+  test/held-out refusal guards, parses as a string, plus two reasons-mode
+  gaps in `measure.py`. Choice: keep the v1 side note as the header and
+  move the metadata under `"split"`; add `--reasons` to measure and the
+  probe. Fixed before any v2 split existed. Ledger P15.
+- **D18.** **d3: fresh-only evaluation sides.** Evidence: a plain re-split would
+  put `scorer-b1`'s own training entries, and issue-46 validation entries
+  the lead read one by one, on the new val/test sides, inflating the
+  baseline and making "fresh test" untrue. Choice: `dev.json` goes to
+  train only (`split.py --train-only`); val and test come only from this
+  cycle's teacher drafts, unseen by `scorer-b1` and by the lead. Operator
+  chose this option.
+- **D19.** **More data over less.** Operator: "Overall I prefer more entries and
+  data than less." Choice: val and test sized at 200 each (the plan said
+  ~150), top-ups for thin classes, generous t15 counts, and the reviewed
+  issue-46 variations reused where leakage-clean.
+- **D20.** **l6: the reviewers were told the corpus's small-talk policy.**
+  Evidence: counting seed 60's verdicts per class showed every
+  `not_a_request` candidate rejected: reviewer B's prompt allowed
+  "answer in words" for any non-machine text, against `dev.json`'s
+  escalate label; and the `missing_argument` definition let the generator
+  draft unsupported actions. Choice: state the policy in the reviewer
+  prompt; require an offered action for `missing_argument`;
+  `--only-reasons` for targeted top-ups. `not_a_request` went from 0 to
+  42 pool entries. Ledger P16.
+- **D21.** **l7: two over-strict verdict-parser rules narrowed.** Evidence: stored
+  yes-replies turned into rejects by `no-argument` (read as "no") and by
+  "ambiguous"/"unclear" used as the reason for an escalation. Choice: a
+  hyphenated `no-` compound is not a no; the two words are allowed in
+  escalation verdicts only; every other hedge still rejects. The 159
+  previously rejected escalate candidates were re-reviewed: 51 kept.
+  Ledger P17.
+- **D22.** **Cortex concurrency was not raised.** Reviewer B throughput limits
+  every data step, but the lobe's own configuration documents
+  `--max-num-seqs 2` as an out-of-memory guard. Choice: run two streams
+  in parallel instead, one per reviewer slot.
+- **D23.** **Held-out sealed; corpus v2 built** (counts and hashes in
+  [Where the run stands](#where-the-run-stands)).
+- **D24.** **t17 measures the served bf16 GGUF through the pipeline**
+  (`<run>.bf16_gguf`), and uses `--predictions` rather than `--details`,
+  which is empty for scorer runs. Ledger P18.
+- **D25.** **Vector scaling earns its parameters on `scorer-b1`.** Evidence: on the
+  validation selection fold (61 entries) temperature alone barely moves
+  ECE (Q4 0.131 -> 0.120; exact 0.111 -> 0.120) while temperature plus
+  vector reaches 0.074 (Q4) and 0.060 (exact). Choice: t19 fits both and
+  keeps the variant that wins on the selection fold for the new
+  checkpoint; with n = 61 the CI is wide, so the fresh test side decides
+  the claim.
+
 ## Where the run stands
+
+**Latest, 2026-09-25 afternoon.**
+
+- **Eval pool (t13):** 480 entries (200 operation, 194 escalate, 86
+  explain), deduplicated across seeds (44 near-duplicates removed) and with
+  no exact or near match in `dev.json`. Escalate classes: `outside_table`
+  29, repair 26, diagnosis 16, injection 18, `over_time` 30, `multi_step`
+  25, `missing_argument` 8, `not_a_request` 42.
+- **Held-out (sealed, private, read-only):** 149 entries (60 operation, 54
+  explain, 35 escalate): the 159 kept by the fixed re-review, less 10
+  removed by `leakage_check.py` against `dev.json` and the eval pool.
+  Header opens "Held-out split" so every guard refuses it; sha256
+  `62dca6ae05d79db7…`. Never read by the lead.
+- **Corpus v2 (d3):** train 509 (245 operation, 134 escalate, 130 explain,
+  including all 431 `dev.json` entries), val 204 (84 / 84 / 36; fit fold
+  143, selection fold 61), test 198 (83 / 79 / 36). Val and test are fresh
+  drafts only.
+- **t17 baseline, `scorer-b1` on v2 validation (204):**
+
+  | Build | Right proposals | Abstention recall | False-positive calls | Wrong mutating | Invalid | ECE | Brier |
+  |---|---|---|---|---|---|---|---|
+  | in-process (exact) | 54 / 84 | 70 / 84 | 16 / 120 | 0 | 14 | 0.081 | 0.240 |
+  | served bf16 GGUF | — | 70 / 84 | — | 0 | 14 | 0.078 | 0.241 |
+  | served `Q4_K_M` | — | 70 / 84 | 16 / 120 | 1 | 13 | 0.097 | 0.258 |
+
+  Every readout was complete (204 / 204). Readout fidelity: served bf16
+  GGUF vs in-process differs by more than 0.01 on 22 of 204 entries (max
+  0.12, median 0.0001), so the 0.01 target is **not** met everywhere and
+  the gap is reported; `Q4_K_M` vs in-process differs by more than 0.05 on
+  26 entries (max 0.78) and changes 7 decisions, including the one wrong
+  mutating proposal: a check-then-change request ("check swap usage, and if
+  it's over 50%, switch to low power") that the exact build answers with
+  the read-only `swap_status` and `Q4_K_M` with `power_set`. Calibration
+  fits and the selection-fold result are decision D25 above; the gate sweep
+  and the permutation probe are running.
+- **t15 generating:** `targeted_augment.py` in two parallel streams
+  (missing-argument and power-set, then diagnosis-explain; disambiguation
+  and hard-negative), every protected side excluded.
 
 **Wave 1 done**, 2026-09-25. **Merged:** t1 (readout core, `0b48c79`), t3
 (served readout cap), t4 (calibration-fit module, `86f1504`), t9
@@ -637,6 +791,39 @@ redaction rule).
   `"sampling": {"per_call_seed": true}`, with a note that reproducibility
   only holds on endpoints that honour the request seed. Full suite: 4589
   passed.
+- **P15, split v2's dict header broke every reader (lapse l5).**
+  **Symptom:** an agy review found `train_scorer.read_split`,
+  `build_dataset`, `merge_variations`, `measure.py`'s side/seed parsing,
+  `quantize.py`, `augment.py`, `dataset_bundle.py` and the test/held-out
+  guards in `calibration_fit`/`permutation_probe` all expect a string header.
+  **Cause:** t12 changed the header's type without an end-to-end test
+  through its readers. **Fix:** string header with the v1 side note,
+  metadata under `"split"`, `check_version()` refusing side-like versions,
+  and an end-to-end test through every reader. Same review: `measure.py`
+  now scores an `escalate:<reason>` choice as an escalation and has a
+  `--reasons` mode (probe too), so r2 is measured on the prompt it trained
+  on.
+- **P16, a reviewer policy mismatch starved two decline classes (lapse
+  l6).** **Symptom:** 0 `not_a_request` and 1 `missing_argument` in the
+  whole eval pool. **Cause:** reviewer B's system prompt offered "answer in
+  words" for any non-machine text, so it rejected small talk that
+  `dev.json` labels escalate; the `missing_argument` definition did not
+  require an action the table offers. **Fix:** the prompt states the
+  corpus policy; the definition requires an offered action;
+  `draft_sources.py draft --only-reasons` for targeted top-ups.
+- **P17, the verdict parser discarded clear yes votes (lapse l7).**
+  **Symptom:** yes-replies stored as rejects. **Cause:**
+  `augment.parse_verdict` read ", no-argument" as a standalone "no", and
+  counted "ambiguous"/"unclear" as hedges even when they were the reason an
+  escalation is right. **Fix:** hyphenated `no-` compounds are not a no;
+  `ambiguous`/`unclear` are allowed in escalation verdicts only;
+  `targeted_augment.py` uses the same rule. Recovery: 51 of 159 previously
+  rejected escalate candidates kept on re-review.
+- **P18, `--details` is empty for scorer runs.** **Symptom:** t17's
+  per-entry details files were 0 bytes. **Cause:** `detail_rows` reads the
+  generative result object, which a scorer run does not produce. **Fix
+  (workaround):** t17 keeps `--predictions`, which carry every entry's
+  distribution; the details gap itself is left as it is.
 - **Throughput note (not a bug).** Reviewer B (Qwen3.8-27B) thinks at
   about 42 tokens/s with up to 8192 tokens per verdict and serves 2
   requests at once, so reviews run at about 2-3 teacher calls a minute; the
