@@ -11,9 +11,12 @@ an experiment, like issue 46: no file under `nvsh/` changes in this cycle's
 PRs, and nvsh's defaults do not change.** Runtime wiring of any gate this
 cycle produces is issue #54, not this cycle.
 
-This page is a long-lived guide and ledger, owned only by the documentation
-subagent for plan task t10. It is updated in the same step as every run,
-obstacle or fix, in the style of `docs/qwen-tool-jev-finetune.md`.
+This page is the cycle's long-lived guide and ledger (plan task t10),
+updated in the same step as every run, obstacle or fix, in the style of
+`docs/qwen-tool-jev-finetune.md`. To build a scorer like this for a
+different domain from scratch, start from the domain-general
+[`scorer-finetune-playbook.md`](scorer-finetune-playbook.md); this page is
+its case study.
 
 **Status: in progress, 2026-09-25.** Code waves 1-3 are merged; the t13
 data is sealed (fresh evaluation pool, private held-out) and corpus v2 is
@@ -481,8 +484,10 @@ lapses, all posted on issue #61 when they happened.
 - **t15 generating:** `targeted_augment.py`, two parallel streams, every
   protected side excluded. Kept so far: power-set 45, disambiguation 74,
   hard-negative 24 and missing-argument 5 (both first passes, before the
-  D26/D30 fixes). Running: diagnosis-explain, then the missing-argument
-  rerun; the hard-negative rerun (seed 54) in the second slot.
+  D26/D30 fixes). Diagnosis-explain done: 26 kept (13 whole pairs; 16
+  rejected by reviewer B, 10 by the identifier guard, 1 near-duplicate of a
+  protected side; sha256 `5a091e53b289…`). Running: the missing-argument
+  rerun and the hard-negative rerun (seed 54).
 - **Assembly prepared (D29):** issue 46's reviewed variations copied into
   the run's `aug/`; `SUPPLEMENT` and `SCORER_BUILD_ARGS` set in the cycle's
   env. Next: combined supplement, `assemble`, freeze hashes, then r1-r3.
