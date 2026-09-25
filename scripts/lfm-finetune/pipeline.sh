@@ -21,13 +21,17 @@
 #   filter-variations     count accepted variations against the train split with
 #                         --filter-to-split, without touching assemble's own output
 #                         (a leakage check between augment/rereview and assemble)
-#   assemble              training sets: nvsh-train.jsonl, $SKILLS_SET-train.jsonl
+#   assemble              training sets: nvsh-train.jsonl, $SKILLS_SET-train.jsonl;
+#                         with SCORER_BUILD_ARGS (build_dataset.py's t14 flags) also
+#                         the Track B file scorer-train.json (issue 53, deviation d2)
 #   train <name> [nvsh|skills]   train, merge, stage into HF_CACHE as REPO
 #                         (a training stage: runs under TRAIN_MEMORY_MAX, mem.log); writes
 #                         a generation_config.json into <run>/merged (deviation d3)
 #   train-scorer [name]   train the Track B scorer on assemble's frozen training set
 #                         (data/train-augmented.json) with split.py's val side
-#                         (train_scorer.py, a training stage; runs/scorer[-name])
+#                         (train_scorer.py, a training stage; runs/scorer[-name]);
+#                         data/scorer-train.json instead when assemble wrote it
+#                         (SCORER_BUILD_ARGS set) and it is the newer of the two
 #   measure-val <name> [args]    validation run with per-entry details (iterate on
 #                         this)
 #   measure-final <name> [--slice S] [--scorer M]   a final run on the test
@@ -571,12 +575,22 @@ case "$STAGE" in
     py scripts/lfm-finetune/leakage_check.py --train "$WORK/data/train-augmented.merged.json" \
       --out-filtered "$WORK/data/train-augmented.json" --protected "${protected[@]}" \
       | tee "$WORK/data/leakage.json"
+    # SCORER_BUILD_ARGS (optional, issue 53 deviation d2): build_dataset.py's
+    # t14 flags (e.g. "--randomize-labels --perm-seed 53 --missing-candidate-rate
+    # 0.3 --reasons"); when set, the same build also writes the corpus-format
+    # Track B file data/scorer-train.json that train-scorer then prefers. Unset,
+    # assemble is exactly issue 46's.
+    read -r -a scorer_build <<<"${SCORER_BUILD_ARGS:-}"
+    if [ "${#scorer_build[@]}" -gt 0 ]; then
+      scorer_build+=(--scorer-out "$WORK/data/scorer-train.json")
+    fi
     # build_dataset.py's render check loads the base's tokenizer (transformers),
     # which only the training environment has.
     site=$(train_site_packages)
     PYTHONPATH="$site${PYTHONPATH:+:$PYTHONPATH}" \
       py scripts/lfm-finetune/build_dataset.py --split "$WORK/data/train-augmented.json" \
-      --out "$WORK/data/nvsh-train.jsonl" --base "$BASE" --revision "$BASE_REV"
+      --out "$WORK/data/nvsh-train.jsonl" --base "$BASE" --revision "$BASE_REV" \
+      "${scorer_build[@]}"
     skills_set=${SKILLS_SET:-skills}
     if [ -s "$WORK/aug/$skills_set-accepted.jsonl" ]; then
       py scripts/lfm-finetune/skills_dataset.py --accepted "$WORK/aug/$skills_set-accepted.jsonl" \
@@ -602,6 +616,13 @@ case "$STAGE" in
     # test entries and a duplicate of a test entry).
     data="$WORK/data/train-augmented.json"
     [ -s "$data" ] || die "no $data; run assemble first"
+    # assemble with SCORER_BUILD_ARGS also writes data/scorer-train.json: the
+    # same entries plus -nocand ones, each with its own label map (issue 53,
+    # deviation d2). Used only when newer than the training set, so an
+    # assemble re-run without SCORER_BUILD_ARGS never trains on a stale one.
+    scorer_data="$WORK/data/scorer-train.json"
+    if [ -s "$scorer_data" ] && [ "$scorer_data" -nt "$data" ]; then data=$scorer_data; fi
+    echo "train-scorer: training on $data"
     run="$WORK/runs/scorer${1:+-$1}"; mkdir -p "$run"
     # shellcheck disable=SC2086
     run_capped "$run" "$TRAIN_PY" "$HERE/train_scorer.py" --train "$data" \

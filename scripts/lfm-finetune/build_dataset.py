@@ -49,7 +49,6 @@ import json
 import random
 import re
 import sys
-from dataclasses import replace
 from pathlib import Path
 from typing import Sequence
 
@@ -557,26 +556,63 @@ def enrich_example(
     return enriched
 
 
-def missing_candidate_example(
-    entry: CorpusEntry, platform: Platform, arguments_as: str, source_id: str
-) -> dict:
-    """The eval_slices.py-shaped derived example: *entry* with its gold answer forced to escalate.
-
-    Used as the base for a ``<id>-nocand`` train row (the gold operation is
-    removed from the offered candidates by the caller); the assistant turn
-    itself must also say escalate, since the operation it would have
-    proposed is no longer offered.
-    """
-    synthetic = replace(entry, id=f"{entry.id}-nocand", expect={"escalate": True})
-    return example_from_entry(synthetic, platform, arguments_as, source_id=source_id)
-
-
 def _select_missing_candidate(perm_seed: int, entry_id: str, rate: float) -> bool:
     """Deterministic, seeded yes/no: does *entry_id* also get a ``-nocand`` example."""
     if rate <= 0:
         return False
     seed = example_seed(perm_seed, f"{entry_id}:missing-candidate")
     return random.Random(seed).random() < rate  # nosec B311 - dataset shaping, not security
+
+
+#: The per-row scorer-training contract (t14/t16): what :func:`enrich_example`
+#: adds to a rendered example and ``train_scorer.read_split`` reads by entry id.
+SCORER_CONTRACT_KEYS = ("permutation", "gold", "perm_seed", "descriptions")
+
+
+def scorer_entry(raw: dict, enriched: dict) -> dict:
+    """*raw* (a corpus-format entry) plus *enriched*'s scorer-training contract, as computed.
+
+    Copied from the rendered example rather than recomputed, so the scorer
+    file and the rendered file hold the same map, gold and seed for a row.
+    """
+    entry = {key: value for key, value in raw.items() if key not in SCORER_CONTRACT_KEYS}
+    entry.update({key: enriched[key] for key in SCORER_CONTRACT_KEYS if key in enriched})
+    return entry
+
+
+def _raw_items(path: Path) -> dict[str, dict]:
+    """Each entry id in *path* -> its raw JSON object, every field as stored."""
+    with open(path, encoding="utf-8") as handle:
+        raw = json.load(handle)
+    raw_entries = raw.get("entries", []) if isinstance(raw, dict) else raw
+    if not isinstance(raw_entries, list):
+        return {}
+    return {
+        str(item["id"]): item for item in raw_entries if isinstance(item, dict) and "id" in item
+    }
+
+
+def scorer_file(source: Path, entries: list[dict], provenance: dict) -> dict:
+    """The ``--scorer-out`` document: *source*'s header and world, *entries*, *provenance*.
+
+    ``header`` stays a string that keeps *source*'s own header verbatim
+    (``train_scorer.read_split`` finds the side in it -- ``"Split 'train'
+    of ..."`` -- and refuses a file that names none), so the structured
+    provenance sits beside it under ``provenance`` rather than inside it.
+    """
+    with open(source, encoding="utf-8") as handle:
+        raw = json.load(handle)
+    document: dict = {
+        "header": (
+            f"{_header(source)} Scorer training entries written by build_dataset.py "
+            "--scorer-out (issue 53, deviation d2); see provenance."
+        ).strip(),
+        "provenance": provenance,
+        "entries": entries,
+    }
+    if isinstance(raw, dict) and "world" in raw:
+        document["world"] = raw["world"]
+    return document
 
 
 def eval_side_markers(path: Path) -> set[str]:
@@ -604,7 +640,16 @@ def eval_side_markers(path: Path) -> set[str]:
     return markers
 
 
-def build(
+def build(source: Path, *args, **kwargs) -> list[dict]:
+    """Every example *source* yields. Refuses the held-out split.
+
+    The rendered half of :func:`build_with_scorer_entries` (same arguments);
+    see it for what each one does.
+    """
+    return build_with_scorer_entries(source, *args, **kwargs)[0]
+
+
+def build_with_scorer_entries(
     source: Path,
     arguments_as: str = ARGUMENTS_AS_OBJECT,
     is_split: bool = False,
@@ -619,8 +664,19 @@ def build(
     perm_seed: int = 0,
     min_subset: int = DEFAULT_MIN_SUBSET,
     full_set_probability: float = DEFAULT_FULL_SET_PROBABILITY,
-) -> list[dict]:
-    """Every example *source* yields. Refuses the held-out split.
+) -> tuple[list[dict], list[dict]]:
+    """``(examples, scorer_entries)``: the rendered Track A examples and the Track B entries.
+
+    Refuses the held-out split. *scorer_entries* (issue 53, deviation d2)
+    holds, in order, the corpus-format entry each rendered example came
+    from (the source's own raw entry plus the scorer-training contract,
+    :data:`SCORER_CONTRACT_KEYS`, copied from that example itself, so
+    ``--out`` and ``--scorer-out`` can never disagree on a map, gold or
+    seed), each followed by its derived ``<id>-nocand`` entry when one is
+    drawn: that entry with its own id, an ``{"escalate": true}`` expect
+    block (and, with *reasons*, class ``decline:outside_table``) and its
+    own contract. ``-nocand`` entries exist only here, never in
+    *examples*. ``train_scorer.py`` reads these entries by id.
 
     *verify_render* wires ``verify_build`` (finding #6) into the build
     itself: when true, one example per outcome is checked to round-trip
@@ -664,10 +720,13 @@ def build(
 
     *missing_candidate_rate* additionally emits, for that fraction
     (deterministic by seed) of train entries whose gold is an operation, a
-    derived ``<id>-nocand`` example (:func:`missing_candidate_example`,
-    ``eval_slices.py``'s shape) with that operation removed from the
-    offered candidates and the gold forced to escalate (``escalate:
-    outside_table`` with *reasons*). This only ever happens from the train
+    derived ``<id>-nocand`` scorer entry (``eval_slices.py``'s shape: the
+    same text, id suffixed) with that operation removed from the offered
+    candidates and the gold forced to escalate (``escalate:outside_table``
+    with *reasons*). It goes into *scorer_entries* only, never into the
+    rendered *examples*: a rendered row would keep the full tool list and
+    the propose enum, so it would pair identical messages and tools with
+    the opposite target of its propose twin. This only ever happens from the train
     side: a ``--split`` file's side is already checked above, and a plain
     ``--corpus`` path is refused when it is named or headed like a val,
     test or held-out side (:func:`eval_side_markers`).
@@ -700,14 +759,17 @@ def build(
     loaded = load_corpus(source)
     platform = world_platform(load_world(source))
     source_ids = _source_ids(source)
+    raw_items = _raw_items(source)
     pool = candidate_pool(reasons)
     fallback_reason = DEFAULT_REASON if reasons else lfm.ESCALATE_TOOL
 
     examples: list[dict] = []
+    entries: list[dict] = []
     for entry in loaded.entries:
         source_id = source_ids.get(entry.id, entry.id)
         example = example_from_entry(entry, platform, arguments_as, source_id)
         gold = gold_for(entry, reasons)
+        raw = dict(raw_items.get(entry.id, {}))
         examples.append(
             enrich_example(
                 example,
@@ -721,28 +783,40 @@ def build(
                 full_probability=full_set_probability,
             )
         )
+        entries.append(scorer_entry(raw, examples[-1]))
         operation = entry.expect.get("operation")
         if operation is not None and _select_missing_candidate(
             perm_seed, entry.id, missing_candidate_rate
         ):
-            derived = missing_candidate_example(entry, platform, arguments_as, source_id)
-            derived_pool = tuple(name for name in pool if name != operation)
-            examples.append(
-                enrich_example(
-                    derived,
-                    f"{entry.id}-nocand",
-                    fallback_reason,
-                    derived_pool,
-                    pool,
-                    perm_seed,
-                    randomize=randomize_labels,
-                    min_subset=min_subset,
-                    full_probability=full_set_probability,
+            derived_id = f"{entry.id}-nocand"
+            if derived_id in raw_items:
+                raise ValueError(
+                    f"{source}: derived missing-candidate id {derived_id!r} is already an entry"
                 )
+            # Scorer file only, never a rendered Track A row: that row would
+            # keep the full tools and the propose enum, so it would teach
+            # escalate for messages/tools identical to its propose twin
+            # (codex review of d2). Its offer drops the operation instead.
+            derived_pool = tuple(name for name in pool if name != operation)
+            contract = enrich_example(
+                {},
+                derived_id,
+                fallback_reason,
+                derived_pool,
+                pool,
+                perm_seed,
+                randomize=randomize_labels,
+                min_subset=min_subset,
+                full_probability=full_set_probability,
             )
+            derived_raw = {**raw, "id": derived_id, "expect": {"escalate": True}}
+            derived_raw["source_id"] = source_id
+            if reasons:
+                derived_raw["class"] = "decline:" + DEFAULT_REASON.split(":", 1)[1]
+            entries.append(scorer_entry(derived_raw, contract))
     if verify_render:
         verify_build(examples, base, revision, tokenizer)
-    return examples
+    return examples, entries
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -835,6 +909,16 @@ def main(argv: list[str] | None = None) -> int:
             "train side only (default 0, off)"
         ),
     )
+    parser.add_argument(
+        "--scorer-out",
+        default=None,
+        help=(
+            "also write a corpus-format Track B training file (train_scorer.py --train): "
+            "each source entry plus its derived <id>-nocand entries, carrying the same "
+            "permutation/gold/perm_seed/descriptions as the --out examples, with a "
+            "provenance block (issue 53, deviation d2)"
+        ),
+    )
     args = parser.parse_args(argv)
     if args.split and args.corpus:
         parser.error("--split and --corpus are mutually exclusive")
@@ -845,27 +929,63 @@ def main(argv: list[str] | None = None) -> int:
     out = Path(args.out)
     if out.resolve() == source.resolve():
         parser.error("--out must not be the corpus file")
-    try:
-        examples = build(
-            source,
-            args.arguments_as,
-            is_split=bool(args.split),
-            verify_render=not args.no_verify_render,
-            base=args.base,
-            revision=args.revision,
-            reasons=args.reasons,
-            randomize_labels=args.randomize_labels,
-            missing_candidate_rate=args.missing_candidate_rate,
-            perm_seed=args.perm_seed,
-            min_subset=args.min_subset,
-            full_set_probability=args.full_set_probability,
+    scorer_out = Path(args.scorer_out) if args.scorer_out else None
+    if scorer_out is not None and scorer_out.resolve() in (source.resolve(), out.resolve()):
+        parser.error("--scorer-out must be neither the corpus file nor --out")
+    options = {
+        "arguments_as": args.arguments_as,
+        "is_split": bool(args.split),
+        "verify_render": not args.no_verify_render,
+        "base": args.base,
+        "revision": args.revision,
+        "reasons": args.reasons,
+        "randomize_labels": args.randomize_labels,
+        "missing_candidate_rate": args.missing_candidate_rate,
+        "perm_seed": args.perm_seed,
+        "min_subset": args.min_subset,
+        "full_set_probability": args.full_set_probability,
+    }
+    if args.missing_candidate_rate > 0 and scorer_out is None:
+        print(
+            "build_dataset: --missing-candidate-rate has no effect without --scorer-out"
+            " (-nocand entries go to the scorer file only, never to --out)",
+            file=sys.stderr,
         )
+    try:
+        if scorer_out is None:
+            examples = build(source, **options)
+        else:
+            examples, entries = build_with_scorer_entries(source, **options)
     except (ValueError, OSError) as exc:
         parser.error(str(exc))
     with open(out, "w", encoding="utf-8") as handle:
         for example in examples:
             handle.write(json.dumps(example, ensure_ascii=False) + "\n")
     print(f"written={len(examples)}")
+    if scorer_out is not None:
+        derived = sum(1 for entry in entries if str(entry["id"]).endswith("-nocand"))
+        provenance = {
+            "tool": "scripts/lfm-finetune/build_dataset.py --scorer-out",
+            "source": str(source),
+            "source_sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+            "source_header": _header(source),
+            "is_split": bool(args.split),
+            "reasons": args.reasons,
+            "randomize_labels": args.randomize_labels,
+            "perm_seed": args.perm_seed,
+            "missing_candidate_rate": args.missing_candidate_rate,
+            "min_subset": args.min_subset,
+            "full_set_probability": args.full_set_probability,
+            "counts": {
+                "entries": len(entries),
+                "original": len(entries) - derived,
+                "missing_candidate": derived,
+            },
+        }
+        document = scorer_file(source, entries, provenance)
+        with open(scorer_out, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(document, ensure_ascii=False, indent=1) + "\n")
+        print(f"scorer_written={len(entries)}")
     return 0
 
 
