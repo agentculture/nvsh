@@ -540,6 +540,24 @@ lapses, all posted on issue #61 when they happened.
   abstentions. At those thresholds, selection fold: r1 20/24, 0 wrong
   mutating, missing-candidate escalation 87.5%; r3 21/24, 0 wrong mutating,
   91.7%. Record: guide.
+- **D42.** **r2 measured; the rule applied to r1-r3.** r2 (reasons mode,
+  measured with `--reasons`; 63 min to train): validation right 72/84,
+  wrong mutating 4 (gate off), abstention recall 88.1%, false-positive calls
+  7/120, invalid 3, ECE 0.063, Brier 0.153; missing-candidate slice 84.5%.
+  Selection fold: raw 19/24; ECE raw 0.070, temperature 0.028, with vector
+  0.029 (favours temperature); pooled permutation change 9.2%. Fitted gate
+  (temperature, escalate >= 0.1): fit right 50, selection **18/24 (75.0%),
+  below the 78.3% floor**. **The rule, in order:** (1) at fitted thresholds
+  all three have 0 wrong mutating on the selection fold and its
+  missing-candidate rows; (2) floor 78.3%: r1 20/24 pass, r3 21/24 pass, r2
+  18/24 **out** (so the escalation reasons are not kept); (3) pooled
+  permutation change r3 4.2%, r1 5.0%, within 1 point, both advance; (4)
+  ECE after temperature r3 0.020, r1 0.082: **r3 is the rule's choice**,
+  with its fitted mutating floor 0.95. r4 is not triggered (0.020 <= 0.10).
+  **Caveat raised to the operator:** r3 is safe only behind that floor; with
+  the gate off it proposes `power_set` on three check-then-change requests
+  (0.97 / 0.83 / 0.78), the same class `scorer-b1`'s `Q4_K_M` got wrong,
+  while r1 escalates them with no gate. Record: guide, #61.
 - **D32.** **Lapses l5-l8 approved.** The operator approved l5 (split v2
   header), l6 (reviewer policy), l7 with its naturalness addendum (verdict
   parser) and l8 (mid-sentence "but"). Every lapse of this cycle, l1-l8,
