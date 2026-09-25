@@ -497,7 +497,13 @@ lapses, all posted on issue #61 when they happened.
   `t17-snap46/`. **Accuracy floor for the rule (step 2):** `scorer-b1`
   in-process on the selection fold, 17 of 24 right proposals (70.8%; the
   old snapshot read 16 of 24), so a candidate needs at least 65.8%. With 24
-  operation entries on the fold, one entry is 4.2 points.
+  operation entries on the fold, one entry is 4.2 points. The calibrated
+  `Q4_K_M` gate sweeps were re-run on the new predictions: 0 wrong mutating
+  in all 5184 threshold sets on both folds, and right proposals never rise
+  above the gate-off value (fit 40 of the fold's operation entries,
+  selection 17), so D28's conclusion stands. These validation files carry no
+  missing-candidate rows, so each candidate's missing-candidate escalation
+  (rule steps 1 and 5) comes from its own `--slice missing-candidate` run.
 
   Every readout was complete (204 / 204). Readout fidelity: served bf16
   GGUF vs in-process differs by more than 0.01 on 22 of 204 entries (max
