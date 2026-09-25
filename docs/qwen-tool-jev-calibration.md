@@ -558,6 +558,36 @@ lapses, all posted on issue #61 when they happened.
   the gate off it proposes `power_set` on three check-then-change requests
   (0.97 / 0.83 / 0.78), the same class `scorer-b1`'s `Q4_K_M` got wrong,
   while r1 escalates them with no gate. Record: guide, #61.
+- **D43.** **r1 goes forward, safety first (deviation d6); more data for
+  an r3 retrain (deviation d7).** Choice (operator): add a filter before the
+  rule's calibration step -- 0 wrong mutating on the whole validation side
+  and its missing-candidate slice with the gate off. Only r1 passes, so r1
+  goes to t19 instead of the rule's r3. In parallel (d7), a new
+  `targeted_augment.py` recipe, `check-then-change` (`42e8cff`, `e66dd88`):
+  per mutating operation, a read-only check paired with the same check
+  followed by a conditional change (escalate, `decline:multi_step`), kept or
+  dropped whole. Its first pilot kept 0 of 9 (the generator split each pair
+  into two objects); after asking for one object per pair, the second pilot
+  kept 8 of 9 pairs with every verdict read. The full run (seeds 61 and 62,
+  20 per mutating operation each) feeds a re-freeze and an r3-recipe
+  retrain (r3b) judged against r1 under d6 before t20; t20 waits for that.
+  Record: d6, d7, #61.
+- **D44.** **t19 on r1: the deployed `Q4_K_M` build needs no gate.**
+  Quantized with issue 46's toolchain (bf16 GGUF, imatrix, `Q4_K_M`, AWQ).
+  Validation, served through `llama-server`, 204/204 complete readouts on
+  every build: bf16 GGUF and `Q4_K_M` both right 71/84, wrong mutating 0,
+  abstention recall 90.5%, false-positive calls 4/120, invalid 7; raw ECE
+  0.095 (bf16 GGUF) and 0.088 (`Q4_K_M`); missing-candidate escalation 86.9%
+  and 84.5%. Unlike `scorer-b1`, quantization adds no wrong mutating
+  proposal. `Q4_K_M`'s own calibration on the selection fold: ECE raw 0.141,
+  temperature 0.073 (T 0.76), temperature and vector **0.057** (kept).
+  Gate: all 1620 swept threshold sets give 0 wrong mutating on the fit fold,
+  and the gate off has the most right proposals (49), so the gate stays off.
+  Selection fold at that setting: right 20/24, 0 wrong mutating, escalation
+  recall 83.3% at precision 90.9%; missing-candidate rows 21/24 escalated,
+  0 wrong mutating. Frozen for t20: `calib/scorer-r1-q4.params.json`
+  (`2567a370e933cc73`) and `calib/scorer-r1-q4.FROZEN.json`
+  (`5fafad796f914166`). Record: guide, #61.
 - **D32.** **Lapses l5-l8 approved.** The operator approved l5 (split v2
   header), l6 (reviewer policy), l7 with its naturalness addendum (verdict
   parser) and l8 (mid-sentence "but"). Every lapse of this cycle, l1-l8,
