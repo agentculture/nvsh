@@ -1084,5 +1084,9 @@ silent non-goal:
   the documentation relabel, t11).
 - **#57** — a `measure.py` bug where a failed startup leaves a results page
   that blocks a clean re-run under the same label; closed by t8.
+- **#62** — a domain-module setting for the scorer pipeline (table,
+  grounding, prompts, reasons, corpus paths, namespace), so it can build a
+  scorer for another domain without a fork and can later move to its own
+  repository (working name jev-build-engine). nvsh stays this cycle's focus.
 - **#58**, **#59**, **#60** — linked from the cycle report (t22) per the
   plan; not yet detailed in anything forwarded to this guide.

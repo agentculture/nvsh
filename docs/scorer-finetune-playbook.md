@@ -83,7 +83,9 @@ import nvsh's table, grounding, prompts and corpus loader directly. The
 logic almost never names an operation (the only literal names are one
 model-card example and a comment). So a port is a fork that replaces the
 modules below. The operation names do not have to change throughout the
-scripts.
+scripts. [Issue #62](https://github.com/agentculture/nvsh/issues/62)
+tracks a domain-module setting that would replace this fork with one
+module you write, as a step towards a separate pipeline repository.
 
 Work through this checklist in a fork of nvsh:
 
