@@ -2,7 +2,7 @@
   "plan_slug": "tool-jev-calibration-cycle-issue-53",
   "schema_version": 2,
   "created": "2026-09-24T23:49:55Z",
-  "updated": "2026-09-25T05:17:34Z",
+  "updated": "2026-09-25T14:15:22Z",
   "deviations": [
     {
       "id": "d1",
@@ -52,6 +52,20 @@
       "status": "approved",
       "classification": "acceptable",
       "seq": 3
+    },
+    {
+      "id": "d4",
+      "what": "assemble no longer protects issue 39's and issue 46's old (spent) test sides, so all 431 dev.json entries and their variations train, as d3 intended; issue 46's sealed held-out, the v2 val/test sides and the q53 sealed held-out stay protected",
+      "task_ref": "t15",
+      "reason": "leakage_check dropped 123 of 431 dev.json entries as exact matches of the old test sides carried over from issue 46's PROTECTED_EXTRA; this cycle makes no claim on those spent sides and the operator prefers more data",
+      "affects": [
+        "t16",
+        "t18"
+      ],
+      "origin": "user",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 4
     }
   ],
   "evidence": [],

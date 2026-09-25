@@ -459,6 +459,31 @@ lapses, all posted on issue #61 when they happened.
   instrument as the candidates. Record: l9 on #61.
 - **D35.** **Lapse l9 approved** by the operator. All lapses l1-l9 and
   deviations d1-d3 are approved. Record: devague, #61.
+- **D36.** **Train on every `dev.json` entry (deviation d4).** Evidence:
+  the first `assemble` dropped 123 of the 431 `dev.json` entries as exact
+  matches of issue 39's and issue 46's old test sides, which the cycle env
+  had carried over as protected. This cycle makes no claim on those spent
+  sides, and d3 made `dev.json` train-only. Choice (operator): remove the
+  two old test sides from `PROTECTED_EXTRA`. Issue 46's sealed held-out,
+  the v2 validation and test sides and the q53 sealed held-out stay
+  protected. Record: d4, #61.
+- **D37.** **Training data frozen.** 339-entry supplement (power-set 45,
+  disambiguation 74, hard-negative 116, missing-argument 30,
+  diagnosis-explain 60 in 30 whole pairs, issue 39's 14). `assemble`:
+  `merge_variations` 848 sources (509 split + 339 supplement), 1197 of issue
+  46's variations kept, 65 duplicates, 9 exact protected matches;
+  `leakage_check` dropped 4 of 2045 (3 exact, 1 near, all against issue 46's
+  sealed held-out; 0 against the v2 sides or the q53 held-out). Scorer file:
+  **2333 rows** (959 operation, 784 escalate, 590 explain golds; 292
+  missing-candidate rows; 13.3 candidates offered on average). r2's
+  reasons-mode file, built from the same filtered set: 2333 rows, 17.8
+  candidates on average. Hashes (first 16 hex): train
+  `049ba790d4485a20`, val `b5d12ab14091194b`, test `d965b10a2257393c`,
+  folds `1ce13dbde40d854a`, supplement `da18fe4fb603ac1c`,
+  train-augmented `8b8adabb70286868`, scorer-train `7d2d5661bb5bddd4`,
+  r2 scorer-train `6a13bc057205a61a`, leakage `ce0bdc02298e2594`. Copied to
+  the training machine and verified byte-identical. Any later change is a
+  deviation.
 - **D32.** **Lapses l5-l8 approved.** The operator approved l5 (split v2
   header), l6 (reviewer policy), l7 with its naturalness addendum (verdict
   parser) and l8 (mid-sentence "but"). Every lapse of this cycle, l1-l8,
@@ -1117,7 +1142,11 @@ address or serving-model location appears here.
    `SCORER_BUILD_ARGS="--randomize-labels --perm-seed 53 --missing-candidate-rate 0.3"`
    (add `--reasons` for r2). `pipeline.sh assemble` merges, drops leakage and
    writes `data/scorer-train.json`; record every output's sha256 as the
-   freeze. *(Not yet run.)*
+   freeze. For r2, run `build_dataset.py` again on the same
+   `data/train-augmented.json` with `--reasons` added, into a second work
+   directory whose `splits/` and `train-augmented.json` are copies.
+   `PROTECTED_EXTRA` holds only sides a claim or comparison still needs
+   (D36). Done: D37.
 10. Training runs and selection (t18) — *(not yet run)*.
 11. Quantize and calibrate the deployed build (t19) — *(not yet run)*.
 12. Final measurement, Spark and Orin (t20) — *(not yet run)*.
