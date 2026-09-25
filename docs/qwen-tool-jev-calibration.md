@@ -457,6 +457,8 @@ lapses, all posted on issue #61 when they happened.
   snapshot (277 services, 41 containers), and t17's three builds are
   re-measured with it so the rule's accuracy floor uses the same
   instrument as the candidates. Record: l9 on #61.
+- **D35.** **Lapse l9 approved** by the operator. All lapses l1-l9 and
+  deviations d1-d3 are approved. Record: devague, #61.
 - **D32.** **Lapses l5-l8 approved.** The operator approved l5 (split v2
   header), l6 (reviewer policy), l7 with its naturalness addendum (verdict
   parser) and l8 (mid-sentence "but"). Every lapse of this cycle, l1-l8,
