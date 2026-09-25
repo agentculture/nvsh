@@ -501,6 +501,24 @@ lapses, all posted on issue #61 when they happened.
   d5, l10, #61.
 - **D39.** **Lapse l10 approved** by the operator. All lapses l1-l10 and
   deviations d1-d5 are approved. Record: devague, #61.
+- **D40.** **r1 measured; the floor re-set under d5; one rule reading
+  fixed.** r1 (in-process, validation 204) after d5 and the grounding fix:
+  right proposals 71/84, wrong mutating 0, abstention recall 90.5% (b1
+  83.3%), false-positive tool calls 4/120 (b1 16/120), invalid 7, ECE 0.084,
+  Brier 0.174 (b1 0.240); missing-candidate slice escalation 86.9% (b1
+  31.0%, bar 80%), with 4 false-positive calls (b1 47). Selection fold:
+  right proposals 22/24 raw; 0 wrong mutating on the fold and on its
+  missing-candidate rows; missing-candidate escalation 21/24 (87.5%); pooled
+  permutation change 5.0% (order 2.3%, letters 7.2%, subset 5.2%,
+  paraphrase 3.9%, all 6.2%; b1 18.8% on full validation); ECE raw 0.120,
+  after temperature 0.082 (T 0.73: r1 is slightly under-confident), with
+  the vector 0.10+ (worse). **Floor:** under d5 `scorer-b1` gets 20/24 on
+  the selection fold, so the floor is 78.3%. **Rule reading (lead):** a
+  candidate's decisions for rule steps 1-2 use the calibration variant its
+  own selection fold favours (t19's rule for the deployed build);
+  temperature alone never changes the top choice. For r1 that is
+  temperature, so its decisions are the raw ones (22/24); with the vector it
+  would be 20/24, above the floor either way. Record: guide.
 - **D32.** **Lapses l5-l8 approved.** The operator approved l5 (split v2
   header), l6 (reviewer policy), l7 with its naturalness addendum (verdict
   parser) and l8 (mid-sentence "but"). Every lapse of this cycle, l1-l8,
