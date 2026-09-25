@@ -484,6 +484,21 @@ lapses, all posted on issue #61 when they happened.
   r2 scorer-train `6a13bc057205a61a`, leakage `ce0bdc02298e2594`. Copied to
   the training machine and verified byte-identical. Any later change is a
   deviation.
+- **D38.** **Arguments compare as grounding matches them (deviation d5,
+  lapse l10), and a grounding fix.** Evidence: r1's first validation run
+  had 5 wrong mutating proposals, all wrong arguments. Four were one unit
+  spelled two ways: the fresh v2 sides write bare service names (23 of 23
+  in val, 17 of 17 in test), `dev.json` the unit form (41 of 45), grounding
+  returns the unit form, and `metrics.py` compared exact strings (on
+  validation b1 59 -> 73 and r1 52 -> 71 right proposals under a canonical
+  compare). The fifth was a real wrong target: "... restart
+  systemd-networkd." kept the full stop, so only `networking.service`
+  grounded. Choice (operator): compare a service argument case-insensitive
+  with the `.service` suffix optional and a container case-insensitive,
+  without touching any data file; strip sentence punctuation from words
+  before grounding (`527e5ad`). r1 and all three `scorer-b1` builds are
+  re-measured; distributions, calibration fits and probes stand. Record:
+  d5, l10, #61.
 - **D32.** **Lapses l5-l8 approved.** The operator approved l5 (split v2
   header), l6 (reviewer policy), l7 with its naturalness addendum (verdict
   parser) and l8 (mid-sentence "but"). Every lapse of this cycle, l1-l8,
@@ -1025,6 +1040,10 @@ redaction rule).
   `measure.py snapshot --from-split` over the v2 validation/test sides and
   the q53 held-out (counts only); t17 re-measured; old results quarantined
   under `t17-snap46/`.
+- **P23, exact argument comparison vs grounding's unit spelling (d5,
+  l10), and a trailing full stop that picked a wrong service.** See D38.
+  Also noted for #54: nvsh's own `bench._is_correct` compares arguments
+  exactly too.
 - **Throughput note (not a bug).** Reviewer B (Qwen3.8-27B) thinks at
   about 42 tokens/s with up to 8192 tokens per verdict and serves 2
   requests at once, so reviews run at about 2-3 teacher calls a minute; the
