@@ -114,20 +114,20 @@ this cycle's PRs. Marked *(planned)* until the task's PR merges.
 |---|---|---|
 | `scorer.py` | **Merged** (`0b48c79`, permutation seam `6ea1105`). One shared label-probability definition, `distribution()`: a candidate's mass is the sum of next-token probabilities over every vocabulary token whose whitespace-stripped text equals its label (3 variants per letter on Qwen3.5-0.8B: `'A'`, `' A'`, `'\tA'`), normalised over offered candidates. New `label_variant_ids()` scans the vocabulary for those variants (~0.4 s over ~248k tokens); `TransformersScorer` now reads all variant ids and goes through `distribution()`, the same function a served model uses; new `label_logits_from_vocab()` is a differentiable log-sum-exp over variant ids, for training. `READOUT_TOP = 5000` is what `score()` requests from a server. Incomplete results are still never renormalised. **Permutation seam (t2):** a frozen `Permutation` dataclass (`order`, `labels`, with `to_json`/`from_json` round-trip); `permute(seed, pool, subset=, keep=)` draws a seeded order and letter permutation without replacement from `LABEL_ALPHABET`, with an optional subset that always keeps the gold candidate; `same_choice()` compares by operation name, never by letter; description overrides let a name outside the operations table (for example `escalate:repair`) supply its own text; `prompt_messages`/`score` take explicit `labels`/`order`/`descriptions`. The default (no permutation given) is pinned byte-identical to before, so `scorer-b1`'s own decisions stay reproducible. | t1, t2 |
 | `serve_for_measure.sh`, `pipeline.env.example`, `pipeline-qwen.env.example` | **Merged.** `MEASURE_MAX_LOGPROBS` now defaults to 5000 (was 22) in the script and both pipeline env examples. `llama-server` has no max-logprobs flag, so nothing there caps the readout. | t3 |
-| `calibration_fit.py` | **Merged.** New, stdlib only. Three subcommands: `folds` (writes `{seed, source, fit_ids, selection_ids}`, disjoint and sorted, default 70/30 split); `fit` (fits a temperature `T` by golden-section search on log T minimising NLL on the fit fold, bounds `T` in `[1/20, 20]`, then a per-label vector by coordinate descent on the temperature-scaled rows); `apply` (applies temperature then vector, renormalising over each line's offered labels; null-candidate lines pass through and are counted). Refuses test/held-out inputs by file name and split header — predictions files carry no header, so the fit refusal is name-based only (a documented limit, not a full guarantee). | t4 |
+| `calibration_fit.py` | **Merged**, then reworked in the review-fix pass on `#61`. New, stdlib only. Three subcommands: `folds` (writes `{seed, source, fit_ids, selection_ids}`, disjoint and sorted, default 70/30 split); `fit` (fits a temperature `T` by golden-section search on log T minimising NLL on the fit fold, bounds `T` in `[1/20, 20]`, then a per-label vector by coordinate descent on the temperature-scaled rows); `apply` (applies temperature then vector, renormalising over each line's offered labels; null-candidate lines pass through and are counted). Refuses test/held-out inputs by file name and split header — predictions files carry no header, so the fit refusal is name-based only (a documented limit, not a full guarantee). Review fix: NLL is now computed in log space without clipping the gold probability, `escalate:<reason>` mass rolls up to `escalate` before NLL, and rows whose gold has no candidate are skipped and counted (`skipped_gold_absent`) instead of corrupting the fit. | t4 |
 | `metrics.py` | **Merged** (`6ea1105`). Per-slice results: read-only vs mutating (by the gold operation's `Operation.read_only`), `escalate_or_explain`, each carrying calibration, candidate-count and missing-candidate rate. Every rate and ECE/Brier carries n and a seeded percentile bootstrap 95% CI (1000 resamples, seed 0 default; precision uses a stratified bootstrap). New outcome `abstain_uncertain` is counted separately from semantic escalate but still counts as "escalated" for escalation bars. Escalation-reason labels use the form `escalate:<reason>` and roll up to plain `escalate` everywhere. `reliability_markdown()` renders the bin tables per slice. | t5 |
-| `gate.py` | *(planned, new)* The uncertainty-abstention gate: decides propose / explain / escalate / `abstain_uncertain` from `p_escalate`, a `p_top1` floor, the top1-top2 margin and normalized entropy; thresholds keyed only by `Operation.read_only`, never an operation name. | t6 |
-| `sweep_gate.py` | *(planned, new)* Offline threshold sweep over stored `predictions.jsonl` files, no GPU needed; refuses test/held-out without `--final`. | t6 |
+| `gate.py` | **Merged, new.** `decide(distribution, offered, thresholds)` -> `propose` / `explain` / `escalate` / `abstain_uncertain`: escalate if the argmax or the rolled-up escalate mass clears its threshold; else explain if top1 is explain; else a per-`Operation.read_only` threshold set (a `p_top1` floor, the top1-top2 margin, and normalized entropy) decides `abstain_uncertain`; any threshold set to `None` disables that check. Thresholds are keyed only by `Operation.read_only`, never an operation name. | t6 |
+| `sweep_gate.py` | **Merged, new.** Re-decides stored `predictions.jsonl` rows offline, over a threshold grid, per fold; refuses test/held-out/final-labelled paths unless `--final`. Sanity-checked against `scorer-b1`'s own exact test-side predictions with every threshold disabled: 61 of 64 decisions reproduced exactly; the other 3 were recorded `invalid` there because `scorer-b1`'s argument grounding failed on them — a step the gate (distribution only) never sees, so this is expected, not a bug. | t6 |
 | `permutation_probe.py` | *(planned, new)* Runs the permutation seam at least 10 times per entry per perturbation kind (order, letters, subset, paraphrase) and reports the operation-level answer-change rate with n and a bootstrap 95% CI; never canonicalises runtime order. | t7 |
-| `measure.py` | *(planned)* Wires in the new readout, applies a fitted calibration file, renders per-slice reliability tables into the committed benchmark markdown, records complete/incomplete served counts, and fixes issue #57 (a failed startup no longer blocks a clean re-run under the same label). | t8 |
+| `measure.py` | **Merged, closes #57.** `--calibration PARAMS` applies the fitted temperature then vector to a line's candidates before metrics/predictions are computed (refuses a params file fitted on test/held-out by name, or a malformed one). The report gains 95% bootstrap CI rows, a "Scorer readouts, complete / incomplete (never renormalised)" row, an "ECE / Brier before `--calibration`" row for comparison, and a "Per-slice calibration" section with reliability tables. Preflight now requires `--max-logprobs >= READOUT_TOP` (d1). **Issue #57 fixed:** a run where every server start-up failed now writes a page explicitly marked "nothing measured", which a re-run under the same label freely replaces; a page that measured anything, even partially, still refuses to be silently overwritten; a "nothing measured" page is never counted as a final run. **Caveat recorded for later tasks:** vector scaling can change which candidate is top-1 even though the recorded *decision* stays whatever the model actually chose before scaling — so any thresholded decision (the gate, t6) must be re-made on the calibrated distribution, never read off the pre-calibration argmax. | t8 |
 | `docs/tool-jev-calibration-rule.md` | **Merged** (commit `b1c6cb6`). The pre-registered checkpoint-selection rule — selection fold, ordered criteria, tie-breaks, and the calibration-aware-stage trigger — confirmed by the operator before any training. See [below](#the-pre-registered-checkpoint-decision-rule-t9). | t9 |
 | `docs/qwen-tool-jev-calibration.md` | This file. | t10 |
 | `docs/qwen-tool-jev-finetune.md`, `docs/benchmarks/2026-09-24-qwen-tool-jev-comparison.md`, `release_bundle.py` (model-card text) | **Merged.** Track A is now described as a specialized generative tool router and Track B as the Jev-style candidate scorer; no text calls them equally Jev-like. | t11 |
-| `split.py` | *(planned)* Can write a versioned corpus v2 (header records version, seed, source hashes, and the calibration fit/selection fold assignment) to a path outside `nvsh/`; validation and test sizes become parameters (validation >= 150, test ~150); never writes `nvsh/tiers/corpus`. | t12 |
-| `draft_heldout.py` | Unchanged tool from issue 46, reused to draft the new sealed held-out set for this cycle (lead reads counts and hashes only). | t13 |
+| `split.py` | **Merged.** New v2 mode: repeatable `--corpus`, `--version`, `--val-size`/`--test-size` as counts, `--fold-seed`. The header is a JSON object `{version, seed, sources: [{path, sha256}], sizes, side}`; the validation header additionally carries `fold_seed`/`fit_ids`/`selection_ids`, and a `folds.json` is written for `calibration_fit`. Refuses any output path under `nvsh/` and refuses `held-out.json` as input. Assembly is class-balanced round-robin by the corpus's `class` field; requested totals can land 1-2 off target per answer kind, from largest-remainder rounding. | t12 |
+| `draft_heldout.py` | Reused from issue 46, extended with a `--seed` option (default 46) so this cycle can draft its own fresh held-out set independent of issue 46's. See [ledger P5](#ledger-symptom---cause---fix) for the seed-53 draft's parse gap and the fix in progress. | t13 |
 | `build_dataset.py`, `merge_variations.py` | *(planned)* Store each rendered example's offered candidates, order and letter map; generate deterministic missing-candidate / no-valid-option train examples from train entries only (`eval_slices.py`'s shape); an optional mode renders the corpus's 8 decline classes as distinct escalate-reason candidates, described from a scripts-side JSON, rolling up to escalate in gold labels. | t14 |
 | `data/reasons.json`, `data/paraphrases.json` | *(planned, new)* Scripts-side descriptions for escalation-reason candidates and for the paraphrase permutation probe — never read from `nvsh/`. | t14 |
-| `train_scorer.py` | *(planned)* Per-row label ids and cross-entropy target come from that row's own stored letter map and offered set (today one fixed `label_ids` list serves the whole run); an optional `--calibration-loss` (label smoothing and/or a Brier term beside CE), off by default. | t16 |
+| `train_scorer.py` | **Merged.** Reads each row's own permutation, gold, descriptions and `perm_seed`, and renders that row's own prompt; per-row label columns are padded with `-inf` masks. `--label-readout` chooses `variants` (default, the shared `distribution()` definition) or `single` (reproduces `scorer-b1` bit-identically — reproducing `b1` now requires passing `--label-readout single` explicitly). `--label-smoothing` / `--brier-weight` (default 0, off) add the calibration-aware loss terms beside cross-entropy. `train-log.json` gains `label_variant_ids`, `letter_ids`, `calibration_loss` and `permutations`; each row's own map is written to `<out>/row-maps.json` (path + sha256), so a run can be replayed exactly. | t16 |
 | `quantize.py` | Reused unchanged tooling from issue 46 to build the chosen checkpoint's `Q4_K_M` (and optionally AWQ). | t19 |
 
 ## Corpus v2 design
@@ -253,14 +253,17 @@ A/B documentation relabel). No training run has happened yet — t9's rule is
 committed and operator-confirmed ahead of the cycle's first training
 command, as required.
 
-**Wave 2 in progress**, 2026-09-25. **Merged:** t2 (permutation seam,
-`6ea1105`) and t5 (per-slice metrics, `6ea1105`). **Started:** t6 (`gate.py`
-and `sweep_gate.py`) and t8 (`measure.py` wiring: `--calibration`, per-slice
-report, complete/incomplete counts, the P71/issue-#57 fix, preflight moved
-to `READOUT_TOP` per d1) — both were waiting on t5, now unblocked. **Still
-running:** t12 (corpus v2 split tooling). A Codex review of every task
-merged so far in this cycle is also running. This section will be updated
-at each step as the lead forwards findings.
+**Wave 2 merged in full**, 2026-09-25: t2 (permutation seam), t5 (per-slice
+metrics), t6 (`gate.py` and `sweep_gate.py`), t8 (`measure.py` wiring,
+closes issue #57) and t12 (corpus v2 split tooling) are all merged. A Codex
+review of every task merged so far surfaced review-fix work landed inside
+t3/t4 (see [ledger below](#ledger-symptom---cause---fix)) and lapse l3.
+Full suite: 4459 passed.
+
+**Wave 3 started**, 2026-09-25: t13 (drafting the fresh evaluation sides
+and sealed held-out) is running; see ledger P5 below for its first
+obstacle and the fix in progress. This section will be updated at each
+step as the lead forwards findings.
 
 Cumulative issue **#61** records every deviation, lapse and status update
 for this cycle as it happens; this guide's ledger below is the narrative
@@ -331,6 +334,49 @@ redaction rule).
   Caught before merge by the failing synthetic-recovery test; t4 merged
   with the fix in place (28 tests for `calibration_fit.py`, full suite
   4325 passed).
+- **P5, review-fix pass across t3/t4's scope (logged on issue #61).** A
+  Codex review of every task merged so far found three fixes, landed as
+  rework inside t3 and t4 rather than as new tasks: (1) `pipeline.sh`'s own
+  default for `MEASURE_MAX_LOGPROBS` was still 22 (t3 had only changed
+  `serve_for_measure.sh` and the env examples); raised to 5000, and
+  `release_bundle.py`'s serving instructions now derive the cap from
+  `scorer.READOUT_TOP` instead of a second hard-coded number — this also
+  fixed an unrelated bug where `release_bundle.py`'s `_sibling()` helper
+  was not registering the modules it imported in `sys.modules`. (2)
+  `calibration_fit.py`'s NLL was computed by clipping the gold probability
+  before taking its log; on a 99-right/1-wrong synthetic repro this drove
+  the fitted temperature to about 0.06 instead of recovering the true
+  T≈1. **Fixed:** compute NLL in log space without clipping. (3) The same
+  fit did not roll `escalate:<reason>` mass up to plain `escalate` before
+  computing NLL, which could drive a fit to the bounds (`T=20`) on a single
+  adversarial row; **fixed**, and rows whose gold has no matching candidate
+  at all are now skipped and counted (`skipped_gold_absent`) instead of
+  corrupting the fit.
+- **l3, a narrow merge-gate check (proposed, not yet operator-adjudicated).**
+  The lead's merge gate for t3 checked only the files t3's own acceptance
+  criteria listed (`serve_for_measure.sh`, the two pipeline env examples),
+  which is why `pipeline.sh`'s separate hard-coded default (P5, above) was
+  missed at t3's own merge and only caught later by the cross-task Codex
+  review.
+- **P6, `train_scorer.py`'s reproducibility trade-off.** Not a bug: adopting
+  the shared `variants` label-probability definition as `train_scorer.py`'s
+  default readout means the tool no longer reproduces `scorer-b1` bit-
+  identically by default. **Fix (by design):** a `--label-readout single`
+  flag reproduces `scorer-b1` exactly; reproducing it now requires passing
+  that flag explicitly rather than relying on the default.
+- **P7, `draft_heldout.py`'s seed-53 escalate gap (in progress).**
+  **Symptom:** the seed-53 draft of this cycle's own fresh held-out set
+  produced 59 entries (42 operation, 17 explain) and **0 escalate**
+  entries. **Cause:** the single drafted escalate prompt's model reply
+  failed to parse (1 parse reject), and separately 3 entries had invalid
+  arguments and 3 were exact duplicates, all dropped by the existing
+  structural checks — none of the losses were escalate-specific, but
+  escalate started from the smallest pool and lost its only entry. **Fix
+  in progress:** a second pass with `--seed 54` drafts escalate entries
+  specifically, merged into the seed-53 draft programmatically (the lead
+  never reads either draft's text, only counts and hashes, per c51/q11).
+  Held-out draft hash (seed 53, pre-merge): `385092216b1e9b74…` (partial,
+  as forwarded).
 
 ## Reproduce steps
 
