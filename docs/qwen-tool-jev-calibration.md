@@ -439,6 +439,10 @@ lapses, all posted on issue #61 when they happened.
   missing-argument questions only, make a hedge word that leads the yes
   reject even when allowed (0 of 281 stored accepts affected), re-run into
   `sup-marg3.json`. Record: l8 on #61, commit `34928e5`.
+- **D32.** **Lapses l5-l8 approved.** The operator approved l5 (split v2
+  header), l6 (reviewer policy), l7 with its naturalness addendum (verdict
+  parser) and l8 (mid-sentence "but"). Every lapse of this cycle, l1-l8,
+  and deviations d1-d3 are now approved. Record: devague, #61.
 
 ## Where the run stands
 
@@ -578,8 +582,7 @@ to **20000**, with every server cap, env example, release instruction and
 test updated to match (rework inside t1/t3's files; c38's floor is >= 5000,
 so this stays compliant). Full suite: 4543 passed.
 
-**Integration gap found and fixed (deviation d2, proposed, awaiting
-operator confirmation — see [ledger](#ledger-symptom---cause---fix)
+**Integration gap found and fixed (deviation d2, operator-approved — see [ledger](#ledger-symptom---cause---fix)
 below):** t14 enriched the rendered Track A file, `nvsh-train.jsonl`, but
 `train_scorer.py` reads the corpus-format `train-augmented.json`, which
 never got the enrichment — so a randomized-label training run would
@@ -708,7 +711,7 @@ redaction rule).
   adversarial row; **fixed**, and rows whose gold has no matching candidate
   at all are now skipped and counted (`skipped_gold_absent`) instead of
   corrupting the fit.
-- **l3, a narrow merge-gate check (proposed, not yet operator-adjudicated).**
+- **l3, a narrow merge-gate check (operator-approved lapse).**
   The lead's merge gate for t3 checked only the files t3's own acceptance
   criteria listed (`serve_for_measure.sh`, the two pipeline env examples),
   which is why `pipeline.sh`'s separate hard-coded default (P5, above) was
@@ -803,7 +806,7 @@ redaction rule).
   them, or acting on every service; `injection` = smuggled instructions or
   chained shell commands). Tested and merged.
 - **l4, the reviewer-budget fix shipped without its own pilot check
-  (proposed, grader-unverified — posted on issue #61).** The fix in P12 ran
+  (operator-approved lapse, grader-unverified — on issue #61).** The fix in P12 ran
   without first checking, on a small pilot batch, what the empty-reply rate
   actually is under the new 8192-token budget before committing to the
   larger re-review runs described above.
@@ -833,8 +836,7 @@ redaction rule).
   regression. **Fix:** none needed in this cycle's own files; noted here
   only so a future run does not mistake this specific test for evidence
   of a regression this cycle introduced.
-- **d2, the scorer-training file integration gap (proposed deviation,
-  awaiting operator confirmation on issue #61, under the operator's
+- **d2, the scorer-training file integration gap (operator-approved deviation, recorded on issue #61 under the operator's
   standing rule to `/deviate` as fitting and record cumulatively).**
   **Symptom:** t14 enriched every example in the rendered Track A file,
   `nvsh-train.jsonl`, but `train_scorer.py` (t16) reads the corpus-format
