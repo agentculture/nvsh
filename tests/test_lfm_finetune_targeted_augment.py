@@ -643,3 +643,44 @@ def test_main_reports_a_missing_role_variable(tmp_path, monkeypatch, capsys) -> 
     code = ta.main(["--train", str(_train_file(tmp_path)), "--out", str(tmp_path / "o.json")])
     assert code == 2
     assert "NVSH_AUG_" in capsys.readouterr().err
+
+
+def test_naturalness_verdict_allows_user_describing_modals() -> None:
+    """t15 run: every 'is this natural?' yes carried 'a real user might ask it'
+    or 'though it depends on context' and was parsed as a hedge (56 of 69 lost)."""
+    item = ta.Item(
+        text="Is that service up?",
+        expect={"escalate": True},
+        cls="decline:missing_argument",
+        reviews=[
+            ta.marg_unspecified_prompt("Is that service up?", "service"),
+            ta.marg_natural_prompt("Is that service up?"),
+        ],
+    )
+    unit = ta.Unit(recipe="missing-argument", items=[item])
+
+    def caller(role, system, user):
+        if ta.MARG_NATURAL_MARKER in user:
+            return "yes, a real user might ask it, though 'that service' depends on context."
+        return "yes, 'that service' does not name a specific service."
+
+    ok, _ = ta.review_unit(unit, ROLES, caller, "reviewer_b")
+    assert ok
+
+    def hedged(role, system, user):
+        return "yes, but it is not really natural."
+
+    ok, _ = ta.review_unit(unit, ROLES, hedged, "reviewer_b")
+    assert not ok
+
+
+def test_user_modals_still_hedge_outside_the_naturalness_question() -> None:
+    item = ta.Item(
+        text="restart nginx",
+        expect={"operation": "service_restart", "args": {"service": "nginx"}},
+        cls=None,
+        reviews=[ta.ds.reviewer_prompt("restart nginx", {"operation": "service_restart"})],
+    )
+    unit = ta.Unit(recipe="disambiguation", items=[item])
+    ok, _ = ta.review_unit(unit, ROLES, lambda r, s, u: "yes, though it might be docker", "both")
+    assert not ok

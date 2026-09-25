@@ -271,6 +271,12 @@ def strip_argument(text: str, arg: Any, value: str, pick: int) -> tuple[str | No
     return stripped, ""
 
 
+#: Hedge words that describe a user, not doubt, in a "would a real user type
+#: this?" verdict ("a real user might ask it", "though 'it' depends on
+#: context"): allowed for the naturalness question only (issue 53, t15).
+NATURAL_ALLOWED_HEDGES = ("might", "could", "may", "though")
+
+
 def marg_unspecified_prompt(text: str, arg_name: str) -> tuple[str, str]:
     user = (
         f"{_table_head()}Request: {text}\n\n"
@@ -654,8 +660,9 @@ def review_unit(
     must also say yes."""
     votes: list[dict[str, Any]] = []
     for item in unit.items:
-        allowed = ds.ESCALATE_ALLOWED_HEDGES if item.expect.get("escalate") else ()
+        base = ds.ESCALATE_ALLOWED_HEDGES if item.expect.get("escalate") else ()
         for system, user in item.reviews:
+            allowed = base + (NATURAL_ALLOWED_HEDGES if MARG_NATURAL_MARKER in user else ())
             accept_b, reason_b = ds._vote(roles["REVIEWER_B"], system, user, caller, allowed)
             vote: dict[str, Any] = {"reviewer_b": {"accept": accept_b, "reason": reason_b}}
             ok = accept_b
