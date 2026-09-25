@@ -587,6 +587,13 @@ def test_drafted_and_targeted_records_carry_their_own_provenance(tmp_path) -> No
         "expect": {"operation": "gpu_stats", "args": {}},
     }
     (splits / "test.json").write_text(json.dumps({"entries": [drafted]}))
+    drafted_val = {
+        **drafted,
+        "id": "q53-draft-v2-eval-decline-repair-001",
+        "text": "fix it",
+        "expect": {"escalate": True},
+    }
+    (splits / "val.json").write_text(json.dumps({"entries": [drafted_val]}))
     train = json.loads(inputs["train_augmented"].read_text())
     train["entries"].append(
         _entry("s5-t15-dx-0001", {"escalate": True}, side="train", source="t15-diagnosis-explain")
@@ -618,6 +625,12 @@ def test_drafted_and_targeted_records_carry_their_own_provenance(tmp_path) -> No
     assert "1 fresh teacher-drafted" in card
     test_line = next(line for line in card.splitlines() if line.startswith("| test |"))
     assert "fresh teacher-drafted" in test_line and "corpus entries only" not in test_line
+    # the provenance section describes what the data actually holds
+    assert "70/15/15" not in card
+    assert "Fresh teacher-drafted requests" in card
+    assert "`scripts/lfm-finetune/draft_sources.py`" in card
+    assert "Targeted supplement entries" in card
+    assert "`scripts/lfm-finetune/targeted_augment.py`" in card
 
 
 def test_a_record_without_a_source_still_refuses_without_a_default(tmp_path) -> None:

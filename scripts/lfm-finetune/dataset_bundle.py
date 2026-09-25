@@ -466,6 +466,9 @@ def build(
         "supplement": origins["supplement"],
         "variation": origins["variation"],
         "draft": origins["draft"],
+        "targeted": sum(
+            1 for e in train if str(e.get("source", "")).startswith(TARGETED_SOURCE_PREFIX)
+        ),
         "redacted_hosts": sum(
             1
             for entry in [*train, *(e for entries in sides.values() for e in entries)]
@@ -499,6 +502,52 @@ SCORER_TRAIN_NOTE = (
     "plus missing-candidate rows (the right operation removed, answer: escalate), as\n"
     "written by nvsh's `scripts/lfm-finetune/build_dataset.py --scorer-out`.\n"
 )
+
+
+def _provenance(counts: dict[str, Any], seeded: str) -> str:
+    """The card's bullets on corpus, supplement and drafted records."""
+    fresh = all(o == ["draft"] for o in counts.get("side_origins", {}).values()) and bool(
+        counts.get("side_origins")
+    )
+    if fresh:
+        split = (
+            f"used on the train side only; validation and test are fresh drafts\n"
+            f"  (`scripts/lfm-finetune/split.py` v2, {seeded})"
+        )
+    else:
+        split = (
+            f"split with\n  `scripts/lfm-finetune/split.py` ({seeded}, stratified by answer,"
+            " 70/15/15)"
+        )
+    lines = [
+        f"- **Corpus entries**: nvsh's development corpus (`{CORPUS_FILE}` in\n"
+        f"  <{REPO_URL}>), written by the nvsh project under Apache-2.0 and {split}.",
+    ]
+    targeted = counts.get("targeted", 0)
+    authored = counts.get("supplement", 0) - targeted
+    if authored:
+        lines.append(
+            f"- **Supplement entries**: a small authored train-only set\n"
+            f"  (`{SUPPLEMENT_FILE}`): requests to stop, shut down or disable a container\n"
+            "  or service, which Tier 2 must escalate because it has no such action,\n"
+            "  next to restart requests as contrasts."
+        )
+    if targeted:
+        lines.append(
+            f"- **Targeted supplement entries** ({targeted}): train-only requests drafted for\n"
+            f"  shapes the model got wrong, by `{TARGETED_FILE}` (missing arguments,\n"
+            "  diagnosis vs explanation, explicit choices, look-alike operations, hard\n"
+            "  negatives, check-then-change requests), each kept only when the deciding\n"
+            "  reviewer accepted it."
+        )
+    if fresh or counts.get("draft"):
+        lines.append(
+            "- **Fresh teacher-drafted requests**: written from nvsh's operation table\n"
+            f"  alone by `{DRAFT_FILE}`, kept only when both reviewer models accepted\n"
+            "  them; all of validation and test"
+            + (f", and {counts['draft']} on the train side." if counts.get("draft") else ".")
+        )
+    return "\n".join(lines) + "\n"
 
 
 def _side_kind(counts: dict[str, Any], side: str) -> str:
@@ -596,6 +645,7 @@ def card(
     if counts.get("draft"):
         train_parts += f", {counts['draft']} fresh teacher-drafted requests"
     val_kind, test_kind = _side_kind(counts, "validation"), _side_kind(counts, "test")
+    provenance = _provenance(counts, seeded)
     redacted = counts.get("redacted_hosts", 0)
     redaction = (
         f"\n{redacted} record(s) named a private network address; it is published as the\n"
@@ -664,14 +714,7 @@ source's answer and side.
 
 ## Where the records come from
 
-- **Corpus entries**: nvsh's development corpus (`{CORPUS_FILE}` in
-  <{REPO_URL}>), written by the nvsh project under Apache-2.0 and split with
-  `scripts/lfm-finetune/split.py` ({seeded}, stratified by answer, 70/15/15).
-- **Supplement entries**: a small authored train-only set
-  (`{SUPPLEMENT_FILE}`): requests to stop, shut down or disable a container
-  or service, which Tier 2 must escalate because it has no such action,
-  next to restart requests as contrasts.
-- **Variations**: rewrites of train entries, made by a local pipeline
+{provenance}- **Variations**: rewrites of train entries, made by a local pipeline
   (`scripts/lfm-finetune/augment.py`). One model rewrote the request and a
   second copyedited it; **neither saw the expected answer**.
   {decision_sentence(summary.decisions)} Deterministic
