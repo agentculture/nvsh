@@ -84,6 +84,19 @@ def prompts(table) -> list[tuple[str, str]]:
     return out
 
 
+def as_item(item) -> dict:
+    """A reply item as a dict: a bare string is a request with no other fields.
+
+    A small model sometimes answers ``["...", "..."]`` instead of objects; an
+    operation item then has no ``args`` and fails validation as it should.
+    """
+    if isinstance(item, dict):
+        return item
+    if isinstance(item, str):
+        return {"text": item}
+    return {}
+
+
 def parse_json_list(raw: str):
     raw = re.sub(r"^```(?:json)?|```$", "", raw.strip(), flags=re.M).strip()
     start, end = raw.find("["), raw.rfind("]")
@@ -139,7 +152,7 @@ def main(argv: list[str] | None = None) -> int:
         except Exception:
             rejects["parse"] += 1
             continue
-        for item in items:
+        for item in map(as_item, items if isinstance(items, list) else []):
             text = str(item.get("text", "")).strip()
             norm = " ".join(text.lower().split())
             if not text or norm in seen or norm in dev_texts:

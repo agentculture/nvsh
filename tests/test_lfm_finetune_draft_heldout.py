@@ -42,3 +42,10 @@ def test_the_seed_defaults_to_issue_46s_and_can_be_overridden() -> None:
     assert _module().parse_args(["out"]) == (Path("out"), 46)
     assert _module().parse_args(["--seed", "53", "out"]) == (Path("out"), 53)
     assert _module().parse_args(["out", "--seed", "7"]) == (Path("out"), 7)
+
+
+def test_bare_string_items_become_text_only_items() -> None:
+    module = _module()
+    assert module.as_item("reboot the box") == {"text": "reboot the box"}
+    assert module.as_item({"text": "a", "args": {}}) == {"text": "a", "args": {}}
+    assert module.as_item(7) == {}
