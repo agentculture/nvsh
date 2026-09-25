@@ -272,3 +272,10 @@ def test_a_decline_reason_class_survives_the_merge() -> None:
     split["entries"][0]["class"] = "decline:repair"
     merged, _ = _module().merge(split, [])
     assert merged["entries"][0]["class"] == "decline:repair"
+
+
+def test_a_supplement_entry_keeps_its_own_source_id() -> None:
+    supplement = _supplement()
+    supplement["entries"][0]["source_id"] = "g1"
+    merged, _ = _module().add_supplement(_split(), supplement)
+    assert merged["entries"][-1]["source_id"] == "g1"
