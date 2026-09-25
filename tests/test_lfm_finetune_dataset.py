@@ -844,7 +844,7 @@ def test_without_randomize_labels_examples_keep_the_fixed_map_regardless_of_perm
 # -- missing-candidate / no-valid-option derived examples --
 
 
-def test_missing_candidate_rate_one_adds_one_derived_example_per_operation_entry(tmp_path):
+def test_missing_candidate_rate_one_adds_one_derived_scorer_entry_per_operation_entry(tmp_path):
     module = _module()
     corpus = _write_corpus(
         tmp_path,
@@ -853,39 +853,52 @@ def test_missing_candidate_rate_one_adds_one_derived_example_per_operation_entry
             _entry("esc01", {"escalate": True}),
         ],
     )
-    base = module.build(corpus)
-    with_missing = module.build(corpus, missing_candidate_rate=1.0)
+    _, base = module.build_with_scorer_entries(corpus)
+    _, with_missing = module.build_with_scorer_entries(corpus, missing_candidate_rate=1.0)
     assert len(with_missing) == len(base) + 1
-    derived = next(e for e in with_missing if e["source_id"] == "op01" and e["gold"] == "escalate")
-    assert _calls(derived)["name"] == lfm.ESCALATE_TOOL
+    derived = next(e for e in with_missing if e["id"] == "op01-nocand")
+    assert derived["gold"] == "escalate"
+    assert derived["expect"] == {"escalate": True}
     assert "thermal_stats" not in derived["permutation"]["order"]
 
 
-def test_missing_candidate_examples_keep_the_eval_slices_id_suffix(tmp_path):
+def test_missing_candidate_entries_are_never_rendered_as_track_a_rows(tmp_path):
+    """Codex review of d2: a rendered -nocand row keeps the full tools and the
+    propose enum, so it would teach escalate for its propose twin's exact input."""
     module = _module()
     corpus = _write_corpus(tmp_path, [_entry("op01", {"operation": "thermal_stats", "args": {}})])
-    examples = module.build(corpus, missing_candidate_rate=1.0)
-    derived_message = next(e for e in examples if e["gold"] == "escalate")["messages"][1]["content"]
-    original_message = next(e for e in examples if e["gold"] != "escalate")["messages"][1][
-        "content"
-    ]
+    assert module.build(corpus, missing_candidate_rate=1.0) == module.build(corpus)
+    examples, entries = module.build_with_scorer_entries(corpus, missing_candidate_rate=1.0)
+    assert [_calls(example)["name"] for example in examples] == [lfm.PROPOSE_TOOL]
+    assert [entry["id"] for entry in entries] == ["op01", "op01-nocand"]
+
+
+def test_missing_candidate_entries_keep_the_eval_slices_id_suffix(tmp_path):
+    module = _module()
+    corpus = _write_corpus(tmp_path, [_entry("op01", {"operation": "thermal_stats", "args": {}})])
+    _, entries = module.build_with_scorer_entries(corpus, missing_candidate_rate=1.0)
+    original, derived = entries
     # eval_slices.py's own shape: text is byte-identical, only the offered set/answer change.
-    assert derived_message == original_message
+    assert derived["id"] == f"{original['id']}-nocand"
+    assert derived["text"] == original["text"]
+    assert derived["kind"] == original["kind"]
 
 
 def test_missing_candidate_rate_zero_adds_nothing_by_default(tmp_path):
     module = _module()
     corpus = _write_corpus(tmp_path, [_entry("op01", {"operation": "thermal_stats", "args": {}})])
-    assert len(module.build(corpus)) == len(module.build(corpus, missing_candidate_rate=0.0))
+    _, default = module.build_with_scorer_entries(corpus)
+    _, zero = module.build_with_scorer_entries(corpus, missing_candidate_rate=0.0)
+    assert default == zero
 
 
 def test_missing_candidate_rate_is_deterministic_by_seed(tmp_path):
     module = _module()
     entries = [_entry(f"op{i:02d}", {"operation": "thermal_stats", "args": {}}) for i in range(20)]
     corpus = _write_corpus(tmp_path, entries)
-    first = module.build(corpus, missing_candidate_rate=0.5, perm_seed=11)
-    second = module.build(corpus, missing_candidate_rate=0.5, perm_seed=11)
-    assert [e["source_id"] for e in first] == [e["source_id"] for e in second]
+    _, first = module.build_with_scorer_entries(corpus, missing_candidate_rate=0.5, perm_seed=11)
+    _, second = module.build_with_scorer_entries(corpus, missing_candidate_rate=0.5, perm_seed=11)
+    assert [e["id"] for e in first] == [e["id"] for e in second]
     assert 0 < len(first) - len(entries) < len(entries)
 
 
@@ -939,8 +952,11 @@ def test_missing_candidate_rate_refuses_a_plain_corpus_named_held_out(tmp_path):
 def test_missing_candidate_rate_allows_a_train_split(tmp_path):
     module = _module()
     split = _write_split(tmp_path, [_entry("op01", {"operation": "thermal_stats", "args": {}})])
-    examples = module.build(split, is_split=True, missing_candidate_rate=1.0)
-    assert len(examples) == 2
+    examples, entries = module.build_with_scorer_entries(
+        split, is_split=True, missing_candidate_rate=1.0
+    )
+    assert len(examples) == 1
+    assert len(entries) == 2
 
 
 def test_missing_candidate_rate_does_not_false_positive_on_dev_json():
@@ -1021,9 +1037,10 @@ def test_reasons_mode_adds_description_overrides_only_for_offered_reasons(tmp_pa
 def test_missing_candidate_in_reasons_mode_uses_outside_table(tmp_path):
     module = _module()
     corpus = _write_corpus(tmp_path, [_entry("op01", {"operation": "thermal_stats", "args": {}})])
-    examples = module.build(corpus, reasons=True, missing_candidate_rate=1.0)
-    derived = next(e for e in examples if e["gold"].startswith("escalate"))
+    _, entries = module.build_with_scorer_entries(corpus, reasons=True, missing_candidate_rate=1.0)
+    derived = next(e for e in entries if e["gold"].startswith("escalate"))
     assert derived["gold"] == "escalate:outside_table"
+    assert derived["class"] == "decline:outside_table"
 
 
 def test_without_reasons_examples_never_carry_descriptions(tmp_path):

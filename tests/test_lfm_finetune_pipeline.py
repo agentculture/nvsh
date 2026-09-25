@@ -2794,3 +2794,119 @@ def test_bundle_then_upload_bundle_end_to_end_with_the_real_scripts(tmp_path: Pa
     assert result.returncode == 0, result.stderr
     assert "private=True" in result.stdout
     assert (tmp_path / "remote" / (_PREFIX + "tool-jev") / "README.md").read_text() == card
+
+
+# -- issue 53, deviation d2: Track B trains on build_dataset.py's scorer file --
+
+
+def _train_python(tmp_path: Path) -> tuple[Path, Path]:
+    """A fake TRAIN_PY: prints a site dir for `-c`, records any other argv as one
+    JSON line, and gives a --merge-only call a merged dir gen_config.py can write to."""
+    site = tmp_path / "train-site-packages"
+    site.mkdir(exist_ok=True)
+    log = tmp_path / "train-py.log"
+    train_py = tmp_path / "train-python"
+    train_py.write_text(
+        "#!/usr/bin/env bash\n"
+        f'if [ "$1" = -c ]; then echo "{site}"; exit 0; fi\n'
+        f'"{sys.executable}" -c \'import json, sys; print(json.dumps(sys.argv[1:]))\' "$@"'
+        f' >> "{log}"\n'
+        'case " $* " in *" --merge-only "*)\n'
+        '  out=""; prev=""; for arg in "$@"; do [ "$prev" = --out ] && out=$arg; prev=$arg; done\n'
+        '  mkdir -p "$out/merged"; echo "{}" > "$out/merged/config.json" ;;\n'
+        "esac\n",
+        encoding="utf-8",
+    )
+    train_py.chmod(0o755)
+    return train_py, log
+
+
+#: `systemd-run --user --scope ... -- CMD`: runs CMD uncapped (a test double).
+_FAKE_SYSTEMD_RUN = """#!/usr/bin/env bash
+while [ "$#" -gt 0 ] && [ "$1" != -- ]; do shift; done
+shift
+exec "$@"
+"""
+
+
+def _scorer_pipeline(tmp_path: Path) -> tuple[_Pipeline, Path]:
+    train_py, log = _train_python(tmp_path)
+    pipe = _Pipeline(
+        tmp_path, f"TRAIN_PY={train_py}\nTRAIN_MEMORY_FLOOR=1K\nTRAIN_WATCHDOG_SECONDS=1\n"
+    )
+    fake = tmp_path / "bin" / "systemd-run"
+    fake.write_text(_FAKE_SYSTEMD_RUN, encoding="utf-8")
+    fake.chmod(0o755)
+    return pipe, log
+
+
+def _train_scorer_argv(log: Path) -> list[str]:
+    calls = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    [argv] = [call for call in calls if call and call[0].endswith("train_scorer.py")]
+    return argv
+
+
+def test_assemble_without_scorer_build_args_is_unchanged(tmp_path: Path) -> None:
+    """Issue-46 runs reproduce: no SCORER_BUILD_ARGS, no scorer file, no t14 flags."""
+    train_py, _ = _train_python(tmp_path)
+    pipe = _Pipeline(tmp_path, f"TRAIN_PY={train_py}\n")
+    result = pipe.run("assemble")
+    assert result.returncode == 0, result.stderr
+    [(_, build)] = pipe.calls("build_dataset.py")
+    for flag in ("--scorer-out", "--randomize-labels", "--reasons", "--perm-seed"):
+        assert flag not in build
+
+
+def test_assemble_passes_scorer_build_args_and_writes_the_scorer_file(tmp_path: Path) -> None:
+    train_py, _ = _train_python(tmp_path)
+    pipe = _Pipeline(tmp_path, f"TRAIN_PY={train_py}\n")
+    args = "--randomize-labels --perm-seed 53 --missing-candidate-rate 0.3 --reasons"
+    result = pipe.run("assemble", SCORER_BUILD_ARGS=args)
+    assert result.returncode == 0, result.stderr
+    [(_, build)] = pipe.calls("build_dataset.py")
+    assert _option(build, "--split") == [str(pipe.work / "data" / "train-augmented.json")]
+    assert _option(build, "--out") == [str(pipe.work / "data" / "nvsh-train.jsonl")]
+    assert _option(build, "--scorer-out") == [str(pipe.work / "data" / "scorer-train.json")]
+    assert "--randomize-labels" in build and "--reasons" in build
+    assert _option(build, "--perm-seed") == ["53"]
+    assert _option(build, "--missing-candidate-rate") == ["0.3"]
+
+
+def test_train_scorer_uses_the_scorer_file_when_it_is_newer(tmp_path: Path) -> None:
+    pipe, log = _scorer_pipeline(tmp_path)
+    data = pipe.work / "data"
+    data.mkdir(parents=True)
+    (data / "train-augmented.json").write_text("{}", encoding="utf-8")
+    os.utime(data / "train-augmented.json", (1_000_000, 1_000_000))
+    (data / "scorer-train.json").write_text("{}", encoding="utf-8")
+    result = pipe.run("train-scorer", "d2")
+    assert result.returncode == 0, result.stderr
+    assert _option(_train_scorer_argv(log), "--train") == [str(data / "scorer-train.json")]
+    assert f"train-scorer: training on {data / 'scorer-train.json'}" in result.stdout
+
+
+def test_train_scorer_ignores_a_scorer_file_older_than_the_training_set(tmp_path: Path) -> None:
+    """A stale scorer file (assemble re-run without SCORER_BUILD_ARGS) is not used."""
+    pipe, log = _scorer_pipeline(tmp_path)
+    data = pipe.work / "data"
+    data.mkdir(parents=True)
+    (data / "scorer-train.json").write_text("{}", encoding="utf-8")
+    os.utime(data / "scorer-train.json", (1_000_000, 1_000_000))
+    (data / "train-augmented.json").write_text("{}", encoding="utf-8")
+    result = pipe.run("train-scorer", "d2")
+    assert result.returncode == 0, result.stderr
+    assert _option(_train_scorer_argv(log), "--train") == [str(data / "train-augmented.json")]
+    assert f"train-scorer: training on {data / 'train-augmented.json'}" in result.stdout
+
+
+def test_train_scorer_without_a_scorer_file_trains_on_the_training_set(tmp_path: Path) -> None:
+    pipe, log = _scorer_pipeline(tmp_path)
+    data = pipe.work / "data"
+    data.mkdir(parents=True)
+    (data / "train-augmented.json").write_text("{}", encoding="utf-8")
+    result = pipe.run("train-scorer", "d2")
+    assert result.returncode == 0, result.stderr
+    argv = _train_scorer_argv(log)
+    assert _option(argv, "--train") == [str(data / "train-augmented.json")]
+    assert _option(argv, "--val") == [str(pipe.work / "splits" / "val.json")]
+    assert f"train-scorer: training on {data / 'train-augmented.json'}" in result.stdout
