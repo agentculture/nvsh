@@ -284,34 +284,47 @@ def _class_of(entry: dict) -> object:
     return entry.get("class")
 
 
-def _class_balanced_order(
-    source_ids: list[str], sources: dict[str, list[dict]], seed: int
-) -> list[str]:
-    """Order *source_ids* so a contiguous slice draws from every ``class`` evenly.
+def _stratify_by_class(
+    source_ids: list[str],
+    sources: dict[str, list[dict]],
+    seed: int,
+    fractions: tuple[float, float, float],
+) -> dict[str, list[str]]:
+    """Assign *source_ids* to train/val/test, proportional to *fractions* per class.
 
     Groups ids by the first member's ``class`` field (``None`` when absent),
     shuffles each class group independently (seeded, so deterministic), then
-    interleaves the groups round-robin. ``_allocate``'s train/val/test slices
-    are taken from the front of this order, so each slice draws from every
-    class present roughly in proportion, instead of by chance alone. A
-    corpus with no ``class`` field on any entry in the group behaves exactly
-    like a single shuffled list (unchanged from the legacy split).
+    allocates *each class's own group* across the three sides with
+    :func:`_allocate`'s largest-remainder rounding -- the same rule already
+    used to divide entries across sides by expectation kind, now applied a
+    level deeper, per class within a kind.
+
+    A prior version instead built one contiguous order (round-robin across
+    classes) and sliced it once for all three sides; with a rare class
+    (e.g. 10 of 100 entries) and small val/test targets, the whole class
+    could land entirely in train and never reach val or test (#53 review
+    finding P2). Allocating per class avoids that: :func:`_allocate`
+    guarantees every side gets at least one member of a class once that
+    class has at least as many source ids as there are sides (>= 3 here).
+
+    A corpus with no ``class`` field on any entry in the group behaves like
+    a single class and reduces to the old per-kind allocation.
     """
     by_class: dict[object, list[str]] = {}
     for source_id in source_ids:
         cls = _class_of(sources[source_id][0])
         by_class.setdefault(cls, []).append(source_id)
-    groups: list[list[str]] = []
+
+    assigned: dict[str, list[str]] = {name: [] for name in SPLIT_NAMES}
     for cls in sorted(by_class, key=lambda c: (c is None, str(c))):
         group = sorted(by_class[cls])
         random.Random(seed).shuffle(group)
-        groups.append(group)
-    ordered: list[str] = []
-    for index in range(max((len(group) for group in groups), default=0)):
-        for group in groups:
-            if index < len(group):
-                ordered.append(group[index])
-    return ordered
+        counts = _allocate(len(group), fractions)
+        offset = 0
+        for name, count in zip(SPLIT_NAMES, counts):
+            assigned[name].extend(group[offset : offset + count])
+            offset += count
+    return assigned
 
 
 def stratified_split_sized(
@@ -326,12 +339,14 @@ def stratified_split_sized(
     largest-remainder allocation per expectation kind that
     :func:`stratified_split` uses (via fractions derived from the target
     sizes over the total entry count), so a kind's own proportional share
-    of val/test is preserved; the only difference in ordering is
-    :func:`_class_balanced_order`, used here instead of a plain per-kind
-    shuffle so entries sharing a ``class`` field (escalation entries)
-    spread across sides where counts allow. Because each kind rounds its
-    own share independently, the *total* val/test size lands close to, but
-    is not always exactly, ``val_size``/``test_size`` -- the acceptance
+    of val/test is preserved; the difference is :func:`_stratify_by_class`,
+    used here instead of a plain per-kind shuffle so entries sharing a
+    ``class`` field (escalation entries) are themselves allocated across
+    train/val/test proportionally to *fractions*, one class at a time --
+    a rare class no longer risks being swept entirely into train (#53
+    review finding P2). Because each kind (and each class within it) rounds
+    its own share independently, the *total* val/test size lands close to,
+    but is not always exactly, ``val_size``/``test_size`` -- the acceptance
     target is itself approximate ("test ~150").
     """
     total = len(entries)
@@ -366,14 +381,11 @@ def stratified_split_sized(
 
     sides: dict[str, list[dict]] = {name: [] for name in SPLIT_NAMES}
     for kind in EXPECTATION_KINDS:
-        group = _class_balanced_order(sorted(by_kind[kind]), sources, seed)
-        counts = _allocate(len(group), fractions)
-        offset = 0
-        for name, count in zip(SPLIT_NAMES, counts):
-            for source_id in group[offset : offset + count]:
+        assigned = _stratify_by_class(sorted(by_kind[kind]), sources, seed, fractions)
+        for name in SPLIT_NAMES:
+            for source_id in assigned[name]:
                 for entry in sources[source_id]:
                     sides[name].append({**entry, "source_id": source_id})
-            offset += count
 
     for name in SPLIT_NAMES:
         sides[name].sort(key=lambda entry: entry["id"])
@@ -476,7 +488,12 @@ def _main_v2(
 
     calibration_fit = _load_calibration_fit()
     val_ids = [entry["id"] for entry in sides["val"]]
-    fit_ids, selection_ids = calibration_fit.make_folds(val_ids, args.fold_seed)
+    # Group by source_id so a source's variations never split across the fit
+    # and selection folds (#53 review finding P1).
+    val_group_of = {entry["id"]: entry.get("source_id", entry["id"]) for entry in sides["val"]}
+    fit_ids, selection_ids = calibration_fit.make_folds(
+        val_ids, args.fold_seed, group_of=val_group_of
+    )
 
     for name in SPLIT_NAMES:
         header = {

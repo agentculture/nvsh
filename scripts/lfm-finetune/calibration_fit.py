@@ -159,7 +159,10 @@ def read_split_ids(path: Path) -> list[str]:
 
 
 def make_folds(
-    ids: Iterable[str], seed: int, fit_fraction: float = DEFAULT_FIT_FRACTION
+    ids: Iterable[str],
+    seed: int,
+    fit_fraction: float = DEFAULT_FIT_FRACTION,
+    group_of: Mapping[str, str] | None = None,
 ) -> tuple[list[str], list[str]]:
     """Split *ids* into ``(fit_ids, selection_ids)``, seeded, disjoint, each sorted.
 
@@ -167,15 +170,38 @@ def make_folds(
     always yield the identical split: ids are sorted before shuffling, so
     the result never depends on input order, dict ordering or
     ``PYTHONHASHSEED``.
+
+    *group_of* (optional) maps an id to the key whose members must all land
+    on the same side -- e.g. an entry's ``source_id``, so a source's
+    variations never get split across the fit and selection folds (#53
+    review finding: the per-id shuffle used to do exactly that). When
+    omitted, or when an id is absent from the mapping, that id is its own
+    group of one, exactly as before.
     """
     if not 0.0 < fit_fraction < 1.0:
         raise ValueError(f"fit_fraction must be between 0 and 1 (exclusive), got {fit_fraction!r}")
     unique_sorted = sorted({str(entry_id) for entry_id in ids})
-    shuffled = list(unique_sorted)
-    random.Random(seed).shuffle(shuffled)
-    n_fit = max(0, min(len(shuffled), round(len(shuffled) * fit_fraction)))
-    fit_ids = sorted(shuffled[:n_fit])
-    selection_ids = sorted(shuffled[n_fit:])
+    if not group_of:
+        shuffled = list(unique_sorted)
+        random.Random(seed).shuffle(shuffled)
+        n_fit = max(0, min(len(shuffled), round(len(shuffled) * fit_fraction)))
+        fit_ids = sorted(shuffled[:n_fit])
+        selection_ids = sorted(shuffled[n_fit:])
+        return fit_ids, selection_ids
+
+    members_of_group: dict[str, list[str]] = {}
+    for entry_id in unique_sorted:
+        key = str(group_of.get(entry_id, entry_id))
+        members_of_group.setdefault(key, []).append(entry_id)
+    group_keys = sorted(members_of_group)
+    shuffled_keys = list(group_keys)
+    random.Random(seed).shuffle(shuffled_keys)
+    n_fit_groups = max(0, min(len(shuffled_keys), round(len(shuffled_keys) * fit_fraction)))
+    fit_keys = set(shuffled_keys[:n_fit_groups])
+    fit_ids = sorted(entry_id for key in fit_keys for entry_id in members_of_group[key])
+    selection_ids = sorted(
+        entry_id for key in group_keys if key not in fit_keys for entry_id in members_of_group[key]
+    )
     return fit_ids, selection_ids
 
 
