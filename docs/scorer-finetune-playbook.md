@@ -18,7 +18,7 @@ tested, but no nvsh result backs them yet.
 
 A **candidate scorer**: a fine-tuned Qwen3.5-0.8B that reads one prompt and
 generates exactly one token. The prompt lists the offered actions as
-lettered lines (`A) disk_usage: ...`). The model's next-token probabilities
+lettered lines (`A) disk_stats: ...`). The model's next-token probabilities
 over those letters are the decision:
 
 ```text
@@ -94,15 +94,19 @@ Work through this checklist in a fork of nvsh:
    scripts call: `get`, `names`, `validate` (never raises, returns codes
    such as `missing_argument` and `bad_choice`). Mark `read_only`
    carefully: the safety bar, the gate thresholds and the per-slice
-   reports all key on it. Write descriptions that tell look-alike
-   operations apart, because the description is the only thing the model
-   sees about an operation.
+   reports all key on it. Write names and descriptions that tell
+   look-alike operations apart: the name and the description are all the
+   model sees of an operation.
 2. **Argument grounding** (`nvsh/ops/ground.py`). nvsh grounds two
    argument kinds, `service` (from `systemctl`) and `container` (from
    `docker`). Add your own lookup kinds, or use only `choice` arguments,
    which ground without any lookup. Replace the matching world-snapshot
    pieces: `nvsh/tiers/bench.py` (`world_runner`, `load_world`) and
-   `measure.py`'s `SNAPSHOT_KEYS` and `snapshot` subcommand.
+   `measure.py`'s `SNAPSHOT_KEYS` and `snapshot` subcommand. Check that
+   the scorer's argument extraction (`scorer.ground_arguments`) can
+   express your arguments. It matches a free-text value one request word
+   at a time and a choice only by its listed spellings, so a
+   multi-word value or a number with a unit needs new extraction code.
 3. **Prompts.** These strings carry nvsh wording. Rewrite each for your
    domain, keeping the structure:
    - `scorer.py` `_INSTRUCTION` ("pick the one action ... on this
@@ -111,11 +115,13 @@ Work through this checklist in a fork of nvsh:
    - The `explain`/`escalate` control descriptions, from
      `nvsh/tiers/lfm.py` `tools_for()`, and its system brief (the brief is
      needed only for a generative Track A model).
-   - `augment.py`: `PHRASING_STYLES`, `DETAILED_STYLES`,
-     `REVIEWER_SYSTEM`, the English guard regexes.
+   - `augment.py`: the generator and corrector prompts,
+     `PHRASING_STYLES`, `DETAILED_STYLES`, `REVIEWER_SYSTEM`, the English
+     guard regexes.
    - `draft_sources.py`: `GENERATOR_SYSTEM`, `REVIEWER_SYSTEM`,
      `_EXPLAIN_ASK` topics, and the `dev.json` de-duplication path.
-   - `draft_heldout.py`: `SYSTEM` and its `dev.json` path.
+   - `draft_heldout.py`: `SYSTEM`, its topic prompts and its `dev.json`
+     path.
    - `targeted_augment.py`: `_SPAN_NOUNS` and `_DX_ASK`.
 4. **Escalation reasons** (only if you want named hand-off reasons).
    Three places must agree with each other and with the corpus's
@@ -127,7 +133,8 @@ Work through this checklist in a fork of nvsh:
    at least two alternative descriptions per candidate.
 6. **Packaging names**: `pipeline.sh`'s `BUNDLE_REPO_PREFIX` and
    `hub_upload.ALLOWED_PREFIX` (both hard-coded to nvsh's namespace), and
-   the model-card text in `release_bundle.py`.
+   the model-card text in `release_bundle.py` and the data set card text
+   in `dataset_bundle.py`.
 7. **Tests.** Several `tests/test_lfm_finetune_*.py` files use nvsh's real
    operation names as fixtures (gate, metrics, measure, augment,
    draft_sources, targeted_augment, dataset_bundle, calibrate_reviewer).
@@ -142,6 +149,47 @@ Already domain-generic, no change needed: `split.py` (pass `--corpus`),
 
 `pipeline.sh split` passes no `--corpus`, so it always splits nvsh's
 `dev.json`. Run `split.py` by hand (step 5) instead.
+
+## Set up the environment and the run file
+
+Do this once per machine, after the port and before step 1:
+
+1. **Training venv**, outside the repository, from the pinned
+   requirements (CUDA 13.0 wheels on a DGX Spark):
+
+   ```bash
+   uv venv --python 3.12 <venv dir>
+   uv pip install --python <venv dir>/bin/python -r scripts/lfm-finetune/requirements-train.txt \
+     --extra-index-url https://download.pytorch.org/whl/cu130 --index-strategy unsafe-best-match
+   ```
+
+2. **Models in the Hugging Face cache**, at pinned commits: the base
+   (`Qwen/Qwen3.5-0.8B`) and the held-out drafter (`Qwen/Qwen3.5-4B`).
+   `draft_heldout.py` loads from the cache only. Point `HF_HOME` at a
+   private directory if a shared cache belongs to another user.
+3. **Serving and quantization tools**: a llama.cpp build (for
+   `llama-server`, GGUF conversion, imatrix and quantize), a separate venv
+   with llm-compressor for AWQ, and the pinned vLLM image. The pipeline
+   reads their paths from `LLAMA_CPP_CONVERT`, `LLAMA_CPP_QUANTIZE`,
+   `LLAMA_CPP_IMATRIX`, `AWQ_PY`, `LLAMA_SERVER` and `MEASURE_IMAGE`.
+   `LLAMA_CPP_CONVERT` must be a small wrapper that runs the converter
+   with the AWQ venv's Python (see the issue 46 guide, step 13).
+4. **The run file.** Copy `scripts/lfm-finetune/pipeline-qwen.env.example`
+   to a private `run.env` and fill it in. The pipeline refuses to start
+   without `WORK`, `BASE`, `BASE_REV`, `REPO`, `HF_CACHE` and `SEED`. The
+   training stages also need `TRAIN_PY` (the training venv's Python) and
+   `TRAIN_MEMORY_MAX`. Set `MEASURE_MAX_LOGPROBS=20000`.
+   Also set `PROTECTED_EXTRA` (every protected file) and `HELDOUT_SPLIT`.
+5. **The teacher roles** (step 3) go in a second private file. The
+   drafting scripts read the process environment and do not source any
+   file, so run `set -a; . <roles file>; set +a` in the shell first.
+6. **A grounding snapshot**, once the splits exist (step 5). The measure
+   stages refuse to run without `GROUND_SNAPSHOT`:
+
+   ```bash
+   python scripts/lfm-finetune/measure.py snapshot --out "$GROUND_SNAPSHOT" \
+     --from-split "$WORK/splits/val.json" --from-split "$WORK/splits/test.json"
+   ```
 
 ## Step 1: write the bars and the decision rule before any data
 
@@ -189,7 +237,7 @@ The corpus is one JSON file, `{"header": "...", "world": {...},
 
 ```json
 {"id": "dev-a001", "kind": "explicit", "text": "how full is the disk?",
- "expect": {"operation": "disk_usage", "args": {}},
+ "expect": {"operation": "disk_stats", "args": {}},
  "source": "hand", "class": "question"}
 ```
 
@@ -257,8 +305,8 @@ NVSH_DRAFT_GENERATOR_MAX_TOKENS=12000
   generation. Otherwise abandoned requests keep running upstream and
   throughput collapses (issue 46, P52).
 - **The verdict parser** (`augment.parse_verdict`) is strict: the first
-  word must be "yes", with no standalone "no" and no hedge word. Two
-  false rejects we hit:
+  word must be "yes", and the reply must pass a check for a verdict-like
+  "no" and a check for hedge words. Two false rejects we hit:
   - "no-argument" was read as a no;
   - "ambiguous" was treated as a hedge, but it is the very reason an
     escalation is right.
@@ -287,8 +335,11 @@ python scripts/lfm-finetune/leakage_check.py --train "$DRAFTS/heldout-rev/draft.
   --protected <seed corpus> "$DRAFTS/eval-pool.json" --out-filtered "$SEALED.tmp"
 ```
 
-To seal it, write `$SEALED` with a header that starts with `Held-out
-split`, so every measuring tool refuses it without `--acceptance`. Make it
+Every draft numbers its ids from `ho46-001`, so give each seed's ids a
+unique prefix when you merge the drafts. To seal the set, write `$SEALED`
+with a header that starts with `Held-out split`. `measure.py` then refuses
+it without `--acceptance`, and `permutation_probe.py` without `--final`.
+Make it
 read-only, store it privately (never in a public repository), and record
 its sha256.
 
@@ -388,9 +439,11 @@ python $P/permutation_probe.py --split "$WORK/splits/val.json" \
   --scorer-kind in-process --out "$WORK/probe/base-val.json" --markdown "$WORK/probe/base-val.md"
 ```
 
-Scorer runs must pass `--scorer served` or `--scorer in-process`. Without
-it, a scorer checkpoint is measured as a generative tool-caller and scores
-about 0. Use `--predictions`, because `--details` is empty for scorer runs.
+Scorer runs must pass `--scorer served` or `--scorer in-process`. The
+pipeline stages refuse a recognised scorer checkpoint without it. A direct
+`measure.py` call does not: it measures the checkpoint as a generative
+tool-caller, which scores about 0. Use `--predictions`, because
+`--details` is empty for scorer runs.
 
 nvsh's baseline, `scorer-b1` on validation: ECE 0.081 in process and 0.097
 on `Q4_K_M`, with 1 wrong mutating proposal on Q4 only. The pooled
@@ -401,13 +454,17 @@ letters learns the letters.** That is why training randomizes them (step
 
 ## Step 7: grow the training data, then freeze it
 
-Train-side data comes from three places, all reviewed by both teachers
-and all checked for leakage against every protected side (validation,
+Train-side data comes from three places, all teacher-reviewed and all
+checked for leakage against every protected side (validation,
 test, held-out, and any older evaluation set):
 
 1. **The seed corpus** (train-only, from step 5).
 2. **Paraphrase variations** of each train entry: generator, then
-   corrector, then two reviewers. Run the `augment-nvsh` (for nvsh's
+   corrector, then two reviewers, with reviewer B deciding. If you
+   re-review, `rereview` writes `*-rereview.jsonl` beside the originals,
+   and `assemble` reads only `nvsh-accepted.jsonl`, so copy the accepted
+   re-review file into place first. Run the
+   `augment-nvsh` (for nvsh's
    corpus), `rereview` and `filter-variations` stages of `pipeline.sh`.
    nvsh kept 1,206 variations from 315 sources.
 3. **Targeted recipes** for the error classes your baseline shows, with
@@ -430,7 +487,10 @@ test, held-out, and any older evaluation set):
    $T --recipes disambiguation,hard-negative --per-recipe 8 --out "$WORK/aug/sup-c.json"
    ```
 
-   Check each recipe's reject reasons in its log. For example, 104 of 129
+   By default reviewer B alone decides (`--decide-by reviewer_b`, the
+   convention nvsh adopted in issue 46, with reviewer A advisory). Pass
+   `--decide-by both` to require both votes. Check each recipe's reject
+   reasons in its log. For example, 104 of 129
    hard-negatives were dropped because the generator wrote an operation
    identifier into the question. The fix was a prompt rule: "name the
    subject the way a user would, never the identifier."
@@ -466,10 +526,13 @@ $P/pipeline.sh --env run.env status                   # memory caps as a child p
 $P/pipeline.sh --env run.env train-scorer r1          # TRAIN_SCORER_ARGS for lr, etc.
 ```
 
-`train_scorer.py` trains LoRA (all-linear, rank 16 / alpha 32) on
-cross-entropy restricted to the offered letters, reading each row's own
-letter map. It then merges, pins greedy generation settings and stages
-the checkpoint. The defaults that worked for nvsh are 3 epochs and lr
+`train-scorer r1` writes the run as `runs/scorer-r1`. Every later stage
+needs that full name: `scorer-r1`, `scorer-r1.q4_k_m`,
+`runs/scorer-r1/merged`. `train_scorer.py` trains LoRA (all-linear, rank
+16 / alpha 32) on cross-entropy restricted to the offered letters,
+reading each row's own letter map, and saves the adapter. The pipeline
+stage then merges it, pins greedy generation settings and stages the
+checkpoint. The defaults that worked for nvsh are 3 epochs and lr
 2e-4. 5 epochs overfit and 2 underfit. lr 1e-4 calibrated better.
 
 - **Check the merge.** Diff one merged weight against the base and
@@ -488,14 +551,19 @@ the checkpoint. The defaults that worked for nvsh are 3 epochs and lr
 **(First run in progress.)** For each candidate, in process:
 
 ```bash
-$P/pipeline.sh --env run.env measure-val r1 --scorer in-process --predictions "$WORK/pred"
+$P/pipeline.sh --env run.env measure-val scorer-r1 --scorer in-process --predictions "$WORK/pred"
 # add MEASURE_REASONS=1 for a reasons-mode candidate
 python $P/calibration_fit.py fit --predictions <r1 val predictions> \
   --folds "$WORK/splits/folds.json" --out "$WORK/calib/r1.params.json"
 python $P/calibration_fit.py evaluate --predictions <r1 val predictions> \
   --params "$WORK/calib/r1.params.json" --folds "$WORK/splits/folds.json" --fold selection
-python $P/permutation_probe.py --split "$WORK/splits/val.json" ... --model "$WORK/runs/r1/merged"
+python $P/permutation_probe.py --split "$WORK/val-selection.json" ... \
+  --model "$WORK/runs/scorer-r1/merged"
 ```
+
+`permutation_probe.py` has no fold option. For the selection-fold figure,
+write `val-selection.json` first: the validation file restricted to
+`folds.json`'s `selection_ids`, keeping its header.
 
 Then add the missing-candidate slice (`--slice missing-candidate`, or
 `eval_slices.py`). Apply your pre-registered rule mechanically and write
@@ -506,8 +574,8 @@ extra candidate only under the condition you wrote in step 1, for example
 ## Step 10: quantize, then calibrate the deployed build
 
 ```bash
-$P/pipeline.sh --env run.env quantize r1              # bf16 GGUF, imatrix, Q4_K_M (+ AWQ)
-$P/pipeline.sh --env run.env measure-val r1.q4_k_m --scorer served --predictions "$WORK/pred"
+$P/pipeline.sh --env run.env quantize scorer-r1       # bf16 GGUF, imatrix, Q4_K_M (+ AWQ)
+$P/pipeline.sh --env run.env measure-val scorer-r1.q4_k_m --scorer served --predictions "$WORK/pred"
 python $P/calibration_fit.py fit ...                  # on Q4's own fit-fold predictions
 python $P/calibration_fit.py evaluate ... --fold selection
 python $P/calibration_fit.py apply ... --out "$WORK/calib/r1-q4-val.calibrated.predictions.jsonl"
@@ -525,9 +593,12 @@ python $P/sweep_gate.py --predictions "$WORK/calib/r1-q4-val.calibrated.predicti
   *selection* fold. For nvsh's baseline, temperature alone did not help
   (Q4 ECE 0.131 raw, 0.120 with temperature). The vector did (0.074),
   because the escalate label's own scale was off.
-- **Re-make decisions after calibration.** The vector can change the
-  top-1, so gate decisions are always re-made on the calibrated
-  distribution.
+- **Re-make decisions after calibration yourself.** `calibration_fit
+  apply` and `measure.py --calibration` change only the probabilities.
+  The stored decision stays the model's pre-calibration choice. The
+  vector can change the top-1, so re-make decisions on the calibrated
+  distribution with `sweep_gate.py`. It marks a newly chosen operation as
+  not grounded, because that operation's arguments were never grounded.
 - **The gate** (`gate.py`) has one set of thresholds for read-only
   operations and one for mutating operations. Each set has a top-1
   floor, a top-1/top-2 margin and a maximum normalised entropy, and
@@ -539,12 +610,16 @@ python $P/sweep_gate.py --predictions "$WORK/calib/r1-q4-val.calibrated.predicti
 ## Step 11: measure once on test and the held-out set
 
 **(First run in progress.)** Run each final measurement once, after the
-choice, with the calibration and thresholds frozen:
+choice. The final stages take only `--slice` and `--scorer`, so they
+record raw predictions. Then apply the frozen calibration with
+`calibration_fit.py apply`, and evaluate the one frozen threshold set with
+`sweep_gate.py --final`, each grid given a single value. Never sweep
+thresholds on final data.
 
 ```bash
-$P/pipeline.sh --env run.env measure-final r1.q4_k_m --scorer served
-$P/pipeline.sh --env run.env measure-final r1.q4_k_m --slice missing-candidate --scorer served
-$P/pipeline.sh --env run.env measure-heldout r1.q4_k_m --scorer served
+$P/pipeline.sh --env run.env measure-final scorer-r1.q4_k_m --scorer served
+$P/pipeline.sh --env run.env measure-final scorer-r1.q4_k_m --slice missing-candidate --scorer served
+$P/pipeline.sh --env run.env measure-heldout scorer-r1.q4_k_m --scorer served
 python $P/permutation_probe.py --split "$WORK/splits/test.json" --final --per-entry 10 ...
 ```
 
@@ -555,10 +630,18 @@ is a recorded deviation.
 ## Step 12: package and publish
 
 ```bash
-$P/pipeline.sh --env run.env bundle gguf r1.q4_k_m <suffix> <final report>.md ...
+$P/pipeline.sh --env run.env bundle gguf scorer-r1.q4_k_m <suffix> <final report>.md ...
 $P/pipeline.sh --env run.env bundle-dataset <suffix>-dataset
-FINAL=1 $P/pipeline.sh --env run.env upload-bundle <suffix>   # token injected, never printed
+FINAL=1 $P/pipeline.sh --env run.env upload-bundle <suffix>           # token injected, never printed
+FINAL=1 $P/pipeline.sh --env run.env upload-bundle <suffix>-dataset   # the data set is its own upload
 ```
+
+Two gaps remain in the bundle stages, so check both by hand:
+
+- nothing adds the calibration parameters and gate thresholds to the
+  model bundle, so copy them in;
+- `bundle-dataset` packages `train-augmented.json`, not the
+  scorer-format `scorer-train.json` the scorer actually trained on.
 
 `upload-bundle` refuses in any of these cases:
 
