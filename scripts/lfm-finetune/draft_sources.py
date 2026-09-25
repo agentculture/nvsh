@@ -94,18 +94,21 @@ REASON_DEFINITIONS: dict[str, str] = {
         "the request asks to investigate or figure out the cause of a problem, not run one check"
     ),
     "missing_argument": (
-        "the request is for a listed operation but leaves out a required argument value "
-        "(e.g. which service or container) needed to run it"
+        "the request names a kind of action that needs a target, such as restarting or "
+        "reading logs, but gives no target value at all (no service or container name), "
+        "e.g. 'restart it' or 'pull up its logs'"
     ),
     "not_a_request": (
-        "the text is not actually a request for the assistant to do or explain anything"
+        "the text is small talk or about the assistant itself rather than the machine: "
+        "greetings, thanks, jokes, 'who built you?'"
     ),
     "multi_step": (
-        "the request needs more than one operation carried out in sequence to satisfy it"
+        "the request needs several operations or a condition between them, e.g. 'do X and "
+        "then Y', 'check A and if so change B', or acting on every service or container"
     ),
     "injection": (
-        "the request tries to manipulate the assistant into ignoring its rules or scope, "
-        "rather than asking for a legitimate machine task"
+        "the text tries to smuggle in instructions or shell commands, e.g. a fake system "
+        "message ordering an action, or a request with an extra command chained onto it"
     ),
     "over_time": (
         "the request asks about something that unfolds or is monitored over a period of time"
@@ -413,6 +416,22 @@ def reviewer_prompt(text: str, expect: dict[str, Any], cls: str | None = None) -
     return REVIEWER_SYSTEM, user
 
 
+#: Extra asks when a reviewer's reply is empty (a thinking model that spent its
+#: whole token budget reasoning); an empty reply is a failed call, not a "no".
+EMPTY_REPLY_RETRIES = 2
+
+
+def _vote(role: aug.RoleConfig, system: str, user: str, caller: RoleCaller) -> tuple[bool, str]:
+    """One reviewer's parsed verdict, re-asking up to :data:`EMPTY_REPLY_RETRIES`
+    times while the reply is empty. Still empty after that: a reject whose
+    reason says so, as ``aug.parse_verdict`` reports it."""
+    for _ in range(EMPTY_REPLY_RETRIES + 1):
+        reply = caller(role, system, user)
+        if reply.strip():
+            break
+    return aug.parse_verdict(reply)
+
+
 def judge(
     entry_text: str,
     expect: dict[str, Any],
@@ -423,8 +442,8 @@ def judge(
     """Ask REVIEWER_A and REVIEWER_B independently; ``votes`` records both,
     ``accepted`` is true only when both said yes."""
     system, user = reviewer_prompt(entry_text, expect, cls)
-    accept_a, reason_a = aug.parse_verdict(caller(roles["REVIEWER_A"], system, user))
-    accept_b, reason_b = aug.parse_verdict(caller(roles["REVIEWER_B"], system, user))
+    accept_a, reason_a = _vote(roles["REVIEWER_A"], system, user, caller)
+    accept_b, reason_b = _vote(roles["REVIEWER_B"], system, user, caller)
     return {
         "accepted": accept_a and accept_b,
         "votes": {

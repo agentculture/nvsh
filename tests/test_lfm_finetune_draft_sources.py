@@ -514,3 +514,26 @@ def test_reason_definitions_cover_the_eight_classes() -> None:
 def test_decline_prompt_embeds_the_reason_definition() -> None:
     _, user = ds.decline_prompt("missing_argument", 3)
     assert ds.REASON_DEFINITIONS["missing_argument"] in user
+
+
+def test_an_empty_reviewer_reply_is_asked_again_not_counted_as_a_no() -> None:
+    replies = {"REVIEWER_A": ["", "", "yes"], "REVIEWER_B": ["yes"]}
+    asked: list[str] = []
+
+    def caller(role, system, user):
+        name = "REVIEWER_A" if role is ROLES["REVIEWER_A"] else "REVIEWER_B"
+        asked.append(name)
+        return replies[name].pop(0)
+
+    out = ds.judge("restart it", {"escalate": True}, "decline:missing_argument", ROLES, caller)
+    assert out["accepted"] is True
+    assert asked.count("REVIEWER_A") == 3
+
+
+def test_a_reviewer_that_stays_empty_is_a_reject_after_the_retries() -> None:
+    def caller(role, system, user):
+        return "" if role is ROLES["REVIEWER_A"] else "yes"
+
+    out = ds.judge("restart it", {"escalate": True}, "decline:missing_argument", ROLES, caller)
+    assert out["accepted"] is False
+    assert out["votes"]["reviewer_a"]["reason"] == "empty reply"
