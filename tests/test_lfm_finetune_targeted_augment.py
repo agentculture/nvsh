@@ -728,3 +728,10 @@ def test_hard_negative_prompt_forbids_writing_the_identifier() -> None:
     """t15 run: 104 of 129 hard negatives named the identifier and were dropped."""
     _, user = ta.hard_negative_prompt("gpu_stats", 8)
     assert "Never write gpu_stats or any other operation identifier" in user
+
+
+def test_diagnosis_explain_prompt_forbids_writing_an_identifier() -> None:
+    """t15 run: 10 diagnosis-explain candidates named an operation identifier
+    and were dropped by the guard (same cause as D30's hard negatives)."""
+    _, user = ta.dx_prompt(4)
+    assert "Never write an operation identifier" in user

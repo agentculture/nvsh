@@ -364,7 +364,9 @@ _DX_ASK = (
     'is answered in one sentence without looking at the machine; "answer" is that one-sentence '
     'correct answer. "diagnose" asks why X is happening on the user\'s own machine right now, '
     "or asks to fix it -- that needs investigation, so the assistant must hand it back to a "
-    "human instead of answering. Do not ask for the hand-off in so many words. Reply as a "
+    "human instead of answering. Do not ask for the hand-off in so many words. Never write an "
+    "operation identifier from the list: name the subject the way a user would (for example "
+    "'GPU usage', not the identifier). Reply as a "
     'JSON list of objects with keys "topic", "explain", "answer" and "diagnose".'
 )
 
