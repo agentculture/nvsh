@@ -190,8 +190,14 @@ Do this once per machine, after the port and before step 1:
 
    ```bash
    python scripts/lfm-finetune/measure.py snapshot --out "$GROUND_SNAPSHOT" \
-     --from-split "$WORK/splits/val.json" --from-split "$WORK/splits/test.json"
+     --from-split "$WORK/splits/val.json" --from-split "$WORK/splits/test.json" \
+     --from-split "$SEALED"
    ```
+
+   It prints counts only. Rebuild it whenever the splits change, and
+   before the baseline. nvsh's baseline first ran with an older run's
+   snapshot, which lacked 23 services and 11 containers from the new
+   sides (issue 53, lapse l9).
 
 ## Step 1: write the bars and the decision rule before any data
 
