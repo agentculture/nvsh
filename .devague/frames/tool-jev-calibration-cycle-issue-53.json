@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-09-24T22:47:35Z",
-  "updated": "2026-09-24T23:49:55Z",
+  "updated": "2026-09-25T00:04:30Z",
   "claims": [
     {
       "id": "c1",
@@ -1168,6 +1168,18 @@
       ],
       "origin": "llm",
       "status": "approved"
+    },
+    {
+      "id": "l3",
+      "code": "assumption-for-measurement",
+      "what": "Lead's t3 merge gate checked only t3's listed files; pipeline.sh (default 22) and release instructions (22) still capped the served readout below READOUT_TOP \u2014 found by codex review, not by the gate",
+      "skipped_check": "grep every MEASURE_MAX_LOGPROBS / max-logprobs default before merging t3",
+      "refs": [
+        "t3",
+        "c38"
+      ],
+      "origin": "llm",
+      "status": "proposed"
     }
   ],
   "obligations": []
