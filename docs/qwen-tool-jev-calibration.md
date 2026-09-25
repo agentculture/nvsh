@@ -418,6 +418,16 @@ lapses, all posted on issue #61 when they happened.
   0.3 is the pipeline's documented example, and the rule's accuracy floor
   (step 2) guards against it tipping the model into over-escalation.
 
+- **D30.** **The hard-negative ask no longer invites the identifier.**
+  Evidence: t15's hard-negative recipe kept 24 of 129; 104 were dropped by
+  `augment.py`'s identifier guard, because the ask said "mention what the
+  operation `<name>` deals with" and the generator wrote the name. The guard
+  is right (no user types `gpu_stats`), the ask was wrong. Choice: the ask
+  forbids writing any operation identifier and gives a user-style example;
+  the recipe re-runs (seed 54). t15 so far: power-set 45, disambiguation 74,
+  hard-negative 24 (first pass), missing-argument 5 (first pass, before
+  D26).
+
 ## Where the run stands
 
 **Latest, 2026-09-25 afternoon.**
