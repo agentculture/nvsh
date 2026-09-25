@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-09-24T22:47:35Z",
-  "updated": "2026-09-25T15:29:35Z",
+  "updated": "2026-09-25T19:57:55Z",
   "claims": [
     {
       "id": "c1",
@@ -1262,5 +1262,132 @@
       "status": "approved"
     }
   ],
-  "obligations": []
+  "obligations": [
+    {
+      "id": "o1",
+      "claim_id": "c25",
+      "seam": "permutation probe on the fresh test side (scorer-r3b, in-process, 10 per entry and kind)",
+      "behavior": "pooled op-level answer change <= 2.3%",
+      "source_text": "Permutation robustness at OpenJev level: shuffling candidate order and permuting op->letter labels changes the semantic choice in <= 2.3% of cases (OpenJev's published figure; its own base model was 18.5%, https://huggingface.co/openjev/openjev). Closed or explained with a cause other than missing data.",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o2",
+      "claim_id": "c26",
+      "seam": "served scorer-r3b Q4_K_M on the fresh test side, frozen calibration applied",
+      "behavior": "ECE <= 0.10 with bootstrap CI and published reliability tables",
+      "source_text": "Calibration on the deployed Q4_K_M scorer: ECE <= 0.10 with a bootstrap CI and a published reliability diagram, on the fresh test side. OpenJev publishes no ECE/Brier (it ships a fixed readout temperature, READOUT_T=0.85), so there is no OpenJev calibration number to match; the #46 bar c35 stands.",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o3",
+      "claim_id": "c27",
+      "seam": "served Q4_K_M at the frozen gate on test and the sealed held-out, full and missing-candidate slices",
+      "behavior": "0 wrong mutating actions at the chosen thresholds",
+      "source_text": "0 wrong mutating actions at the chosen gate thresholds, and escalation (semantic or uncertainty) on >= 80% of the missing-candidate slice (7/32 today); OpenJev reports no abstention mechanism, so these bars are nvsh's own (c34 lineage).",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o4",
+      "claim_id": "c27",
+      "seam": "served Q4_K_M at the frozen gate on the missing-candidate slices",
+      "behavior": "escalation (semantic or uncertainty) on >= 80% of the missing-candidate slice",
+      "source_text": "0 wrong mutating actions at the chosen gate thresholds, and escalation (semantic or uncertainty) on >= 80% of the missing-candidate slice (7/32 today); OpenJev reports no abstention mechanism, so these bars are nvsh's own (c34 lineage).",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o5",
+      "claim_id": "c36",
+      "seam": "served readout of the deployed build on the fresh sides",
+      "behavior": "complete label distributions for >= 95% of entries, semantic escalate and abstain_uncertain as separate outcomes",
+      "source_text": "A retrained Track B scorer whose choice survives label/order permutation, whose served Q4_K_M returns complete label distributions that are calibrated after a fitted temperature, with separate semantic-escalate and uncertainty-abstain outcomes, thresholds measured per read-only/mutating, and every result reported per slice with confidence intervals on fresh evaluation sides.",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o6",
+      "claim_id": "c3",
+      "seam": "gate.py / metrics.py",
+      "behavior": "escalate stays a candidate label; abstain_uncertain is a separate outcome; thresholds keyed by Operation.read_only only",
+      "source_text": "Uncertainty-abstention gate kept separate from semantic escalate: escalate stays an ordinary candidate label (scorer.py:64), and a policy over the distribution (p_escalate, p_top1 floor, top1-top2 margin, normalized entropy) decides abstain_uncertain; today the decision is a bare argmax (scorer.py:363). Thresholds are chosen separately for read-only vs mutating ops using Operation.read_only (nvsh/ops/table.py), never an operation name.",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o7",
+      "claim_id": "c16",
+      "seam": "gate, sweep, metrics and calibration code",
+      "behavior": "no code switches on a specific operation name",
+      "source_text": "No code switches on a specific operation name: gates and per-slice reports key on Operation.read_only and candidate count only (docs/tiers-improving-accuracy.md rule; nvsh/tiers/router.py:17-18).",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o8",
+      "claim_id": "c18",
+      "seam": "Hugging Face repositories of this cycle",
+      "behavior": "every repo created in this cycle is private",
+      "source_text": "All data and model repos stay private on the Hub; making any repo public needs per-repo operator approval (issue 46 c48).",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o9",
+      "claim_id": "c44",
+      "seam": "PR #52's repositories",
+      "behavior": "scorer-b1's artifacts are not overwritten; new builds go to new private repos; every bundle passes scan_bundle",
+      "source_text": "New models and data never overwrite the PR #52 artifacts: scorer-b1 stays reproducible as the baseline, new builds go to new private repos or tagged revisions, and every bundle passes scripts/lfm-finetune/scan_bundle.py before upload (issue 46 c47/c48 lineage).",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o10",
+      "claim_id": "c40",
+      "seam": "served bf16 GGUF vs in-process scoring of scorer-r3b on validation",
+      "behavior": "bf16 GGUF readout matches the in-process distribution within 0.01; Q4 fitted on its own predictions",
+      "source_text": "Calibration and readout fidelity are judged against the same artifact: the Q4_K_M distribution legitimately differs from bf16 (probe: max abs diff up to 0.096 on dev-e08 where the bf16 GGUF matched to 1e-4), so the temperature and thresholds are fitted on the deployed Q4_K_M's own validation distributions, and h12's 'match bf16 exact within 0.01' check applies to the bf16 GGUF (readout fidelity), not to Q4.",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o11",
+      "claim_id": "c41",
+      "seam": "validation folds",
+      "behavior": "fit and selection folds seeded and disjoint; no entry informs both",
+      "source_text": "Validation is not double-dipped: the temperature fit, the gate thresholds and the checkpoint choice all come from validation, so validation is split into a fit fold and a selection fold (or cross-validated), fixed with a seed before the first run.",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o12",
+      "claim_id": "c42",
+      "seam": "docs/tool-jev-calibration-rule.md",
+      "behavior": "the checkpoint rule is committed before the first training command",
+      "source_text": "A pre-registered checkpoint decision rule is written before any training run of this cycle, including how clean-test accuracy trades against permutation robustness and calibration (q7 risk; in #46, b1 beat the better-calibrated b4 only on the pre-registered rule \u2014 docs/qwen-tool-jev-finetune.md Track B runs).",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o13",
+      "claim_id": "c13",
+      "seam": "fresh evaluation sides",
+      "behavior": "new sealed test side and held-out before any training; validation >= 150; issue-46 test side not used for a claim",
+      "source_text": "Fresh evaluation sides: the issue-46 test side is spent (comparison doc next-iteration notes), so this cycle needs a new sealed test side and held-out, and validation grown from 66 to ~150-200 entries so threshold and temperature fits are not driven by single entries (1/15 escalate = 6.7 pts).",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o14",
+      "claim_id": "c14",
+      "seam": "final reports",
+      "behavior": "every reported rate and ECE carries a bootstrap CI and n",
+      "source_text": "Results carry uncertainty: with n=64 test and n=32 missing-candidate, ECE/recall move 3-7 pts per entry, so reports include bootstrap confidence intervals and reliability diagrams, not just point ECE/Brier.",
+      "origin": "llm",
+      "status": "proposed"
+    }
+  ]
 }
