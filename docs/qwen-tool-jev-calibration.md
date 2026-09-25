@@ -18,15 +18,19 @@ different domain from scratch, start from the domain-general
 [`scorer-finetune-playbook.md`](scorer-finetune-playbook.md); this page is
 its case study.
 
-**Status: in progress, 2026-09-25.** Code waves 1-3 are merged; the t13
-data is sealed (fresh evaluation pool, private held-out) and corpus v2 is
-built; the t17 baseline on `scorer-b1` is done (pooled permutation change
-18.8%, Q4 ECE 0.097 raw); t15's targeted augmentation is finishing. No
-training run has started. See the
-[decision path](#decision-path) for every choice made so far and why,
-[Where the run stands](#where-the-run-stands) for the live picture, and the
+**Status: trained, measured and uploaded privately, 2026-09-25.** The
+chosen checkpoint is `scorer-r3b` (D46), deployed as `Q4_K_M` with a frozen
+temperature and a read-only margin gate (D47). On the fresh test side and
+the sealed held-out it makes **0 wrong mutating proposals**, calibrated
+**ECE 0.016 / 0.044**, and pooled permutation change **2.07%** (bar 2.3%);
+missing-candidate escalation is 85.5% on test and **76.7% on the held-out,
+the one missed bar** (D48). Three private repositories hold the bf16 model,
+the GGUF with its calibration and gate, and the data set (D49). Still open:
+the report (t22), `/validate-delivery`, `/summarize-delivery`, the version
+bump and the PR (t23); DeepEval evaluation is issue #64. See the
+[decision path](#decision-path) for every choice and why, and the
 [pre-registered decision rule](#the-pre-registered-checkpoint-decision-rule-t9)
-for how the chosen checkpoint will be picked.
+for how the checkpoint was picked.
 
 ## What this cycle is
 
@@ -664,6 +668,16 @@ lapses, all posted on issue #61 when they happened.
   of 80%, where the model proposes a related read-only operation instead
   (0 wrong mutating). Pages: `docs/benchmarks/2026-09-25-lfm-final-scorer-r3b*`,
   `...-heldout-scorer-r3b*` and the Orin's `edge-orin-*`. Record: guide, #61.
+- **D49.** **t21: private uploads (operator-approved, the evaluation gate
+  for #64).** Three new private repositories, so issue 46's `scorer-b1`
+  repositories stay as they were: `tool-jev-scorer-v2` (bf16, commit
+  `e362b1fa`), `tool-jev-scorer-v2-gguf` (`Q4_K_M` plus `calibration.json` and
+  `gate.json`, commit `604b99e9`) and `tool-jev-v2-dataset` (train 2191,
+  validation 204, test 198, `data/scorer-train.json`; commit `33667224`), all
+  under the `jetson-ai-lab/qwen3.5-0.8b-nvsh-` prefix, each fetched back
+  byte-identical and read back `private=True`. The frozen calibration and
+  gate ship with the GGUF only, since they were fitted on that build.
+  Getting there took six tooling fixes (P24-P26). Record: guide, #61.
 - **D32.** **Lapses l5-l8 approved.** The operator approved l5 (split v2
   header), l6 (reviewer policy), l7 with its naturalness addendum (verdict
   parser) and l8 (mid-sentence "but"). Every lapse of this cycle, l1-l8,
@@ -671,7 +685,14 @@ lapses, all posted on issue #61 when they happened.
 
 ## Where the run stands
 
-**Latest, 2026-09-25 afternoon.**
+**Final, 2026-09-25 night.** Chosen checkpoint `scorer-r3b` (D46), deployed
+as `Q4_K_M` with frozen temperature 1.54 and a read-only margin 0.2 gate
+(D47); final run on test and the sealed held-out, Spark and AGX Orin (D48);
+private uploads (D49). Remaining: t22 report, t23 validate, summarize,
+version bump and PR. The entries below are the afternoon's snapshot of the
+data work, kept as the record.
+
+**Afternoon, 2026-09-25.**
 
 - **Eval pool (t13):** 480 entries (200 operation, 194 escalate, 86
   explain), deduplicated across seeds (44 near-duplicates removed) and with
@@ -1209,6 +1230,35 @@ redaction rule).
   l10), and a trailing full stop that picked a wrong service.** See D38.
   Also noted for #54: nvsh's own `bench._is_correct` compares arguments
   exactly too.
+- **P24, the bundle stages did not fit a second Tool-Jev cycle.**
+  **Symptom:** no stage could ship the frozen calibration and gate; the
+  data set card hard-coded issue 46; the data set bundle packaged
+  `train-augmented.json` but not the scorer's own training file. **Fix:**
+  `release_bundle.py --calibration/--gate` (a scorer only; a card section
+  explains them) and `BUNDLE_CALIBRATION`/`BUNDLE_GATE`; `dataset_bundle.py`
+  knows issue 53 (run log, grounding note) with `BUNDLE_ISSUE`, and ships
+  `data/scorer-train.json` when the run has one (`0e4b5cb`).
+- **P25, the fresh drafts carried no `source`, and provenance claimed
+  `dev.json`.** **Symptom:** `bundle-dataset` refused ("every published
+  record needs a 'source' field") on all 204 validation, 198 test and 75
+  train-side drafted records. Reading the code showed two more errors: the
+  manifest credited validation, test and the `t15-*` records to `dev.json`,
+  and the card called validation and test "corpus entries only" and the
+  split "70/15/15". **Fix:** `draft_sources.py` now writes `source:
+  draft-<pool>`; `dataset_bundle.py` has a `draft` origin, names each
+  record's real `source_file` (`draft_sources.py`, `targeted_augment.py`),
+  takes `--default-source` (`BUNDLE_DEFAULT_SOURCE=draft-sources`) for the
+  frozen records that lack one, and its card describes each side, the
+  targeted entries and the v2 split as they are (`aeff53b`, `19893a7`).
+- **P26, a drafted request named a private address.** **Symptom:** the
+  bundle scan refused `data/validation.jsonl` ("192.168.1.50", an
+  `outside_table` request to ssh into another machine, invented by the
+  teacher and on the same private range as the operator's network).
+  **Fix:** published records name any private IPv4 address by the RFC 5737
+  documentation address with the same last octet, disclosed on the card
+  (`a2367c6`); `scan_bundle.py` accepts the three documentation networks,
+  which Python's `ipaddress` counts as private (`6684033`). The measured
+  data is unchanged; only the published copy of that one record differs.
 - **Throughput note (not a bug).** Reviewer B (Qwen3.8-27B) thinks at
   about 42 tokens/s with up to 8192 tokens per verdict and serves 2
   requests at once, so reviews run at about 2-3 teacher calls a minute; the
@@ -1331,10 +1381,71 @@ address or serving-model location appears here.
    directory whose `splits/` and `train-augmented.json` are copies.
    `PROTECTED_EXTRA` holds only sides a claim or comparison still needs
    (D36). Done: D37.
-10. Training runs and selection (t18) — *(not yet run)*.
-11. Quantize and calibrate the deployed build (t19) — *(not yet run)*.
-12. Final measurement, Spark and Orin (t20) — *(not yet run)*.
-13. Private uploads (t21) — *(not yet run)*.
+10. **Training runs and selection (t18, D34-D46).** On the training machine
+    (cortex stopped for the run, restarted after), one env file per candidate
+    with `TRAIN_SCORER_ARGS="--epochs 3 --lr 2e-4 --rank 16 --alpha 32 --batch 8
+    --seed 46"` (r3: `--lr 1e-4`); r2 uses a second work directory whose
+    `data/scorer-train.json` was built with `--reasons`.
+
+    ```bash
+    $P/pipeline.sh --env r1.env train-scorer r1        # stages runs/scorer-r1
+    # per candidate, on the measuring machine (runs copied back):
+    $P/pipeline.sh --env cycle.env measure-val scorer-r1 --scorer in-process --predictions "$WORK/pred"
+    $P/pipeline.sh --env cycle.env measure-val scorer-r1 --scorer in-process --predictions "$WORK/pred" \
+      --slice missing-candidate --label scorer-r1-val-mc --out "$WORK/measure/scorer-r1-val-mc.md"
+    python $P/calibration_fit.py fit --predictions <val predictions> --folds "$WORK/splits/folds.json" \
+      --out "$WORK/calib/scorer-r1.params.json"
+    python $P/calibration_fit.py evaluate ... --fold selection
+    python $P/permutation_probe.py --split "$WORK/splits/val-selection.json" --per-entry 10 ... \
+      --model "$WORK/runs/scorer-r1/merged"     # val-selection.json: val restricted to selection_ids
+    ```
+
+    Apply the candidate's favoured calibration (by selection-fold ECE), fit
+    its gate on the fit fold (`sweep_gate.py`, 0 wrong mutating, then
+    missing-candidate escalation >= 80%, then the most right proposals; the
+    missing-candidate slice uses a `folds-mc.json` with `-nocand` ids), then
+    judge the selection fold by the rule plus d6. The d7 retrain (r3b) used a
+    third work directory with supplement v3 (D45).
+11. **Quantize and calibrate the deployed build (t19, D44/D47).**
+
+    ```bash
+    $P/pipeline.sh --env cycle.env quantize scorer-r3b
+    $P/pipeline.sh --env cycle.env measure-val scorer-r3b.q4_k_m --scorer served --predictions "$WORK/pred"
+    python $P/calibration_fit.py fit --predictions <q4 val predictions> --folds "$WORK/splits/folds.json" \
+      --out "$WORK/calib/scorer-r3b-q4.params.json"
+    ```
+
+    Keep the favoured variant (temperature here: the vector set to 1.0),
+    sweep the gate on the fit fold, check the selection fold, then freeze the
+    params and a settings file and record their hashes.
+12. **Final measurement, once (t20, D48).**
+
+    ```bash
+    $P/pipeline.sh --env cycle.env measure-final scorer-r3b.q4_k_m --scorer served
+    $P/pipeline.sh --env cycle.env measure-final scorer-r3b.q4_k_m --scorer served --slice missing-candidate
+    $P/pipeline.sh --env cycle.env measure-heldout scorer-r3b.q4_k_m --scorer served   # and --slice missing-candidate
+    python $P/permutation_probe.py --split "$WORK/splits/test.json" --final --per-entry 10 ...
+    python $P/calibration_fit.py apply --predictions <final predictions> --params <frozen params> --out <cal>
+    python $P/sweep_gate.py --predictions <cal> --final --escalate none --floor none --margin 0.2 \
+      --max-entropy none --mutating-floor none --mutating-margin none --mutating-max-entropy none
+    ```
+
+    On the edge device, the same build is served by the pinned Jetson
+    llama.cpp image and measured by the same harness (the device's resident
+    model stopped with operator approval and restarted by a trap on exit;
+    the held-out copy deleted on exit).
+13. **Private uploads (t21, D49).** A bundle env sets `TEACHER_MODELS`,
+    `BUNDLE_DATA_SUMMARY`, `BUNDLE_REJECTED`, `BUNDLE_ISSUE=53`,
+    `BUNDLE_DEFAULT_SOURCE=draft-sources` and `DATASET_MODEL_REPOS`.
+
+    ```bash
+    $P/pipeline.sh --env bundle.env bundle bf16 scorer-r3b tool-jev-scorer-v2 <final exact pages>
+    BUNDLE_CALIBRATION=<frozen params> BUNDLE_GATE=<frozen settings> \
+      $P/pipeline.sh --env bundle.env bundle gguf scorer-r3b.q4_k_m tool-jev-scorer-v2-gguf <final Q4 pages>
+    $P/pipeline.sh --env bundle.env bundle-dataset tool-jev-v2-dataset
+    FINAL=1 grant run --inject HF_TOKEN=<write token> -- \
+      $P/pipeline.sh --env bundle.env upload-bundle tool-jev-scorer-v2   # and the other two
+    ```
 
 ## Follow-up issues
 
