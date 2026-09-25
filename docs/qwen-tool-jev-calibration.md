@@ -126,11 +126,12 @@ this cycle's PRs. Marked *(planned)* until the task's PR merges.
 | `split.py` | **Merged.** New v2 mode: repeatable `--corpus`, `--version`, `--val-size`/`--test-size` as counts, `--fold-seed`. The header is a JSON object `{version, seed, sources: [{path, sha256}], sizes, side}`; the validation header additionally carries `fold_seed`/`fit_ids`/`selection_ids`, and a `folds.json` is written for `calibration_fit`. Refuses any output path under `nvsh/` and refuses `held-out.json` as input. Assembly is class-balanced round-robin by the corpus's `class` field; requested totals can land 1-2 off target per answer kind, from largest-remainder rounding. | t12 |
 | `draft_heldout.py` | Reused from issue 46, extended with a `--seed` option (default 46) so this cycle can draft its own fresh held-out set independent of issue 46's; gained a new `as_item()` fix (see [ledger P9](#ledger-symptom---cause---fix)) that turns a bare-string model reply into a text-only item instead of crashing. See [ledger P7](#ledger-symptom---cause---fix) for the seed-53 draft's original parse gap. | t13 |
 | `draft_sources.py` | **Merged, new** (a second t13 tool, alongside `draft_heldout.py`). `draft OUT --pool eval\|heldout --seed N --per-op K --per-reason K --explain K`: a table-only generator producing per-operation requests with validated arguments, per-decline-reason escalate prompts for all 8 classes, and explain Q/A pairs. `review IN OUT`: two independent reviewers give a strict yes/no; only what both accept is kept; exact and near-duplicate (Jaccard >= 0.8) dedupe against `dev.json` and within the draft, reusing `leakage_check.py`. Prints counts and hashes only; `review.jsonl` omits entry text entirely for the `heldout` pool. Reviewer roles are configured through `NVSH_DRAFT_<ROLE>_*` environment variables — no literal URL, key or model name is hard-coded. **Reworked (P12 below):** a reviewer's empty reply is now retried up to twice before being counted as a genuine reject (reason `"empty reply"`); the per-reviewer reply budget was raised to 8192 tokens; the escalate-reason definitions (`missing_argument`, `not_a_request`, `multi_step`, `injection`) were tightened to match the corpus's own decline classes exactly. | t13 |
-| `build_dataset.py` | **Merged.** Every rendered example is enriched with its `permutation` (`{order, labels}`), `gold`, `perm_seed` (a sha256 of `"<perm-seed>:<example id>"`), and `descriptions` (only when reason candidates are offered). New flags: `--randomize-labels`, `--perm-seed`, `--min-subset` (default 6), `--full-set-probability` (default 0.3), `--missing-candidate-rate` (train side only — derives `<id>-nocand` examples with the gold operation removed and gold retargeted to `escalate` / `escalate:outside_table`), `--reasons` (16 operations + `explain` + 8 `escalate:<reason>` = 25 candidates; the reason is read from the entry's `class` field, `decline:<reason>`, falling back to `outside_table` when unrecognised; descriptions come from `scripts/lfm-finetune/data/reasons.json`). Default behaviour (no new flags passed) is unchanged. | t14 |
+| `build_dataset.py` | **Merged**, then reworked for the d2 integration fix (below). Every rendered example is enriched with its `permutation` (`{order, labels}`), `gold`, `perm_seed` (a sha256 of `"<perm-seed>:<example id>"`), and `descriptions` (only when reason candidates are offered). Flags: `--randomize-labels`, `--perm-seed`, `--min-subset` (default 6), `--full-set-probability` (default 0.3), `--reasons` (16 operations + `explain` + 8 `escalate:<reason>` = 25 candidates; the reason is read from the entry's `class` field, `decline:<reason>`, falling back to `outside_table` when unrecognised; descriptions come from `scripts/lfm-finetune/data/reasons.json`). **`--missing-candidate-rate` no longer touches the rendered Track A file** (`nvsh-train.jsonl`): its `<id>-nocand` examples (gold operation removed, gold retargeted to `escalate` / `escalate:outside_table`) are now written **only** into a new corpus-format scorer training file, and only when `--scorer-out PATH` is also given — see the d2 entry below for why. Default behaviour (no new flags passed) is unchanged. | t14 |
 | `merge_variations.py` | Existing issue-46 tool; test coverage extended alongside t14's `build_dataset.py` changes. | t14 |
 | `data/reasons.json` | **Merged, new.** Scripts-side descriptions for the 8 `escalate:<reason>` candidates — never read from `nvsh/`. | t14 |
 | `data/paraphrases.json` | **Merged, new.** At least 2 alternative descriptions per candidate, for `permutation_probe.py`'s `paraphrase` kind. | t14 |
-| `train_scorer.py` | **Merged.** Reads each row's own permutation, gold, descriptions and `perm_seed`, and renders that row's own prompt; per-row label columns are padded with `-inf` masks. `--label-readout` chooses `variants` (default, the shared `distribution()` definition) or `single` (reproduces `scorer-b1` bit-identically — reproducing `b1` now requires passing `--label-readout single` explicitly). `--label-smoothing` / `--brier-weight` (default 0, off) add the calibration-aware loss terms beside cross-entropy. `train-log.json` gains `label_variant_ids`, `letter_ids`, `calibration_loss` and `permutations`; each row's own map is written to `<out>/row-maps.json` (path + sha256), so a run can be replayed exactly. | t16 |
+| `pipeline.sh` | **Reworked for d2 (below).** The `assemble` stage takes `SCORER_BUILD_ARGS`, which adds `--scorer-out $WORK/data/scorer-train.json` to the `build_dataset.py` call, producing the corpus-format scorer training file alongside the rendered Track A file. | t14/t16 (d2) |
+| `train_scorer.py` | **Merged.** Reads each row's own permutation, gold, descriptions and `perm_seed`, and renders that row's own prompt; per-row label columns are padded with `-inf` masks. `--label-readout` chooses `variants` (default, the shared `distribution()` definition) or `single` (reproduces `scorer-b1` bit-identically — reproducing `b1` now requires passing `--label-readout single` explicitly). `--label-smoothing` / `--brier-weight` (default 0, off) add the calibration-aware loss terms beside cross-entropy. `train-log.json` gains `label_variant_ids`, `letter_ids`, `calibration_loss` and `permutations`; each row's own map is written to `<out>/row-maps.json` (path + sha256), so a run can be replayed exactly. **Fixed by d2 (below):** now trains on the new corpus-format scorer file (`scorer-train.json`) when it exists and is newer than `train-augmented.json`, and prints which file it used — closing an integration gap where randomized-label runs would otherwise have trained on the fixed label map with no missing-candidate rows at all. | t16 |
 | `quantize.py` | Reused unchanged tooling from issue 46 to build the chosen checkpoint's `Q4_K_M` (and optionally AWQ). | t19 |
 
 ## Corpus v2 design
@@ -325,6 +326,39 @@ vocabulary (1.46 s). **Fix (ledger P13):** `READOUT_TOP` raised from 5000
 to **20000**, with every server cap, env example, release instruction and
 test updated to match (rework inside t1/t3's files; c38's floor is >= 5000,
 so this stays compliant). Full suite: 4543 passed.
+
+**Integration gap found and fixed (deviation d2, proposed, awaiting
+operator confirmation — see [ledger](#ledger-symptom---cause---fix)
+below):** t14 enriched the rendered Track A file, `nvsh-train.jsonl`, but
+`train_scorer.py` reads the corpus-format `train-augmented.json`, which
+never got the enrichment — so a randomized-label training run would
+silently have trained on the fixed label map with zero missing-candidate
+rows. Fixed: `build_dataset.py --scorer-out` now writes a separate
+corpus-format scorer training file; `pipeline.sh`'s `assemble` stage wires
+it in via `SCORER_BUILD_ARGS`; `train_scorer.py` trains on it when present
+and newer, and reports which file it used. Full suite: 4566 passed.
+
+**A second Codex review of wave 2-3's code found six real bugs**, all
+logged on issue #61, fixes in progress (none merged yet as of this entry):
+`permutation_probe.py` only ever read labels `A` through `R`, missing any
+letter later in the alphabet, and did not separate incomplete trials from
+complete ones in its counts; `calibration_fit.py`'s fold split assigned
+individual example ids to fit/selection, so one source's variations could
+straddle both folds — it needs to fold by `source_id` as a group instead;
+`split.py`'s class-balanced round-robin used contiguous slicing, which
+starved validation and test of rare decline classes — it needs per-class
+allocation across sides instead; `sweep_gate.py` turned a scorer's
+argument-grounding failure into an ordinary proposal instead of preserving
+it as `invalid`; `draft_sources.py`'s `--seed` did not actually control
+generation (each teacher call was effectively unseeded) — it needs a
+per-call request seed and a note on what reproducibility that does and
+does not buy.
+
+**Throughput note:** reviews run at about 3.4 teacher calls a minute under
+the fixed 8192-token reviewer budgets. The serial runner's remaining queue
+was stopped so the eval re-review, the eval top-ups and the held-out
+re-review can all run in parallel, with reviewer B serving two requests at
+once.
 
 This section will be updated at each step as the lead forwards findings.
 
@@ -545,6 +579,51 @@ redaction rule).
   regression. **Fix:** none needed in this cycle's own files; noted here
   only so a future run does not mistake this specific test for evidence
   of a regression this cycle introduced.
+- **d2, the scorer-training file integration gap (proposed deviation,
+  awaiting operator confirmation on issue #61, under the operator's
+  standing rule to `/deviate` as fitting and record cumulatively).**
+  **Symptom:** t14 enriched every example in the rendered Track A file,
+  `nvsh-train.jsonl`, but `train_scorer.py` (t16) reads the corpus-format
+  `train-augmented.json` instead — which t14 never touched. **Cause:** the
+  enrichment and the file the scorer actually trains on live in two
+  different formats, and nothing wired the new fields from one to the
+  other; had this gone unnoticed, every randomized-label training run of
+  this cycle would have silently trained on the fixed label map with no
+  missing-candidate rows at all, defeating the point of t2/t14/t16.
+  **Fix (merged):** `build_dataset.py --scorer-out PATH` writes a new
+  corpus-format scorer training file — the original entries plus the
+  `<id>-nocand` missing-candidate examples, each carrying the permutation,
+  gold, `perm_seed` and descriptions from the same enrichment pass, plus a
+  provenance block; `pipeline.sh`'s `assemble` stage gained
+  `SCORER_BUILD_ARGS` to add `--scorer-out $WORK/data/scorer-train.json`;
+  `train_scorer.py` now trains on that file when it exists and is newer
+  than `train-augmented.json`, and prints which file it used. **A related
+  fix, found by Codex during this same pass:** `<id>-nocand` rows are now
+  written *only* into the scorer file, never into the rendered Track A
+  output — in the Track A file they would have carried the same prompt and
+  tool list as their source row but the opposite target, which is wrong
+  for a generative tool router. Default behaviour (no `--scorer-out`) is
+  unchanged. Full suite: 4566 passed.
+- **P14, a second Codex review of wave 2-3's code found six real bugs
+  (logged on issue #61; fixes in progress, none merged as of this entry).**
+  (1) `permutation_probe.py`'s letter permutation only ever drew from `A`
+  through `R`, silently never reaching later letters of the alphabet —
+  **fix:** read the whole alphabet. (2) The same tool did not separate
+  incomplete trials from complete ones in its counts — **fix:** count
+  incomplete trials separately. (3) `calibration_fit.py`'s fold split
+  assigned individual example ids to the fit or selection fold, so one
+  source's stored variations could land on both sides of the split it is
+  meant to keep separate — **fix:** fold by `source_id` as a group. (4)
+  `split.py`'s class-balanced round-robin used contiguous slicing per
+  class, which could starve validation and test of the rarer decline
+  classes — **fix:** allocate per class across sides instead of slicing
+  contiguously. (5) `sweep_gate.py` turned a scorer's own argument-
+  grounding failure into an ordinary `propose` decision instead of
+  preserving it as `invalid` — **fix:** preserve grounding failures as
+  `invalid`, matching `scorer.py`'s own behaviour. (6) `draft_sources.py`'s
+  `--seed` flag did not actually control generation (each teacher call ran
+  effectively unseeded) — **fix:** derive a per-call request seed from it,
+  and document what reproducibility it does and does not buy.
 
 ## Reproduce steps
 
