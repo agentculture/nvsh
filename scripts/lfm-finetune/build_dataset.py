@@ -79,28 +79,14 @@ def _sibling(name: str):
 
 scorer = _sibling("scorer")
 
-#: The 8 decline classes (issue 53 t14), read from the corpus's own `class`
-#: field (``"decline:<reason>"``) and offered, in ``--reasons`` mode, as
-#: distinct escalate-reason candidates instead of the bare ``escalate``.
-#: Order is fixed so the default (non-randomized) letter map is stable.
-REASON_CANDIDATES: tuple[str, ...] = (
-    "escalate:outside_table",
-    "escalate:repair",
-    "escalate:diagnosis",
-    "escalate:missing_argument",
-    "escalate:not_a_request",
-    "escalate:multi_step",
-    "escalate:injection",
-    "escalate:over_time",
-)
-
-#: An escalate entry with no or unknown `class` rolls up to this reason.
-DEFAULT_REASON = "escalate:outside_table"
-
-#: Scripts-side (never nvsh/) description overrides for the reason candidates.
-REASON_DESCRIPTIONS: dict[str, str] = json.loads(
-    (_HERE / "data" / "reasons.json").read_text(encoding="utf-8")
-)
+#: The 8 decline classes (issue 53 t14), offered in ``--reasons`` mode as
+#: distinct escalate-reason candidates instead of the bare ``escalate``, their
+#: roll-up default and their prompt descriptions (``data/reasons.json``). Defined
+#: once in scorer.py, which measure.py --reasons reads too, so the pool a scorer
+#: is trained on and the pool it is measured on cannot drift apart.
+REASON_CANDIDATES: tuple[str, ...] = scorer.REASON_CANDIDATES
+DEFAULT_REASON = scorer.DEFAULT_REASON
+REASON_DESCRIPTIONS: dict[str, str] = scorer.REASON_DESCRIPTIONS
 
 #: How many candidates a randomized offer keeps at minimum, and the chance
 #: it keeps the full pool instead (--randomize-labels only).
@@ -398,16 +384,8 @@ def _header(source: Path) -> str:
 
 
 def candidate_pool(reasons: bool) -> tuple[str, ...]:
-    """Every candidate a build offers: :func:`scorer.candidates`, or with
-
-    *reasons*, its bare ``escalate`` replaced by :data:`REASON_CANDIDATES`
-    (16 operations + explain + 8 reasons = 25, still within
-    ``scorer.LABEL_ALPHABET``).
-    """
-    base = scorer.candidates()
-    if not reasons:
-        return base
-    return tuple(name for name in base if name != lfm.ESCALATE_TOOL) + REASON_CANDIDATES
+    """Every candidate a build offers: :func:`scorer.candidate_pool` (shared with measure.py)."""
+    return scorer.candidate_pool(reasons)
 
 
 def reason_for_entry(entry: CorpusEntry) -> str:
@@ -415,15 +393,9 @@ def reason_for_entry(entry: CorpusEntry) -> str:
 
     The corpus's ``class`` field (``CorpusEntry.phrasing``) carries
     ``"decline:<reason>"`` for an escalate entry; the matching candidate is
-    ``"escalate:<reason>"``. A missing or unrecognised class rolls up to
-    :data:`DEFAULT_REASON`, never a fabricated one.
+    ``"escalate:<reason>"`` (:func:`scorer.reason_for_class`).
     """
-    cls = entry.phrasing or ""
-    if cls.startswith("decline:"):
-        candidate = "escalate:" + cls.split(":", 1)[1]
-        if candidate in REASON_CANDIDATES:
-            return candidate
-    return DEFAULT_REASON
+    return scorer.reason_for_class(entry.phrasing)
 
 
 def gold_for(entry: CorpusEntry, reasons: bool) -> str:
@@ -477,11 +449,7 @@ def default_permutation(offered: Sequence[str], full: Sequence[str]):
     :func:`scorer.candidates` at all, so this is a small reimplementation
     rather than a call to ``labels_for`` itself.
     """
-    letters = scorer.LABEL_ALPHABET
-    if len(full) > len(letters):
-        raise ValueError(f"{len(full)} candidates but only {len(letters)} labels")
-    index = {name: position for position, name in enumerate(full)}
-    labels = {name: letters[index[name]] for name in offered}
+    labels = scorer.positional_labels(offered, full)
     return scorer.Permutation(order=tuple(offered), labels=labels)
 
 
@@ -514,7 +482,7 @@ def build_permutation(
 
 def descriptions_for(order: Sequence[str]) -> dict[str, str]:
     """Description overrides for *order*'s reason candidates only; ``{}`` otherwise."""
-    return {name: REASON_DESCRIPTIONS[name] for name in order if name in REASON_DESCRIPTIONS}
+    return scorer.reason_descriptions(order)
 
 
 def enrich_example(

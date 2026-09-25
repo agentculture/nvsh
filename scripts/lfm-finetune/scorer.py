@@ -67,6 +67,7 @@ helpers work without a training environment.
 
 from __future__ import annotations
 
+import json
 import math
 import random
 import re
@@ -92,6 +93,28 @@ CALIBRATION_LABELS = {
     lfm.EXPLAIN_TOOL: tier_bench.EXPLAIN_LABEL,
     lfm.ESCALATE_TOOL: tier_bench.ESCALATE_LABEL,
 }
+
+#: The 8 decline classes (issue 53 t14), offered in reasons mode (``build_dataset.py
+#: --reasons``, ``measure.py --reasons``) as distinct escalate-reason candidates in
+#: place of the bare ``escalate``. Order is fixed so the default letter map is stable.
+REASON_CANDIDATES: tuple[str, ...] = (
+    "escalate:outside_table",
+    "escalate:repair",
+    "escalate:diagnosis",
+    "escalate:missing_argument",
+    "escalate:not_a_request",
+    "escalate:multi_step",
+    "escalate:injection",
+    "escalate:over_time",
+)
+
+#: An escalate entry with no or unknown ``class`` rolls up to this reason.
+DEFAULT_REASON = "escalate:outside_table"
+
+#: Scripts-side (never nvsh/) prompt descriptions for the reason candidates.
+REASON_DESCRIPTIONS: dict[str, str] = json.loads(
+    (Path(__file__).resolve().parent / "data" / "reasons.json").read_text(encoding="utf-8")
+)
 
 #: Label alphabet, in candidate order. Each is one token in the Qwen3.5 and
 #: LFM2.5 vocabularies (checked by :func:`label_token_ids`, never assumed).
@@ -183,6 +206,53 @@ def labels_for(offered: Sequence[str]) -> dict[str, str]:
             raise ValueError(f"{name!r} is not a candidate")
         labels[name] = LABEL_ALPHABET[full.index(name)]
     return labels
+
+
+def candidate_pool(reasons: bool = False) -> tuple[str, ...]:
+    """Every candidate one request is offered: :func:`candidates`, or in reasons mode
+
+    its bare ``escalate`` replaced by :data:`REASON_CANDIDATES` (16 operations +
+    explain + 8 reasons = 25, still within :data:`LABEL_ALPHABET`). The one pool
+    ``build_dataset.py --reasons`` trains on and ``measure.py --reasons`` measures.
+    """
+    base = candidates()
+    if not reasons:
+        return base
+    return tuple(name for name in base if name != lfm.ESCALATE_TOOL) + REASON_CANDIDATES
+
+
+def reason_for_class(cls: str | None) -> str:
+    """The reason candidate a corpus ``class`` (``"decline:<reason>"``) names.
+
+    A missing or unrecognised class rolls up to :data:`DEFAULT_REASON`, never
+    a fabricated one.
+    """
+    if cls and cls.startswith("decline:"):
+        candidate = "escalate:" + cls.split(":", 1)[1]
+        if candidate in REASON_CANDIDATES:
+            return candidate
+    return DEFAULT_REASON
+
+
+def reason_descriptions(order: Sequence[str]) -> dict[str, str]:
+    """Description overrides for *order*'s reason candidates only; ``{}`` otherwise."""
+    return {name: REASON_DESCRIPTIONS[name] for name in order if name in REASON_DESCRIPTIONS}
+
+
+def positional_labels(offered: Sequence[str], full: Sequence[str]) -> dict[str, str]:
+    """Candidate -> letter for *offered*, each lettered by its position in *full*.
+
+    :func:`labels_for`'s rule over any pool, including the reasons pool (whose
+    names :func:`labels_for` refuses): a candidate's letter does not move when
+    others are left out.
+    """
+    if len(full) > len(LABEL_ALPHABET):
+        raise ValueError(f"{len(full)} candidates but only {len(LABEL_ALPHABET)} labels")
+    index = {name: position for position, name in enumerate(full)}
+    missing = [name for name in offered if name not in index]
+    if missing:
+        raise ValueError(f"not in the candidate pool: {', '.join(missing)}")
+    return {name: LABEL_ALPHABET[index[name]] for name in offered}
 
 
 @dataclass(frozen=True)
