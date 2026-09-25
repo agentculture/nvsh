@@ -1259,6 +1259,17 @@ redaction rule).
   (`a2367c6`); `scan_bundle.py` accepts the three documentation networks,
   which Python's `ipaddress` counts as private (`6684033`). The measured
   data is unchanged; only the published copy of that one record differs.
+- **P27, PR #65 code review (7 findings, all fixed; `85d72fb`, `35a5a0f`).**
+  (1) `scorer-train.json` shipped without the address redaction, and CGNAT
+  addresses were never redacted; (2) `bundle-dataset` could ship a stale
+  `scorer-train.json`; (3) reasons-mode training validated on the fixed
+  18-label map (only r2's logged trainer figure was affected); (4) the gate
+  gave an unknown operation the read-only thresholds; (5) gate entropy was
+  normalised before the escalate-reason roll-up; (6) the sweep bootstrapped
+  every grid point; (7) `draft_heldout.py` labelled every draft issue 46's
+  and crashed on a bare `--seed`. None changes a shipped result: the uploaded
+  bundle scanned clean, the frozen gate uses no entropy threshold and every
+  proposed operation is in the table.
 - **Throughput note (not a bug).** Reviewer B (Qwen3.8-27B) thinks at
   about 42 tokens/s with up to 8192 tokens per verdict and serves 2
   requests at once, so reviews run at about 2-3 teacher calls a minute; the
