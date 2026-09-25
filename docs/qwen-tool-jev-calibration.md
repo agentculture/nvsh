@@ -499,8 +499,13 @@ lapses, all posted on issue #61 when they happened.
   D26/D30 fixes). Diagnosis-explain done: 26 kept (13 whole pairs; 16
   rejected by reviewer B, 10 by the identifier guard, 1 near-duplicate of a
   protected side; sha256 `5a091e53b289…`). Missing-argument rerun: 20
-  kept, then D31 found 20 more real yeses lost to the parser; running
-  again as `sup-marg3.json`, beside the hard-negative rerun (seed 54).
+  kept, then D31 found 20 more real yeses lost to the parser. Rerun with the
+  fix (`sup-marg3.json`): **30 kept** (reviewer B 24, duplicates 7, train
+  exact 7, no argument span 5, too short 2, near-protected 1). The lead
+  read all 24 remaining reviewer rejects: every one is a genuine "no"
+  (fragments such as "that service logs", stripping that left the service
+  named, awkward phrasings), none a parser artifact. Still running: the
+  hard-negative rerun (seed 54).
 - **Assembly prepared (D29):** issue 46's reviewed variations copied into
   the run's `aug/`; `SUPPLEMENT` and `SCORER_BUILD_ARGS` set in the cycle's
   env. Next: combined supplement, `assemble`, freeze hashes, then r1-r3.
