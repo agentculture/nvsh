@@ -30,6 +30,8 @@ _SCRIPT = Path(__file__).resolve().parents[1] / "scripts/lfm-finetune/measure.py
 UID = 4242
 OWN = f"nvsh-tier2-{UID}"
 STOCK = "LiquidAI/LFM2.5-350M"
+#: --max-logprobs a served scorer needs: scorer.READOUT_TOP (issue 53, deviation d1).
+_READOUT = "5000"
 TUNED = "jetson-ai-lab/lfm2.5-350m-nvsh-triage"
 
 
@@ -1564,7 +1566,7 @@ def test_scorer_mode_writes_the_same_predictions_file(measure, metrics, tmp_path
     _scorer_seams(measure, harness, fake, built)
     predictions = tmp_path / "p"
     out = tmp_path / "r.md"
-    argv = _argv(split, out, "--scorer", "served", "--max-logprobs", "24", models=(STOCK,))
+    argv = _argv(split, out, "--scorer", "served", "--max-logprobs", _READOUT, models=(STOCK,))
     argv += ["--predictions", str(predictions), "--ground-snapshot", str(_snapshot(tmp_path))]
     assert measure.main(argv, seams=harness.seams) == 0
     assert harness.specs == []  # no LfmTier in scorer mode
@@ -1586,7 +1588,7 @@ def test_scorer_mode_writes_the_same_predictions_file(measure, metrics, tmp_path
     assert fake.tops == [measure.scorer.READOUT_TOP] * 3
     text = out.read_text(encoding="utf-8")
     assert "candidate scorer (served)" in text
-    assert "max-logprobs 24" in text
+    assert f"max-logprobs {_READOUT}" in text
     assert "## Issue 46 metrics" in text
 
 
@@ -1595,7 +1597,15 @@ def test_served_scorer_needs_enough_max_logprobs(measure, tmp_path, capsys):
     harness = Harness(measure, tmp_path, FakeDocker(), lfm={"engine": "vllm", "mode": "attach"})
     built: list = []
     _scorer_seams(measure, harness, _FakeScorer(lambda _p: {}), built)
-    for extra in ([], ["--max-logprobs", "20"]):
+    below = str(measure.scorer.READOUT_TOP - 1)
+    # The old label-count check (len(labels) + TOP_MARGIN = 24) no longer suffices:
+    # a served request asks for scorer.READOUT_TOP (issue 53, deviation d1).
+    for extra in (
+        [],
+        ["--max-logprobs", "20"],
+        ["--max-logprobs", "24"],
+        ["--max-logprobs", below],
+    ):
         argv = _argv(split, tmp_path / "r.md", "--scorer", "served", *extra, models=(STOCK,))
         assert measure.main(argv, seams=harness.seams) == 1
         assert "max-logprobs" in capsys.readouterr().err
@@ -1607,7 +1617,7 @@ def test_served_scorer_refused_on_a_managed_launch(measure, tmp_path, capsys):
     harness = Harness(measure, tmp_path, FakeDocker())
     built: list = []
     _scorer_seams(measure, harness, _FakeScorer(lambda _p: {}), built)
-    argv = _argv(split, tmp_path / "r.md", "--scorer", "served", "--max-logprobs", "24")
+    argv = _argv(split, tmp_path / "r.md", "--scorer", "served", "--max-logprobs", _READOUT)
     assert measure.main(argv, seams=harness.seams) == 2
     assert "max-logprobs" in capsys.readouterr().err
     assert built == []
@@ -1888,7 +1898,7 @@ def test_served_scorer_preflight_refuses_the_wrong_model_name(
     split = _small_split(tmp_path)
     harness, built = _served_scorer_harness(measure, tmp_path, scorer_server)
     argv = _argv(
-        split, tmp_path / "r.md", "--scorer", "served", "--max-logprobs", "24", models=(STOCK,)
+        split, tmp_path / "r.md", "--scorer", "served", "--max-logprobs", _READOUT, models=(STOCK,)
     )
     assert measure.main(argv, seams=harness.seams) == 2
     assert not (tmp_path / "r.md").exists()
@@ -1903,7 +1913,7 @@ def test_served_scorer_call_error_fails_the_run_and_writes_no_results_page(
     out = tmp_path / "r.md"
     predictions = tmp_path / "p"
     harness, built = _served_scorer_harness(measure, tmp_path, scorer_server)
-    argv = _argv(split, out, "--scorer", "served", "--max-logprobs", "24", models=(STOCK,))
+    argv = _argv(split, out, "--scorer", "served", "--max-logprobs", _READOUT, models=(STOCK,))
     argv += ["--predictions", str(predictions)]
     assert measure.main(argv, seams=harness.seams) == 2
     assert not out.exists()
@@ -1922,7 +1932,7 @@ def test_served_scorer_healthy_run_is_not_a_tier_error(
     harness, built = _served_scorer_harness(measure, tmp_path, scorer_server)
     full = _label_logprobs(measure, "escalate")
     monkeypatch.setattr(_ScorerHandler, "logprobs_by_call", [full, full])
-    argv = _argv(split, out, "--scorer", "served", "--max-logprobs", "24", models=(STOCK,))
+    argv = _argv(split, out, "--scorer", "served", "--max-logprobs", _READOUT, models=(STOCK,))
     assert measure.main(argv, seams=harness.seams) == 0
     assert out.exists()
 
@@ -2072,3 +2082,268 @@ def test_label_allows_a_quantized_build_name(measure, tmp_path, label, ok):
     argv = _argv(split, tmp_path / "r.md")
     argv[argv.index("--label") + 1] = label
     assert (measure.main(argv, seams=harness.seams) == 0) is ok
+
+
+# ---------------------------------------------------------------------------
+# Issue 53, t8: the READOUT_TOP preflight, complete/incomplete readout counts,
+# --calibration, per-slice reliability tables and CIs, and P71 (#57)
+# ---------------------------------------------------------------------------
+
+
+def test_served_scorer_preflight_is_readout_top(measure):
+    """Deviation d1: the --max-logprobs check reads scorer.READOUT_TOP, not labels + margin."""
+    assert measure.scorer_labels_needed() == measure.scorer.READOUT_TOP
+    assert _READOUT == str(measure.scorer.READOUT_TOP)
+
+
+def _scorer_harness(measure, tmp_path, pick) -> tuple[Harness, _FakeScorer, list]:
+    fake = _FakeScorer(pick)
+    harness = Harness(measure, tmp_path, FakeDocker(), lfm={"engine": "vllm", "mode": "attach"})
+    built: list = []
+    _scorer_seams(measure, harness, fake, built)
+    return harness, fake, built
+
+
+def _missing_one(measure, winner: str) -> dict[str, float]:
+    """Every label but one (never the winner): an incomplete served readout."""
+    full = _label_logprobs(measure, winner)
+    labels = measure.scorer.labels_for(measure.scorer.candidates())
+    dropped = next(label for name, label in labels.items() if name != winner)
+    return {token: value for token, value in full.items() if token != dropped}
+
+
+def test_served_run_counts_complete_and_incomplete_lines(measure, tmp_path):
+    split = _small_split(tmp_path)  # op1 (gpu_stats), esc1 (escalate)
+
+    def pick(prompt: str) -> dict[str, float]:
+        request = json.loads(prompt)[-1]["content"]
+        if "op1" in request:
+            return _label_logprobs(measure, "gpu_stats")
+        return _missing_one(measure, "escalate")
+
+    harness, _fake, _built = _scorer_harness(measure, tmp_path, pick)
+    out = tmp_path / "r.md"
+    predictions = tmp_path / "p"
+    argv = _argv(split, out, "--scorer", "served", "--max-logprobs", _READOUT, models=(STOCK,))
+    argv += ["--predictions", str(predictions)]
+    assert measure.main(argv, seams=harness.seams) == 0
+    op1, esc1 = _prediction_lines(_predictions_files(predictions)[0])
+    assert op1["candidates"]["gpu_stats"] == pytest.approx(0.9)
+    # Incomplete: counted, never renormalised over the labels that came back.
+    assert esc1["candidates"] is None
+    text = out.read_text(encoding="utf-8")
+    assert _row(text, "Scorer readouts, complete / incomplete (never renormalised)") == ["1 / 1"]
+    kept = json.loads(next(predictions.glob("*.metrics.json")).read_text(encoding="utf-8"))
+    assert kept["readout"] == {"complete": 1, "incomplete": 1, "no_label_mass": 0, "call_error": 0}
+
+
+def test_generative_run_shows_no_scorer_readout(measure, tmp_path):
+    split = _split(tmp_path)
+    harness = Harness(measure, tmp_path, FakeDocker())
+    out = tmp_path / "r.md"
+    assert measure.main(_argv(split, out), seams=harness.seams) == 0
+    text = out.read_text(encoding="utf-8")
+    assert _row(text, "Scorer readouts, complete / incomplete (never renormalised)") == [
+        "n/a",
+        "n/a",
+    ]
+
+
+def _params(tmp_path: Path, name: str = "params.json", **fields) -> Path:
+    payload = {
+        "seed": 7,
+        "temperature": 2.0,
+        "vector": {},
+        "fit_examples": 10,
+        "skipped_null": 0,
+        "fit_fold_size": 10,
+        "predictions_source": "work/val-1-stock.predictions.jsonl",
+        **fields,
+    }
+    path = tmp_path / name
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
+
+
+def _scored_run(measure, tmp_path, extra=(), sub="run") -> tuple[int, Path, Path]:
+    split = _small_split(tmp_path)
+    harness, _fake, _built = _scorer_harness(
+        measure, tmp_path, lambda _p: _label_logprobs(measure, "gpu_stats")
+    )
+    out = tmp_path / sub / "r.md"
+    predictions = tmp_path / sub / "p"
+    argv = _argv(split, out, "--scorer", "in-process", models=(STOCK,))
+    argv += ["--predictions", str(predictions), *extra]
+    return measure.main(argv, seams=harness.seams), out, predictions
+
+
+def test_calibration_rescales_candidates_before_metrics_and_predictions(measure, tmp_path):
+    import hashlib
+
+    code, _out, raw_dir = _scored_run(measure, tmp_path, sub="raw")
+    assert code == 0
+    raw = _prediction_lines(_predictions_files(raw_dir)[0])
+    params = _params(tmp_path, vector={"(escalate)": 3.0})
+    code, out, cal_dir = _scored_run(measure, tmp_path, ("--calibration", str(params)), "cal")
+    assert code == 0
+    calibrated = _prediction_lines(_predictions_files(cal_dir)[0])
+    for before, after in zip(raw, calibrated):
+        expected = measure.calibration_fit.apply_scaling(
+            before["candidates"], 2.0, {"(escalate)": 3.0}
+        )
+        assert after["candidates"] == pytest.approx(expected)
+        assert after["outcome"] == before["outcome"]  # the decision is not rescaled
+    kept = json.loads(next(cal_dir.glob("*.metrics.json")).read_text(encoding="utf-8"))
+    raw_kept = json.loads(next(raw_dir.glob("*.metrics.json")).read_text(encoding="utf-8"))
+    assert kept["calibration"]["brier"] != pytest.approx(raw_kept["calibration"]["brier"])
+    text = out.read_text(encoding="utf-8")
+    digest = hashlib.sha256(params.read_bytes()).hexdigest()
+    assert f"sha256 `{digest}`" in text
+    assert "- Calibration: " in text
+    before_row = _row(text, "ECE / Brier before --calibration")
+    assert before_row == [
+        f"{raw_kept['calibration']['ece']:.3f} / {raw_kept['calibration']['brier']:.3f}"
+    ]
+
+
+def test_no_calibration_is_recorded_as_none(measure, tmp_path):
+    code, out, _p = _scored_run(measure, tmp_path)
+    assert code == 0
+    text = out.read_text(encoding="utf-8")
+    assert "- Calibration: none" in text
+    assert _row(text, "ECE / Brier before --calibration") == ["n/a"]
+
+
+@pytest.mark.parametrize(
+    "source", ["work/test-1-stock.predictions.jsonl", "out/held-out-1.predictions.jsonl"]
+)
+def test_calibration_fitted_on_test_or_held_out_is_refused(measure, tmp_path, capsys, source):
+    params = _params(tmp_path, predictions_source=source)
+    split = _small_split(tmp_path)
+    harness, _fake, built = _scorer_harness(measure, tmp_path, lambda _p: {})
+    out = tmp_path / "r.md"
+    argv = _argv(split, out, "--scorer", "in-process", "--calibration", str(params))
+    assert measure.main(argv, seams=harness.seams) == 1
+    assert "calibration" in capsys.readouterr().err
+    assert built == []  # refused before any model starts
+    assert not out.exists()
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"temperature": 0},
+        {"temperature": "hot"},
+        {"vector": {"gpu_stats": -1.0}},
+        {"vector": ["gpu_stats"]},
+        {"predictions_source": None},
+    ],
+)
+def test_malformed_calibration_params_are_refused(measure, tmp_path, fields):
+    params = _params(tmp_path, **fields)
+    split = _small_split(tmp_path)
+    harness, _fake, built = _scorer_harness(measure, tmp_path, lambda _p: {})
+    argv = _argv(split, tmp_path / "r.md", "--scorer", "in-process", "--calibration", str(params))
+    assert measure.main(argv, seams=harness.seams) == 1
+    assert built == []
+
+
+def test_missing_calibration_file_is_refused(measure, tmp_path):
+    split = _small_split(tmp_path)
+    harness, _fake, built = _scorer_harness(measure, tmp_path, lambda _p: {})
+    argv = _argv(split, tmp_path / "r.md", "--scorer", "in-process")
+    argv += ["--calibration", str(tmp_path / "nope.json")]
+    assert measure.main(argv, seams=harness.seams) == 1
+    assert built == []
+
+
+def test_report_carries_cis_and_per_slice_reliability_tables(measure, tmp_path):
+    code, out, _p = _scored_run(measure, tmp_path)
+    assert code == 0
+    text = out.read_text(encoding="utf-8")
+    ci = _row(text, "Right proposals, 95% bootstrap CI")[0]
+    assert ci.startswith("[") and "%" in ci
+    for metric in (
+        "Abstention recall, 95% bootstrap CI",
+        "Abstention precision, strict, 95% bootstrap CI",
+        "False-positive tool calls, 95% bootstrap CI",
+        "Invalid outputs, 95% bootstrap CI",
+        "ECE, 95% bootstrap CI",
+        "Brier, 95% bootstrap CI",
+    ):
+        assert len(_row(text, metric)) == 1
+    assert "## Per-slice calibration" in text
+    section = text.split("## Per-slice calibration", 1)[1].split("\n## ", 1)[0]
+    assert f"### `{STOCK}`" in section
+    for name in ("read_only", "mutating", "escalate_or_explain"):
+        assert f"#### {name}" in section
+        assert f"| {name} |" in section  # the per-slice summary row
+    assert "| bin | n | confidence | accuracy |" in section
+
+
+def test_failed_scorer_start_up_does_not_block_a_clean_rerun(measure, tmp_path, capsys):
+    """P71 / #57: a run that measured nothing may be replaced by a re-run, same label."""
+    split = _small_split(tmp_path)
+    out = tmp_path / "r.md"
+    argv = _argv(split, out, "--scorer", "in-process", models=(STOCK,))
+    harness, _fake, _built = _scorer_harness(
+        measure, tmp_path, lambda _p: _label_logprobs(measure, "gpu_stats")
+    )
+    working = harness.seams.build_scorer
+
+    def failing(spec):
+        raise ImportError("No module named 'transformers'")
+
+    harness.seams.build_scorer = failing
+    assert measure.main(argv, seams=harness.seams) == 2
+    failed = out.read_text(encoding="utf-8")
+    assert measure.NOT_MEASURED_MARKER in failed.splitlines()
+    capsys.readouterr()
+
+    harness.seams.build_scorer = working
+    assert measure.main(argv, seams=harness.seams) == 0  # no --force needed
+    assert "replacing" in capsys.readouterr().err
+    text = out.read_text(encoding="utf-8")
+    assert measure.NOT_MEASURED_MARKER not in text.splitlines()
+    assert _row(text, "Right proposals (metrics.py)") == ["1 of 1"]
+    # ... and a page that did measure something still refuses.
+    assert measure.main(argv, seams=harness.seams) == 1
+    assert "already exists" in capsys.readouterr().err
+
+
+def test_failed_generative_start_up_does_not_block_a_clean_rerun(measure, tmp_path):
+    split = _split(tmp_path)
+    out = tmp_path / "r.md"
+    failing = Harness(
+        measure, tmp_path, FakeDocker(), fail={STOCK: "image not pinned", TUNED: "image not pinned"}
+    )
+    assert measure.main(_argv(split, out), seams=failing.seams) == 2
+    assert measure.NOT_MEASURED_MARKER in out.read_text(encoding="utf-8").splitlines()
+    assert (
+        measure.main(_argv(split, out), seams=Harness(measure, tmp_path, FakeDocker()).seams) == 0
+    )
+    assert measure.NOT_MEASURED_MARKER not in out.read_text(encoding="utf-8").splitlines()
+
+
+def test_a_partly_measured_run_still_blocks_a_rerun(measure, tmp_path):
+    split = _split(tmp_path)
+    out = tmp_path / "r.md"
+    harness = Harness(measure, tmp_path, FakeDocker(), fail={TUNED: "image not pinned"})
+    assert measure.main(_argv(split, out), seams=harness.seams) == 2
+    assert measure.NOT_MEASURED_MARKER not in out.read_text(encoding="utf-8").splitlines()
+    assert (
+        measure.main(_argv(split, out), seams=Harness(measure, tmp_path, FakeDocker()).seams) == 1
+    )
+
+
+def test_a_final_page_that_measured_nothing_is_not_counted(measure, tmp_path):
+    split = _split(tmp_path, "test.json")
+    results = tmp_path / "benchmarks"
+    results.mkdir()
+    (results / "2026-09-01-lfm-old.md").write_text(
+        f"# old\n\n- Final run: yes\n{measure.NOT_MEASURED_MARKER}\n", encoding="utf-8"
+    )
+    out = results / "2026-09-22-lfm-final.md"
+    harness = Harness(measure, tmp_path, FakeDocker())
+    assert measure.main(_argv(split, out, "--final"), seams=harness.seams) == 0
+    assert "- Final runs on the test side, including this one: 1" in out.read_text(encoding="utf-8")

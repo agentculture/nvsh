@@ -87,13 +87,41 @@ distribution comes from the deciding reply's log-probabilities
 every candidate label once per entry and the same predictions file is
 written from its results (0 tokens; arguments from the grounding path the
 scorer uses). A served scorer needs ``--max-logprobs``, the value the
-attached vLLM was started with, and it must cover every label plus
-``scorer.TOP_MARGIN`` (risk r8); nvsh's managed launcher cannot pass that
-flag, so a served scorer is refused in managed mode. A served scorer is
+attached vLLM was started with, and it must cover ``scorer.READOUT_TOP``,
+the number of next-token log-probabilities a served request asks for (issue
+53, deviation d1; risk r8); nvsh's managed launcher cannot pass that flag,
+so a served scorer is refused in managed mode. A served scorer is
 preflighted like a generative run, and a call that fails (as opposed to
 ``scorer.py``'s normal "incomplete" result, when labels are simply missing
 from the top log-probabilities) is a tier error under the same
 ``--allow-tier-errors`` gate; the in-process scorer has no server to check.
+Every scorer run records how many lines came back with a complete
+distribution and how many were incomplete (a label missing from the top
+log-probabilities): an incomplete line is counted and carries no
+distribution, never one renormalised over the labels that did come back.
+
+Issue 53
+--------
+
+``--calibration PARAMS`` applies a ``calibration_fit.py fit`` params file
+(temperature, then vector scaling, ``calibration_fit.apply_scaling``) to every
+line's ``candidates`` before the predictions file is written and before
+metrics.py scores it; decisions (outcomes) are not changed. The params file's
+path and sha256 go into the report header, and the ECE / Brier before
+calibration are shown next to the calibrated ones. Params whose recorded
+``predictions_source`` names the test or held-out split are refused, as is a
+malformed params file, before any model starts.
+
+The report carries metrics.py's 95% bootstrap CIs next to each rate and the
+ECE / Brier, and a per-slice section (read-only / mutating /
+escalate-or-explain): a summary row per slice plus
+``metrics.reliability_markdown``'s reliability tables.
+
+A run in which every model's start-up failed measured nothing: its results
+page is written, marked with :data:`NOT_MEASURED_MARKER`, and a re-run with the
+same label replaces it without ``--force`` (ledger P71, #57). Such a page is
+not counted as a final run either. A page from a run that measured anything
+still refuses to be overwritten.
 
 ``--slice missing-candidate`` measures ``eval_slices.py``'s slice of the
 split (every operation entry with its gold operation left out of the
@@ -164,6 +192,7 @@ def _sibling(name: str):
     return module
 
 
+calibration_fit = _sibling("calibration_fit")  # before metrics: it loads its own copy
 metrics = _sibling("metrics")
 scorer = _sibling("scorer")
 eval_slices = _sibling("eval_slices")
@@ -175,6 +204,12 @@ _SCRIPT_NAME = "scripts/lfm-finetune/measure.py"
 
 MANAGED = "managed"
 FINAL_MARKER = "- Final run: yes"
+#: A results page from a run in which every model's start-up failed (P71, #57):
+#: it measured nothing, so a re-run with the same label may replace it.
+NOT_MEASURED_MARKER = (
+    "- Run status: nothing measured (every start-up failed); a re-run with the same"
+    " label replaces this page"
+)
 
 EXIT_OK = 0
 EXIT_USER = 1
@@ -1370,10 +1405,153 @@ def score_predictions(lines: Sequence[dict], path: Path) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Issue 53: --calibration applies calibration_fit.py's params to every line
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Calibration:
+    """A validated ``calibration_fit.py fit`` params file and where it came from."""
+
+    path: str
+    sha256: str
+    temperature: float
+    vector: Mapping[str, float]
+    source: str
+    fit_examples: object = None
+
+
+def _positive_number(value: object) -> bool:
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(value)
+        and value > 0
+    )
+
+
+def load_calibration(path: Path) -> Calibration:
+    """Read and check *path*; refuse (exit 1) a malformed one or one fitted on test/held-out.
+
+    ``calibration_fit.fit_params`` already refuses a test or held-out
+    predictions file, but a params file is only JSON: its recorded
+    ``predictions_source`` is checked again here with the same rule, so a
+    hand-made or renamed params file cannot bring test-side fitting in.
+    """
+    hint = "write one with: calibration_fit.py fit --predictions VAL --folds FOLDS --out PATH"
+    try:
+        data = path.read_bytes()
+        raw = json.loads(data)
+    except (OSError, ValueError) as exc:
+        raise MeasureError(EXIT_USER, f"--calibration {path}: {exc}", hint) from exc
+    if not isinstance(raw, dict):
+        raise MeasureError(EXIT_USER, f"--calibration {path}: not a JSON object", hint)
+    temperature = raw.get("temperature", 1.0)
+    if not _positive_number(temperature):
+        raise MeasureError(
+            EXIT_USER, f"--calibration {path}: temperature must be a positive number", hint
+        )
+    vector = raw.get("vector") or {}
+    if not isinstance(vector, dict) or not all(
+        isinstance(label, str) and _positive_number(scale) for label, scale in vector.items()
+    ):
+        raise MeasureError(
+            EXIT_USER,
+            f"--calibration {path}: vector must map each label to a positive number",
+            hint,
+        )
+    source = raw.get("predictions_source")
+    if not isinstance(source, str) or not source:
+        raise MeasureError(
+            EXIT_USER,
+            f"--calibration {path}: no predictions_source, so where it was fitted is unknown",
+            hint,
+        )
+    markers = calibration_fit.split_markers(Path(source))
+    if markers:
+        raise MeasureError(
+            EXIT_USER,
+            f"--calibration {path} was fitted on {source}, which looks like the"
+            f" {' and '.join(sorted(markers))} split; calibration is fitted on a validation"
+            " fold only",
+            "fit the params on a validation predictions file (calibration_fit.py fit)",
+        )
+    return Calibration(
+        path=home_relative(str(path)),
+        sha256=hashlib.sha256(data).hexdigest(),
+        temperature=float(temperature),
+        vector={label: float(scale) for label, scale in vector.items()},
+        source=home_relative(source),
+        fit_examples=raw.get("fit_examples"),
+    )
+
+
+def calibrate_lines(lines: Sequence[dict], calibration: Calibration) -> list[dict]:
+    """*lines* with each ``candidates`` rescaled; a line without one is left as it is.
+
+    Only the distribution is rescaled -- the decision (outcome, operation,
+    arguments) is what the model did and stays unchanged.
+    """
+    calibrated = []
+    for line in lines:
+        candidates = line.get("candidates")
+        if candidates is not None:
+            line = {
+                **line,
+                "candidates": calibration_fit.apply_scaling(
+                    candidates, calibration.temperature, dict(calibration.vector)
+                ),
+            }
+        calibrated.append(line)
+    return calibrated
+
+
+def calibration_of(lines: Sequence[dict]) -> dict:
+    """metrics.py's calibration block (ECE, Brier, bins) over *lines*, unwritten."""
+    try:
+        return metrics.compute_calibration([metrics.Prediction.from_dict(line) for line in lines])
+    except metrics.MetricsError as exc:
+        raise MeasureError(EXIT_ENV, f"metrics.py refused a predictions line: {exc}") from exc
+
+
+def calibration_note(calibration: Calibration | None) -> str:
+    if calibration is None:
+        return "none (the model's own candidate distributions)"
+    vector = (
+        f"vector over {len(calibration.vector)} label(s)" if calibration.vector else "no vector"
+    )
+    examples = (
+        f", {calibration.fit_examples} fit example(s)"
+        if calibration.fit_examples is not None
+        else ""
+    )
+    return (
+        f"`{calibration.path}` sha256 `{calibration.sha256}` (temperature"
+        f" {calibration.temperature:.4f}, {vector}; fitted on `{calibration.source}`{examples});"
+        " applied to every line's candidates before the predictions file and metrics"
+    )
+
+
+def readout_counts(notes: Mapping[str, int]) -> dict[str, int]:
+    """A scorer run's readouts: complete, incomplete, no label mass, call error."""
+    return {
+        "complete": int(notes.get(READOUT_COMPLETE, 0)),
+        "incomplete": int(notes.get(READOUT_INCOMPLETE, 0)),
+        "no_label_mass": int(notes.get(READOUT_NO_MASS, 0)),
+        "call_error": int(notes.get(READOUT_CALL_ERROR, 0)),
+    }
+
+
+# ---------------------------------------------------------------------------
 # Issue 46, Track B: the candidate scorer writes the same predictions file
 # ---------------------------------------------------------------------------
 
 SCORER_SERVED = "served"
+#: Run-note keys for a scorer run's readouts (issue 53): each line is exactly one.
+READOUT_COMPLETE = "readout_complete"
+READOUT_INCOMPLETE = "readout_incomplete"
+READOUT_NO_MASS = "readout_no_label_mass"
+READOUT_CALL_ERROR = "readout_call_error"
 SCORER_IN_PROCESS = "in-process"
 REVISION_IN_PROCESS = "passed to from_pretrained in-process"
 
@@ -1407,8 +1585,8 @@ class ScorerHandle:
 
 
 def scorer_labels_needed() -> int:
-    """Log-probabilities a served scorer asks for: every label plus the margin (risk r8)."""
-    return len(scorer.candidates()) + scorer.TOP_MARGIN
+    """Log-probabilities a served scorer asks for: ``scorer.READOUT_TOP`` (issue 53, d1)."""
+    return scorer.READOUT_TOP
 
 
 def build_scorer(spec: ScorerSpec) -> ScorerHandle:  # pragma: no cover - a model server or GPU
@@ -1536,10 +1714,16 @@ def scorer_predictions(
         call_error = watched.errors > before
         if call_error:
             notes[NO_DISTRIBUTION + "the scorer's call failed"] += 1
+            notes[READOUT_CALL_ERROR] += 1
         elif scored.incomplete is not None:
+            # Counted, never renormalised over the labels that came back (issue 53).
             notes[NO_DISTRIBUTION + "labels missing from the top log-probabilities"] += 1
+            notes[READOUT_INCOMPLETE] += 1
         elif scored.candidates is None:
             notes[NO_DISTRIBUTION + "no label mass"] += 1
+            notes[READOUT_NO_MASS] += 1
+        else:
+            notes[READOUT_COMPLETE] += 1
         lines.append(scorer_line(entry, scored, elapsed_ms, call_error=call_error))
     return lines, notes
 
@@ -1679,6 +1863,8 @@ class RunRecord:
     predictions: list = field(default_factory=list)
     metrics: dict = field(default_factory=dict)
     notes: Counter = field(default_factory=Counter)
+    #: Issue 53: metrics.py's calibration block before --calibration was applied.
+    raw_calibration: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -1964,6 +2150,8 @@ class Provenance:
     #: --allow-tier-errors; 0 unless that happened and the run was allowed to proceed.
     tier_errors: int = 0
     tier_errors_allowed: int = 0
+    #: Issue 53: which --calibration params were applied (path, sha256), or none.
+    calibration_note: str = ""
 
 
 def serving_record(settings: Mapping[str, object]) -> dict[str, str]:
@@ -2013,6 +2201,48 @@ def _timing(block: Mapping[str, object]) -> str:
     )
 
 
+def _ci(block: object, *, percent: bool) -> str:
+    """metrics.py's ``{n, value, ci_low, ci_high}`` as ``[low, high] (n=N)``."""
+    if not isinstance(block, Mapping):
+        return "n/a"
+    low, high = block.get("ci_low"), block.get("ci_high")
+    if not isinstance(low, (int, float)) or not isinstance(high, (int, float)):
+        return f"n/a (n={block.get('n', 0)})"
+    shown = (_pct(low), _pct(high)) if percent else (_num(low), _num(high))
+    return f"[{shown[0]}, {shown[1]}] (n={block.get('n', 0)})"
+
+
+def _path(data: Mapping[str, object], *keys: str) -> object:
+    for key in keys:
+        if not isinstance(data, Mapping):
+            return None
+        data = data.get(key)  # type: ignore[assignment]
+    return data
+
+
+CI_SUFFIX = ", 95% bootstrap CI"
+
+
+def _readout_cell(record: RunRecord) -> str:
+    counts = readout_counts(record.notes)
+    if not any(counts.values()):
+        return "n/a"
+    cell = f"{counts['complete']} / {counts['incomplete']}"
+    other = [
+        f"{why.replace('_', ' ')}: {counts[why]}"
+        for why in ("no_label_mass", "call_error")
+        if counts[why]
+    ]
+    return cell + (f" ({', '.join(other)})" if other else "")
+
+
+def _before_calibration(record: RunRecord) -> str:
+    raw = record.raw_calibration
+    if raw is None:
+        return "n/a"
+    return f"{_num(raw.get('ece'))} / {_num(raw.get('brier'))}"
+
+
 def metric_rows(records: Sequence[RunRecord]) -> list[tuple[str, list[str]]]:
     """``(metric, [one cell per model])`` for metrics.py's figures over each predictions file."""
 
@@ -2032,6 +2262,10 @@ def metric_rows(records: Sequence[RunRecord]) -> list[tuple[str, list[str]]]:
             cells(lambda m, _r: _of(m["right_proposals"]["n"], m["right_proposals"]["N"])),
         ),
         (
+            "Right proposals" + CI_SUFFIX,
+            cells(lambda m, _r: _ci(_path(m, "right_proposals", "ci"), percent=True)),
+        ),
+        (
             "Abstention recall (escalate entries escalated)",
             cells(
                 lambda m, _r: f"{_pct(m['abstention']['recall'])} "
@@ -2039,8 +2273,16 @@ def metric_rows(records: Sequence[RunRecord]) -> list[tuple[str, list[str]]]:
             ),
         ),
         (
+            "Abstention recall" + CI_SUFFIX,
+            cells(lambda m, _r: _ci(_path(m, "escalation", "recall_ci"), percent=True)),
+        ),
+        (
             "Abstention precision, strict (deviation d2)",
             cells(lambda m, _r: _pct(m["abstention"]["precision"])),
+        ),
+        (
+            "Abstention precision, strict" + CI_SUFFIX,
+            cells(lambda m, _r: _ci(_path(m, "escalation", "precision_strict_ci"), percent=True)),
         ),
         (
             "False-positive tool calls (proposals on explain/escalate entries)",
@@ -2049,6 +2291,10 @@ def metric_rows(records: Sequence[RunRecord]) -> list[tuple[str, list[str]]]:
                     m["false_positive_tool_calls"]["n"], m["false_positive_tool_calls"]["N"]
                 )
             ),
+        ),
+        (
+            "False-positive tool calls" + CI_SUFFIX,
+            cells(lambda m, _r: _ci(_path(m, "false_positive_tool_calls", "ci"), percent=True)),
         ),
         (
             "Wrong mutating, total (wrong operation + wrong arguments)",
@@ -2060,6 +2306,10 @@ def metric_rows(records: Sequence[RunRecord]) -> list[tuple[str, list[str]]]:
         ),
         ("Invalid outputs", cells(invalid)),
         (
+            "Invalid outputs" + CI_SUFFIX,
+            cells(lambda m, _r: _ci(_path(m, "invalid", "ci"), percent=True)),
+        ),
+        (
             "Lines with a candidate distribution",
             cells(
                 lambda m, _r: _of(
@@ -2068,8 +2318,21 @@ def metric_rows(records: Sequence[RunRecord]) -> list[tuple[str, list[str]]]:
                 )
             ),
         ),
+        (
+            "Scorer readouts, complete / incomplete (never renormalised)",
+            cells(lambda _m, r: _readout_cell(r)),
+        ),
         ("ECE (10 equal-width bins)", cells(lambda m, _r: _num(m["calibration"]["ece"]))),
+        (
+            "ECE" + CI_SUFFIX,
+            cells(lambda m, _r: _ci(_path(m, "calibration", "ece_ci"), percent=False)),
+        ),
         ("Brier (multi-class)", cells(lambda m, _r: _num(m["calibration"]["brier"]))),
+        (
+            "Brier" + CI_SUFFIX,
+            cells(lambda m, _r: _ci(_path(m, "calibration", "brier_ci"), percent=False)),
+        ),
+        ("ECE / Brier before --calibration", cells(lambda _m, r: _before_calibration(r))),
         (
             "Tokens generated per decision, mean / median",
             cells(
@@ -2097,6 +2360,62 @@ def render_metrics(records: Sequence[RunRecord]) -> str:
     for metric, row in metric_rows(records):
         lines.append(f"| {metric} | " + " | ".join(row) + " |")
     return "\n".join(lines)
+
+
+def _with_ci(shown: str, block: object, *, percent: bool = True) -> str:
+    """*shown* followed by its CI; an empty slice is just ``n/a (n=0)``."""
+    if isinstance(block, Mapping) and not block.get("n"):
+        return "n/a (n=0)"
+    return f"{shown} {_ci(block, percent=percent)}"
+
+
+def _slice_rows(slices: Mapping[str, object]) -> list[str]:
+    lines = [
+        "| Slice | Lines | With a distribution | ECE [95% CI] | Brier [95% CI] |"
+        " Missing-candidate rate [95% CI] | Offered candidates, mean / median |",
+        "|---|---|---|---|---|---|---|",
+    ]
+    for name in metrics.SLICE_NAMES:
+        data = slices.get(name)
+        if not isinstance(data, Mapping):
+            continue
+        cal = data.get("calibration") or {}
+        missing = data.get("missing_candidate") or {}
+        count = data.get("candidate_count") or {}
+        lines.append(
+            f"| {name} | {data.get('n', 0)} | {cal.get('n', 0)} |"
+            f" {_with_ci(_num(cal.get('ece')), cal.get('ece_ci'), percent=False)} |"
+            f" {_with_ci(_num(cal.get('brier')), cal.get('brier_ci'), percent=False)} |"
+            f" {_with_ci(_of(missing.get('n', 0), missing.get('N', 0)), missing.get('rate'))} |"
+            f" {_num(count.get('mean'), 1)} / {_num(count.get('median'), 1)} |"
+        )
+    return lines
+
+
+def _slices_section(records: Sequence[RunRecord]) -> list[str]:
+    """Issue 53: per-slice calibration, one summary table and reliability tables per model."""
+    lines = [
+        "## Per-slice calibration",
+        "",
+        "metrics.py's slices by the gold label: read-only and mutating operations (the",
+        "operation table's `read_only` flag) and escalate-or-explain entries. Confidence",
+        "intervals are seeded percentile bootstraps over the slice's lines.",
+        "",
+    ]
+    for record in records:
+        lines += [f"### `{record.model}`", ""]
+        slices = record.metrics.get("slices") if not record.failure else None
+        if not isinstance(slices, Mapping):
+            lines += ["Not measured.", ""]
+            continue
+        reliability = metrics.reliability_markdown(slices)
+        lines += [
+            *_slice_rows(slices),
+            "",
+            re.sub(r"(?m)^### ", "#### ", reliability),
+            "",
+        ]
+    return lines
 
 
 def _notes_lines(records: Sequence[RunRecord]) -> list[str]:
@@ -2132,6 +2451,12 @@ def render_markdown(prov: Provenance, records: Sequence[RunRecord]) -> str:
         f"# Tier 2 measurement, {prov.date}: {prov.label}",
         "",
     ]
+    if records and all(record.failure for record in records):
+        lines += [
+            "**Nothing was measured: every model's start-up failed.** A re-run with the",
+            "same label replaces this page.",
+            "",
+        ]
     if prov.tier_errors:
         lines += [
             f"**{prov.tier_errors} tier-error prediction(s) permitted by "
@@ -2170,6 +2495,9 @@ def render_markdown(prov: Provenance, records: Sequence[RunRecord]) -> str:
         )
         if line
     ]
+    lines.append(f"- Calibration: {prov.calibration_note or calibration_note(None)}")
+    if records and all(record.failure for record in records):
+        lines.append(NOT_MEASURED_MARKER)
     lines += [
         f"- Acceptance run: {'yes' if prov.acceptance else 'no'}",
         FINAL_MARKER if prov.final else "- Final run: no",
@@ -2200,6 +2528,7 @@ def render_markdown(prov: Provenance, records: Sequence[RunRecord]) -> str:
         "",
         metrics.ISSUE46_NOTE,
         "",
+        *_slices_section(records),
     ]
     lines += ["## Background before each run", ""]
     for record in records:
@@ -2337,6 +2666,14 @@ def _parser() -> argparse.ArgumentParser:
         help="Track B: score candidate labels with scorer.py instead of generating",
     )
     parser.add_argument(
+        "--calibration",
+        default=None,
+        metavar="PARAMS",
+        help="apply a calibration_fit.py fit params file (temperature, then vector) to every"
+        " line's candidates before the predictions file and metrics; its path and sha256 are"
+        " recorded. Params fitted on a test or held-out file are refused",
+    )
+    parser.add_argument(
         "--tokenizer",
         default=None,
         help="with --scorer: load the tokenizer (and an in-process model) from this path "
@@ -2370,7 +2707,9 @@ def _count_finals(directory: Path, exclude: Path) -> int:
             text = path.read_text(encoding="utf-8")
         except OSError:
             continue
-        if FINAL_MARKER in text.splitlines():
+        lines = text.splitlines()
+        # A page that measured nothing (P71) looked at no test-side entry.
+        if FINAL_MARKER in lines and NOT_MEASURED_MARKER not in lines:
             count += 1
     return count
 
@@ -2434,10 +2773,10 @@ def _check_issue46_flags(args: argparse.Namespace, lfm_settings: Mapping[str, ob
     if args.max_logprobs is None or args.max_logprobs < needed:
         raise MeasureError(
             EXIT_USER,
-            f"a served scorer asks for {needed} log-probabilities ({needed - scorer.TOP_MARGIN}"
-            f" labels + {scorer.TOP_MARGIN}); --max-logprobs must say the engine allows that",
-            f"start vLLM with --max-logprobs {needed} or more and pass the same value, or use"
-            " --scorer in-process",
+            f"a served scorer asks for {needed} log-probabilities (scorer.READOUT_TOP) per"
+            " request; --max-logprobs must say the engine allows that",
+            f"start the server with --max-logprobs {needed} or more and pass the same value,"
+            " or use --scorer in-process",
         )
     if str(lfm_settings.get("mode") or MANAGED) == MANAGED:
         raise MeasureError(
@@ -2447,6 +2786,14 @@ def _check_issue46_flags(args: argparse.Namespace, lfm_settings: Mapping[str, ob
             "attach to a vLLM started with --max-logprobs ([tiers.lfm] mode = attach), or use"
             " --scorer in-process",
         )
+
+
+def measured_nothing(path: Path) -> bool:
+    """True when *path* is a results page whose every start-up failed (P71, #57)."""
+    try:
+        return NOT_MEASURED_MARKER in path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError):
+        return False
 
 
 def _requests_note(args: argparse.Namespace) -> str:
@@ -2528,7 +2875,14 @@ def _run(
     date = seams.today()
     out = Path(args.out) if args.out else _BENCHMARKS_DIR / f"{date}-lfm-{args.label}.md"
     if out.exists() and not args.force:
-        raise MeasureError(EXIT_USER, f"{out} already exists", "pick another --label or --force")
+        if not measured_nothing(out):
+            raise MeasureError(
+                EXIT_USER, f"{out} already exists", "pick another --label or --force"
+            )
+        print(
+            f"note: replacing {out}: its run measured nothing (every start-up failed)",
+            file=sys.stderr,
+        )
 
     try:
         cfg = seams.load_config(Path(args.config) if args.config else None)
@@ -2538,6 +2892,7 @@ def _run(
     lfm = tiers.get("lfm")
     lfm_settings = dict(lfm) if isinstance(lfm, Mapping) else {}
     _check_issue46_flags(args, lfm_settings)
+    calibration = load_calibration(Path(args.calibration)) if args.calibration else None
     if args.ctx is not None:
         lfm_settings["ctx"] = args.ctx
 
@@ -2602,10 +2957,22 @@ def _run(
             continue
         name = f"{args.label}-{index}-{_slug(record.model)}"
         path = (keep or workdir) / f"{name}.predictions.jsonl"
+        if calibration is not None:
+            record.raw_calibration = calibration_of(record.predictions)
+            record.predictions = calibrate_lines(record.predictions, calibration)
         record.metrics = score_predictions(record.predictions, path)
         if keep is not None:
+            kept = dict(record.metrics)
+            if args.scorer:
+                kept["readout"] = readout_counts(record.notes)
+            if calibration is not None:
+                kept["calibration_applied"] = {
+                    "params": calibration.path,
+                    "sha256": calibration.sha256,
+                    "before": record.raw_calibration,
+                }
             (keep / f"{name}.metrics.json").write_text(
-                json.dumps(record.metrics, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+                json.dumps(kept, indent=2, sort_keys=True) + "\n", encoding="utf-8"
             )
     if args.details:
         with open(args.details, "w", encoding="utf-8") as handle:
@@ -2664,6 +3031,7 @@ def _run(
         scorer_run=bool(args.scorer),
         tier_errors=tier_error_total,
         tier_errors_allowed=args.allow_tier_errors,
+        calibration_note=calibration_note(calibration),
     )
     text = render_markdown(prov, records)
     out.parent.mkdir(parents=True, exist_ok=True)
