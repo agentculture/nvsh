@@ -909,6 +909,12 @@ _NO_RE = re.compile(
 #: "Yes, not ..." negates the yes it follows ("Yes, not equivalent: ...").
 _YES_NOT_RE = re.compile(r"""^[\s*_`"',.:;\-\u2013\u2014]*not\b""", re.IGNORECASE)
 _HEDGE_RE = re.compile(r"\b(" + "|".join(_HEDGE_WORDS) + r")\b", re.IGNORECASE)
+#: A hedge word right after the yes qualifies the yes itself ("yes, but ...",
+#: "yes -- though ..."), so it rejects even when the caller allows that word
+#: later in the sentence ("says 'that service' but does not name it", issue 53).
+_YES_HEDGE_RE = re.compile(
+    r"""^[\s*_`"',.:;\-\u2013\u2014]*(""" + "|".join(_HEDGE_WORDS) + r")\b", re.IGNORECASE
+)
 
 
 def _has_hedge(rest: str, allowed: Iterable[str]) -> bool:
@@ -944,6 +950,7 @@ def parse_verdict(text: str, allowed_hedges: Iterable[str] = ()) -> tuple[bool, 
         _NO_RE.search(rest)
         or _has_hedge(rest, allowed_hedges)
         or _YES_NOT_RE.match(rest)
+        or _YES_HEDGE_RE.match(rest)
         or _YES_CERTAINTY_RE.match(rest)
     ):
         return False, stripped

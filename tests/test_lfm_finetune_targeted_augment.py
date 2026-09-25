@@ -674,6 +674,44 @@ def test_naturalness_verdict_allows_user_describing_modals() -> None:
     assert not ok
 
 
+def test_missing_argument_verdicts_allow_a_mid_sentence_but() -> None:
+    """t15 rerun (lapse l8): 20 of 37 reviewer-B rejects were clear yeses whose
+    reason used 'but' ("says 'that service' but does not name it")."""
+    item = ta.Item(
+        text="Set the power mode to another mode",
+        expect={"escalate": True},
+        cls="decline:missing_argument",
+        reviews=[
+            ta.marg_unspecified_prompt("Set the power mode to another mode", "mode"),
+            ta.marg_natural_prompt("Set the power mode to another mode"),
+        ],
+    )
+    unit = ta.Unit(recipe="missing-argument", items=[item])
+
+    def caller(role, system, user):
+        if ta.MARG_NATURAL_MARKER in user:
+            return "yes, it is a terse but natural terminal request."
+        return "yes, the request says 'another mode' but does not name which mode is meant."
+
+    ok, _ = ta.review_unit(unit, ROLES, caller, "reviewer_b")
+    assert ok
+    ok, _ = ta.review_unit(unit, ROLES, lambda r, s, u: "yes, but the mode is named.", "reviewer_b")
+    assert not ok
+
+
+def test_a_mid_sentence_but_still_hedges_outside_missing_argument() -> None:
+    item = ta.Item(
+        text="restart nginx",
+        expect={"operation": "service_restart", "args": {"service": "nginx"}},
+        cls=None,
+        reviews=[ta.ds.reviewer_prompt("restart nginx", {"operation": "service_restart"})],
+    )
+    unit = ta.Unit(recipe="disambiguation", items=[item])
+    reply = "yes, service_restart fits but container_restart fits as well"
+    ok, _ = ta.review_unit(unit, ROLES, lambda r, s, u: reply, "reviewer_b")
+    assert not ok
+
+
 def test_user_modals_still_hedge_outside_the_naturalness_question() -> None:
     item = ta.Item(
         text="restart nginx",

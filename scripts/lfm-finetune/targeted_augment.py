@@ -276,6 +276,12 @@ def strip_argument(text: str, arg: Any, value: str, pick: int) -> tuple[str | No
 #: context"): allowed for the naturalness question only (issue 53, t15).
 NATURAL_ALLOWED_HEDGES = ("might", "could", "may", "though")
 
+#: "but" inside a missing-argument verdict is the reason, not doubt ("says
+#: 'that service' but does not name it", "terse but natural"): allowed for
+#: both missing-argument questions. A leading "yes, but" still rejects
+#: (augment.parse_verdict). Issue 53, t15, lapse l8.
+MARG_ALLOWED_HEDGES = ("but",)
+
 
 def marg_unspecified_prompt(text: str, arg_name: str) -> tuple[str, str]:
     user = (
@@ -665,6 +671,8 @@ def review_unit(
         base = ds.ESCALATE_ALLOWED_HEDGES if item.expect.get("escalate") else ()
         for system, user in item.reviews:
             allowed = base + (NATURAL_ALLOWED_HEDGES if MARG_NATURAL_MARKER in user else ())
+            if MARG_NATURAL_MARKER in user or MARG_UNSPECIFIED_MARKER in user:
+                allowed += MARG_ALLOWED_HEDGES
             accept_b, reason_b = ds._vote(roles["REVIEWER_B"], system, user, caller, allowed)
             vote: dict[str, Any] = {"reviewer_b": {"accept": accept_b, "reason": reason_b}}
             ok = accept_b

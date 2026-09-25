@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-09-24T22:47:35Z",
-  "updated": "2026-09-25T07:09:02Z",
+  "updated": "2026-09-25T11:52:09Z",
   "claims": [
     {
       "id": "c1",
@@ -1224,6 +1224,17 @@
       "skipped_check": "per-class false-reject audit of the verdict parser on stored yes-replies",
       "refs": [
         "t13"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l8",
+      "code": "grader-unverified",
+      "what": "t15 missing-argument rerun ran without a reviewer pilot; augment.parse_verdict treats any 'but' as a hedge, so 20 of 37 reviewer-B rejects in the rerun (38 of 56 in the first pass) were clear yes verdicts ('says \"that service\" but does not name it')",
+      "skipped_check": "40-item known-good/known-bad reviewer pilot before the rerun",
+      "refs": [
+        "t15"
       ],
       "origin": "llm",
       "status": "proposed"
