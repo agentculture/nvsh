@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-09-24T22:47:35Z",
-  "updated": "2026-09-25T12:15:02Z",
+  "updated": "2026-09-25T12:21:58Z",
   "claims": [
     {
       "id": "c1",
@@ -1238,6 +1238,17 @@
       ],
       "origin": "llm",
       "status": "approved"
+    },
+    {
+      "id": "l9",
+      "code": "assumption-for-measurement",
+      "what": "t17 measured scorer-b1 on v2 validation with issue 46's grounding snapshot (GROUND_SNAPSHOT left at q46), which lacks 23 services and 11 containers named only in the v2 splits and the q53 held-out; right-proposal and invalid (not_grounded 14/204) figures may be understated. Distributions, ECE and Brier are unaffected",
+      "skipped_check": "rebuild the snapshot from the v2 splits before t17",
+      "refs": [
+        "t17"
+      ],
+      "origin": "llm",
+      "status": "proposed"
     }
   ],
   "obligations": []

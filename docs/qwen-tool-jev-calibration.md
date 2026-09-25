@@ -447,6 +447,16 @@ lapses, all posted on issue #61 when they happened.
   (`sup-dx2.json`, 40 requested) runs while the hard-negative rerun holds
   the other slot. The combined supplement keeps or drops each pair whole.
   Record: guide.
+- **D34.** **Candidate recipe pinned to scorer-b1's, grounding snapshot
+  rebuilt (lapse l9).** Evidence: the cycle env had an empty
+  `TRAIN_SCORER_ARGS` and issue 46's grounding snapshot, which lacks 23
+  services and 11 containers named in the v2 splits and the q53 held-out.
+  Choice (lead): r1/r2 use b1's recipe exactly (`--epochs 3 --lr 2e-4
+  --rank 16 --alpha 32 --batch 8 --seed 46`), r3 the same at `--lr 1e-4`,
+  so only data and labels differ from b1; `GROUND_SNAPSHOT` points at a v2
+  snapshot (277 services, 41 containers), and t17's three builds are
+  re-measured with it so the rule's accuracy floor uses the same
+  instrument as the candidates. Record: l9 on #61.
 - **D32.** **Lapses l5-l8 approved.** The operator approved l5 (split v2
   header), l6 (reviewer policy), l7 with its naturalness addendum (verdict
   parser) and l8 (mid-sentence "but"). Every lapse of this cycle, l1-l8,
@@ -965,6 +975,12 @@ redaction rule).
   `MARG_ALLOWED_HEDGES = ("but",)` for both missing-argument questions;
   `_YES_HEDGE_RE` rejects a hedge word leading the yes regardless.
   Re-run as `sup-marg3.json`.
+- **P22, a stale grounding snapshot (lapse l9).** **Symptom:** none
+  visible; found while preparing r1-r3's env. **Cause:** `GROUND_SNAPSHOT`
+  still named issue 46's snapshot, built from the v1 sides. **Fix:**
+  `measure.py snapshot --from-split` over the v2 validation/test sides and
+  the q53 held-out (counts only); t17 re-measured; old results quarantined
+  under `t17-snap46/`.
 - **Throughput note (not a bug).** Reviewer B (Qwen3.8-27B) thinks at
   about 42 tokens/s with up to 8192 tokens per verdict and serves 2
   requests at once, so reviews run at about 2-3 teacher calls a minute; the
