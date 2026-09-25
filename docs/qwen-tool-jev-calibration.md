@@ -17,8 +17,9 @@ obstacle or fix, in the style of `docs/qwen-tool-jev-finetune.md`.
 
 **Status: in progress, 2026-09-25.** Code waves 1-3 are merged; the t13
 data is sealed (fresh evaluation pool, private held-out) and corpus v2 is
-built; the t17 baseline on `scorer-b1` is running and t15's targeted
-augmentation is generating. No training run has started. See the
+built; the t17 baseline on `scorer-b1` is done (pooled permutation change
+18.8%, Q4 ECE 0.097 raw); t15's targeted augmentation is finishing. No
+training run has started. See the
 [decision path](#decision-path) for every choice made so far and why,
 [Where the run stands](#where-the-run-stands) for the live picture, and the
 [pre-registered decision rule](#the-pre-registered-checkpoint-decision-rule-t9)
@@ -477,9 +478,14 @@ lapses, all posted on issue #61 when they happened.
 
   Subset trials dropped the baseline's own choice in 135 of 2040. No
   incomplete trials.
-- **t15 generating:** `targeted_augment.py` in two parallel streams
-  (missing-argument and power-set, then diagnosis-explain; disambiguation
-  and hard-negative), every protected side excluded.
+- **t15 generating:** `targeted_augment.py`, two parallel streams, every
+  protected side excluded. Kept so far: power-set 45, disambiguation 74,
+  hard-negative 24 and missing-argument 5 (both first passes, before the
+  D26/D30 fixes). Running: diagnosis-explain, then the missing-argument
+  rerun; the hard-negative rerun (seed 54) in the second slot.
+- **Assembly prepared (D29):** issue 46's reviewed variations copied into
+  the run's `aug/`; `SUPPLEMENT` and `SCORER_BUILD_ARGS` set in the cycle's
+  env. Next: combined supplement, `assemble`, freeze hashes, then r1-r3.
 
 **Wave 1 done**, 2026-09-25. **Merged:** t1 (readout core, `0b48c79`), t3
 (served readout cap), t4 (calibration-fit module, `86f1504`), t9
@@ -914,26 +920,121 @@ redaction rule).
 
 ## Reproduce steps
 
-*(Placeholder — filled in as each step of the plan lands and is confirmed
-by the lead. Commands will not include any home-directory path,
-`/home/...` path, hostname, IP address, or serving-model location.)*
+Filled in as each step lands. Commands use `$WORK` (the run's work
+directory), `$DRAFTS` (the private drafting directory) and `$SEALED` (the
+private sealed held-out file); no home-directory path, hostname, IP
+address or serving-model location appears here.
 
 1. Training environment setup — *(not yet run this cycle; see
    `docs/qwen-tool-jev-finetune.md`'s "Reproduce it" step 1 for the base
    pattern, unchanged).*
 2. Base model and serving image — *(unchanged from issue 46; no new step
    recorded yet)*.
-3. Corpus v2 split (t12) — *(not yet run)*.
-4. Draft and seal the new held-out set (t13) — *(not yet run)*.
-5. Baseline probe of `scorer-b1` on v2 validation (t17) — *(not yet run;
-   the pre-challenge probe above was a scratch, out-of-repository probe,
-   not this step)*.
-6. Dataset build with per-example candidate sets (t14/t15) — *(not yet
-   run)*.
-7. Training runs and selection (t18) — *(not yet run)*.
-8. Quantize and calibrate the deployed build (t19) — *(not yet run)*.
-9. Final measurement, Spark and Orin (t20) — *(not yet run)*.
-10. Private uploads (t21) — *(not yet run)*.
+3. **Teacher roles for drafting and review (t13, t15).** One env file
+   (never committed) exports `NVSH_DRAFT_{GENERATOR,REVIEWER_A,REVIEWER_B}_{URL,MODEL,TEMPERATURE,TIMEOUT}`
+   for the three Apache-2.0 teachers (generator Qwen3.6-35B-A3B, reviewer A
+   Gemma-4-26B-A4B, reviewer B Qwen3.8-27B), plus
+   `NVSH_DRAFT_REVIEWER_{A,B}_MAX_TOKENS=8192` and
+   `NVSH_DRAFT_GENERATOR_MAX_TOKENS=12000` (P12). Reviewer B serves two
+   requests at once; run at most two drafting or review processes in
+   parallel.
+4. **Draft, review and seal the new held-out set (t13).** `$DRAFTS` is a
+   private work directory, `$SEALED` a private file outside the repo.
+
+   ```bash
+   # seeds 53-58, Qwen3.5-4B in-process (the training environment's python)
+   for s in 53 54 55 56 57 58; do
+     python scripts/lfm-finetune/draft_heldout.py "$DRAFTS/heldout-draft-s$s" --seed "$s"
+   done
+   # combine the drafts into one {header, entries} file, then two-reviewer review
+   python scripts/lfm-finetune/draft_sources.py review "$DRAFTS/heldout-all.json" "$DRAFTS/heldout-rev2"
+   # after the eval pool (step 5) exists: drop matches of dev.json and the pool
+   python scripts/lfm-finetune/leakage_check.py --train "$DRAFTS/heldout-rev2/draft.json" \
+     --protected nvsh/tiers/corpus/dev.json "$DRAFTS/eval-pool.json" --out-filtered "$SEALED.tmp"
+   ```
+
+   Seal: write `$SEALED` with a header that opens "Held-out split" (every
+   guard then refuses it) and make it read-only. Print counts and the
+   sha256 only; nobody on the development side reads the entries.
+5. **Draft the fresh evaluation pool (t13).**
+
+   ```bash
+   python scripts/lfm-finetune/draft_sources.py draft "$DRAFTS/eval-draft" --pool eval \
+     --seed 53 --per-op 10 --per-reason 8 --explain 60
+   # top-ups for thin slices (seeds 54, 57-63), for example:
+   python scripts/lfm-finetune/draft_sources.py draft "$DRAFTS/eval-topup-s62" --pool eval \
+     --seed 62 --per-op 0 --per-reason 12 --only-reasons missing_argument,not_a_request --explain 0
+   ```
+
+   Rejected decline candidates can be re-reviewed after a grader fix with
+   `draft_sources.py review` on a `{header, entries}` file built from the
+   `-rejected` rows of each `review.jsonl` (D21). Merge every kept file
+   into one pool, dropping any exact or near-duplicate (`leakage_check.match`)
+   of `dev.json` or of an entry already in the pool.
+6. **Corpus v2 split (t12, d3).**
+
+   ```bash
+   python scripts/lfm-finetune/split.py --version v2 --corpus "$DRAFTS/eval-pool.json" \
+     --train-only nvsh/tiers/corpus/dev.json --val-size 200 --test-size 200 \
+     --seed 53 --fold-seed 53 --out-dir "$WORK/splits"
+   ```
+
+7. **Baseline of `scorer-b1` on v2 validation (t17).** A pipeline env for
+   this cycle sets `WORK`, `MEASURE_MAX_LOGPROBS=20000`, the private
+   `HELDOUT_SPLIT` and `PROTECTED_EXTRA`; `$WORK/runs/scorer-b1` and
+   `$WORK/quant/scorer-b1` point at issue 46's run and quantized builds.
+
+   ```bash
+   P=scripts/lfm-finetune
+   for spec in "scorer-b1 in-process" "scorer-b1.bf16_gguf served" "scorer-b1.q4_k_m served"; do
+     set -- $spec
+     $P/pipeline.sh --env cycle.env measure-val "$1" --scorer "$2" --predictions "$WORK/pred"
+   done
+   python $P/calibration_fit.py fit --predictions "$WORK/pred/<q4 predictions>.jsonl" \
+     --folds "$WORK/splits/folds.json" --out "$WORK/calib/b1-q4.params.json"
+   python $P/calibration_fit.py evaluate --predictions "$WORK/pred/<q4 predictions>.jsonl" \
+     --params "$WORK/calib/b1-q4.params.json" --folds "$WORK/splits/folds.json"
+   python $P/calibration_fit.py apply --predictions "$WORK/pred/<q4 predictions>.jsonl" \
+     --params "$WORK/calib/b1-q4.params.json" --out "$WORK/calib/b1-q4-val.calibrated.predictions.jsonl"
+   python $P/sweep_gate.py --predictions "$WORK/calib/b1-q4-val.calibrated.predictions.jsonl" \
+     --folds "$WORK/splits/folds.json" --fold fit --escalate none,0.3,0.4,0.5 \
+     --floor none,0.3,0.4,0.5 --margin none,0.1,0.2 --max-entropy none,0.6,0.8 \
+     --mutating-floor none,0.5,0.6,0.7 --mutating-margin none,0.2,0.3 --out "$WORK/calib/sweep-fit.json"
+   # the permutation probe runs in-process (training environment on PYTHONPATH)
+   python $P/permutation_probe.py --split "$WORK/splits/val.json" \
+     --paraphrases $P/data/paraphrases.json --per-entry 10 --seed 53 \
+     --model "$WORK/runs/scorer-b1/merged" --tokenizer "$WORK/runs/scorer-b1/merged" \
+     --scorer-kind in-process --out "$WORK/probe/b1-val.json" --markdown "$WORK/probe/b1-val.md"
+   ```
+
+   Repeat the sweep with `--fold selection`. `--details` stays empty for
+   scorer runs (P18); use `--predictions`.
+8. **Targeted train-side data (t15).** Two parallel streams, every
+   protected side excluded:
+
+   ```bash
+   T="python scripts/lfm-finetune/targeted_augment.py --train $WORK/splits/train.json \
+     --seed 53 --roles-from draft --exclude <v2 val> <v2 test> <both sealed held-outs> \
+     nvsh/tiers/corpus/held-out.json <eval pool>"
+   $T --recipes missing-argument,power-set --per-recipe 20 --out "$WORK/aug-t15/sup-marg-pset.json"
+   $T --recipes diagnosis-explain --per-recipe 40 --out "$WORK/aug-t15/sup-dx.json"
+   $T --recipes disambiguation,hard-negative --per-recipe 8 --out "$WORK/aug-t15/sup-disamb-hneg.json"
+   ```
+
+   After D26 and D30, missing-argument and hard-negative re-run into their
+   own files; the combined supplement takes each recipe from its latest
+   run.
+9. **Assemble and freeze (t15, D29).** `SUPPLEMENT` names the combined
+   supplement, `$WORK/aug/nvsh-accepted.jsonl` holds issue 46's reviewed
+   variations, and
+   `SCORER_BUILD_ARGS="--randomize-labels --perm-seed 53 --missing-candidate-rate 0.3"`
+   (add `--reasons` for r2). `pipeline.sh assemble` merges, drops leakage and
+   writes `data/scorer-train.json`; record every output's sha256 as the
+   freeze. *(Not yet run.)*
+10. Training runs and selection (t18) — *(not yet run)*.
+11. Quantize and calibrate the deployed build (t19) — *(not yet run)*.
+12. Final measurement, Spark and Orin (t20) — *(not yet run)*.
+13. Private uploads (t21) — *(not yet run)*.
 
 ## Follow-up issues
 
