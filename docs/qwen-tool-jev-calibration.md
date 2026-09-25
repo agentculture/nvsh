@@ -918,6 +918,18 @@ redaction rule).
   "might"/"could"/"though", all in `augment.py`'s hedge list. **Fix:**
   `NATURAL_ALLOWED_HEDGES` for the naturalness question only; the recipe
   re-runs.
+- **P20, tooling facts for t18-t21, found by a Codex fact-check of the
+  playbook.** (1) `train-scorer r1` stages the run as `runs/scorer-r1`;
+  every later stage takes `scorer-r1` / `scorer-r1.q4_k_m`. (2)
+  `permutation_probe.py` has no fold option, so the rule's selection-fold
+  permutation figure needs a validation file restricted to `folds.json`'s
+  `selection_ids` (header kept). (3) `measure-final`/`measure-heldout` take
+  only `--slice`/`--scorer`: t20 records raw predictions, then applies the
+  frozen calibration with `calibration_fit.py apply` and evaluates the one
+  frozen threshold set with `sweep_gate.py --final`. (4) `bundle-dataset`
+  packages `train-augmented.json`, not `scorer-train.json`, and no stage
+  adds calibration parameters or thresholds to a model bundle; t21 handles
+  both by hand. None changes a result so far.
 - **Throughput note (not a bug).** Reviewer B (Qwen3.8-27B) thinks at
   about 42 tokens/s with up to 8192 tokens per verdict and serves 2
   requests at once, so reviews run at about 2-3 teacher calls a minute; the
