@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-09-24T22:47:35Z",
-  "updated": "2026-09-25T04:08:11Z",
+  "updated": "2026-09-25T04:43:26Z",
   "claims": [
     {
       "id": "c1",
@@ -1192,6 +1192,19 @@
       ],
       "origin": "llm",
       "status": "approved"
+    },
+    {
+      "id": "l5",
+      "code": "control-absent",
+      "what": "t12 changed split.py v2's header from the string note to a dict without checking the ~10 downstream header readers (train_scorer.read_split, build_dataset, merge_variations, measure seed/side parsing, quantize, augment, dataset_bundle, and the test/held-out refusal guards in calibration_fit/permutation_probe); t14's reasons mode (r2) was never wired into measure.py (bare-escalate prompt, escalate:<reason> choices scored invalid). Found by the agy review, not by the merge gates",
+      "skipped_check": "an end-to-end test passing a v2 split (and an r2 reasons row) through every reader and measure",
+      "refs": [
+        "t12",
+        "t14",
+        "t8"
+      ],
+      "origin": "llm",
+      "status": "proposed"
     }
   ],
   "obligations": []
