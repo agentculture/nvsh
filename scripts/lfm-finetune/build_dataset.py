@@ -43,10 +43,15 @@ from __future__ import annotations
 
 import argparse
 import ast
+import hashlib
+import importlib.util
 import json
+import random
 import re
 import sys
+from dataclasses import replace
 from pathlib import Path
+from typing import Sequence
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # runnable from any directory
 
@@ -60,6 +65,48 @@ from nvsh.tiers.bench import (  # noqa: E402
     request_for,
     world_platform,
 )
+
+_HERE = Path(__file__).resolve().parent
+
+
+def _sibling(name: str):
+    """A script next to this one, loaded by path (they are not a package)."""
+    spec = importlib.util.spec_from_file_location(f"lfm_finetune_{name}", _HERE / f"{name}.py")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module  # its dataclasses look their module up there
+    spec.loader.exec_module(module)
+    return module
+
+
+scorer = _sibling("scorer")
+
+#: The 8 decline classes (issue 53 t14), read from the corpus's own `class`
+#: field (``"decline:<reason>"``) and offered, in ``--reasons`` mode, as
+#: distinct escalate-reason candidates instead of the bare ``escalate``.
+#: Order is fixed so the default (non-randomized) letter map is stable.
+REASON_CANDIDATES: tuple[str, ...] = (
+    "escalate:outside_table",
+    "escalate:repair",
+    "escalate:diagnosis",
+    "escalate:missing_argument",
+    "escalate:not_a_request",
+    "escalate:multi_step",
+    "escalate:injection",
+    "escalate:over_time",
+)
+
+#: An escalate entry with no or unknown `class` rolls up to this reason.
+DEFAULT_REASON = "escalate:outside_table"
+
+#: Scripts-side (never nvsh/) description overrides for the reason candidates.
+REASON_DESCRIPTIONS: dict[str, str] = json.loads(
+    (_HERE / "data" / "reasons.json").read_text(encoding="utf-8")
+)
+
+#: How many candidates a randomized offer keeps at minimum, and the chance
+#: it keeps the full pool instead (--randomize-labels only).
+DEFAULT_MIN_SUBSET = 6
+DEFAULT_FULL_SET_PROBABILITY = 0.3
 
 #: The request and context builders are ``nvsh.tiers.bench``'s own, and the
 #: user message is ``nvsh.tiers.lfm.request_message``: a FAILURE entry is
@@ -351,6 +398,212 @@ def _header(source: Path) -> str:
     return header if isinstance(header, str) else ""
 
 
+def candidate_pool(reasons: bool) -> tuple[str, ...]:
+    """Every candidate a build offers: :func:`scorer.candidates`, or with
+
+    *reasons*, its bare ``escalate`` replaced by :data:`REASON_CANDIDATES`
+    (16 operations + explain + 8 reasons = 25, still within
+    ``scorer.LABEL_ALPHABET``).
+    """
+    base = scorer.candidates()
+    if not reasons:
+        return base
+    return tuple(name for name in base if name != lfm.ESCALATE_TOOL) + REASON_CANDIDATES
+
+
+def reason_for_entry(entry: CorpusEntry) -> str:
+    """*entry*'s escalate-reason candidate: from its ``class`` field, or :data:`DEFAULT_REASON`.
+
+    The corpus's ``class`` field (``CorpusEntry.phrasing``) carries
+    ``"decline:<reason>"`` for an escalate entry; the matching candidate is
+    ``"escalate:<reason>"``. A missing or unrecognised class rolls up to
+    :data:`DEFAULT_REASON`, never a fabricated one.
+    """
+    cls = entry.phrasing or ""
+    if cls.startswith("decline:"):
+        candidate = "escalate:" + cls.split(":", 1)[1]
+        if candidate in REASON_CANDIDATES:
+            return candidate
+    return DEFAULT_REASON
+
+
+def gold_for(entry: CorpusEntry, reasons: bool) -> str:
+    """The candidate name *entry*'s own expected answer names.
+
+    An operation name, ``"explain"``, ``"escalate"``, or -- with *reasons*
+    -- ``"escalate:<reason>"``. This is what a scorer (train_scorer.py, t16)
+    is trained to pick; it never depends on which candidates are offered.
+    """
+    if entry.expect.get("explain"):
+        return lfm.EXPLAIN_TOOL
+    if entry.expect.get("escalate"):
+        return reason_for_entry(entry) if reasons else lfm.ESCALATE_TOOL
+    return entry.expect["operation"]
+
+
+def example_seed(perm_seed: int, example_id: str) -> int:
+    """A deterministic per-example seed: independent of process or machine.
+
+    Derived from ``sha256(f"{perm_seed}:{example_id}")`` (the first 16 hex
+    digits, as an int) so the same (*perm_seed*, *example_id*) pair always
+    gives the same seed -- what makes a rendered example "seeded and
+    replayable" (t14 acceptance): a consumer holding only the stored
+    ``perm_seed`` can hand it straight to :func:`scorer.permute` again.
+    """
+    digest = hashlib.sha256(f"{perm_seed}:{example_id}".encode("utf-8")).hexdigest()
+    return int(digest[:16], 16)
+
+
+def subset_size(seed: int, pool_size: int, min_subset: int, full_probability: float) -> int:
+    """A deterministic subset size in ``[min_subset, pool_size]``, drawn from *seed*.
+
+    With probability *full_probability* the full pool is offered; otherwise
+    a size is drawn uniformly from ``[min_subset, pool_size - 1]``. A pool no
+    larger than *min_subset* always offers the full pool.
+    """
+    rng = random.Random(seed)  # nosec B311 - dataset shaping, not security
+    if pool_size <= min_subset or rng.random() < full_probability:
+        return pool_size
+    return rng.randint(min_subset, pool_size - 1)
+
+
+def default_permutation(offered: Sequence[str], full: Sequence[str]):
+    """Today's fixed order + letter map: *offered*, labelled by its index in *full*.
+
+    Mirrors :func:`scorer.labels_for`: a candidate's letter comes from its
+    position in the *full* candidate list, so it does not move when others
+    are left out (a missing-candidate example's reduced offer keeps the same
+    letters the full offer would have given it). *full* may include the
+    reason candidates (:data:`REASON_CANDIDATES`), which are not in
+    :func:`scorer.candidates` at all, so this is a small reimplementation
+    rather than a call to ``labels_for`` itself.
+    """
+    letters = scorer.LABEL_ALPHABET
+    if len(full) > len(letters):
+        raise ValueError(f"{len(full)} candidates but only {len(letters)} labels")
+    index = {name: position for position, name in enumerate(full)}
+    labels = {name: letters[index[name]] for name in offered}
+    return scorer.Permutation(order=tuple(offered), labels=labels)
+
+
+def build_permutation(
+    example_id: str,
+    gold: str,
+    offered: Sequence[str],
+    full: Sequence[str],
+    perm_seed: int,
+    *,
+    randomize: bool,
+    min_subset: int,
+    full_probability: float,
+):
+    """This example's ``(Permutation, seed)``. Seeded and replayable (t14).
+
+    Without *randomize*, this is :func:`default_permutation` of *offered*
+    against *full* (today's fixed map, so scorer-b1's data stays
+    reproducible). With it, a subset size is drawn deterministically from
+    the per-example seed and handed to :func:`scorer.permute` along with
+    *offered* as the pool, keeping *gold* in the subset.
+    """
+    seed = example_seed(perm_seed, example_id)
+    if not randomize:
+        return default_permutation(offered, full), seed
+    size = subset_size(seed, len(offered), min_subset, full_probability)
+    permutation = scorer.permute(seed, pool=list(offered), subset=size, keep=gold)
+    return permutation, seed
+
+
+def descriptions_for(order: Sequence[str]) -> dict[str, str]:
+    """Description overrides for *order*'s reason candidates only; ``{}`` otherwise."""
+    return {name: REASON_DESCRIPTIONS[name] for name in order if name in REASON_DESCRIPTIONS}
+
+
+def enrich_example(
+    example: dict,
+    example_id: str,
+    gold: str,
+    offered: Sequence[str],
+    full: Sequence[str],
+    perm_seed: int,
+    *,
+    randomize: bool,
+    min_subset: int,
+    full_probability: float,
+) -> dict:
+    """*example* plus the shared scorer-training contract (t14/t16): permutation, gold, perm_seed.
+
+    ``descriptions`` is added only when *order* offers a reason candidate
+    (never a bare, unconditional key) -- see the t14/t16 shared contract.
+    """
+    permutation, seed = build_permutation(
+        example_id,
+        gold,
+        offered,
+        full,
+        perm_seed,
+        randomize=randomize,
+        min_subset=min_subset,
+        full_probability=full_probability,
+    )
+    enriched = {
+        **example,
+        "permutation": permutation.to_json(),
+        "gold": gold,
+        "perm_seed": seed,
+    }
+    descriptions = descriptions_for(permutation.order)
+    if descriptions:
+        enriched["descriptions"] = descriptions
+    return enriched
+
+
+def missing_candidate_example(
+    entry: CorpusEntry, platform: Platform, arguments_as: str, source_id: str
+) -> dict:
+    """The eval_slices.py-shaped derived example: *entry* with its gold answer forced to escalate.
+
+    Used as the base for a ``<id>-nocand`` train row (the gold operation is
+    removed from the offered candidates by the caller); the assistant turn
+    itself must also say escalate, since the operation it would have
+    proposed is no longer offered.
+    """
+    synthetic = replace(entry, id=f"{entry.id}-nocand", expect={"escalate": True})
+    return example_from_entry(synthetic, platform, arguments_as, source_id=source_id)
+
+
+def _select_missing_candidate(perm_seed: int, entry_id: str, rate: float) -> bool:
+    """Deterministic, seeded yes/no: does *entry_id* also get a ``-nocand`` example."""
+    if rate <= 0:
+        return False
+    seed = example_seed(perm_seed, f"{entry_id}:missing-candidate")
+    return random.Random(seed).random() < rate  # nosec B311 - dataset shaping, not security
+
+
+def eval_side_markers(path: Path) -> set[str]:
+    """Which of ``{"val", "test", "held-out"}`` *path*'s own name claims.
+
+    Mirrors ``calibration_fit.split_markers``'s word-boundary/compact-stem
+    approach, but by file name only, never header prose: a corpus header is
+    free text that can innocuously mention another split's file name (as
+    ``dev.json``'s own header names ``held-out.json``), so header scanning
+    would false-positive on the very corpus this build reads every day. A
+    ``--split`` file's actual side is instead read from its
+    ``"Split '<side>' of ..."`` header note by ``build()`` itself, above;
+    this only covers a plain ``--corpus`` path with no such note, e.g. one
+    merely named ``test.json`` or ``val.json``.
+    """
+    stem_words = {word for word in re.split(r"[^a-z0-9]+", path.stem.lower()) if word}
+    compact_stem = re.sub(r"[^a-z0-9]", "", path.stem.lower())
+    markers: set[str] = set()
+    if "test" in stem_words:
+        markers.add("test")
+    if "heldout" in compact_stem:
+        markers.add("held-out")
+    if "val" in stem_words:
+        markers.add("val")
+    return markers
+
+
 def build(
     source: Path,
     arguments_as: str = ARGUMENTS_AS_OBJECT,
@@ -359,6 +612,13 @@ def build(
     base: str = DEFAULT_BASE,
     revision: str = DEFAULT_REVISION,
     tokenizer=None,
+    *,
+    reasons: bool = False,
+    randomize_labels: bool = False,
+    missing_candidate_rate: float = 0.0,
+    perm_seed: int = 0,
+    min_subset: int = DEFAULT_MIN_SUBSET,
+    full_set_probability: float = DEFAULT_FULL_SET_PROBABILITY,
 ) -> list[dict]:
     """Every example *source* yields. Refuses the held-out split.
 
@@ -388,6 +648,29 @@ def build(
     side, so a file that is supposed to be one but doesn't say so cannot be
     trusted to be the train side (e.g. a renamed ``test.json`` whose header
     was stripped or hand-edited away from ``split.py``'s own wording).
+
+    Every rendered example also carries the t14/t16 shared scorer-training
+    contract (:func:`enrich_example`): ``permutation`` (order + letter map),
+    ``gold``, ``perm_seed``, and, where a reason candidate is offered,
+    ``descriptions``. *reasons* offers the 8 escalate-reason candidates
+    (:data:`REASON_CANDIDATES`) instead of the bare ``escalate``. Without
+    *randomize_labels* every example keeps today's fixed order and letter
+    map (:func:`default_permutation`); with it, a seeded random subset
+    (bounds *min_subset*/*full_set_probability*) and letter permutation are
+    drawn per example (:func:`build_permutation`), keeping the gold
+    candidate. *perm_seed* is the one global seed mixed with each example's
+    own id to derive its seed, so the same *perm_seed* always replays the
+    same file.
+
+    *missing_candidate_rate* additionally emits, for that fraction
+    (deterministic by seed) of train entries whose gold is an operation, a
+    derived ``<id>-nocand`` example (:func:`missing_candidate_example`,
+    ``eval_slices.py``'s shape) with that operation removed from the
+    offered candidates and the gold forced to escalate (``escalate:
+    outside_table`` with *reasons*). This only ever happens from the train
+    side: a ``--split`` file's side is already checked above, and a plain
+    ``--corpus`` path is refused when it is named or headed like a val,
+    test or held-out side (:func:`eval_side_markers`).
     """
     if source.name == HELD_OUT_NAME:
         raise ValueError("the held-out split is for judging a tuned model, never for training it")
@@ -407,13 +690,56 @@ def build(
                 f"{source}: --split file is the {side!r} side -- only the {TRAIN_SIDE!r} side "
                 "may be used for training; val/test are held out for evaluation"
             )
+    if missing_candidate_rate > 0 and not is_split:
+        markers = eval_side_markers(source)
+        if markers:
+            raise ValueError(
+                f"{source}: looks like the {' and '.join(sorted(markers))} side -- "
+                "missing-candidate examples are only ever generated from the train side"
+            )
     loaded = load_corpus(source)
     platform = world_platform(load_world(source))
     source_ids = _source_ids(source)
-    examples = [
-        example_from_entry(entry, platform, arguments_as, source_ids.get(entry.id))
-        for entry in loaded.entries
-    ]
+    pool = candidate_pool(reasons)
+    fallback_reason = DEFAULT_REASON if reasons else lfm.ESCALATE_TOOL
+
+    examples: list[dict] = []
+    for entry in loaded.entries:
+        source_id = source_ids.get(entry.id, entry.id)
+        example = example_from_entry(entry, platform, arguments_as, source_id)
+        gold = gold_for(entry, reasons)
+        examples.append(
+            enrich_example(
+                example,
+                entry.id,
+                gold,
+                pool,
+                pool,
+                perm_seed,
+                randomize=randomize_labels,
+                min_subset=min_subset,
+                full_probability=full_set_probability,
+            )
+        )
+        operation = entry.expect.get("operation")
+        if operation is not None and _select_missing_candidate(
+            perm_seed, entry.id, missing_candidate_rate
+        ):
+            derived = missing_candidate_example(entry, platform, arguments_as, source_id)
+            derived_pool = tuple(name for name in pool if name != operation)
+            examples.append(
+                enrich_example(
+                    derived,
+                    f"{entry.id}-nocand",
+                    fallback_reason,
+                    derived_pool,
+                    pool,
+                    perm_seed,
+                    randomize=randomize_labels,
+                    min_subset=min_subset,
+                    full_probability=full_set_probability,
+                )
+            )
     if verify_render:
         verify_build(examples, base, revision, tokenizer)
     return examples
@@ -457,6 +783,58 @@ def main(argv: list[str] | None = None) -> int:
             "check is on by default"
         ),
     )
+    parser.add_argument(
+        "--reasons",
+        action="store_true",
+        help=(
+            "offer the 8 decline classes as distinct escalate-reason candidates "
+            "(escalate:<reason>, from scripts/lfm-finetune/data/reasons.json) "
+            "instead of the bare 'escalate', rolling up to escalate in gold labels"
+        ),
+    )
+    parser.add_argument(
+        "--randomize-labels",
+        action="store_true",
+        help=(
+            "seed each example's own candidate subset/order/letter map from "
+            "--perm-seed and its id; without this, every example keeps today's "
+            "fixed order and letter map"
+        ),
+    )
+    parser.add_argument(
+        "--perm-seed",
+        type=int,
+        default=0,
+        help="global seed mixed with each example's id (--randomize-labels; default 0)",
+    )
+    parser.add_argument(
+        "--min-subset",
+        type=int,
+        default=DEFAULT_MIN_SUBSET,
+        help=(
+            f"smallest randomized candidate subset "
+            f"(--randomize-labels; default {DEFAULT_MIN_SUBSET})"
+        ),
+    )
+    parser.add_argument(
+        "--full-set-probability",
+        type=float,
+        default=DEFAULT_FULL_SET_PROBABILITY,
+        help=(
+            "chance a randomized example offers the full candidate pool "
+            f"(--randomize-labels; default {DEFAULT_FULL_SET_PROBABILITY})"
+        ),
+    )
+    parser.add_argument(
+        "--missing-candidate-rate",
+        type=float,
+        default=0.0,
+        help=(
+            "fraction of train operation entries that also get a derived "
+            "<id>-nocand example (gold operation removed, gold escalate); "
+            "train side only (default 0, off)"
+        ),
+    )
     args = parser.parse_args(argv)
     if args.split and args.corpus:
         parser.error("--split and --corpus are mutually exclusive")
@@ -475,6 +853,12 @@ def main(argv: list[str] | None = None) -> int:
             verify_render=not args.no_verify_render,
             base=args.base,
             revision=args.revision,
+            reasons=args.reasons,
+            randomize_labels=args.randomize_labels,
+            missing_candidate_rate=args.missing_candidate_rate,
+            perm_seed=args.perm_seed,
+            min_subset=args.min_subset,
+            full_set_probability=args.full_set_probability,
         )
     except (ValueError, OSError) as exc:
         parser.error(str(exc))
