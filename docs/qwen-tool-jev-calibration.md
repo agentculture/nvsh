@@ -512,8 +512,11 @@ lapses, all posted on issue #61 when they happened.
   exact 7, no argument span 5, too short 2, near-protected 1). The lead
   read all 24 remaining reviewer rejects: every one is a genuine "no"
   (fragments such as "that service logs", stripping that left the service
-  named, awkward phrasings), none a parser artifact. Still running: the
-  hard-negative rerun (seed 54) and a diagnosis-explain top-up (D33).
+  named, awkward phrasings), none a parser artifact. Hard-negative rerun
+  (seed 54, after D30): **92 kept** (up from 24; identifier 16, reviewer B
+  19, duplicate 1). The lead read the 19 reviewer rejects: all genuine,
+  wrong or invented answers ("NVIDIA Shared Memory", "restarting sshd
+  refreshes host keys"). Still running: the diagnosis-explain top-up (D33).
 - **Assembly prepared (D29):** issue 46's reviewed variations copied into
   the run's `aug/`; `SUPPLEMENT` and `SCORER_BUILD_ARGS` set in the cycle's
   env. Next: combined supplement, `assemble`, freeze hashes, then r1-r3.
