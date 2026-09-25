@@ -112,8 +112,8 @@ this cycle's PRs. Marked *(planned)* until the task's PR merges.
 
 | File | What it does | Task |
 |---|---|---|
-| `scorer.py` | **Merged** (`0b48c79`, permutation seam `6ea1105`). One shared label-probability definition, `distribution()`: a candidate's mass is the sum of next-token probabilities over every vocabulary token whose whitespace-stripped text equals its label (3 variants per letter on Qwen3.5-0.8B: `'A'`, `' A'`, `'\tA'`), normalised over offered candidates. New `label_variant_ids()` scans the vocabulary for those variants (~0.4 s over ~248k tokens); `TransformersScorer` now reads all variant ids and goes through `distribution()`, the same function a served model uses; new `label_logits_from_vocab()` is a differentiable log-sum-exp over variant ids, for training. `READOUT_TOP = 5000` is what `score()` requests from a server. Incomplete results are still never renormalised. **Permutation seam (t2):** a frozen `Permutation` dataclass (`order`, `labels`, with `to_json`/`from_json` round-trip); `permute(seed, pool, subset=, keep=)` draws a seeded order and letter permutation without replacement from `LABEL_ALPHABET`, with an optional subset that always keeps the gold candidate; `same_choice()` compares by operation name, never by letter; description overrides let a name outside the operations table (for example `escalate:repair`) supply its own text; `prompt_messages`/`score` take explicit `labels`/`order`/`descriptions`. The default (no permutation given) is pinned byte-identical to before, so `scorer-b1`'s own decisions stay reproducible. | t1, t2 |
-| `serve_for_measure.sh`, `pipeline.env.example`, `pipeline-qwen.env.example` | **Merged.** `MEASURE_MAX_LOGPROBS` now defaults to 5000 (was 22) in the script and both pipeline env examples. `llama-server` has no max-logprobs flag, so nothing there caps the readout. | t3 |
+| `scorer.py` | **Merged** (`0b48c79`, permutation seam `6ea1105`). One shared label-probability definition, `distribution()`: a candidate's mass is the sum of next-token probabilities over every vocabulary token whose whitespace-stripped text equals its label (3 variants per letter on Qwen3.5-0.8B: `'A'`, `' A'`, `'\tA'`), normalised over offered candidates. New `label_variant_ids()` scans the vocabulary for those variants (~0.4 s over ~248k tokens); `TransformersScorer` now reads all variant ids and goes through `distribution()`, the same function a served model uses; new `label_logits_from_vocab()` is a differentiable log-sum-exp over variant ids, for training. `READOUT_TOP` is what `score()` requests from a server — raised from 5000 to **20000** in the P13 rework below (still >= the c38 floor of 5000). Incomplete results are still never renormalised. **Permutation seam (t2):** a frozen `Permutation` dataclass (`order`, `labels`, with `to_json`/`from_json` round-trip); `permute(seed, pool, subset=, keep=)` draws a seeded order and letter permutation without replacement from `LABEL_ALPHABET`, with an optional subset that always keeps the gold candidate; `same_choice()` compares by operation name, never by letter; description overrides let a name outside the operations table (for example `escalate:repair`) supply its own text; `prompt_messages`/`score` take explicit `labels`/`order`/`descriptions`. The default (no permutation given) is pinned byte-identical to before, so `scorer-b1`'s own decisions stay reproducible. | t1, t2 |
+| `serve_for_measure.sh`, `pipeline.env.example`, `pipeline-qwen.env.example`, `pipeline.sh`, `release_bundle.py` | **Merged.** `MEASURE_MAX_LOGPROBS` now defaults to **20000** (raised from an initial 5000, itself up from 22) in the script, both pipeline env examples, `pipeline.sh`'s own default and `release_bundle.py`'s serving instructions — all derived from `scorer.READOUT_TOP` rather than a separately hard-coded number (P5 fixed the derivation; P13 below raised the number itself). `llama-server` has no max-logprobs flag, so nothing there caps the readout. | t3 |
 | `calibration_fit.py` | **Merged**, then reworked in the review-fix pass on `#61`. New, stdlib only. Three subcommands: `folds` (writes `{seed, source, fit_ids, selection_ids}`, disjoint and sorted, default 70/30 split); `fit` (fits a temperature `T` by golden-section search on log T minimising NLL on the fit fold, bounds `T` in `[1/20, 20]`, then a per-label vector by coordinate descent on the temperature-scaled rows); `apply` (applies temperature then vector, renormalising over each line's offered labels; null-candidate lines pass through and are counted). Refuses test/held-out inputs by file name and split header — predictions files carry no header, so the fit refusal is name-based only (a documented limit, not a full guarantee). Review fix: NLL is now computed in log space without clipping the gold probability, `escalate:<reason>` mass rolls up to `escalate` before NLL, and rows whose gold has no candidate are skipped and counted (`skipped_gold_absent`) instead of corrupting the fit. | t4 |
 | `metrics.py` | **Merged** (`6ea1105`). Per-slice results: read-only vs mutating (by the gold operation's `Operation.read_only`), `escalate_or_explain`, each carrying calibration, candidate-count and missing-candidate rate. Every rate and ECE/Brier carries n and a seeded percentile bootstrap 95% CI (1000 resamples, seed 0 default; precision uses a stratified bootstrap). New outcome `abstain_uncertain` is counted separately from semantic escalate but still counts as "escalated" for escalation bars. Escalation-reason labels use the form `escalate:<reason>` and roll up to plain `escalate` everywhere. `reliability_markdown()` renders the bin tables per slice. | t5 |
 | `gate.py` | **Merged, new.** `decide(distribution, offered, thresholds)` -> `propose` / `explain` / `escalate` / `abstain_uncertain`: escalate if the argmax or the rolled-up escalate mass clears its threshold; else explain if top1 is explain; else a per-`Operation.read_only` threshold set (a `p_top1` floor, the top1-top2 margin, and normalized entropy) decides `abstain_uncertain`; any threshold set to `None` disables that check. Thresholds are keyed only by `Operation.read_only`, never an operation name. | t6 |
@@ -125,7 +125,7 @@ this cycle's PRs. Marked *(planned)* until the task's PR merges.
 | `docs/qwen-tool-jev-finetune.md`, `docs/benchmarks/2026-09-24-qwen-tool-jev-comparison.md`, `release_bundle.py` (model-card text) | **Merged.** Track A is now described as a specialized generative tool router and Track B as the Jev-style candidate scorer; no text calls them equally Jev-like. | t11 |
 | `split.py` | **Merged.** New v2 mode: repeatable `--corpus`, `--version`, `--val-size`/`--test-size` as counts, `--fold-seed`. The header is a JSON object `{version, seed, sources: [{path, sha256}], sizes, side}`; the validation header additionally carries `fold_seed`/`fit_ids`/`selection_ids`, and a `folds.json` is written for `calibration_fit`. Refuses any output path under `nvsh/` and refuses `held-out.json` as input. Assembly is class-balanced round-robin by the corpus's `class` field; requested totals can land 1-2 off target per answer kind, from largest-remainder rounding. | t12 |
 | `draft_heldout.py` | Reused from issue 46, extended with a `--seed` option (default 46) so this cycle can draft its own fresh held-out set independent of issue 46's; gained a new `as_item()` fix (see [ledger P9](#ledger-symptom---cause---fix)) that turns a bare-string model reply into a text-only item instead of crashing. See [ledger P7](#ledger-symptom---cause---fix) for the seed-53 draft's original parse gap. | t13 |
-| `draft_sources.py` | **Merged, new** (a second t13 tool, alongside `draft_heldout.py`). `draft OUT --pool eval\|heldout --seed N --per-op K --per-reason K --explain K`: a table-only generator producing per-operation requests with validated arguments, per-decline-reason escalate prompts for all 8 classes, and explain Q/A pairs. `review IN OUT`: two independent reviewers give a strict yes/no; only what both accept is kept; exact and near-duplicate (Jaccard >= 0.8) dedupe against `dev.json` and within the draft, reusing `leakage_check.py`. Prints counts and hashes only; `review.jsonl` omits entry text entirely for the `heldout` pool. Reviewer roles are configured through `NVSH_DRAFT_<ROLE>_*` environment variables — no literal URL, key or model name is hard-coded. | t13 |
+| `draft_sources.py` | **Merged, new** (a second t13 tool, alongside `draft_heldout.py`). `draft OUT --pool eval\|heldout --seed N --per-op K --per-reason K --explain K`: a table-only generator producing per-operation requests with validated arguments, per-decline-reason escalate prompts for all 8 classes, and explain Q/A pairs. `review IN OUT`: two independent reviewers give a strict yes/no; only what both accept is kept; exact and near-duplicate (Jaccard >= 0.8) dedupe against `dev.json` and within the draft, reusing `leakage_check.py`. Prints counts and hashes only; `review.jsonl` omits entry text entirely for the `heldout` pool. Reviewer roles are configured through `NVSH_DRAFT_<ROLE>_*` environment variables — no literal URL, key or model name is hard-coded. **Reworked (P12 below):** a reviewer's empty reply is now retried up to twice before being counted as a genuine reject (reason `"empty reply"`); the per-reviewer reply budget was raised to 8192 tokens; the escalate-reason definitions (`missing_argument`, `not_a_request`, `multi_step`, `injection`) were tightened to match the corpus's own decline classes exactly. | t13 |
 | `build_dataset.py` | **Merged.** Every rendered example is enriched with its `permutation` (`{order, labels}`), `gold`, `perm_seed` (a sha256 of `"<perm-seed>:<example id>"`), and `descriptions` (only when reason candidates are offered). New flags: `--randomize-labels`, `--perm-seed`, `--min-subset` (default 6), `--full-set-probability` (default 0.3), `--missing-candidate-rate` (train side only — derives `<id>-nocand` examples with the gold operation removed and gold retargeted to `escalate` / `escalate:outside_table`), `--reasons` (16 operations + `explain` + 8 `escalate:<reason>` = 25 candidates; the reason is read from the entry's `class` field, `decline:<reason>`, falling back to `outside_table` when unrecognised; descriptions come from `scripts/lfm-finetune/data/reasons.json`). Default behaviour (no new flags passed) is unchanged. | t14 |
 | `merge_variations.py` | Existing issue-46 tool; test coverage extended alongside t14's `build_dataset.py` changes. | t14 |
 | `data/reasons.json` | **Merged, new.** Scripts-side descriptions for the 8 `escalate:<reason>` candidates — never read from `nvsh/`. | t14 |
@@ -297,8 +297,36 @@ per reason and 20 explain per seed, generator max tokens raised to 12000,
 no operation requests this round.
 
 All teachers used across both drafts are Apache-2.0 (generator
-Qwen3.6-35B-A3B, reviewer A Gemma-4-26B-A4B, reviewer B Qwen3.8-27B). This
-section will be updated at each step as the lead forwards findings.
+Qwen3.6-35B-A3B, reviewer A Gemma-4-26B-A4B, reviewer B Qwen3.8-27B).
+
+**Root cause found for the low escalate/explain yields, and fixed** (see
+[ledger P12](#ledger-symptom---cause---fix)): reviewer B is a thinking
+model that was running with a 1024-token reply budget and often spent it
+all reasoning, replying empty — which every review pass so far had counted
+as an ordinary reject. Fixed and re-running now, one runner at a time: a
+full re-review of all 247 held-out candidates (seeds 53-58) under the fixed
+budgets, then a re-review of the 42 previously rejected eval-pool declines,
+then three fresh eval top-ups (seeds 57-59; 6 per reason, 20 explain each).
+The first eval top-up under the *old* budget (seed 54) had already
+finished and kept 25 (17 escalate, 8 explain) before the fix landed.
+
+**Readout fidelity re-checked on `scorer-b1`** (spent test side, diagnosis
+only, not a cycle claim): the shared `distribution()` definition closed the
+`dev-f02` gap the [pre-challenge probe](#pre-challenge-probe-before-any-code-or-training)
+found — in-process vs served bf16 GGUF top-choice agreement is now 100% on
+all 54 complete entries, and `dev-f02` itself differs by 0.005 (was 0.137).
+This is the evidence lapse l1 was waiting on. Remaining small gaps: max
+absolute difference 0.029, with 3 of 54 entries above 0.01 (worst:
+`dev-g278`, `dev-g190`, `dev-g269`). Completeness at the old `READOUT_TOP`
+of 5000 was still short: 10 of 64 entries incomplete on the bf16 GGUF, and
+on `Q4_K_M` 5 of 64 incomplete at top 5000 (0.17 s/request on CPU), 0 of 64
+at top 20000 (0.25 s), 0 at top 60000 (0.44 s), 0 at the full 250000-token
+vocabulary (1.46 s). **Fix (ledger P13):** `READOUT_TOP` raised from 5000
+to **20000**, with every server cap, env example, release instruction and
+test updated to match (rework inside t1/t3's files; c38's floor is >= 5000,
+so this stays compliant). Full suite: 4543 passed.
+
+This section will be updated at each step as the lead forwards findings.
 
 Cumulative issue **#61** records every deviation, lapse and status update
 for this cycle as it happens; this guide's ledger below is the narrative
@@ -347,11 +375,16 @@ redaction rule).
   `READOUT_TOP` so the merge stayed green; `measure.py`'s own
   `--max-logprobs` preflight check still belongs to t8. Reason: keep task
   ownership boundaries clean without blocking a passing merge.
-- **l1, an assumption not yet re-measured (operator-approved lapse).** The
-  pre-challenge probe's `dev-f02` 0.137 definition gap (P1 above) is
-  claimed closed on the strength of t1's code change alone; it has not yet
-  been re-measured on `scorer-b1` itself. t17 (the baseline re-probe on
-  corpus v2 validation) re-measures it.
+- **l1, an assumption not re-measured at the time (operator-approved
+  lapse), now resolved.** The pre-challenge probe's `dev-f02` 0.137
+  definition gap (P1 above) was claimed closed on the strength of t1's code
+  change alone, before it had been re-measured on `scorer-b1` itself.
+  **Resolved:** the diagnosis-only readout fidelity check recorded in
+  [ledger P13](#ledger-symptom---cause---fix) re-measured it directly:
+  `dev-f02` now differs by 0.005 (was 0.137), and top-choice agreement
+  between in-process and served bf16 scoring is 100% on all 54 complete
+  entries. The shared `distribution()` definition closed the gap as
+  claimed.
 - **l2, no CI control for the training-interpreter path (operator-approved
   lapse).** The torch/tokenizer-backed scorer tests (`label_variant_ids`,
   `TransformersScorer`, `label_logits_from_vocab`) run only under the
@@ -457,6 +490,53 @@ redaction rule).
   from seeds 54-56, 6 per reason and 20 explain per seed (smaller requests),
   generator max tokens raised to 12000, no operation requests this round
   (the operation slice is already well covered).
+- **P12, the actual root cause of the low escalate/explain yields: reviewer
+  B's reply budget (merged, tested).** **Symptom:** across P7, P10 and P11,
+  escalate and explain entries kept coming back far short of what was
+  drafted, with many eval top-up rejects reasoned as "empty reply."
+  **Cause:** reviewer B (Qwen3.8-27B, a thinking model) ran with the
+  default 1024-token reply budget; it frequently spent the whole budget
+  reasoning and returned an empty reply, and `draft_sources.py` counted an
+  empty reply as an ordinary reject rather than a review failure — silently
+  discarding entries the reviewer never actually judged. **A second,
+  distinct issue found in the same pass:** the generator's own definitions
+  for `missing_argument`, `not_a_request`, `multi_step` and `injection` did
+  not match the corpus's own decline classes — for example the generator
+  wrote "what's the status of the ssh service" as `missing_argument` (it is
+  a normal, fully-specified request), which both reviewers correctly
+  rejected. **Fix:** `draft_sources.py` now re-asks a reviewer up to twice
+  on an empty reply, counting it as a genuine reject (reason `"empty
+  reply"`) only if it stays empty after retrying; every reviewer's reply
+  budget was raised to 8192 tokens; the four reason definitions were
+  tightened to match the corpus's decline classes exactly (e.g.
+  `missing_argument` = an action needing a target given with none at all,
+  like "restart it"; `not_a_request` = small talk or questions about the
+  assistant itself; `multi_step` = several operations, a condition between
+  them, or acting on every service; `injection` = smuggled instructions or
+  chained shell commands). Tested and merged.
+- **l4, the reviewer-budget fix shipped without its own pilot check
+  (proposed, grader-unverified — posted on issue #61).** The fix in P12 ran
+  without first checking, on a small pilot batch, what the empty-reply rate
+  actually is under the new 8192-token budget before committing to the
+  larger re-review runs described above.
+- **P13, `READOUT_TOP` was still too low for the deployed `Q4_K_M` build.**
+  **Symptom:** a diagnosis-only readout fidelity check (spent test side,
+  not a cycle claim) found completeness gaps even after t1/t3's earlier
+  fixes: at the-then `READOUT_TOP` of 5000, 10 of 64 entries were
+  incomplete on the bf16 GGUF, and 5 of 64 were still incomplete on the
+  deployed `Q4_K_M` GGUF (0.17 s/request on CPU). **Cause:** 5000 was
+  enough to close most of the gap (per the earlier P1 probe) but not all of
+  it on this build. Sweeping further: `Q4_K_M` was complete (0 of 64
+  incomplete) at top 20000 (0.25 s/request), top 60000 (0.44 s) and the
+  full 250000-token vocabulary (1.46 s). **Fix:** `READOUT_TOP` raised from
+  5000 to 20000 (still above the c38 floor of >= 5000), with every server
+  cap, env example, release instruction and test updated to match, as
+  rework inside t1's and t3's own files. The same check re-measured the
+  `dev-f02` label-definition gap directly and found it closed (see the
+  updated [l1](#ledger-symptom---cause---fix) above): top-choice agreement
+  100% on 54 complete entries, `dev-f02` itself now 0.005 off (was 0.137),
+  worst remaining gap 0.029 on 3 of 54 entries (`dev-g278`, `dev-g190`,
+  `dev-g269`). Full suite: 4543 passed.
 - **P8, a load-sensitive test flake (unrelated to this cycle's files).**
   **Symptom:** a full-suite run under heavy load failed
   `tests/test_readline_bash.py::test_bash_at_target_grammar_accepts_every_python_positive_row`
