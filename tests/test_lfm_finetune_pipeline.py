@@ -732,6 +732,23 @@ def test_measure_stages_pass_the_snapshot_thinking_and_extra_args(
     assert _option(argv, "--max-logprobs") == ["5000"]
 
 
+def test_measure_max_logprobs_default_matches_scorer_readout_top(tmp_path: Path) -> None:
+    """Issue 53 t3: the served cap must not truncate below what scorer.py asks for."""
+    scorer_path = _REPO_ROOT / "scripts" / "lfm-finetune" / "scorer.py"
+    spec = importlib.util.spec_from_file_location("t3_scorer", scorer_path)
+    scorer = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = scorer  # its dataclasses look their module up there
+    spec.loader.exec_module(scorer)
+    assert scorer.READOUT_TOP >= 5000
+
+    pipe = _Pipeline(tmp_path)
+    pipe.ready()
+    result = pipe.run("measure-val", "a1")
+    assert result.returncode == 0, result.stderr
+    [(_, argv)] = pipe.calls("measure.py")
+    assert _option(argv, "--max-logprobs") == [str(scorer.READOUT_TOP)]
+
+
 def test_enable_thinking_comes_from_the_env_file(tmp_path: Path) -> None:
     pipe = _Pipeline(tmp_path, "ENABLE_THINKING=true\n")
     pipe.ready()

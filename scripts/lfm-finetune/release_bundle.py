@@ -114,10 +114,6 @@ TOKENIZER_FILES = (
 #: The measure.py report section an Apache card quotes.
 RESULTS_HEADING = "## Issue 46 metrics"
 
-#: A served Track B scorer needs this many next-token log-probabilities (18
-#: labels plus 4, risk r8), as the measure stages serve it.
-SCORER_MAX_LOGPROBS = 22
-
 #: Who wrote and checked the synthetic training requests of issue 39's LFM2.5
 #: run (spec c45), as the operator's local gateway served them. An Apache
 #: bundle never uses this: it names its own run's teachers (``run_teachers``).
@@ -143,12 +139,32 @@ _APACHE_TEACHERS_NEEDED = (
 def _sibling(name: str):
     spec = importlib.util.spec_from_file_location(f"release_{name}", _HERE / f"{name}.py")
     module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module  # its dataclasses look their module up there
     spec.loader.exec_module(module)
     return module
 
 
 def _stage_cache():
     return _sibling("stage_cache")
+
+
+def _scorer_max_logprobs() -> int:
+    """The served logprobs cap the model card must quote.
+
+    Derived from ``scorer.READOUT_TOP`` (the count the scorer itself
+    requests, issue 53 t3) the same way ``dataset_bundle`` is loaded above;
+    falls back to the literal 5000 -- kept equal to ``scorer.READOUT_TOP`` --
+    if scorer.py cannot be imported standalone.
+    """
+    try:
+        return int(_sibling("scorer").READOUT_TOP)
+    except Exception:  # pragma: no cover -- defensive fallback
+        return 5000
+
+
+#: A served Track B scorer needs this many next-token log-probabilities, as
+#: the measure stages serve it (kept equal to scorer.READOUT_TOP, issue 53 t3).
+SCORER_MAX_LOGPROBS = _scorer_max_logprobs()
 
 
 class RunTeachers:

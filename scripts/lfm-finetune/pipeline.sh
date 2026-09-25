@@ -407,7 +407,9 @@ serve_for_measure() {
   MEASURE_PORT=${MEASURE_PORT:-18060}
   MEASURE_CTX=${MEASURE_CTX:-2048}
   MEASURE_GPU_FRACTION=${MEASURE_GPU_FRACTION:-0.08}
-  MEASURE_MAX_LOGPROBS=${MEASURE_MAX_LOGPROBS:-22}
+  # Kept equal to scorer.py's READOUT_TOP (issue 53 t3): the scorer requests
+  # this many next-token log-probabilities per served request.
+  MEASURE_MAX_LOGPROBS=${MEASURE_MAX_LOGPROBS:-5000}
   MEASURE_MODEL_NAME=$name
   # A GGUF build's native llama-server keeps its pid file and log here.
   MEASURE_RUN_DIR="$WORK/measure"
