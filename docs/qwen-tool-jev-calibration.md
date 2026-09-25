@@ -405,6 +405,19 @@ lapses, all posted on issue #61 when they happened.
   v2 validation does not contain, so the sweep's missing-candidate recall
   was n/a here).
 
+- **D29.** **Training-set assembly for r1-r3.** The v2 train side (509),
+  issue 46's reviewed paraphrase variations of `dev.json` train entries
+  (its `nvsh-accepted.jsonl`, 1,206 kept in issue 46; valid here because
+  every `dev.json` entry is train-only under d3), and one combined train
+  supplement (issue 46's 14 `train-supplement.json` entries plus t15's
+  targeted entries). `assemble` then drops any exact or near match of v2
+  val, v2 test, both sealed held-outs and the issue-39/46 test sides
+  (`leakage_check.py`). Track B build flags (`SCORER_BUILD_ARGS`):
+  `--randomize-labels --perm-seed 53 --missing-candidate-rate 0.3`, plus
+  `--reasons` for r2. The plan leaves the missing-candidate rate open;
+  0.3 is the pipeline's documented example, and the rule's accuracy floor
+  (step 2) guards against it tipping the model into over-escalation.
+
 ## Where the run stands
 
 **Latest, 2026-09-25 afternoon.**
