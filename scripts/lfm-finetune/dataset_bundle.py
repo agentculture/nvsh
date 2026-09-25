@@ -49,6 +49,7 @@ from __future__ import annotations
 
 import argparse
 import collections
+import ipaddress
 import json
 import re
 import shutil
@@ -272,9 +273,33 @@ def _teacher(role_models: dict[str, tuple[str, str]], alias: str) -> tuple[str, 
     return role_models[alias]
 
 
+_IPV4 = re.compile(r"(?<![\d.])(\d{1,3}(?:\.\d{1,3}){3})(?![\d.])")
+#: RFC 5737 TEST-NET-1: an address that is never anyone's real host.
+DOCUMENTATION_NET = "192.0.2."
+
+
+def publishable_text(text: str) -> str:
+    """*text* with every private (non-loopback) IPv4 address replaced by the
+    documentation address with the same last octet (issue 53 t21: a drafted
+    request named 192.168.1.50, and the bundle scan refuses private hosts)."""
+
+    def swap(match: re.Match[str]) -> str:
+        try:
+            address = ipaddress.ip_address(match.group(1))
+        except ValueError:
+            return match.group(0)
+        if address.is_loopback or address.is_unspecified or not address.is_private:
+            return match.group(0)
+        return DOCUMENTATION_NET + match.group(1).rsplit(".", 1)[1]
+
+    return _IPV4.sub(swap, text)
+
+
 def _record(entry: dict[str, Any], split: str) -> dict[str, Any]:
     keep = ("id", "text", "expect", "kind", "source_id", "class")
     record = {key: entry[key] for key in keep if key in entry}
+    if "text" in record:
+        record["text"] = publishable_text(record["text"])
     record.setdefault("source_id", entry["id"])
     record["split"] = split
     return record
@@ -441,6 +466,11 @@ def build(
         "supplement": origins["supplement"],
         "variation": origins["variation"],
         "draft": origins["draft"],
+        "redacted_hosts": sum(
+            1
+            for entry in [*train, *(e for entries in sides.values() for e in entries)]
+            if publishable_text(entry.get("text", "")) != entry.get("text", "")
+        ),
         "side_origins": {
             side: sorted({_origin(e) for e in entries}) for side, entries in sides.items()
         },
@@ -566,6 +596,13 @@ def card(
     if counts.get("draft"):
         train_parts += f", {counts['draft']} fresh teacher-drafted requests"
     val_kind, test_kind = _side_kind(counts, "validation"), _side_kind(counts, "test")
+    redacted = counts.get("redacted_hosts", 0)
+    redaction = (
+        f"\n{redacted} record(s) named a private network address; it is published as the\n"
+        f"documentation address {DOCUMENTATION_NET}x (RFC 5737) with the same last octet.\n"
+        if redacted
+        else ""
+    )
     return f"""---
 license: apache-2.0
 language:
@@ -607,7 +644,7 @@ in words, or **escalate** to a full agent. {_intro(issue, model_repos)}
 
 The train side's answers: {answers.get('propose', 0)} propose,
 {answers.get('escalate', 0)} escalate, {answers.get('explain', 0)} explain.
-
+{redaction}
 **Do not train on validation or test** if you want numbers comparable with
 nvsh's. nvsh's separate held-out split (`held-out.json`) is not in this data
 set.

@@ -633,3 +633,17 @@ def test_a_record_without_a_source_still_refuses_without_a_default(tmp_path) -> 
     )
     with pytest.raises(ValueError, match="source"):
         _module().build(**inputs)
+
+
+def test_a_private_address_is_published_as_a_documentation_address(tmp_path) -> None:
+    """Issue 53 t21: a teacher-drafted request named 192.168.1.50; the bundle scan
+    refuses private hosts, and the address may be on the operator's network."""
+    inputs = _inputs(tmp_path)
+    entry = _entry("dev-t2", {"escalate": True})
+    entry["text"] = "ssh into 192.168.1.50 and check postgres, not 127.0.0.1"
+    (inputs["splits"] / "test.json").write_text(json.dumps({"entries": [entry]}))
+    counts = _module().build(**inputs)
+    record = json.loads((tmp_path / "bundle" / "data" / "test.jsonl").read_text())
+    assert record["text"] == "ssh into 192.0.2.50 and check postgres, not 127.0.0.1"
+    assert counts["redacted_hosts"] == 1
+    assert "192.0.2" in (tmp_path / "bundle" / "README.md").read_text()
