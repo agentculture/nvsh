@@ -97,6 +97,39 @@ def test_make_folds_dedupes_ids(calibration_fit):
     assert set(fit_ids) | set(selection_ids) == {"a", "b", "c"}
 
 
+def test_make_folds_keeps_a_group_of_ids_together(calibration_fit):
+    """#53 review finding: without grouping, a shuffle of individual ids can
+    split a source's variations across the fit and selection folds (seed 7
+    repro: fit {s, s~v2}, selection {s~v1}). ``group_of`` maps each id to the
+    key (source_id) whose members must all land on the same side."""
+    group_of = {}
+    for group in range(6):
+        for variant in range(3):
+            group_of[f"g{group}v{variant}"] = f"g{group}"
+    ids = list(group_of)
+    for seed in range(20):
+        fit_ids, selection_ids = calibration_fit.make_folds(ids, seed=seed, group_of=group_of)
+        fit_set, selection_set = set(fit_ids), set(selection_ids)
+        for group in range(6):
+            members = {f"g{group}v{variant}" for variant in range(3)}
+            assert members <= fit_set or members <= selection_set, (seed, group)
+
+
+def test_make_folds_group_of_still_covers_every_id(calibration_fit):
+    group_of = {"s": "s", "s~v1": "s", "s~v2": "s", "t": "t"}
+    fit_ids, selection_ids = calibration_fit.make_folds(list(group_of), seed=7, group_of=group_of)
+    assert set(fit_ids) | set(selection_ids) == set(group_of)
+    assert set(fit_ids) & set(selection_ids) == set()
+
+
+def test_make_folds_without_group_of_is_unchanged(calibration_fit):
+    ids = [f"id{n}" for n in range(20)]
+    fit_a, selection_a = calibration_fit.make_folds(ids, seed=7)
+    fit_b, selection_b = calibration_fit.make_folds(ids, seed=7, group_of=None)
+    assert fit_a == fit_b
+    assert selection_a == selection_b
+
+
 def test_read_split_ids(calibration_fit, tmp_path):
     path = _split_file(tmp_path, "val.json", ["a", "b", "c"])
     assert calibration_fit.read_split_ids(path) == ["a", "b", "c"]

@@ -512,6 +512,138 @@ def test_legacy_single_corpus_invocation_is_unaffected_by_v2(tmp_path) -> None:
     assert isinstance(header, str)
 
 
+def test_v2_fold_assignment_keeps_source_id_groups_on_one_side(tmp_path) -> None:
+    """#53 review finding P1: fold creation (~split.py line 478) shuffled
+    individual val ids and ignored source_id grouping, so a source's
+    variations could land in both the fit and selection folds. --seed 3
+    lands the whole "sib" group in val for this fixture; sweeping
+    --fold-seed reliably reproduces the pre-fix split under the old code."""
+    module = _module()
+    entries = [_operation_entry(f"op{i:02d}") for i in range(40)]
+    entries += [_escalate_entry(f"esc{i:02d}") for i in range(34)]
+    entries += [
+        {**_escalate_entry("sib0"), "source_id": "sib"},
+        {**_escalate_entry("sib1"), "source_id": "sib"},
+        {**_escalate_entry("sib2"), "source_id": "sib"},
+    ]
+    corpus = tmp_path / "c.json"
+    corpus.write_text(json.dumps({"header": "h", "entries": entries}), encoding="utf-8")
+    # --seed 3 lands the whole "sib" group in val for this fixture (confirmed
+    # by direct enumeration); vary --fold-seed to hit the buggy per-id shuffle.
+    for fold_seed in range(15):
+        out_dir = tmp_path / f"out{fold_seed}"
+        module.main(
+            [
+                "--corpus",
+                str(corpus),
+                "--version",
+                "v2",
+                "--val-size",
+                "15",
+                "--test-size",
+                "15",
+                "--seed",
+                "3",
+                "--fold-seed",
+                str(fold_seed),
+                "--out-dir",
+                str(out_dir),
+            ]
+        )
+        val_payload = json.loads((out_dir / "val.json").read_text())
+        sib_ids_in_val = {e["id"] for e in val_payload["entries"] if e["source_id"] == "sib"}
+        if not sib_ids_in_val:
+            continue
+        fit_ids = set(val_payload["header"]["fit_ids"])
+        selection_ids = set(val_payload["header"]["selection_ids"])
+        assert sib_ids_in_val <= fit_ids or sib_ids_in_val <= selection_ids, fold_seed
+
+
+def test_v2_stratifies_a_rare_class_across_val_and_test(tmp_path) -> None:
+    """#53 review finding P2: class round-robin ordering followed by
+    contiguous train/val/test slicing is not stratification -- with 90
+    common + 10 rare escalation entries and 15/15 eval sizes, all 10 rare
+    entries used to land in train, none in val or test."""
+    module = _module()
+    entries = [{**_escalate_entry(f"common{i:03d}"), "class": "decline:common"} for i in range(90)]
+    entries += [{**_escalate_entry(f"rare{i:02d}"), "class": "decline:rare"} for i in range(10)]
+    corpus = tmp_path / "c.json"
+    corpus.write_text(json.dumps({"header": "h", "entries": entries}), encoding="utf-8")
+    out_dir = tmp_path / "out"
+    module.main(
+        [
+            "--corpus",
+            str(corpus),
+            "--version",
+            "v2",
+            "--val-size",
+            "15",
+            "--test-size",
+            "15",
+            "--fold-seed",
+            "1",
+            "--out-dir",
+            str(out_dir),
+        ]
+    )
+    val = json.loads((out_dir / "val.json").read_text())["entries"]
+    test = json.loads((out_dir / "test.json").read_text())["entries"]
+    train = json.loads((out_dir / "train.json").read_text())["entries"]
+    assert "decline:rare" in {e["class"] for e in val}
+    assert "decline:rare" in {e["class"] for e in test}
+    assert abs(len(val) - 15) <= 2
+    assert abs(len(test) - 15) <= 2
+    assert len(train) + len(val) + len(test) == len(entries)
+
+
+def test_v2_class_stratification_respects_source_id_groups(tmp_path) -> None:
+    module = _module()
+    entries = [_operation_entry(f"op{i:02d}") for i in range(30)]
+    entries += [
+        {**_escalate_entry("g0"), "class": "decline:rare"},
+        {**{**_escalate_entry("g0v1"), "source_id": "g0"}, "class": "decline:rare"},
+    ]
+    entries += [{**_escalate_entry(f"other{i:02d}"), "class": "decline:rare"} for i in range(8)]
+    corpus = tmp_path / "c.json"
+    corpus.write_text(json.dumps({"header": "h", "entries": entries}), encoding="utf-8")
+    out_dir = tmp_path / "out"
+    module.main(
+        [
+            "--corpus",
+            str(corpus),
+            "--version",
+            "v2",
+            "--val-size",
+            "10",
+            "--test-size",
+            "10",
+            "--fold-seed",
+            "1",
+            "--out-dir",
+            str(out_dir),
+        ]
+    )
+    sides_by_source: dict[str, set[str]] = {}
+    for name in module.SPLIT_NAMES:
+        entries_out = json.loads((out_dir / f"{name}.json").read_text())["entries"]
+        for entry in entries_out:
+            sides_by_source.setdefault(entry["source_id"], set()).add(name)
+    assert all(len(sides) == 1 for sides in sides_by_source.values())
+
+
+def test_v2_legacy_mode_is_byte_identical_to_before(tmp_path) -> None:
+    """Non-v2 (legacy) invocations must be unaffected by the v2 fixes above."""
+    module = _module()
+    corpus = _fixture_corpus(tmp_path)
+    out_dir = tmp_path / "out"
+    module.main(
+        ["--corpus", str(corpus), "--out-dir", str(out_dir), "--seed", str(module.DEFAULT_SEED)]
+    )
+    payload = json.loads((out_dir / "val.json").read_text())["entries"]
+    ids = sorted(e["id"] for e in payload)
+    assert ids == ["esc02", "exp01", "op00", "op06"]
+
+
 def test_every_side_keeps_the_corpus_world(tmp_path) -> None:
     split = _module()
     world = {"platform": {"kind": "jetson"}}
