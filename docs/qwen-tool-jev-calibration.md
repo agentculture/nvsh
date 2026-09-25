@@ -511,14 +511,35 @@ lapses, all posted on issue #61 when they happened.
   missing-candidate rows; missing-candidate escalation 21/24 (87.5%); pooled
   permutation change 5.0% (order 2.3%, letters 7.2%, subset 5.2%,
   paraphrase 3.9%, all 6.2%; b1 18.8% on full validation); ECE raw 0.120,
-  after temperature 0.082 (T 0.73: r1 is slightly under-confident), with
-  the vector 0.10+ (worse). **Floor:** under d5 `scorer-b1` gets 20/24 on
+  after temperature 0.082 (T 0.73: r1 is slightly under-confident), after
+  temperature and vector 0.047 (the vector lowers ECE but raises Brier,
+  0.139 -> 0.151; an earlier revision of this entry misread it as worse). **Floor:** under d5 `scorer-b1` gets 20/24 on
   the selection fold, so the floor is 78.3%. **Rule reading (lead):** a
   candidate's decisions for rule steps 1-2 use the calibration variant its
-  own selection fold favours (t19's rule for the deployed build);
+  own selection fold favours by ECE (t19's rule for the deployed build);
   temperature alone never changes the top choice. For r1 that is
-  temperature, so its decisions are the raw ones (22/24); with the vector it
-  would be 20/24, above the floor either way. Record: guide.
+  temperature and vector (20/24; the raw decisions give 22/24), above the
+  floor either way. Record: guide.
+- **D41.** **r3 measured; gate thresholds fitted per candidate.** r3 (lr
+  1e-4), validation 204: right proposals 73/84, **wrong mutating 3**, all on
+  the fit fold and all the same shape: a check-then-change request whose
+  gold is escalate ("check the gpu temp and if it's above 80c switch to
+  low_power mode") answered with `power_set` at 0.97, 0.83 and 0.78 (r1
+  escalates all three; `scorer-b1` answers with the read-only check).
+  Abstention recall 91.7%, false-positive calls 7/120, invalid 0, ECE 0.037,
+  Brier 0.134; missing-candidate slice escalation 88.1%, 9 false-positive
+  calls. Selection fold: right 21/24, 0 wrong mutating, missing-candidate
+  escalation 87.5%, pooled permutation change 4.2% (order 5.4%, letters
+  3.1%, subset 3.0%, paraphrase 2.0%, all 7.4%), ECE raw 0.055, after
+  temperature 0.020 (T 1.19), with the vector 0.039. **Rule reading
+  (lead):** "gate thresholds fitted on the fit fold for that candidate"
+  means the most right proposals with 0 wrong mutating on the fit fold
+  (fewest abstentions on a tie), in the candidate's favoured calibration
+  variant. r1 (temperature and vector): no gate needed, fit right 48.
+  r3 (temperature): mutating floor 0.95, fit right 52 -> 43 and 12
+  abstentions. At those thresholds, selection fold: r1 20/24, 0 wrong
+  mutating, missing-candidate escalation 87.5%; r3 21/24, 0 wrong mutating,
+  91.7%. Record: guide.
 - **D32.** **Lapses l5-l8 approved.** The operator approved l5 (split v2
   header), l6 (reviewer policy), l7 with its naturalness addendum (verdict
   parser) and l8 (mid-sentence "but"). Every lapse of this cycle, l1-l8,
