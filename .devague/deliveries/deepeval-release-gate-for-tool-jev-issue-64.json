@@ -2,7 +2,7 @@
   "plan_slug": "deepeval-release-gate-for-tool-jev-issue-64",
   "schema_version": 2,
   "created": "2026-09-26T06:47:33Z",
-  "updated": "2026-09-26T07:57:20Z",
+  "updated": "2026-09-26T10:27:19Z",
   "deviations": [
     {
       "id": "d1",
@@ -54,6 +54,20 @@
       "status": "approved",
       "classification": "acceptable",
       "seq": 3
+    },
+    {
+      "id": "d4",
+      "what": "Run the two baselines locally once on the issue-53 test set (198) and its missing-candidate slice (83) with the same measure.py command shape as the approved a3-heal run: stock Qwen3.5-0.8B (Track A) and scorer-b1 (Track B); no held-out runs; no API cost",
+      "task_ref": "t20",
+      "reason": "Operator decision 2026-09-26: neither baseline had saved issue-53 test predictions (scorer-b1's are on the issue-46 test, whose ids are in issue-53's training split), so the gate would have no baseline rows",
+      "affects": [
+        "c38",
+        "t24"
+      ],
+      "origin": "user",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 4
     }
   ],
   "evidence": [],
