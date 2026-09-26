@@ -1,40 +1,57 @@
 """DeepEval layer over Tool-Jev traces (issue 64, task t15).
 
 One :class:`deepeval.test_case.LLMTestCase` per ``(subject, case, policy)``:
-the case's raw model output plus one policy's final decision on it, exactly
-as :class:`evals.tool_jev.trace.Trace` already carries them. Four custom
-``BaseMetric`` subclasses grade each test case with an *exact* check — no
-LLM judge, no network, no randomness:
+the case's raw model output, *replayed through one harness policy*, exactly
+as :func:`apply_policy_to_prediction` builds it. Four custom ``BaseMetric``
+subclasses grade each test case with an *exact* check — no LLM judge, no
+network, no randomness:
 
-- :class:`RightActionMetric` — the raw prediction's top-1/right
-  operation+arguments call, per ``scripts/lfm-finetune/metrics.py``'s own
-  conventions (``metrics_bridge.top1_correct`` when the row carries a
-  candidate distribution, otherwise ``metrics.py``'s own
-  ``_right_proposal``).
-- :class:`WrongMutatingMetric` — the negation of
-  ``metrics_bridge``'s row-level ``wrong_mutating`` flag
-  (``metrics._wrong_operation_mutating`` OR ``_wrong_arguments_mutating``).
+- :class:`RightActionMetric` — ``metrics.py``'s own ``_right_proposal`` on
+  the **policy-applied** prediction: did this policy's final decision
+  actually propose the right operation+arguments. A policy that gates a
+  correct raw pick away into an abstention does not get right-action
+  credit for it — that is the whole point of grading per policy.
+- :class:`WrongMutatingMetric` — the negation of ``metrics.py``'s
+  ``_wrong_operation_mutating`` OR ``_wrong_arguments_mutating`` on the
+  **policy-applied** prediction. A raw wrong-mutating pick that a policy
+  gates away into an abstention (``operation`` becomes ``None``) is no
+  longer a wrong-mutating call *under that policy* — this is issue 64's
+  core distinction between "the model improved" and "the harness
+  prevented the model's mistake".
 - :class:`CorrectAbstainEscalateMetric` — for an escalate/explain-expected
-  case, whether *this policy's* final decision correctly declined
-  (``metrics._escalated`` semantics for escalate-expected, a bare
-  ``"explain"`` decision for explain-expected). Not applicable to an
+  case, whether the **policy-applied** prediction's outcome correctly
+  declined (``metrics._escalated`` semantics for escalate-expected, a bare
+  ``"explain"`` outcome for explain-expected). Not applicable to an
   operation-expected case.
 - :class:`MissingCandidateHandledMetric` — for a case
   ``metrics.is_missing_candidate`` flags (its gold operation was not among
-  the offered candidates), whether the raw prediction escalated
-  (``metrics._escalated``) rather than guessing. Not applicable otherwise.
+  the offered candidates), whether the **policy-applied** prediction
+  escalated (``metrics._escalated``) rather than guessing. Not applicable
+  otherwise.
+
+:func:`apply_policy_to_prediction` is the single place a "policy-applied"
+``metrics.Prediction`` is built from an already-recorded raw one — the
+corpus-level runner (t17) reuses it to feed ``metrics_bridge.compute`` per
+``(subject, policy)``, so the per-case metrics here and the corpus figures
+there always agree. It replays the same calibration/gate math
+``evals.tool_jev.policies.apply`` uses (via that module's own already-loaded
+``calibration_fit``/``gate``), because ``policies.apply`` itself only
+returns the decision string and reason, not the scaled distribution or
+decided label this module also needs.
 
 Every metric's verdict is computed by calling the same
 ``scripts/lfm-finetune/metrics.py`` functions ``evals.tool_jev.metrics_bridge``
-already calls (never a re-derived copy of the rule), from the trace fields
-this module put in the test case's ``additional_metadata`` — so a metric's
-pass/fail is reproducible from the metadata alone, with no need to keep the
-original :class:`Trace` object around.
+already calls (never a re-derived copy of the rule) on that policy-applied
+prediction, rebuilt fresh from the trace fields and policy JSON this module
+put in the test case's ``additional_metadata`` — so a metric's pass/fail is
+reproducible from the metadata alone, with no need to keep the original
+:class:`Trace` object around.
 
 Corpus-level figures (ECE, Brier, coverage, abstain precision/recall,
 per-slice) are never computed here or by DeepEval: :func:`evaluate_traces`
-returns ``evals.tool_jev.metrics_bridge.compute``'s own output unchanged,
-alongside DeepEval's own per-case ``EvaluationResult``.
+returns ``evals.tool_jev.metrics_bridge.compute``'s own output, computed
+over the same policy-applied predictions, unchanged, alongside DeepEval's
+own per-case ``EvaluationResult``.
 
 No network: this module only calls DeepEval's synchronous, local
 ``evaluate()`` (``async_config=AsyncConfig(run_async=False)``), and every
@@ -42,10 +59,23 @@ metric here is a pure function of already-recorded fields. Import order
 matters — ``evals.tool_jev`` (this package) must be imported before
 ``deepeval`` anywhere in the process, which is why this module's first
 import is ``evals.tool_jev`` itself (see that package's docstring).
+
+``evaluate_traces`` also keeps DeepEval's own local state directory
+(``.deepeval/``, resolved *relative to the process's current working
+directory* at the moment DeepEval touches disk — see
+``deepeval.config.constants.HIDDEN_DIR``) out of this repository by running
+``deepeval.evaluate.evaluate()`` inside ``contextlib.chdir()`` pointed at a
+directory under ``results_folder``, restoring the previous cwd afterwards.
+``os.chdir`` is process-global, so this is safe only because this evals
+suite is single-threaded/single-process per run (no concurrent
+``evaluate_traces`` call in another thread of the same process); a future
+concurrent runner would need a different isolation strategy (e.g. a
+subprocess) rather than relying on this chdir.
 """
 
 from __future__ import annotations
 
+import contextlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -59,12 +89,8 @@ from deepeval.test_case import LLMTestCase
 
 import evals.tool_jev  # noqa: F401  (env guard: must precede any deepeval import)
 from evals.tool_jev import metrics_bridge
+from evals.tool_jev import policies as policy_module
 from evals.tool_jev.trace import Trace
-
-#: Outcomes that count as a decline, exactly the vocabulary
-#: ``scripts/lfm-finetune/metrics.py``'s own ``_escalated`` checks (private,
-#: so reused via a tiny stand-in object rather than imported by name).
-_ESCALATED_OUTCOMES = ("escalate", "abstain_uncertain")
 
 
 class DeepevalLayerError(ValueError):
@@ -137,36 +163,141 @@ def prediction_from_trace(trace: Trace, metrics_mod) -> Any:
     return metrics_mod.Prediction.from_dict(row)
 
 
-def build_test_case(trace: Trace, policy: str, *, metrics_mod=None) -> LLMTestCase:
-    """One ``LLMTestCase`` for *trace*'s ``policy`` final decision.
+def _resolve_policy(policy: Mapping[str, Any] | str) -> dict:
+    """*policy* as a validated policy dict.
+
+    A ``str`` names one of this package's own ``policies/<name>.json``
+    files (``policies.builtin_policy_path`` + ``policies.load_policy``); a
+    mapping is validated as-is (``policies.validate_policy``) so a caller
+    building its own policy JSON in memory (e.g. a test) never has to write
+    it to disk first.
+    """
+    if isinstance(policy, str):
+        return policy_module.load_policy(policy_module.builtin_policy_path(policy))
+    return policy_module.validate_policy(policy)
+
+
+def apply_policy_to_prediction(
+    policy: Mapping[str, Any] | str,
+    prediction: Any,
+    *,
+    metrics_mod,
+    offered: Sequence[str] | None = None,
+) -> Any:
+    """The ``metrics.Prediction`` *policy* actually produces on *prediction*.
+
+    This is the one place a "policy-applied" prediction is built from an
+    already-recorded raw one, shared by this module's four metrics and by
+    the corpus-level runner (t17), so both layers always agree. It never
+    reimplements ``evals.tool_jev.policies.apply``'s calibration/gate math:
+    it calls the exact same ``calibration_fit.apply_scaling`` /
+    ``gate.decide`` functions ``policies.apply`` uses internally (via that
+    module's own already-loaded copies, ``policy_module.calibration_fit`` /
+    ``policy_module.gate``), because ``policies.apply`` itself only returns
+    the decision string and reason -- not the scaled distribution or the
+    decided label this module also needs to build a full ``Prediction``.
+
+    *prediction*'s ``outcome`` becomes the policy's final decision.
+    ``operation``/``arguments`` are kept only when that decision is
+    ``"propose"`` (``None`` otherwise -- ``metrics.Prediction`` requires
+    this): the decided operation is ``gate.Decision.label``, and its
+    arguments are *prediction*'s own recorded arguments when that label
+    matches *prediction*'s own operation, else an empty dict (the gate
+    picked a different top candidate than the raw record's own proposal;
+    there are no recorded arguments for that hypothetical). ``candidates``
+    is the policy's calibrated distribution when it carries a calibration
+    block, otherwise *prediction*'s own distribution, unchanged.
+
+    A row with no recorded distribution at all (``prediction.candidates``
+    falsy) is returned **unchanged**: ``policies.apply``'s own
+    ``NOT_GATEABLE`` case -- there is nothing for any policy to gate, so
+    every policy agrees with the raw record on such a row.
+    """
+    validated = _resolve_policy(policy)
+    candidates = prediction.candidates
+    if not candidates:
+        return prediction
+
+    scaled = dict(candidates)
+    calibration = validated.get("calibration")
+    if calibration:
+        temperature = float(calibration.get("temperature", 1.0))
+        vector = calibration.get("vector") or None
+        scaled = policy_module.calibration_fit.apply_scaling(
+            scaled, temperature=temperature, vector=vector
+        )
+
+    gate_json = validated.get("gate")
+    thresholds = (
+        policy_module.gate.Thresholds.from_json(gate_json)
+        if gate_json
+        else policy_module.gate.Thresholds()
+    )
+    offered_labels = list(offered) if offered is not None else list(candidates.keys())
+    decision = policy_module.gate.decide(scaled, offered_labels, thresholds)
+
+    if decision.outcome == "propose":
+        operation = decision.label
+        arguments = (
+            dict(prediction.arguments)
+            if (prediction.operation == operation and prediction.arguments is not None)
+            else {}
+        )
+    else:
+        operation = None
+        arguments = None
+
+    row = _prediction_row(
+        case_id=prediction.id,
+        expected=prediction.expected,
+        outcome=decision.outcome,
+        operation=operation,
+        arguments=arguments,
+        candidates=scaled,
+        tokens=prediction.tokens,
+        ttfd_ms=prediction.ttfd_ms,
+        latency_ms=prediction.latency_ms,
+        invalid_reason=prediction.invalid_reason,
+    )
+    return metrics_mod.Prediction.from_dict(row)
+
+
+def build_test_case(
+    trace: Trace, policy: Mapping[str, Any] | str, *, metrics_mod=None
+) -> LLMTestCase:
+    """One ``LLMTestCase`` for *trace* replayed through *policy*.
 
     ``input`` is a case-id placeholder (never the case text: real request
     text must never reach DeepEval's own results files).
-    ``actual_output``/``expected_output`` are the final decision string and
-    the gold calibration label. Every field the four metrics need to
-    recompute their verdict independently of the original ``Trace`` object
-    lives in ``additional_metadata``.
+    ``actual_output``/``expected_output`` are the policy-applied
+    prediction's outcome and the gold calibration label. Every field the
+    four metrics need to rebuild that same policy-applied prediction (and
+    recompute their verdict) independently of the original ``Trace``
+    object lives in ``additional_metadata`` -- including the resolved
+    policy JSON itself, so a metric never has to re-resolve a policy name
+    against disk.
     """
     metrics_mod = metrics_mod or metrics_bridge.load_metrics_module()
     if trace.ground_truth is None:
         raise DeepevalLayerError(
             f"trace {trace.case_id!r} carries no ground_truth to score against"
         )
-    final = trace.final.get(policy)
-    if final is None:
-        raise DeepevalLayerError(
-            f"trace {trace.case_id!r} carries no final decision for policy {policy!r}"
-        )
+    policy_dict = _resolve_policy(policy)
+    raw_prediction = prediction_from_trace(trace, metrics_mod)
+    policy_applied = apply_policy_to_prediction(
+        policy_dict, raw_prediction, metrics_mod=metrics_mod
+    )
     gold_label = metrics_mod.expected_label(trace.ground_truth)
     return LLMTestCase(
         input=f"case:{trace.case_id}",
-        actual_output=final.decision,
+        actual_output=policy_applied.outcome,
         expected_output=gold_label,
         additional_metadata={
             "case_id": trace.case_id,
             "split": trace.split,
             "subject": trace.subject,
-            "policy": policy,
+            "policy": policy_dict["name"],
+            "policy_json": policy_dict,
             "expected": dict(trace.ground_truth),
             "raw_outcome": trace.raw.outcome,
             "raw_operation": trace.raw.operation,
@@ -176,19 +307,16 @@ def build_test_case(trace: Trace, policy: str, *, metrics_mod=None) -> LLMTestCa
             "raw_ttfd_ms": trace.raw.ttfd_ms,
             "raw_latency_ms": trace.raw.latency_ms,
             "raw_invalid_reason": trace.raw.invalid_reason,
-            "final_decision": final.decision,
-            "final_reason": final.reason,
+            "final_decision": policy_applied.outcome,
+            "final_operation": policy_applied.operation,
+            "final_arguments": policy_applied.arguments,
+            "final_candidates": policy_applied.candidates,
         },
     )
 
 
-def _prediction_from_metadata(metadata: Mapping[str, Any], metrics_mod) -> Any:
-    """Rebuild a ``metrics_mod.Prediction`` from a test case's ``additional_metadata``.
-
-    This is what makes a metric's verdict reproducible from the test case
-    alone: the same row :func:`build_test_case` derived from the original
-    ``Trace`` is derived again here, from the metadata it stored.
-    """
+def _raw_prediction_from_metadata(metadata: Mapping[str, Any], metrics_mod) -> Any:
+    """Rebuild the *raw* ``metrics_mod.Prediction`` from a test case's ``additional_metadata``."""
     row = _prediction_row(
         case_id=metadata["case_id"],
         expected=metadata["expected"],
@@ -202,6 +330,21 @@ def _prediction_from_metadata(metadata: Mapping[str, Any], metrics_mod) -> Any:
         invalid_reason=metadata["raw_invalid_reason"],
     )
     return metrics_mod.Prediction.from_dict(row)
+
+
+def _policy_applied_prediction_from_metadata(metadata: Mapping[str, Any], metrics_mod) -> Any:
+    """Rebuild the **policy-applied** ``metrics_mod.Prediction`` a metric grades.
+
+    Recomputed fresh via :func:`apply_policy_to_prediction` from the raw
+    fields and the resolved ``policy_json`` :func:`build_test_case` stored
+    in ``additional_metadata`` -- so a metric's verdict is reproducible
+    from the test case alone, and is always the *same* policy-applied
+    prediction :func:`build_test_case` used to pick ``actual_output``.
+    """
+    raw_prediction = _raw_prediction_from_metadata(metadata, metrics_mod)
+    return apply_policy_to_prediction(
+        metadata["policy_json"], raw_prediction, metrics_mod=metrics_mod
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -254,7 +397,14 @@ class _ExactMetric(BaseMetric):
 
 
 class RightActionMetric(_ExactMetric):
-    """Right action: the raw prediction's top-1 (or right proposal) call.
+    """Right action: the **policy-applied** prediction's right proposal call.
+
+    ``metrics.py``'s own ``_right_proposal`` already requires
+    ``outcome == "propose"`` and an exact operation+arguments match, so a
+    policy that gates a correct raw pick away into an abstention correctly
+    loses right-action credit for it under this metric -- grading is per
+    policy, on the decision that policy actually made, never on the raw
+    model's distribution alone.
 
     Not applicable to an escalate/explain-expected case (there is no
     "action" to grade there); such a case always passes with a neutral
@@ -268,27 +418,27 @@ class RightActionMetric(_ExactMetric):
 
     def _verdict(self, test_case: LLMTestCase) -> tuple[bool, str]:
         metadata = test_case.metadata or {}
-        prediction = _prediction_from_metadata(metadata, self.metrics_mod)
+        prediction = _policy_applied_prediction_from_metadata(metadata, self.metrics_mod)
         if self.metrics_mod.expect_kind(prediction.expected) != "operation":
             return True, "not applicable: case does not expect an operation"
         gold = self.metrics_mod.expected_label(prediction.expected)
-        if prediction.candidates is not None:
-            correct = metrics_bridge.top1_correct(self.metrics_mod, prediction)
-            reason = f"top-1 candidate {'matches' if correct else 'differs from'} gold {gold!r}"
-            return bool(correct), reason
         correct = self.metrics_mod._right_proposal(prediction)
         reason = (
-            f"raw proposal {'matches' if correct else 'differs from'} gold "
-            f"operation+arguments {gold!r}"
+            f"policy-applied outcome {prediction.outcome!r} "
+            f"{'proposes' if correct else 'does not propose'} gold {gold!r}"
         )
         return bool(correct), reason
 
 
 class WrongMutatingMetric(_ExactMetric):
-    """Wrong mutating: the row must not be a wrong mutating call.
+    """Wrong mutating: the **policy-applied** prediction must not be a wrong mutating call.
 
-    Exactly ``metrics_bridge.row_metrics``'s ``wrong_mutating`` flag,
-    negated (a wrong mutating call is a failure, not a pass).
+    Exactly ``metrics.py``'s ``_wrong_operation_mutating`` OR
+    ``_wrong_arguments_mutating``, negated (a wrong mutating call is a
+    failure, not a pass), on the policy-applied prediction: when a policy
+    gates a raw wrong-mutating pick away into an abstention (``operation``
+    becomes ``None``), that check is no longer true *under this policy* --
+    issue 64's "the harness prevented the model's mistake" case.
     """
 
     @property
@@ -297,17 +447,17 @@ class WrongMutatingMetric(_ExactMetric):
 
     def _verdict(self, test_case: LLMTestCase) -> tuple[bool, str]:
         metadata = test_case.metadata or {}
-        prediction = _prediction_from_metadata(metadata, self.metrics_mod)
+        prediction = _policy_applied_prediction_from_metadata(metadata, self.metrics_mod)
         wrong = self.metrics_mod._wrong_operation_mutating(
             prediction
         ) or self.metrics_mod._wrong_arguments_mutating(prediction)
         if wrong:
-            return False, "raw prediction is a wrong mutating call"
-        return True, "raw prediction is not a wrong mutating call"
+            return False, "policy-applied outcome is a wrong mutating call"
+        return True, "policy-applied outcome is not a wrong mutating call"
 
 
 class CorrectAbstainEscalateMetric(_ExactMetric):
-    """Correct abstain/escalate: this policy's final decision, on a decline-expected case.
+    """Correct abstain/escalate: the **policy-applied** outcome, on a decline-expected case.
 
     Not applicable to an operation-expected case (there is nothing to
     decline there); such a case always passes with a neutral reason.
@@ -319,21 +469,20 @@ class CorrectAbstainEscalateMetric(_ExactMetric):
 
     def _verdict(self, test_case: LLMTestCase) -> tuple[bool, str]:
         metadata = test_case.metadata or {}
-        expected = metadata["expected"]
-        kind = self.metrics_mod.expect_kind(expected)
-        final_decision = metadata["final_decision"]
+        prediction = _policy_applied_prediction_from_metadata(metadata, self.metrics_mod)
+        kind = self.metrics_mod.expect_kind(prediction.expected)
         if kind == "escalate":
-            escalated = final_decision in _ESCALATED_OUTCOMES
+            escalated = self.metrics_mod._escalated(prediction)
             reason = (
-                f"final decision {final_decision!r} "
+                f"policy-applied outcome {prediction.outcome!r} "
                 f"{'correctly escalates' if escalated else 'fails to escalate'} "
                 "an escalate-expected case"
             )
             return escalated, reason
         if kind == "explain":
-            explained = final_decision == "explain"
+            explained = prediction.outcome == "explain"
             reason = (
-                f"final decision {final_decision!r} "
+                f"policy-applied outcome {prediction.outcome!r} "
                 f"{'correctly explains' if explained else 'fails to explain'} "
                 "an explain-expected case"
             )
@@ -345,10 +494,12 @@ class MissingCandidateHandledMetric(_ExactMetric):
     """Missing-candidate handled: escalate when the gold op was never offered.
 
     ``metrics.is_missing_candidate`` decides whether this row's offered
-    candidates ever included the gold label; when they didn't, the raw
-    prediction must have escalated (``metrics._escalated``) rather than
-    guessing at an operation it was never offered. Not applicable to a row
-    whose candidates did include gold.
+    candidates ever included the gold label (invariant to a policy's
+    calibration, which only reweights the same labels); when they didn't,
+    the **policy-applied** prediction must have escalated
+    (``metrics._escalated``) rather than guessing at an operation it was
+    never offered. Not applicable to a row whose candidates did include
+    gold.
     """
 
     @property
@@ -357,12 +508,13 @@ class MissingCandidateHandledMetric(_ExactMetric):
 
     def _verdict(self, test_case: LLMTestCase) -> tuple[bool, str]:
         metadata = test_case.metadata or {}
-        prediction = _prediction_from_metadata(metadata, self.metrics_mod)
+        prediction = _policy_applied_prediction_from_metadata(metadata, self.metrics_mod)
         if not self.metrics_mod.is_missing_candidate(prediction):
             return True, "not applicable: gold operation was offered"
         escalated = self.metrics_mod._escalated(prediction)
         reason = (
-            f"missing-candidate case {'correctly escalated' if escalated else 'did not escalate'}"
+            f"missing-candidate case {'correctly escalated' if escalated else 'did not escalate'} "
+            f"under this policy"
         )
         return escalated, reason
 
@@ -403,7 +555,7 @@ class EvaluationOutcome:
 
 def evaluate_traces(
     traces: Sequence[Trace],
-    policy: str,
+    policy: Mapping[str, Any] | str,
     *,
     results_folder: str | Path,
     metrics_mod=None,
@@ -413,24 +565,50 @@ def evaluate_traces(
     async_config: AsyncConfig | None = None,
     cache_config: CacheConfig | None = None,
 ) -> EvaluationOutcome:
-    """Score *traces* under *policy* with DeepEval, and report corpus metrics.
+    """Score *traces* replayed through *policy* with DeepEval, and report corpus metrics.
+
+    *policy* is either a builtin policy name (``"raw"``,
+    ``"scorer-r3b-shipped"``, ...) or an in-memory policy dict; it is
+    resolved once here and the *same* resolved dict is used to build every
+    test case's policy-applied prediction (:func:`apply_policy_to_prediction`)
+    and to feed ``metrics_bridge.compute`` for ``corpus_metrics`` below --
+    so the per-case metrics and the corpus figures always agree on what
+    "this policy's decision" was for a given row.
 
     Runs synchronously (``AsyncConfig(run_async=False)`` by default) and
     never calls a model or the network: every metric here is a pure
     function of the trace fields already recorded. ``results_folder`` is
     passed straight to ``DisplayConfig`` (or merged into a caller-supplied
     one) so the timestamped ``test_run_*.json`` lands exactly where the
-    caller asked, never inside this repository — callers running this
-    under test point it at a ``tmp_path``-backed directory outside any git
-    worktree (see this module's test file).
+    caller asked.
+
+    DeepEval also keeps its own local state relative to the process's
+    *current working directory* at the moment it touches disk (see this
+    module's docstring). To keep that out of this repository regardless of
+    the caller's own cwd, the actual ``deepeval.evaluate.evaluate()`` call
+    below runs inside ``contextlib.chdir()`` pointed at a directory created
+    under ``results_folder``, restoring the previous cwd on exit (even on
+    error). ``os.chdir`` is process-global -- see the module docstring for
+    why that is safe here.
     """
     metrics_mod = metrics_mod or metrics_bridge.load_metrics_module()
     gate_mod = gate_mod or metrics_bridge.load_gate_module()
+    policy_dict = _resolve_policy(policy)
     metric_list = list(metrics) if metrics is not None else build_metrics(metrics_mod)
 
-    predictions = [prediction_from_trace(trace, metrics_mod) for trace in traces]
-    test_cases = [build_test_case(trace, policy, metrics_mod=metrics_mod) for trace in traces]
+    predictions = [
+        apply_policy_to_prediction(
+            policy_dict, prediction_from_trace(trace, metrics_mod), metrics_mod=metrics_mod
+        )
+        for trace in traces
+    ]
+    test_cases = [build_test_case(trace, policy_dict, metrics_mod=metrics_mod) for trace in traces]
 
+    # Resolved to an absolute path *before* the chdir below, since
+    # DisplayConfig.results_folder (a relative string, if given one) would
+    # otherwise be resolved against the temporary run_dir instead of the
+    # caller's own cwd.
+    results_folder = Path(results_folder).resolve()
     if display_config is None:
         display_config = DisplayConfig(
             results_folder=str(results_folder),
@@ -442,12 +620,15 @@ def evaluate_traces(
     if cache_config is None:
         cache_config = CacheConfig(write_cache=False, use_cache=False)
 
-    deepeval_result = evaluate(
-        test_cases,
-        metric_list,
-        async_config=async_config,
-        display_config=display_config,
-        cache_config=cache_config,
-    )
+    run_dir = results_folder / ".deepeval-run"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    with contextlib.chdir(run_dir):
+        deepeval_result = evaluate(
+            test_cases,
+            metric_list,
+            async_config=async_config,
+            display_config=display_config,
+            cache_config=cache_config,
+        )
     corpus_metrics = metrics_bridge.compute(predictions, metrics_mod=metrics_mod, gate_mod=gate_mod)
     return EvaluationOutcome(deepeval_result=deepeval_result, corpus_metrics=corpus_metrics)
