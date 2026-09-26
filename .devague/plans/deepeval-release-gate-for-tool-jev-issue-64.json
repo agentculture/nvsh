@@ -5,7 +5,7 @@
   "schema_version": 5,
   "status": "exported",
   "created": "2026-09-26T04:58:49Z",
-  "updated": "2026-09-26T06:57:38Z",
+  "updated": "2026-09-26T07:10:17Z",
   "targets": [
     {
       "id": "c1",
@@ -941,24 +941,24 @@
       "text": "permutation_probe.py may only support one-position scorers; a3-heal (generative) permutation may be not measurable",
       "kind": "unknown_nonblocking",
       "task_id": "t23",
-      "resolved": false,
-      "resolution": ""
+      "resolved": true,
+      "resolution": "Confirmed by t23 reading permutation_probe.py in full: every kind goes through scorer.permute/labels_for/score (one-position choice interface only); a3-heal (tool-call) is reported not_measurable with that reason, never estimated; scorer-r3b reuses the saved issue-53 probe"
     },
     {
       "id": "r3",
       "text": "Local Qwen3.8 27B and gemma-4-26b-a4b need GPU memory next to the lobes and the a3-heal run; serving on the same measuring port races (issue 58) \u2014 t20 and t21 must be serialized",
       "kind": "unknown_nonblocking",
       "task_id": "t21",
-      "resolved": false,
-      "resolution": ""
+      "resolved": true,
+      "resolution": "t21 needed no new serving: both local references are existing lobes on the localhost gateway (unsloth/Qwen3.8-27B-NVFP4 = cortex, nvidia/Gemma-4-26B-A4B-NVFP4 = senses); t20's a3-heal.q4_k_m run used a small llama-server next to senses and finished (bd926ed); no port race occurred"
     },
     {
       "id": "r4",
       "text": "Judge metrics must be single-pass for the two-pass batching (frame park v6); G-Eval's logprob-weighted score is unavailable on judges without logprobs, so scores are raw G-Eval scores",
       "kind": "unknown_nonblocking",
       "task_id": "t16",
-      "resolved": false,
-      "resolution": ""
+      "resolved": true,
+      "resolution": "t16 verified in deepeval 4.2.6 source and a prototype: GEval with fixed evaluation_steps makes exactly one scoring call per answer (score and reason in one ReasonScore call); with a model lacking generate_raw_response it falls back to the plain integer score, never a logprob-weighted one; criteria-only rubrics are refused (DependentCallError)"
     },
     {
       "id": "r5",
@@ -981,16 +981,16 @@
       "text": "claude-opus-5-5 rejects forced tool use (tool_choice any/tool -> HTTP 400, per Anthropic errors doc): the tool_call interface must send tool_choice auto for that model (a per-model capability), and an answer without a tool call counts as a malformed answer",
       "kind": "unknown_nonblocking",
       "task_id": "t13",
-      "resolved": false,
-      "resolution": ""
+      "resolved": true,
+      "resolution": "fixC (merged): per-model forced_tool_choice flag; the Anthropic adapter defaults it off for claude-opus-5-5 (tool_choice auto); an answer without a tool call classifies malformed"
     },
     {
       "id": "r8",
       "text": "The three adapters emit different answer shapes for a tool call (t12: operation=tool name; t14: operation read from the arguments blob; t11 parse_tool_call expects the raw {name, arguments} call) and their fixtures use invented tool names instead of nvsh's real propose/explain/escalate tools, so no test crosses adapter -> parser",
       "kind": "unknown_nonblocking",
       "task_id": "t11",
-      "resolved": false,
-      "resolution": ""
+      "resolved": true,
+      "resolution": "fixC (merged): every adapter returns the raw first tool call as JSON {name, arguments}; request.parse_tool_call interprets it; fixtures use nvsh's real tools; test_contract_integration.py drives each adapter into the parser"
     }
   ],
   "obligations": []
