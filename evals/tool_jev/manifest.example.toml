@@ -60,9 +60,11 @@ track = "B"
 predictions_path = "${NVSH_EVALS_PRIVATE}/predictions/scorer-b1.jsonl"
 
 # ---------------------------------------------------------------------------
-# Reference roster: 15 (provider, model) pairs. Uniqueness is on the pair,
-# not on model id alone — kimi-k3 deliberately appears under both
-# openrouter and nvidia. api_key_env names the environment variable that
+# Reference roster: 16 (provider, model) pairs. Uniqueness is on the pair,
+# not on model id alone (the same model may appear under two providers).
+# OpenRouter carries the cheaper open models (deviation d3, 2026-09-26):
+# kimi-k3 runs on build.nvidia.com only; qwen3.8-max-0902 stays, as a
+# reference and a judge (every judge also answers). api_key_env names the environment variable that
 # holds the credential; the value itself never lives here.
 # ---------------------------------------------------------------------------
 
@@ -100,6 +102,14 @@ api_key_env = "ANTHROPIC_API_KEY"
 
 [[reference]]
 provider = "openrouter"
+model = "qwen/qwen3.8-27b"
+reasoning = "medium"
+batch = false
+capabilities = ["chat"]
+api_key_env = "OPEN_ROUTER_API_KEY"
+
+[[reference]]
+provider = "openrouter"
 model = "qwen/qwen3.8-max-0902"
 reasoning = "medium"
 batch = false
@@ -124,7 +134,7 @@ api_key_env = "OPEN_ROUTER_API_KEY"
 
 [[reference]]
 provider = "openrouter"
-model = "moonshotai/kimi-k3"
+model = "deepseek/deepseek-v4.1-flash"
 reasoning = "medium"
 batch = false
 capabilities = ["chat"]

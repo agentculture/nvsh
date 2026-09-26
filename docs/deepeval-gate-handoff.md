@@ -33,7 +33,9 @@ Nothing. Every started task is merged; no worktree or agent is running.
 
 ## Next, in order
 
-1. A codex review of the merged d1 loop (not yet reviewed).
+1. A codex review of the merged d1 loop (running 2026-09-26). Plan risk r9 is
+   fixed (e937544): loop replies with no tool call reach `LfmTier` as text,
+   every loop call sends `tool_choice: auto`, truncated replies are invalid.
 2. **t17 runner** (opus): `python -m evals.tool_jev run|continue|status|smoke`,
    folding in deviation d2's driver loop. It must supply what no module owns
    yet:
@@ -73,8 +75,10 @@ Nothing. Every started task is merged; no worktree or agent is running.
 - Issue [#66](https://github.com/agentculture/nvsh/issues/66) (mid-line env
   assignment not redacted) is fixed in its own PR, not this one.
 - Budgets: the operator topped up OpenRouter (\$20 credit, \$20 key limit),
-  Anthropic and OpenAI. \$20 on OpenRouter covers about one fresh full run
-  plus the smoke run.
+  Anthropic and OpenAI. After deviation d3 the OpenRouter estimate is about
+  \$15 per fresh full run plus about \$0.6 for the smoke run. The operator
+  will add OpenRouter funds as needed and accepts hitting the ceiling as a
+  live test of the money-stop path.
 
 ## Rules that bit this run
 

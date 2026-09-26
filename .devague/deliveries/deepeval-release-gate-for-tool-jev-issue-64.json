@@ -2,7 +2,7 @@
   "plan_slug": "deepeval-release-gate-for-tool-jev-issue-64",
   "schema_version": 2,
   "created": "2026-09-26T06:47:33Z",
-  "updated": "2026-09-26T06:53:45Z",
+  "updated": "2026-09-26T07:57:20Z",
   "deviations": [
     {
       "id": "d1",
@@ -39,6 +39,21 @@
       "status": "approved",
       "classification": "acceptable",
       "seq": 2
+    },
+    {
+      "id": "d3",
+      "what": "OpenRouter reference lineup changed to fit its budget: add qwen/qwen3.8-27b and deepseek/deepseek-v4.1-flash; move moonshotai/kimi-k3 to build.nvidia.com only (kimi host-to-host comparison dropped); keep qwen/qwen3.8-max-0902 as a reference and a judge (every judge also answers). 16 references; judges unchanged. Estimated OpenRouter cost about $15 per fresh full run plus about $0.6 for the smoke run, within the $20 key limit; the operator accepts hitting the ceiling as a test of the money-stop path and will top up as needed",
+      "task_ref": "t6",
+      "reason": "Operator request 2026-09-26: smaller OpenRouter models to fit $20; live OpenRouter price list showed kimi-k3 ($3/$15 per M) was most of the OpenRouter cost; no deepseek v4.1 pro exists, only v4.1-flash",
+      "affects": [
+        "t14",
+        "t24",
+        "c41"
+      ],
+      "origin": "user",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 3
     }
   ],
   "evidence": [],

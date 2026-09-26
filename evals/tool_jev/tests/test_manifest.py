@@ -147,7 +147,7 @@ def test_example_manifest_exists_and_loads():
     m = load_manifest(EXAMPLE_MANIFEST)
     assert len(m.candidates) == 2
     assert len(m.baselines) == 2
-    assert len(m.references) == 15
+    assert len(m.references) == 16
     assert len(m.judges) == 5
     assert len(m.case_sets) == 4
     assert len(m.budgets) == 5
@@ -187,9 +187,23 @@ def test_example_manifest_roster_has_no_duplicate_pairs_and_allows_shared_model_
     m = load_manifest(EXAMPLE_MANIFEST)
     pairs = [ref.key for ref in m.references]
     assert len(pairs) == len(set(pairs))
-    # kimi-k3 deliberately appears under two different providers.
+    # Deviation d3: kimi-k3 runs on build.nvidia.com only.
     kimi_providers = {p for p, model in pairs if model == "moonshotai/kimi-k3"}
-    assert kimi_providers == {"openrouter", "nvidia"}
+    assert kimi_providers == {"nvidia"}
+    # The same model id under two providers is still a legal roster.
+    shared = _BASE_MANIFEST + """
+[[reference]]
+provider = "openrouter"
+model = "moonshotai/kimi-k3"
+api_key_env = "OPEN_ROUTER_API_KEY"
+
+[[reference]]
+provider = "nvidia"
+model = "moonshotai/kimi-k3"
+api_key_env = "NGC_API_KEY"
+"""
+    both = {ref.key for ref in _parse(shared).references}
+    assert {("openrouter", "moonshotai/kimi-k3"), ("nvidia", "moonshotai/kimi-k3")} <= both
 
 
 # ---------------------------------------------------------------------------

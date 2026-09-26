@@ -38,12 +38,18 @@ judge panel scores explain text only, and never feeds a release bar.
 | Baselines | stock Qwen3.5-0.8B, `scorer-b1` (issue 46) |
 | References, OpenAI | `gpt-6-luna`, `gpt-6-sol` |
 | References, Anthropic | `claude-opus-5-5`, `claude-sonnet-5` |
-| References, OpenRouter | `qwen/qwen3.8-max-0902`, `deepseek/deepseek-v4-flash`, `deepseek/deepseek-v4-pro-0813`, `moonshotai/kimi-k3` |
+| References, OpenRouter | `qwen/qwen3.8-max-0902`, `qwen/qwen3.8-27b`, `deepseek/deepseek-v4-flash`, `deepseek/deepseek-v4-pro-0813`, `deepseek/deepseek-v4.1-flash` |
 | References, build.nvidia.com | `moonshotai/kimi-k3`, `z-ai/glm-5.3`, `nvidia/nemotron-3-ultra-550b-a55b`, `nvidia/nemotron-3-super-120b-a12b`, `google/gemma-4-31b-it` |
 | References, local | `unsloth/Qwen3.8-27B-NVFP4`, `nvidia/Gemma-4-26B-A4B-NVFP4` (the lobes gateway on localhost; 4-bit NVFP4 builds) |
 | Judge panel (explain text) | `claude-opus-5-5`, `gpt-6-sol`, `moonshotai/kimi-k3` (build.nvidia.com), `nvidia/nemotron-3-ultra-550b-a55b`, `qwen/qwen3.8-max-0902` |
 
-`kimi-k3` is deliberately on two hosts, which shows host-to-host variance.
+Deviation d3 moved OpenRouter to cheaper open models to fit its budget:
+`qwen/qwen3.8-27b` and `deepseek/deepseek-v4.1-flash` were added, and
+`moonshotai/kimi-k3` now runs on build.nvidia.com only (so the kimi
+host-to-host comparison is dropped). `qwen/qwen3.8-max-0902` stays as a
+reference and a judge, since every judge also answers.
+`Qwen3.8-27B` still appears twice, hosted on OpenRouter and as a local
+4-bit NVFP4 build, which shows hosted-versus-local variance.
 
 ## Case sets and privacy
 
