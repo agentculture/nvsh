@@ -10,7 +10,7 @@ session needs to pick up.
   PR). Version not bumped yet (still 0.20.0).
 - devague frame and plan slug: `deepeval-release-gate-for-tool-jev-issue-64`
   (`devague plan status`, `devague deviate --list`, `devague lapse --list`).
-- Tests: evals suite 499 passing
+- Tests: evals suite 520 passing
   (`uv run pytest -c evals/pytest.ini --rootdir=. -q`); root suite 4710
   passing, 55 skipped.
 
@@ -33,9 +33,13 @@ Nothing. Every started task is merged; no worktree or agent is running.
 
 ## Next, in order
 
-1. A codex review of the merged d1 loop (running 2026-09-26). Plan risk r9 is
-   fixed (e937544): loop replies with no tool call reach `LfmTier` as text,
-   every loop call sends `tool_choice: auto`, truncated replies are invalid.
+1. Done 2026-09-26: codex review of the d1 loop, all findings fixed
+   (`962852a`), and plan risk r9 fixed (`e937544`): loop calls send
+   `tool_choice: auto` for every provider, a reply with no tool call reaches
+   `LfmTier` as its visible text (`Provider.reply_text`), truncated replies
+   are invalid, adapters answer with the first well-formed call, Anthropic
+   native blocks replay in order, and argument redaction keeps the JSON
+   secret-field rule. Deviation d3 changed the OpenRouter lineup.
 2. **t17 runner** (opus): `python -m evals.tool_jev run|continue|status|smoke`,
    folding in deviation d2's driver loop. It must supply what no module owns
    yet:
@@ -49,9 +53,8 @@ Nothing. Every started task is merged; no worktree or agent is running.
      `deepeval_layer.apply_policy_to_prediction`;
    - stop-and-ask on an **unresolved** Anthropic orphan batch (risk r6);
      never resubmit it;
-   - fix plan risk r9 first: a reference's prose-only reply in the Track A
-     loop must reach `LfmTier` as text (explain), as a candidate's does,
-     not be classified malformed by the adapter;
+   - read judge answers and explain text with `Provider.reply_text` (visible
+     text only; `truncated` flags a reply cut at the output budget);
    - the reasoning parameter name for build.nvidia.com and local models is
      an unverified assumption (`reasoning_effort`); settle it in the smoke run.
 3. **d2 packaging**: Dockerfile + compose (pinned `python:3.12-slim` + uv,
@@ -65,11 +68,12 @@ Nothing. Every started task is merged; no worktree or agent is running.
 
 ## Open items
 
-- Plan risks open: r5 (build.nvidia.com free-tier throttling), r6 (Anthropic
+- Plan risks open: r10 (512-token output cap vs medium reasoning; settle in
+  the smoke run), r5 (build.nvidia.com free-tier throttling), r6 (Anthropic
   in-progress batch cannot be matched: the adapter now raises
-  `BatchLookupUnresolved`; the runner must stop and ask), r9 (prose-reply
-  fairness in the loop, plus unverified Anthropic thinking replay and OpenAI
-  reasoning items). r1-r4, r7, r8 are resolved.
+  `BatchLookupUnresolved`; the runner must stop and ask). r1-r4, r7-r9 are
+  resolved; r9 leaves two live checks for the smoke run (Anthropic thinking
+  replay acceptance, OpenAI reasoning items not replayed).
 - Lapses l1-l4 are filed and proposed; the operator adjudicates them at
   delivery.
 - Issue [#66](https://github.com/agentculture/nvsh/issues/66) (mid-line env
