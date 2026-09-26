@@ -1,0 +1,7 @@
+{
+  "name": "raw",
+  "version": "1",
+  "description": "Identity policy: no calibration, no gate. Final decision is the bare argmax (gate.decide with an all-null Thresholds() already reproduces this, including the unconditional semantic escalate/explain checks).",
+  "calibration": null,
+  "gate": null
+}

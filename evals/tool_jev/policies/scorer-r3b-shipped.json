@@ -1,0 +1,23 @@
+{
+  "name": "scorer-r3b-shipped",
+  "version": "1",
+  "description": "The shipped scorer-r3b policy: frozen temperature-only calibration (vector scaling off) plus a read_only-only gate margin. No mutating-specific threshold: a mutating proposal is never abstained on by this policy.",
+  "source": "issue-53 bundle calibration.json + gate.json",
+  "calibration": {
+    "temperature": 1.5366,
+    "vector": null
+  },
+  "gate": {
+    "escalate": null,
+    "read_only": {
+      "floor": null,
+      "margin": 0.2,
+      "max_entropy": null
+    },
+    "mutating": {
+      "floor": null,
+      "margin": null,
+      "max_entropy": null
+    }
+  }
+}
