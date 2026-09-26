@@ -61,6 +61,13 @@
 - Provider runs are bounded and resumable: a per-run call budget and concurrency cap, retries with backoff, and every timeout, refusal, malformed or empty answer is recorded per case as invalid and counted in the denominator, never dropped
   - instruction: fake-provider tests for timeout, 429, refusal and malformed JSON; the page shows invalid counts per model
   - honesty: Every model row's case count equals the case set size; invalid answers appear as their own count
+- A run keeps a durable call ledger in its private run directory: every planned call has a key (provider, model, case, interface or judge, prompt hash) and a state (pending, submitted with batch id, done, invalid); ledger writes are atomic; on continue, done calls come from the cache, submitted batches are re-attached by their batch id and polled rather than resubmitted, and only pending calls are sent
+  - instruction: stop with Ctrl+C or kill mid-run in a fake-provider test, continue, and compare against an uninterrupted run
+  - honesty: A run stopped at any point and continued produces byte-identical deterministic results to an uninterrupted run, and the provider logs show no call made twice for a key already done
+  - honesty: A batch submitted before a stop is never resubmitted while it is still valid; an expired or failed batch marks only its unfinished keys pending again
+- Judge calls are batched in two phases: phase 1 runs the DeepEval judge metrics against a recording model (a custom DeepEvalBaseLLM) that captures every judge prompt DeepEval would send, and those prompts go into the batch like subject calls; phase 2 re-runs the same DeepEval metrics against a replaying model that answers from the cache, so DeepEval computes the scores without making any live call
+  - instruction: one metric version + one rubric version per run; the replaying model errors loudly on a prompt missing from the cache
+  - honesty: Phase 2 makes zero network calls, and its judge prompts match the phase 1 recorded prompts byte for byte
 
 ## Honesty conditions
 
@@ -180,6 +187,12 @@
   - instruction: serialize with any local serving (issue 58); label the run so measure.py refuses a silent rerun
 - Explain text is judged by a blind panel, all-to-all: every subject (both candidates, the baselines and all 15 references) answers; the panel claude-opus-5-5 (Anthropic), gpt-6-sol (OpenAI), moonshotai/kimi-k3 (build.nvidia.com), nvidia/nemotron-3-ultra-550b-a55b (build.nvidia.com) and qwen/qwen3.8-max-0902 (OpenRouter) scores every answer with model identity removed and order shuffled; a judge's scores of its own answers are kept apart from the panel score, which is aggregated over the other judges; panel scores stay outside the release bars (c7)
   - instruction: judge prompt and rubric versioned in evals/; judge calls cached like subject calls (c34) and bounded by the same budget (c35); report per-judge scores and inter-judge agreement
+- OpenAI and Anthropic calls (subject and judge) go through their Batch APIs (50% off); OpenRouter, build.nvidia.com and local models use normal calls
+  - instruction: OpenAI /v1/batches with a JSONL file; Anthropic Message Batches API; results land in the same response cache as normal calls (c34)
+- Every run is continuous and resumable for all providers: the operator can stop a run at any point and continue it later from where it stopped, never paying twice for a call that already completed
+  - instruction: a run directory holds the manifest, the call ledger and the cache; 'continue' reuses them
+- Reasoning effort is medium for every subject and judge that accepts a reasoning setting; a model that rejects the parameter is recorded in its capability entry (c34) and runs at its default. Cost estimate at medium: about $44 per fresh full run, about $27 with OpenAI/Anthropic batching (OpenAI ~$3.9, Anthropic ~$12.3, OpenRouter ~$11.4, build.nvidia.com $0 free tier)
+  - instruction: reasoning setting recorded per call in the ledger; per-provider budget caps set from the smoke-run measurement
 
 ## Hard questions
 
@@ -196,6 +209,7 @@
 
 - [unknown_nonblocking] Calibration of quantized builds from served routes: issue 46 could not measure scorer-b1 Q4/AWQ distributions (d17/l6), while issue 53 measured r3b Q4 complete (198/198); whether every candidate's deployed artifact has complete distributions in the saved files is unverified per artifact
 - [unknown_nonblocking] Which interface each reference model answers through (generative tool call like Track A, or choosing among offered candidates like Track B, or both) and how its choice maps onto the 18-key candidate space
+- [unknown_nonblocking] Whether every DeepEval judge metric used is single-pass (G-Eval with fixed `evaluation_steps`: one scoring call per answer); a metric whose second call depends on its first reply would need one batch round per step, and G-Eval's logprob-weighted scoring is unavailable where the provider returns no logprobs (all five judges except via OpenRouter-hosted qwen)
 
 ## Resolved vagueness
 
