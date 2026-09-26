@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-09-26T04:16:04Z",
-  "updated": "2026-09-26T04:58:09Z",
+  "updated": "2026-09-26T05:32:36Z",
   "claims": [
     {
       "id": "c1",
@@ -955,7 +955,7 @@
     {
       "id": "s9",
       "surface": ".github/workflows/tests.yml + pyproject pytest config",
-      "finding": "testpaths=['tests'] (pyproject:100); lint runs black/isort/flake8 on 'nvsh tests scripts' only (tests.yml:61-67); no GPU runner anywhere; version-check blocks any PR without a version bump; deepeval registers a pytest11 plugin named 'plugins' that auto-loads into any pytest run and starts telemetry at import (deepeval issue 1419)",
+      "finding": "testpaths=['tests'] (pyproject:100); lint runs black/isort/flake8 on 'nvsh tests scripts' only (tests.yml:61-67); no GPU runner anywhere; version-check blocks any PR without a version bump; deepeval registers a pytest11 plugin named 'deepeval' (module deepeval.plugins.plugin; corrected by t1's --trace-config check) that auto-loads into any pytest run where deepeval is installed, so the root suite runs with -p no:deepeval; an ini given with -c sets rootdir to its directory and pytest honors testpaths only when invocation dir == rootdir, so evals runs pass --rootdir=.",
       "seeds": [
         "c11"
       ]
@@ -1116,6 +1116,18 @@
       ],
       "origin": "llm",
       "status": "approved"
+    },
+    {
+      "id": "l2",
+      "code": "provenance-missing",
+      "what": "Scope finding and t1 brief named deepeval's pytest plugin 'plugins' (from an explorer's research report); its registered pytest11 name is 'deepeval' (t1 verified with --trace-config); I never checked the entry point myself",
+      "skipped_check": "read deepeval's entry_points.txt before writing the scope finding",
+      "refs": [
+        "scope entry on .github/workflows/tests.yml + pyproject pytest config",
+        "task t1"
+      ],
+      "origin": "llm",
+      "status": "proposed"
     }
   ],
   "obligations": []
