@@ -21,7 +21,15 @@ services:
       context: ../..
       dockerfile: evals/docker/Dockerfile
     image: nvsh-evals-gate:local
-    command: ["drive", "--manifest", "/private/${NVSH_EVALS_MANIFEST_NAME:-manifest.toml}"]
+    # --start: the first boot begins the run; --idle-when-done: a finished (or
+    # stop-and-ask) run waits for `docker compose down` instead of exiting,
+    # which `restart: unless-stopped` would turn into a restart loop.
+    command:
+      - drive
+      - --manifest
+      - /private/${NVSH_EVALS_MANIFEST_NAME:-manifest.toml}
+      - --start
+      - --idle-when-done
     # The local lobes gateway listens on the host's localhost.
     network_mode: host
     restart: unless-stopped

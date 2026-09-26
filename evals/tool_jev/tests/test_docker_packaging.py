@@ -52,6 +52,7 @@ def test_service_survives_restarts_and_reaches_the_local_gateway():
     assert service["restart"] == "unless-stopped"
     assert service["network_mode"] == "host"
     assert service["command"][0] == "drive"
+    assert "--start" in service["command"] and "--idle-when-done" in service["command"]
     assert service["logging"]["options"]["max-size"]
 
 

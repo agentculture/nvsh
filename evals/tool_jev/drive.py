@@ -20,7 +20,13 @@ this module is the loop itself, runnable anywhere:
   surprise) is logged and the loop backs off (2^n x ``poll_seconds``, at
   most 30 minutes) and tries again: it never crash-loops;
 - one line per step is appended to ``<run_dir>/drive.log``;
-- SIGTERM / SIGINT set a flag and the loop exits cleanly between steps.
+- SIGTERM / SIGINT set a flag and the loop exits cleanly between steps;
+- ``start=True`` begins a full run when the run dir holds none yet (the
+  container's first boot), so the service needs no separate `run` step;
+- ``idle_when_done=True`` (the container's mode) waits for a signal instead
+  of exiting once the run is complete or has stopped to ask: a service with
+  ``restart: unless-stopped`` would otherwise be restarted in a loop that
+  re-runs the same final pass (or the same stop-and-ask lookup) forever.
 
 The clock and sleep are injectable so tests never wait for real.
 """
@@ -60,6 +66,8 @@ def drive(
     recheck_seconds: float = DEFAULT_RECHECK_SECONDS,
     max_steps: int | None = None,
     out: Callable[[str], None] = print,
+    start: bool = False,
+    idle_when_done: bool = False,
 ) -> int:
     """Run :func:`run.step` until the run completes, asks or is told to stop; the exit code."""
     run_dir = Path(run_dir)
@@ -72,27 +80,43 @@ def drive(
         else:
             stop.wait(seconds)
 
+    def finish(code: int, why: str) -> int:
+        if not idle_when_done:
+            return code
+        _log(run_dir, clock, f"{why}; idling until stopped (exit code {code} when stopped)")
+        out(f"{why}; idling until stopped")
+        while not stop.is_set():
+            wait(3600.0)
+            if sleep is not None:  # an injected sleep never sets the flag: tests end here
+                break
+        return code
+
     steps = 0
     errors = 0
     code = runner.EXIT_OK
     while not stop.is_set():
         steps += 1
+        begin = start and not (run_dir / runner.RUN_FILE).exists()
         try:
-            outcome = runner.step(
-                run_dir,
-                manifest_path,
-                env=env,
-                factory=factory,
-                retry_money=False,
-                out=out,
-                clock=clock,
-                poll_seconds=poll_seconds,
-                recheck_seconds=recheck_seconds,
-            )
+            if begin:
+                _log(run_dir, clock, f"step {steps}: no run in {run_dir}; starting a full run")
+                outcome = runner.start(run_dir, manifest_path, env=env, factory=factory, out=out)
+            else:
+                outcome = runner.step(
+                    run_dir,
+                    manifest_path,
+                    env=env,
+                    factory=factory,
+                    retry_money=False,
+                    out=out,
+                    clock=clock,
+                    poll_seconds=poll_seconds,
+                    recheck_seconds=recheck_seconds,
+                )
         except runner.StopAndAsk as exc:
             _log(run_dir, clock, f"stop and ask: {exc}")
             out(f"stop and ask: {exc}")
-            return runner.EXIT_ASK
+            return finish(runner.EXIT_ASK, "stopped to ask the operator")
         except Exception as exc:  # noqa: BLE001 -- logged; the loop backs off, never crash-loops
             errors += 1
             delay = backoff_delay(poll_seconds, errors)
@@ -107,7 +131,7 @@ def drive(
         errors = 0
         _log(run_dir, clock, f"step {steps}: {outcome.status}; " + " | ".join(outcome.messages))
         if outcome.status == runner.STATUS_COMPLETE:
-            return runner.EXIT_OK
+            return finish(runner.EXIT_OK, "run complete")
         code = outcome.exit_code
         if max_steps is not None and steps >= max_steps:
             return code

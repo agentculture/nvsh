@@ -782,6 +782,99 @@ def test_drive_stops_cleanly_between_steps_on_a_signal(tmp_path):
     assert not (run_dir / "result.json").exists()
 
 
+def test_drive_start_begins_a_full_run_in_an_empty_run_dir(tmp_path):
+    world = World(tmp_path)
+    run_dir = tmp_path / "run"
+    clock = FakeClock()
+    code = drive_mod.drive(
+        run_dir,
+        world.manifest,
+        env=world.env,
+        factory=world.factory,
+        clock=clock,
+        sleep=clock.sleep,
+        max_steps=50,
+        out=world.lines.append,
+        start=True,
+    )
+    assert code == runner.EXIT_OK, world.lines
+    assert (run_dir / "result.json").exists()
+    assert "starting a full run" in (run_dir / "drive.log").read_text()
+
+
+def test_drive_without_start_refuses_an_empty_run_dir(tmp_path):
+    world = World(tmp_path)
+    clock = FakeClock()
+    code = drive_mod.drive(
+        tmp_path / "run",
+        world.manifest,
+        env=world.env,
+        factory=world.factory,
+        clock=clock,
+        sleep=clock.sleep,
+        max_steps=1,
+        out=world.lines.append,
+    )
+    assert code != runner.EXIT_OK
+    assert "holds no run" in world.lines[-1]
+
+
+def test_drive_idles_instead_of_exiting_when_done(tmp_path):
+    """A restart-unless-stopped service must not re-run a finished run in a loop."""
+    import threading
+
+    world = World(tmp_path)
+    run_dir = tmp_path / "run"
+    stop = threading.Event()
+    waits: list[float] = []
+
+    def sleep(seconds):
+        waits.append(seconds)
+
+    code = drive_mod.drive(
+        run_dir,
+        world.manifest,
+        env=world.env,
+        factory=world.factory,
+        clock=FakeClock(),
+        sleep=sleep,
+        stop=stop,
+        max_steps=50,
+        out=world.lines.append,
+        start=True,
+        idle_when_done=True,
+    )
+    assert code == runner.EXIT_OK
+    assert waits and waits[-1] == 3600.0  # idling, not polling
+    assert "run complete; idling until stopped" in (run_dir / "drive.log").read_text()
+
+
+def test_the_cli_drive_flags_reach_the_loop(tmp_path, monkeypatch):
+    seen = {}
+
+    def fake_drive(run_dir, manifest, **kwargs):
+        seen.update(kwargs)
+        return runner.EXIT_OK
+
+    monkeypatch.setattr(drive_mod, "drive", fake_drive)
+    from evals.tool_jev import __main__ as cli
+
+    code = cli.main(
+        [
+            "drive",
+            "--manifest",
+            str(tmp_path / "m.toml"),
+            "--run-dir",
+            str(tmp_path / "run"),
+            "--start",
+            "--idle-when-done",
+        ],
+        stop=__import__("threading").Event(),
+    )
+    assert code == runner.EXIT_OK
+    assert seen["start"] is True and seen["idle_when_done"] is True
+
+
 # ---------------------------------------------------------------------------
 # smoke
 # ---------------------------------------------------------------------------

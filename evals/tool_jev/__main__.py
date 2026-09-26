@@ -79,6 +79,14 @@ def _parser() -> argparse.ArgumentParser:
     loop.add_argument(
         "--recheck-minutes", type=float, default=drive_mod.DEFAULT_RECHECK_SECONDS / 60
     )
+    loop.add_argument(
+        "--start", action="store_true", help="start a full run when the run dir holds none"
+    )
+    loop.add_argument(
+        "--idle-when-done",
+        action="store_true",
+        help="wait for a signal instead of exiting when the run completes or asks (a service)",
+    )
     return parser
 
 
@@ -138,6 +146,8 @@ def main(
                 sleep=sleep,
                 poll_seconds=args.poll_seconds,
                 recheck_seconds=args.recheck_minutes * 60,
+                start=args.start,
+                idle_when_done=args.idle_when_done,
                 **kwargs,
             )
         if args.json:
