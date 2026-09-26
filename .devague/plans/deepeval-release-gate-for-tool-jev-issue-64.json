@@ -5,7 +5,7 @@
   "schema_version": 5,
   "status": "exported",
   "created": "2026-09-26T04:58:49Z",
-  "updated": "2026-09-26T06:22:56Z",
+  "updated": "2026-09-26T06:57:38Z",
   "targets": [
     {
       "id": "c1",
@@ -933,8 +933,8 @@
       "text": "OpenRouter key has $5 credit and a $10 key limit, below one run (~$11.4 at medium); live tasks t22/t24 need a top-up and a raised key limit first",
       "kind": "unknown_nonblocking",
       "task_id": "t22",
-      "resolved": false,
-      "resolution": ""
+      "resolved": true,
+      "resolution": "Operator topped up 2026-09-26: OpenRouter key now $20 credit / $20 key limit (verified via API); Anthropic and OpenAI budgets confirmed by the operator (no balance API). $20 covers about one fresh full run with d1's multi-round Track A (~$15-17 OpenRouter share) plus the smoke run; the driver's per-provider caps stop cleanly before the key limit"
     },
     {
       "id": "r2",
