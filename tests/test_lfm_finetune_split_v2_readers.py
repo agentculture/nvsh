@@ -218,8 +218,9 @@ def test_merge_variations_accepts_the_v2_train_side_only(modules, v2_split) -> N
     merged, counts = merge_variations.merge(train, [])
     assert counts["kept"] == 0
     assert "Split 'train' of " in merged["header"]
+    val = _raw(v2_split["val"])
     with pytest.raises(ValueError, match="train side"):
-        merge_variations.merge(_raw(v2_split["val"]), [])
+        merge_variations.merge(val, [])
 
 
 # -- measure --
@@ -248,13 +249,13 @@ def test_calibration_fit_refuses_only_the_v2_test_side(modules, v2_split, tmp_pa
     calibration_fit = modules["calibration_fit"]
     for key in ("train-copy", "val-copy"):
         calibration_fit.refuse_if_test_or_held_out(v2_split[key], _raw(v2_split[key])["header"])
+    test_header = _raw(v2_split["test-copy"])["header"]
     with pytest.raises(calibration_fit.CalibrationError, match="test"):
-        calibration_fit.refuse_if_test_or_held_out(
-            v2_split["test-copy"], _raw(v2_split["test-copy"])["header"]
-        )
+        calibration_fit.refuse_if_test_or_held_out(v2_split["test-copy"], test_header)
     held_out = _held_out_marked(tmp_path, v2_split)
+    header = _raw(held_out)["header"]
     with pytest.raises(calibration_fit.CalibrationError, match="held-out"):
-        calibration_fit.refuse_if_test_or_held_out(held_out, _raw(held_out)["header"])
+        calibration_fit.refuse_if_test_or_held_out(held_out, header)
 
 
 def test_calibration_fit_folds_cli_takes_val_refuses_test(modules, v2_split, tmp_path) -> None:
@@ -280,7 +281,8 @@ def test_permutation_probe_refuses_the_v2_test_side_without_final(
     # The val side passes the guard and stops only for want of a model.
     assert probe.main(["--split", str(v2_split["val-copy"])]) == 1
     err = capsys.readouterr().err
-    assert "refusing" not in err and "--model is required" in err
+    assert "refusing" not in err
+    assert "--model is required" in err
 
 
 # -- quantize, augment, dataset_bundle --
@@ -291,9 +293,10 @@ def test_quantize_verifies_each_v2_side_by_its_header(modules, v2_split) -> None
     for side in ("train", "val", "test"):
         path = v2_split[f"{side}-copy"]
         quantize._verify_split_side(path, _raw(path), side)
+    path = v2_split["val-copy"]
+    raw = _raw(path)
     with pytest.raises(quantize.QuantizeError, match="expected 'train'"):
-        path = v2_split["val-copy"]
-        quantize._verify_split_side(path, _raw(path), "train")
+        quantize._verify_split_side(path, raw, "train")
 
 
 def test_augment_infers_each_v2_side_from_its_header(modules, v2_split) -> None:

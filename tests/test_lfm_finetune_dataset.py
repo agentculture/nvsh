@@ -1058,7 +1058,8 @@ def test_reasons_json_covers_exactly_the_eight_reason_candidates():
     data = json.loads(_REASONS_PATH.read_text(encoding="utf-8"))
     assert set(data) == set(module.REASON_CANDIDATES)
     for text in data.values():
-        assert isinstance(text, str) and text.strip()
+        assert isinstance(text, str)
+        assert text.strip()
 
 
 def test_reasons_json_descriptions_never_name_a_table_operation():
@@ -1083,9 +1084,11 @@ def test_paraphrases_json_covers_every_candidate_name():
 def test_paraphrases_json_has_at_least_two_non_empty_alternatives_each():
     data = json.loads(_PARAPHRASES_PATH.read_text(encoding="utf-8"))
     for name, alternatives in data.items():
-        assert isinstance(alternatives, list) and len(alternatives) >= 2, name
+        assert isinstance(alternatives, list), name
+        assert len(alternatives) >= 2, name
         for text in alternatives:
-            assert isinstance(text, str) and text.strip(), name
+            assert isinstance(text, str), name
+            assert text.strip(), name
 
 
 def test_paraphrases_json_never_repeats_the_default_description():

@@ -93,7 +93,9 @@ def test_read_split_keeps_each_rows_stored_permutation_seed_and_descriptions(tmp
     assert permuted.perm_seed == 7
     assert permuted.descriptions == {"thermal_stats": "Read the temperatures."}
     assert permuted.gold == "thermal_stats"
-    assert fixed.permutation is None and fixed.perm_seed is None and fixed.descriptions is None
+    assert fixed.permutation is None
+    assert fixed.perm_seed is None
+    assert fixed.descriptions is None
 
 
 def test_a_stored_gold_must_agree_with_the_expect_block(tmp_path) -> None:
@@ -102,24 +104,27 @@ def test_a_stored_gold_must_agree_with_the_expect_block(tmp_path) -> None:
     [example] = module.read_split(_split(tmp_path, "train", [reason]), module.TRAIN_SIDE)
     assert example.gold == "escalate:repair"
     wrong = _entry("w1", "How hot?", {"operation": "thermal_stats", "args": {}}, gold="gpu_stats")
+    path = _split(tmp_path, "train", [wrong])
     with pytest.raises(ValueError, match="gold"):
-        module.read_split(_split(tmp_path, "train", [wrong]), module.TRAIN_SIDE)
+        module.read_split(path, module.TRAIN_SIDE)
 
 
 def test_a_gold_the_rows_permutation_does_not_offer_is_refused(tmp_path) -> None:
     module = _module()
     perm = {"order": ["gpu_stats", "explain"], "labels": {"gpu_stats": "k", "explain": "B"}}
     entry = _entry("x", "How hot?", {"operation": "thermal_stats", "args": {}}, permutation=perm)
+    path = _split(tmp_path, "train", [entry])
     with pytest.raises(ValueError, match="not offered"):
-        module.read_split(_split(tmp_path, "train", [entry]), module.TRAIN_SIDE)
+        module.read_split(path, module.TRAIN_SIDE)
 
 
 def test_a_permutation_that_reuses_a_letter_is_refused(tmp_path) -> None:
     module = _module()
     perm = {"order": ["thermal_stats", "explain"], "labels": {"thermal_stats": "Q", "explain": "Q"}}
     entry = _entry("x", "How hot?", {"operation": "thermal_stats", "args": {}}, permutation=perm)
+    path = _split(tmp_path, "train", [entry])
     with pytest.raises(ValueError, match="letter"):
-        module.read_split(_split(tmp_path, "train", [entry]), module.TRAIN_SIDE)
+        module.read_split(path, module.TRAIN_SIDE)
 
 
 # -- encoding: per-row letters and targets --
@@ -231,8 +236,9 @@ def test_the_label_readout_defaults_to_variants_and_calibration_terms_to_off() -
         ["--train", "t.json", "--out", "o", "--label-readout", "single"]
     )
     assert single.label_readout == "single"
+    parser = module._parser()
     with pytest.raises(SystemExit):
-        module._parser().parse_args(["--train", "t", "--out", "o", "--label-readout", "x"])
+        parser.parse_args(["--train", "t", "--out", "o", "--label-readout", "x"])
 
 
 def test_permutation_record_logs_seeds_counts_and_per_row_maps(tmp_path) -> None:
@@ -389,7 +395,8 @@ def test_single_readout_reads_the_one_id_and_masks_the_padding() -> None:
     logits, mask = module.column_logits(vocab, [[(40,), (41,)], [(42,), (43,), (44,)]])
     assert logits[0, :2].tolist() == vocab[0, [40, 41]].tolist()
     assert logits[1].tolist() == vocab[1, [42, 43, 44]].tolist()
-    assert logits[0, 2] == float("-inf") and not bool(mask[0, 2])
+    assert logits[0, 2] == float("-inf")
+    assert not bool(mask[0, 2])
 
 
 def test_a_mixed_batch_gives_each_row_the_loss_it_has_alone() -> None:
@@ -510,8 +517,9 @@ def test_calibration_terms_out_of_range_are_refused() -> None:
 )
 def test_the_parser_refuses_calibration_terms_out_of_range(flags: list[str]) -> None:
     module = _module()
+    parser = module._parser()
     with pytest.raises(SystemExit):
-        module._parser().parse_args(["--train", "t.json", "--out", "o", *flags])
+        parser.parse_args(["--train", "t.json", "--out", "o", *flags])
     ok = module._parser().parse_args(
         ["--train", "t", "--out", "o", "--label-smoothing", "0.1", "--brier-weight", "0.5"]
     )

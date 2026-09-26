@@ -2867,7 +2867,8 @@ def test_assemble_passes_scorer_build_args_and_writes_the_scorer_file(tmp_path: 
     assert _option(build, "--split") == [str(pipe.work / "data" / "train-augmented.json")]
     assert _option(build, "--out") == [str(pipe.work / "data" / "nvsh-train.jsonl")]
     assert _option(build, "--scorer-out") == [str(pipe.work / "data" / "scorer-train.json")]
-    assert "--randomize-labels" in build and "--reasons" in build
+    assert "--randomize-labels" in build
+    assert "--reasons" in build
     assert _option(build, "--perm-seed") == ["53"]
     assert _option(build, "--missing-candidate-rate") == ["0.3"]
 

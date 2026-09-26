@@ -670,7 +670,8 @@ def test_in_process_and_served_paths_give_the_same_distribution_on_a_fixture() -
         )
     served = module.score(_FakeScorer(served_logprobs), "p", "x", runner=world_runner(_WORLD))
 
-    assert in_process.incomplete is None and served.incomplete is None
+    assert in_process.incomplete is None
+    assert served.incomplete is None
     assert set(in_process.distribution) == set(served.distribution)
     for name in labels:
         assert in_process.distribution[name] == pytest.approx(served.distribution[name], abs=1e-6)

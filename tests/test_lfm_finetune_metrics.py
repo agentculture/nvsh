@@ -539,9 +539,12 @@ def test_slices_partition_the_fixture_and_report_calibration(result, metrics):
     assert slices["mutating"]["n"] >= 2
     for name in ("read_only", "mutating", "escalate_or_explain"):
         calibration = slices[name]["calibration"]
-        assert "ece" in calibration and "ece_ci" in calibration
-        assert "brier" in calibration and "brier_ci" in calibration
-        assert "bins" in calibration and len(calibration["bins"]) == metrics.ECE_BINS
+        assert "ece" in calibration
+        assert "ece_ci" in calibration
+        assert "brier" in calibration
+        assert "brier_ci" in calibration
+        assert "bins" in calibration
+        assert len(calibration["bins"]) == metrics.ECE_BINS
 
 
 def test_slice_candidate_count_and_missing_candidate(metrics, tmp_path):
@@ -633,7 +636,8 @@ def test_every_rate_and_ece_carries_n_and_a_bootstrap_ci(result):
         result["calibration"]["brier_ci"],
     ):
         assert set(ci) == {"n", "value", "ci_low", "ci_high"}
-        assert isinstance(ci["n"], int) and ci["n"] > 0
+        assert isinstance(ci["n"], int)
+        assert ci["n"] > 0
 
 
 # ---------------------------------------------------------------------------

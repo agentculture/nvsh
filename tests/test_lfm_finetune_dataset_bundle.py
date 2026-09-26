@@ -625,7 +625,8 @@ def test_drafted_and_targeted_records_carry_their_own_provenance(tmp_path) -> No
     card = (tmp_path / "bundle" / "README.md").read_text()
     assert "1 fresh teacher-drafted" in card
     test_line = next(line for line in card.splitlines() if line.startswith("| test |"))
-    assert "fresh teacher-drafted" in test_line and "corpus entries only" not in test_line
+    assert "fresh teacher-drafted" in test_line
+    assert "corpus entries only" not in test_line
     # the provenance section describes what the data actually holds
     assert "70/15/15" not in card
     assert "Fresh teacher-drafted requests" in card
@@ -645,8 +646,9 @@ def test_a_record_without_a_source_still_refuses_without_a_default(tmp_path) -> 
             }
         )
     )
+    module = _module()
     with pytest.raises(ValueError, match="source"):
-        _module().build(**inputs)
+        module.build(**inputs)
 
 
 def test_a_private_address_is_published_as_a_documentation_address(tmp_path) -> None:

@@ -55,8 +55,9 @@ def test_bare_string_items_become_text_only_items() -> None:
 
 def test_a_seed_flag_without_a_value_is_a_usage_error() -> None:
     """PR #65 review: '--seed' as the last argument raised IndexError."""
+    module = _module()
     with pytest.raises(SystemExit):
-        _module().parse_args(["out", "--seed"])
+        module.parse_args(["out", "--seed"])
 
 
 def test_the_draft_header_names_the_issue_it_was_drafted_for() -> None:

@@ -2094,7 +2094,7 @@ def test_label_allows_a_quantized_build_name(measure, tmp_path, label, ok):
 def test_served_scorer_preflight_is_readout_top(measure):
     """Deviation d1: the --max-logprobs check reads scorer.READOUT_TOP, not labels + margin."""
     assert measure.scorer_labels_needed() == measure.scorer.READOUT_TOP
-    assert _READOUT == str(measure.scorer.READOUT_TOP)
+    assert str(measure.scorer.READOUT_TOP) == _READOUT
 
 
 def _scorer_harness(measure, tmp_path, pick) -> tuple[Harness, _FakeScorer, list]:
@@ -2263,7 +2263,8 @@ def test_report_carries_cis_and_per_slice_reliability_tables(measure, tmp_path):
     assert code == 0
     text = out.read_text(encoding="utf-8")
     ci = _row(text, "Right proposals, 95% bootstrap CI")[0]
-    assert ci.startswith("[") and "%" in ci
+    assert ci.startswith("[")
+    assert "%" in ci
     for metric in (
         "Abstention recall, 95% bootstrap CI",
         "Abstention precision, strict, 95% bootstrap CI",

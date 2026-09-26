@@ -716,7 +716,8 @@ def test_a_scorer_bundle_ships_its_frozen_calibration_and_gate(tmp_path) -> None
     assert (out / "gate.json").read_bytes() == gate.read_bytes()
     card = (out / "README.md").read_text()
     assert "## Calibration and gate" in card
-    assert "calibration.json" in card and "gate.json" in card
+    assert "calibration.json" in card
+    assert "gate.json" in card
 
 
 def test_calibration_and_gate_are_for_a_scorer_only(tmp_path) -> None:

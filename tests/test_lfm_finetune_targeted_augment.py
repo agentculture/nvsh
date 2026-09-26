@@ -223,9 +223,11 @@ def test_strip_removes_the_argument_value() -> None:
 def test_strip_finds_a_dotted_service_name_and_its_bare_stem() -> None:
     arg = _op("service_status").args[0]
     stripped, _ = ta.strip_argument("Is vllm.service running?", arg, "vllm.service", 0)
-    assert stripped is not None and "vllm" not in stripped.lower()
+    assert stripped is not None
+    assert "vllm" not in stripped.lower()
     stripped, _ = ta.strip_argument("restart docker", arg, "docker.service", 0)
-    assert stripped is not None and "docker" not in stripped.lower()
+    assert stripped is not None
+    assert "docker" not in stripped.lower()
 
 
 def test_strip_handles_a_choice_value_with_underscores() -> None:

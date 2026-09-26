@@ -663,7 +663,8 @@ def test_run_draft_records_the_sampling_header(tmp_path: Path) -> None:
     doc = json.loads((tmp_path / "draft.json").read_text())
     sampling = doc["header"]["sampling"]
     assert sampling["per_call_seed"] is True
-    assert isinstance(sampling["note"], str) and sampling["note"]
+    assert isinstance(sampling["note"], str)
+    assert sampling["note"]
 
 
 def test_post_chat_completion_seeded_sends_a_top_level_seed(
@@ -712,7 +713,8 @@ def test_only_reasons_limits_the_decline_draft(tmp_path: Path) -> None:
     )
     doc = json.loads((tmp_path / "draft.json").read_text())
     classes = {entry["class"] for entry in doc["entries"]}
-    assert classes and classes <= {"decline:not_a_request", "decline:missing_argument"}
+    assert classes
+    assert classes <= {"decline:not_a_request", "decline:missing_argument"}
     assert doc["header"]["reasons"] == ["missing_argument", "not_a_request"]
 
 
@@ -746,7 +748,8 @@ def test_reviewer_policy_hands_off_small_talk_not_answers_it() -> None:
     reviewer must be told the same policy or it rejects every such entry."""
     system = ds.REVIEWER_SYSTEM
     assert "only for technical knowledge questions" in system
-    assert "greetings, thanks" in system and "handed off, not answered" in system
+    assert "greetings, thanks" in system
+    assert "handed off, not answered" in system
 
 
 def test_missing_argument_definition_requires_an_offered_action() -> None:

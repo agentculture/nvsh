@@ -719,7 +719,9 @@ def test_v2_header_note_names_the_version_not_an_input_path(tmp_path) -> None:
     )
     header = json.loads((out_dir / "train.json").read_text())["header"]
     assert header.startswith("Split 'train' of corpus-v2.1 (seed=39). ")
-    assert "drafts" not in header and "test" not in header and "held" not in header
+    assert "drafts" not in header
+    assert "test" not in header
+    assert "held" not in header
 
 
 def _train_only_corpus(tmp_path: Path, ids: list[str], name: str = "dev-like.json") -> Path:
@@ -784,8 +786,9 @@ def test_v2_train_only_refuses_an_id_already_on_a_side(tmp_path, capsys) -> None
     corpus = _fixture_corpus(tmp_path)
     clash_id = _fixture_entries()[0]["id"]
     dev_like = _train_only_corpus(tmp_path, [clash_id])
+    argv = _v2_args(corpus, tmp_path / "out", "--train-only", str(dev_like))
     with pytest.raises(SystemExit):
-        module.main(_v2_args(corpus, tmp_path / "out", "--train-only", str(dev_like)))
+        module.main(argv)
     assert "already on a split side" in capsys.readouterr().err
 
 
@@ -793,6 +796,7 @@ def test_v2_train_only_refuses_the_held_out_file(tmp_path, capsys) -> None:
     module = _module()
     corpus = _fixture_corpus(tmp_path)
     held_out = _train_only_corpus(tmp_path, ["h-1"], name="held-out.json")
+    argv = _v2_args(corpus, tmp_path / "out", "--train-only", str(held_out))
     with pytest.raises(SystemExit):
-        module.main(_v2_args(corpus, tmp_path / "out", "--train-only", str(held_out)))
+        module.main(argv)
     assert "held-out" in capsys.readouterr().err
