@@ -802,6 +802,30 @@ def test_drive_start_begins_a_full_run_in_an_empty_run_dir(tmp_path):
     assert "starting a full run" in (run_dir / "drive.log").read_text()
 
 
+def test_drive_posts_progress_and_the_completion_alert(tmp_path):
+    from evals.tool_jev import alerts
+
+    world = World(tmp_path)
+    posts: list[str] = []
+    clock = FakeClock()
+    code = drive_mod.drive(
+        tmp_path / "run",
+        world.manifest,
+        env={**world.env, alerts.ENV_WEBHOOK: "https://discord.example/hook"},
+        factory=world.factory,
+        clock=clock,
+        sleep=clock.sleep,
+        max_steps=50,
+        out=world.lines.append,
+        start=True,
+        poster=lambda url, text: posts.append(text),
+    )
+    assert code == runner.EXIT_OK, world.lines
+    text = "\n".join(posts)
+    assert "COMPLETE" in text and "100%" in text
+    assert "alert sent" in (tmp_path / "run" / "drive.log").read_text()
+
+
 def test_drive_without_start_refuses_an_empty_run_dir(tmp_path):
     world = World(tmp_path)
     clock = FakeClock()

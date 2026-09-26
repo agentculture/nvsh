@@ -2,7 +2,7 @@
   "plan_slug": "deepeval-release-gate-for-tool-jev-issue-64",
   "schema_version": 2,
   "created": "2026-09-26T06:47:33Z",
-  "updated": "2026-09-26T10:27:19Z",
+  "updated": "2026-09-26T11:57:56Z",
   "deviations": [
     {
       "id": "d1",
@@ -68,6 +68,20 @@
       "status": "approved",
       "classification": "acceptable",
       "seq": 4
+    },
+    {
+      "id": "d5",
+      "what": "Add Discord webhook alerts to the unattended driver (extends deviation d2): every 10% of each provider's calls answered, every whole dollar of total spend, each provider/model stop, and the run's end (complete or stop-and-ask); counts, dollars, names and stop reasons only, never case text; webhook URL read from NVSH_EVALS_ALERT_WEBHOOK (grant-injected), sent milestones recorded in the run dir so restarts never repeat them",
+      "task_ref": "t17",
+      "reason": "Operator request 2026-09-26: know the unattended run's progress, spend (so each dollar used is visible) and finish state without watching the terminal",
+      "affects": [
+        "t19",
+        "t24"
+      ],
+      "origin": "user",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 5
     }
   ],
   "evidence": [],

@@ -90,15 +90,31 @@ grant run --inject OPENAI_API_KEY=OPENAI_API_KEY \
           --inject ANTHROPIC_API_KEY=ANTHROPIC_API_KEY \
           --inject OPEN_ROUTER_API_KEY=OPEN_ROUTER_API_KEY \
           --inject LOBES_GATEWAY_API_KEY=LOBES_GATEWAY_API_KEY \
+          --inject NGC_API_KEY=NGC_API_KEY \
+          --inject NVSH_EVALS_ALERT_WEBHOOK=NVSH_EVALS_ALERT_WEBHOOK \
           -- docker compose -f evals/docker/compose.yaml up -d --build
 ```
 
-`NGC_API_KEY` (build.nvidia.com) is not injected through `grant`: it is read
-straight from the operator's own shell environment, the same as the other
-four, and simply needs to already be exported before `docker compose up`
-runs (it is one of the `environment:` names in
-[`docker/compose.yaml`](docker/compose.yaml), so an unset name just stays
-unset in the container rather than failing the build).
+Every name is listed under `environment:` in
+[`docker/compose.yaml`](docker/compose.yaml) with no value, so a name that
+is unset stays unset in the container rather than failing the build.
+
+An OpenAI key must be allowed to use Files and Batch: a restricted key
+without the `api.files.write` scope is refused at the batch upload, and
+the runner reports that as a `missing_scope` stop, not a bad key.
+
+### Alerts
+
+When `NVSH_EVALS_ALERT_WEBHOOK` holds a Discord (or Discord-compatible)
+webhook URL, the driver posts a short message after each step with
+anything new: every 10% of each provider's calls answered, every whole
+dollar of total spend (with each provider's spend and cap), each provider
+or model stop, and the run's end (complete, or stopped to ask). Messages
+carry counts, dollars, names and stop reasons only, never case text.
+Milestones already sent are kept in `alerts.json` in the run directory, so
+a restart never repeats them, and a failed post is retried at the next
+step without affecting the run. The URL is a secret: keep it in `grant`
+(`grant set NVSH_EVALS_ALERT_WEBHOOK --hidden`), never in a file.
 
 ## Smoke run
 

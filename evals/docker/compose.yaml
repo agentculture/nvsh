@@ -6,6 +6,8 @@
 #             --inject ANTHROPIC_API_KEY=ANTHROPIC_API_KEY \
 #             --inject OPEN_ROUTER_API_KEY=OPEN_ROUTER_API_KEY \
 #             --inject LOBES_GATEWAY_API_KEY=LOBES_GATEWAY_API_KEY \
+#             --inject NGC_API_KEY=NGC_API_KEY \
+#             --inject NVSH_EVALS_ALERT_WEBHOOK=NVSH_EVALS_ALERT_WEBHOOK \
 #             -- docker compose -f evals/docker/compose.yaml up -d --build
 #
 # NVSH_EVALS_PRIVATE_ROOT (case sets, saved predictions, snapshot, private
@@ -47,6 +49,8 @@ services:
       OPEN_ROUTER_API_KEY:
       NGC_API_KEY:
       LOBES_GATEWAY_API_KEY:
+      # Optional Discord webhook for progress/spend/stop alerts (deviation d5).
+      NVSH_EVALS_ALERT_WEBHOOK:
     volumes:
       - type: bind
         source: ${NVSH_EVALS_PRIVATE_ROOT:?set NVSH_EVALS_PRIVATE_ROOT to the private data root}

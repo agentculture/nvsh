@@ -20,6 +20,10 @@ this module is the loop itself, runnable anywhere:
   surprise) is logged and the loop backs off (2^n x ``poll_seconds``, at
   most 30 minutes) and tries again: it never crash-loops;
 - one line per step is appended to ``<run_dir>/drive.log``;
+- after every step, when ``NVSH_EVALS_ALERT_WEBHOOK`` is set, progress (every
+  10% per provider), spend (every whole dollar), stops and the run's end go
+  to that webhook (:mod:`evals.tool_jev.alerts`, deviation d5); a failed post
+  is logged and retried next step, never stopping the run;
 - SIGTERM / SIGINT set a flag and the loop exits cleanly between steps;
 - ``start=True`` begins a full run when the run dir holds none yet (the
   container's first boot), so the service needs no separate `run` step;
@@ -39,6 +43,7 @@ import time
 from pathlib import Path
 from typing import Callable, Mapping
 
+from . import alerts
 from . import run as runner
 
 backoff_delay = runner.backoff_delay
@@ -68,6 +73,7 @@ def drive(
     out: Callable[[str], None] = print,
     start: bool = False,
     idle_when_done: bool = False,
+    poster: alerts.Poster | None = None,
 ) -> int:
     """Run :func:`run.step` until the run completes, asks or is told to stop; the exit code."""
     run_dir = Path(run_dir)
@@ -79,6 +85,21 @@ def drive(
             sleep(seconds)
         else:
             stop.wait(seconds)
+
+    def alert(finished: str | None = None) -> None:
+        try:
+            sent = alerts.notify(
+                run_dir,
+                runner.status(run_dir),
+                env=env,
+                finished=finished,
+                **({"poster": poster} if poster is not None else {}),
+            )
+        except Exception as exc:  # noqa: BLE001 -- an alert never stops the run
+            _log(run_dir, clock, f"alert not sent ({type(exc).__name__}); retried next step")
+            return
+        if sent:
+            _log(run_dir, clock, f"alert sent: {len(sent)} line(s)")
 
     def finish(code: int, why: str) -> int:
         if not idle_when_done:
@@ -116,6 +137,7 @@ def drive(
         except runner.StopAndAsk as exc:
             _log(run_dir, clock, f"stop and ask: {exc}")
             out(f"stop and ask: {exc}")
+            alert(finished="ask")
             return finish(runner.EXIT_ASK, "stopped to ask the operator")
         except Exception as exc:  # noqa: BLE001 -- logged; the loop backs off, never crash-loops
             errors += 1
@@ -131,7 +153,9 @@ def drive(
         errors = 0
         _log(run_dir, clock, f"step {steps}: {outcome.status}; " + " | ".join(outcome.messages))
         if outcome.status == runner.STATUS_COMPLETE:
+            alert(finished="complete")
             return finish(runner.EXIT_OK, "run complete")
+        alert()
         code = outcome.exit_code
         if max_steps is not None and steps >= max_steps:
             return code

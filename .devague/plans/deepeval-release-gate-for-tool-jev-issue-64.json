@@ -5,7 +5,7 @@
   "schema_version": 5,
   "status": "exported",
   "created": "2026-09-26T04:58:49Z",
-  "updated": "2026-09-26T08:27:53Z",
+  "updated": "2026-09-26T11:40:34Z",
   "targets": [
     {
       "id": "c1",
@@ -1005,8 +1005,8 @@
       "text": "Output budget: request.DEFAULT_MAX_OUTPUT_TOKENS is 512, and OpenAI max_output_tokens and Anthropic max_tokens count reasoning/thinking tokens against it, so reference replies may be cut (a truncated reply is invalid, reason truncated). Operator guidance 2026-09-26: never keep paying for capped, bad output (runner has a per-model truncation stop); reasoning is per reference and may be low or none, since some models work well without it; if the t22 smoke run still shows a model capped, replace it with an operator-chosen model and record a deviation",
       "kind": "unknown_nonblocking",
       "task_id": "t22",
-      "resolved": false,
-      "resolution": ""
+      "resolved": true,
+      "resolution": "t22 smoke run 2026-09-26 (10 issue-53 test cases, medium reasoning, max_output_tokens 2048): 0 truncated and 0 invalid replies for claude-opus-5-5, claude-sonnet-5 and all 5 OpenRouter models, and the two local models; no model replaced. The full run keeps max_output_tokens 2048 and the runner's truncation stop stays armed. OpenAI (gpt-6-luna, gpt-6-sol) and build.nvidia.com (5 models) returned HTTP 401 on their keys and were not measured; the operator will rotate those keys later"
     }
   ],
   "obligations": []

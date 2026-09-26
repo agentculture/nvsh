@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-09-26T04:16:04Z",
-  "updated": "2026-09-26T06:59:56Z",
+  "updated": "2026-09-26T11:57:14Z",
   "claims": [
     {
       "id": "c1",
@@ -1150,6 +1150,17 @@
       ],
       "origin": "llm",
       "status": "proposed"
+    },
+    {
+      "id": "l5",
+      "code": "control-absent",
+      "what": "commit 4a55743 landed with one evals test red: the gate command piped pytest into tail, so the commit ran on tail's exit status, not pytest's; fixed in a146ab6, and the gate now checks pytest's own exit code",
+      "skipped_check": "pytest exit status before git commit",
+      "refs": [
+        "4a55743"
+      ],
+      "origin": "llm",
+      "status": "approved"
     }
   ],
   "obligations": []
