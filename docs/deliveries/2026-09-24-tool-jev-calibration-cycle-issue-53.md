@@ -88,7 +88,7 @@ After: A retrained Track B scorer whose choice survives label/order permutation,
 ## Evidence
 
 - tests: full suite `uv run pytest -n auto` at `3b66166` — 4700 passed, 55 skipped (torch-path scorer tests: 121 passed under the training interpreter on the training machine)
-- behavioral evidence (devague): `e1`-`e15` for obligations `o1`-`o14`; **`e5` fail** (held-out missing-candidate escalation 76.7%), **`e11` fail** (bf16 GGUF readout within 0.01 on 196/204)
+- behavioral evidence (devague): `e1`-`e15` for obligations `o1`-`o14`; **`e5` fail** (held-out missing-candidate escalation 76.7%), **`e11` fail** (bf16 GGUF readout within 0.01 on 196/204); `o1`-`o14`, `e1`-`e15` (including both fails) and deltas `b1`-`b7` approved by the operator 2026-09-26
 - measurements: `docs/benchmarks/2026-09-25-lfm-final-scorer-r3b*.md`, `...-heldout-scorer-r3b*.md`, `...-edge-orin-scorer-r3b*.md`; report `docs/benchmarks/2026-09-25-tool-jev-calibration-cycle.md`
 - lint: `black --check`, `flake8` on changed files, `markdownlint-cli2` on every changed doc, `scripts/scan-secrets.py` (570 files clean), `harness-smoke --stage config` (6 passed)
 - commits: `main..3b66166` (148 commits on `spec/tool-jev-calibration-issue-53`, not yet pushed)
@@ -133,6 +133,5 @@ Lapse ledger evidence:
 - held-out `read_only` slice ECE 0.147 — threshold read-only proposals with it in mind when wiring the runtime — #54
 - bf16 GGUF readout differs from in-process by more than 0.01 on 8/204 — investigate the runtime difference — follow-up
 - evaluate the uploaded model and the harness separately with DeepEval — #64, next session
-- adjudicate the proposed validate-delivery records `o1`-`o14`, `e1`-`e15`, `b1`-`b7` — operator
 - decide per-repository Hub visibility for the three new repos — operator (they stay private until then)
 - a domain-module setting for the pipeline — #62
