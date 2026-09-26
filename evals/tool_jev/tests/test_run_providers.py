@@ -163,3 +163,57 @@ def test_existing_interfaces_still_send_their_system_text(monkeypatch, interface
         case_id="c", split="test", case_text="u", prompt="sys", interface=interface
     )
     assert provider._build_payload(request)["system"] == "sys"
+
+
+# -- review fixes (codex t17) ----------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "status, complete, expired",
+    [
+        ("cancelling", False, False),
+        ("cancelled", True, True),
+        ("failed", True, True),
+        ("expired", True, True),
+        ("completed", True, False),
+    ],
+)
+def test_openai_cancelling_batch_is_not_terminal(monkeypatch, status, complete, expired):
+    """P1-1: a cancelling batch may still be running; keep polling it."""
+    monkeypatch.setenv("OPENAI_API_KEY", "k" * 8)
+
+    def transport(method, url, data, headers):
+        return openai.TransportResponse(200, json.dumps({"id": "b1", "status": status}).encode())
+
+    provider = openai.OpenAIProvider("gpt-6-sol", transport=transport)
+    got = provider.poll_batch(openai.BatchHandle(batch_id="b1", provider=provider.name))
+    assert (got.complete, got.expired) == (complete, expired)
+
+
+def test_rate_limiter_is_thread_safe():
+    """P2-10: concurrent acquires each get their own slot, none share one."""
+    import threading
+    import time
+
+    waits: list[float] = []
+    lock = threading.Lock()
+
+    def sleep(seconds):
+        with lock:
+            waits.append(round(seconds, 6))
+        time.sleep(0.02)  # a slow sleeper widens any read-then-write race
+
+    limiter = openai_compat.RateLimiter(60.0, clock=lambda: 0.0, sleep=sleep)
+    barrier = threading.Barrier(8)
+
+    def worker():
+        barrier.wait()
+        limiter.acquire()
+
+    threads = [threading.Thread(target=worker) for _ in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    # One call goes at once; the other seven wait 1, 2, ... 7 seconds.
+    assert sorted(waits) == [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]

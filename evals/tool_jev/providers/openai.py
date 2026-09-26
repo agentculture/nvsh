@@ -113,9 +113,10 @@ DEFAULT_API_KEY_ENV = "OPENAI_API_KEY"
 RESPONSES_ENDPOINT = "/v1/responses"
 
 #: Batch statuses that mean "not finished yet" per the Batch API guide.
-_INCOMPLETE_STATUSES = frozenset({"validating", "in_progress", "finalizing"})
+#: "cancelling" is not terminal: the batch may still be running and billing.
+_INCOMPLETE_STATUSES = frozenset({"validating", "in_progress", "finalizing", "cancelling"})
 _COMPLETE_STATUSES = frozenset({"completed"})
-_EXPIRED_STATUSES = frozenset({"expired", "failed", "cancelled", "cancelling"})
+_EXPIRED_STATUSES = frozenset({"expired", "failed", "cancelled"})
 
 #: Both reasoning models this task covers. Neither returns logprobs.
 MODELS = frozenset({"gpt-6-luna", "gpt-6-sol"})

@@ -66,6 +66,7 @@ token that actually answers.
 from __future__ import annotations
 
 import json
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -228,14 +229,21 @@ class RateLimiter:
         self._clock = clock
         self._sleep = sleep
         self._next_allowed: float | None = None
+        self._lock = threading.Lock()
 
     def acquire(self) -> None:
-        """Block (via the injected ``sleep``) until the next call is allowed."""
-        now = self._clock()
-        if self._next_allowed is not None and now < self._next_allowed:
-            self._sleep(self._next_allowed - now)
-            now = self._next_allowed
-        self._next_allowed = now + self._interval
+        """Block (via the injected ``sleep``) until the next call is allowed.
+
+        Thread-safe: each caller claims its own slot under a lock, then
+        sleeps outside it, so concurrent callers never share a slot. One
+        limiter may be shared by every model of one provider account.
+        """
+        with self._lock:
+            now = self._clock()
+            slot = now if self._next_allowed is None else max(now, self._next_allowed)
+            self._next_allowed = slot + self._interval
+        if slot > now:
+            self._sleep(slot - now)
 
 
 # ---------------------------------------------------------------------------

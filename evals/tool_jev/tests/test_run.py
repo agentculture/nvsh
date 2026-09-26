@@ -191,6 +191,17 @@ class CaseFake(fake.FakeProvider):
         self.fail_always: str | None = None
         self.sent: list[tuple] = []
         self.polls: dict[str, int] = {}
+        #: review-fix knobs: a valid choice letter in a truncated reply; a
+        #: crash after the provider accepted send N; batches reported expired
+        #: (only half their results kept); a failing batch submission; a
+        #: failing batch lookup.
+        self.cut_choice = False
+        self.crash_after_send_at: int | None = None
+        self.expire = 0
+        self.batch_fail: str | None = None
+        self.find_error: BaseException | None = None
+        self.expired_ids: set[str] = set()
+        self.batch_sizes: list[int] = []
 
     def outcome(self, request) -> fake.ScriptedOutcome:
         if request.interface == "text":
@@ -214,7 +225,7 @@ class CaseFake(fake.FakeProvider):
                 text=labels[name],
                 candidates=dist,
                 usage=USAGE,
-                truncated=self.cut,
+                truncated=self.cut or self.cut_choice,
             )
         if self.cut:
             return fake.ScriptedOutcome(
@@ -233,6 +244,8 @@ class CaseFake(fake.FakeProvider):
             raise KeyboardInterrupt
         kind = self.fail.get(self.sends) or self.fail_always
         self.sent.append(self._identity(request))
+        if self.crash_after_send_at == self.sends:
+            raise KeyboardInterrupt  # accepted (and billed) by the provider, never heard back
         if kind:
             return self._resolve(request, fake.ScriptedOutcome(kind))
         return self._resolve(request, self.outcome(request))
@@ -251,16 +264,32 @@ class CaseFake(fake.FakeProvider):
         self.sends += 1
         if self.interrupt_at == self.sends:
             raise KeyboardInterrupt
-        return super()._send_batch(requests, submit_ref)
+        if self.batch_fail:
+            return self._resolve(requests[0], fake.ScriptedOutcome(self.batch_fail))
+        self.batch_sizes.append(len(requests))
+        handle = super()._send_batch(requests, submit_ref)
+        if self.expire > 0:
+            self.expire -= 1
+            self.expired_ids.add(handle.batch_id)
+        return handle
+
+    def _find_batch(self, submit_ref):
+        if self.find_error is not None:
+            raise self.find_error
+        return super()._find_batch(submit_ref)
 
     def _check_batch(self, handle):
         self.polls[handle.batch_id] = self.polls.get(handle.batch_id, 0) + 1
         done = not self.slow or self.polls[handle.batch_id] > 1
-        return BatchStatus(batch_id=handle.batch_id, complete=done)
+        expired = done and handle.batch_id in self.expired_ids
+        return BatchStatus(batch_id=handle.batch_id, complete=done, expired=expired)
 
     def _collect_batch(self, handle):
         out = []
-        for request in self._batches.get(handle.batch_id, []):
+        requests = self._batches.get(handle.batch_id, [])
+        if handle.batch_id in self.expired_ids:
+            requests = requests[: len(requests) // 2]  # only these finished before expiry
+        for request in requests:
             self.sent.append(self._identity(request))
             out.append(self._resolve(request, self.outcome(request)))
         return out
@@ -554,7 +583,9 @@ def test_budget_cap_is_a_money_stop_that_names_the_remaining_calls(tmp_path):
     assert world.run(run_dir) == runner.EXIT_STOPPED
     capped = [line for line in world.lines if "budget_cap_reached" in line]
     assert capped and "call(s) left pending" in capped[0]
-    assert len(world.sync.sent) == 2  # $0.0012 per call: the second one crosses $0.002
+    # $0.0012 billed for the first call; the second's reserved estimate
+    # (prompt plus its whole output budget) would cross $0.002, so it never leaves.
+    assert len(world.sync.sent) == 1
 
 
 def test_rejected_request_stops_only_that_model_and_is_a_capability(tmp_path):
@@ -676,7 +707,7 @@ def test_drive_rechecks_a_money_stopped_provider_with_one_probe(tmp_path):
     # One 402 at the start, one probe at +30 min (402 again), one at +60 min
     # that goes through; nothing is sent in between.
     log = [json.loads(line) for line in (run_dir / "drive.log").read_text().splitlines()]
-    probes = [entry for entry in log if "probed ['openrouter']" in entry["msg"]]
+    probes = [entry for entry in log if "probing the money stop" in entry["msg"]]
     assert len(probes) >= 2
     assert probes[0]["t"] - 1000.0 >= 1800
     # Between probes the stopped provider sent nothing.
@@ -685,7 +716,7 @@ def test_drive_rechecks_a_money_stopped_provider_with_one_probe(tmp_path):
     assert set(counts) == {1}
     counts = [count for at, count in sends_at if 1800 < at - 1000.0 <= 3600]
     assert set(counts) == {2}
-    assert "money stop cleared" in (run_dir / "drive.log").read_text()
+    assert "its money stop is cleared" in (run_dir / "drive.log").read_text()
 
 
 def test_drive_exits_non_zero_on_stop_and_ask(tmp_path):
@@ -951,3 +982,414 @@ def test_a_configuration_error_does_not_mark_the_run_started(tmp_path):
     assert world.run(run_dir) == runner.EXIT_ENV
     world.env = env
     assert world.run(run_dir) == runner.EXIT_OK, world.lines
+
+
+# ---------------------------------------------------------------------------
+# codex review of t17: one test per finding
+# ---------------------------------------------------------------------------
+
+
+def _step(world, run_dir, **kwargs):
+    return runner.step(
+        run_dir,
+        world.manifest,
+        env=world.env,
+        factory=world.factory,
+        out=world.lines.append,
+        **kwargs,
+    )
+
+
+def test_p1_1_expired_batch_keeps_completed_results_and_requeues_only_the_rest(tmp_path):
+    world = World(tmp_path)
+    world.batch.expire = 1
+    run_dir = tmp_path / "run"
+    runner.init_state(run_dir, world.manifest, run_id="r", date="d")
+    clock = FakeClock()
+    outcome = None
+    for _ in range(6):
+        outcome = _step(world, run_dir, clock=clock, poll_seconds=60)
+        if outcome.status == runner.STATUS_COMPLETE:
+            break
+        clock.now += 600
+    assert outcome.status == runner.STATUS_COMPLETE, world.lines
+    # Every answer that came back was kept: no key was answered twice.
+    assert len(world.batch.sent) == len(set(world.batch.sent))
+    assert any("expired" in line and "anthropic/fake-batch" in line for line in world.lines)
+    record = json.loads((run_dir / "run.json").read_text())
+    assert record["batch_failures"] == {}  # a good batch afterwards resets the count
+
+
+def test_p1_1_repeated_batch_failures_back_off_then_stop_the_model(tmp_path):
+    world = World(tmp_path)
+    world.batch.expire = 99
+    run_dir = tmp_path / "run"
+    clock = FakeClock()
+    runner.init_state(run_dir, world.manifest, run_id="r", date="d")
+    _step(world, run_dir, clock=clock, poll_seconds=60)
+    first = len(world.batch.batch_sizes)
+    assert first >= 1
+    failures = json.loads((run_dir / "run.json").read_text())["batch_failures"]
+    count = failures["anthropic/fake-batch"]["count"]
+    assert count == first
+    backoff = min(2**count * 60, 1800)
+    assert failures["anthropic/fake-batch"]["next_submit_at"] == clock.now + backoff
+    _step(world, run_dir, clock=clock, poll_seconds=60)
+    assert len(world.batch.batch_sizes) == first  # backing off: nothing resubmitted
+    clock.now += backoff
+    _step(world, run_dir, clock=clock, poll_seconds=60)
+    assert len(world.batch.batch_sizes) > first
+    record = json.loads((run_dir / "run.json").read_text())
+    stop = record["stops"]["models"]["anthropic/fake-batch"]
+    assert stop["kind"] == "batch_failures" and "operator decision" in stop["message"]
+    submitted = len(world.batch.batch_sizes)
+    clock.now += 3600
+    outcome = _step(world, run_dir, clock=clock, poll_seconds=60)
+    assert len(world.batch.batch_sizes) == submitted  # stopped: no more submissions
+    assert outcome.status == runner.STATUS_STOPPED
+
+
+def test_p1_2_a_sync_call_in_flight_at_a_crash_is_resent_with_an_uncertain_charge(tmp_path):
+    world = World(tmp_path)
+    world.sync.crash_after_send_at = 2
+    run_dir = tmp_path / "run"
+    assert world.run(run_dir) == runner.EXIT_INTERRUPTED
+    record = json.loads((run_dir / "run.json").read_text())
+    in_flight = [k for k, v in record["reserved"].items() if v["route"] == "sync"]
+    assert len(in_flight) == 1  # the in-flight marker survived the crash
+    (key,) = in_flight
+    assert world.cont(run_dir) == runner.EXIT_OK, world.lines
+    record = json.loads((run_dir / "run.json").read_text())
+    assert [c["key"] for c in record["uncertain_charges"]] == [key]
+    assert record["reserved"] == {}
+    billing = [json.loads(line) for line in (run_dir / "billing.jsonl").read_text().splitlines()]
+    uncertain = [b for b in billing if b["kind"] == "uncertain"]
+    assert [b["key"] for b in uncertain] == [key] and uncertain[0]["cost_usd"] > 0
+    assert "uncertain_resend" in (run_dir / "events.jsonl").read_text()
+    assert any("resent" in line and key[:12] in line for line in world.lines)
+    # The resent identity appears twice (it really was sent twice); nothing else does.
+    assert len(world.sync.sent) == len(set(world.sync.sent)) + 1
+
+
+DUPLICATE_SET = """
+[[case_set]]
+name = "syn-copy"
+count = 3
+split = "test-mc"
+path = "splits/syn-test.json"
+"""
+
+
+def test_p1_3_duplicate_keys_across_case_sets_are_sent_once(tmp_path):
+    world = World(tmp_path)
+    world.manifest.write_text(world.manifest.read_text() + DUPLICATE_SET)
+    run_dir = tmp_path / "run"
+    assert world.run(run_dir) == runner.EXIT_OK, world.lines
+    assert len(world.sync.sent) == len(set(world.sync.sent))
+    assert len(world.batch.sent) == len(set(world.batch.sent))
+    result = json.loads((run_dir / "result.json").read_text())
+    assert "openrouter.vendor-fake-sync.A.syn-copy" in {
+        row["subject"] for row in result["reference_rows"]
+    }
+
+
+def test_p1_4_batch_submissions_reserve_cost_against_the_cap(tmp_path):
+    world = World(tmp_path)
+    world.batch.slow = True
+    text = world.manifest.read_text().replace(
+        "[budget.anthropic]\nusd_cap = 10.0", "[budget.anthropic]\nusd_cap = 0.012"
+    )
+    world.manifest.write_text(text)
+    run_dir = tmp_path / "run"
+    world.run(run_dir)
+    record = json.loads((run_dir / "run.json").read_text())
+    reserved = [r for r in record["reserved"].values() if r["provider"] == "anthropic"]
+    assert reserved and sum(r["usd"] for r in reserved) <= 0.012
+    # One call is estimated at ~$0.005 batched: the round-1 batch was split to fit.
+    assert world.batch.batch_sizes and max(world.batch.batch_sizes) < 3
+    assert any("budget_cap_reached" in line for line in world.lines)
+
+
+EXTRA_OPENROUTER = """
+[[reference]]
+provider = "openrouter"
+model = "vendor/extra"
+usd_per_mtok_in = 1.0
+usd_per_mtok_out = 2.0
+"""
+
+
+def test_p1_5_spend_is_billed_at_answer_time_and_survives_manifest_changes(tmp_path):
+    world = World(tmp_path, extra_refs=EXTRA_OPENROUTER)
+    world.extra = CaseFake("openrouter:vendor/extra", batch=False, host="sync-host.test")
+    factory = world.factory
+    world.factory = lambda ref, budget, env: (
+        world.extra if ref.model == "vendor/extra" else factory(ref, budget, env)
+    )
+    run_dir = tmp_path / "run"
+    assert world.run(run_dir) == runner.EXIT_OK, world.lines
+    before = runner.status(run_dir)["providers"]["openrouter"]["spend_usd"]
+    assert before > 0
+    billing = (run_dir / "billing.jsonl").read_text()
+    assert '"label": "openrouter/vendor/extra"' in billing
+    # The operator replaces the extra model and changes prices: history stays.
+    text = world.manifest.read_text().replace(EXTRA_OPENROUTER, "")
+    text = text.replace("usd_per_mtok_out = 2.0", "usd_per_mtok_out = 200.0")
+    text = text.replace(
+        "[budget.openrouter]\nusd_cap = 10.0", f"[budget.openrouter]\nusd_cap = {before * 0.99}"
+    )
+    world.manifest.write_text(text)
+    assert runner.status(run_dir)["providers"]["openrouter"]["spend_usd"] == pytest.approx(before)
+    world.lines.clear()
+    world.cont(run_dir)
+    assert any("budget_cap_reached" in line for line in world.lines)
+
+
+def test_p1_6_continuing_a_smoke_keeps_the_smoke_scope(tmp_path):
+    world = World(tmp_path)
+    world.batch.slow = True
+    run_dir = tmp_path / "run"
+    code = world.main(
+        "smoke", "--manifest", str(world.manifest), "--run-dir", str(run_dir), "--cases", "2"
+    )
+    assert code == runner.EXIT_WAITING
+    for _ in range(10):
+        code = world.cont(run_dir)
+        if code == runner.EXIT_OK:
+            break
+    assert code == runner.EXIT_OK
+    assert (run_dir / "smoke.json").exists() and not (run_dir / "result.json").exists()
+    sent_cases = {case_id for case_id, _i, _h in world.sync.sent + world.batch.sent}
+    assert "s-3" not in sent_cases  # only the two smoke cases ever left
+    assert all(c.startswith(("s-1", "s-2", "j-")) for c in sent_cases)
+    record = json.loads((run_dir / "run.json").read_text())
+    assert record["scope"] == {"mode": "smoke", "case_set": "syn-test", "case_ids": ["s-1", "s-2"]}
+
+
+def test_p1_6_run_on_a_smoke_dir_needs_expand(tmp_path):
+    world = World(tmp_path)
+    run_dir = tmp_path / "run"
+    code = world.main(
+        "smoke", "--manifest", str(world.manifest), "--run-dir", str(run_dir), "--cases", "2"
+    )
+    assert code == runner.EXIT_OK
+    assert world.run(run_dir) == runner.EXIT_USER
+    assert "--expand" in world.lines[-1]
+    assert world.run(run_dir, "--expand") == runner.EXIT_OK, world.lines
+    assert (run_dir / "result.json").exists()
+
+
+def _orphan(world):
+    original = world.batch._send_batch
+
+    def accept_then_drop(requests, submit_ref):
+        original(requests, submit_ref)
+        raise OSError("reply lost")
+
+    world.batch._send_batch = accept_then_drop
+    return original
+
+
+def test_p2_7_a_failing_batch_lookup_pauses_the_provider_and_keeps_the_orphan(tmp_path):
+    from evals.tool_jev.ledger import Ledger
+
+    world = World(tmp_path)
+    run_dir = tmp_path / "run"
+    _orphan(world)
+    assert world.run(run_dir) == runner.EXIT_STOPPED
+    del world.batch._send_batch  # back to the class method
+    world.batch.find_error = fake.FakeProviderError(
+        runner.classify_transport("anthropic", status_code=429), "anthropic", ""
+    )
+    assert world.cont(run_dir) == runner.EXIT_STOPPED
+    with Ledger(run_dir) as ledger:
+        assert ledger.continue_plan().orphans  # the marker is kept, nothing resubmitted
+    assert len(world.batch.submitted_refs) == 1
+    assert any("rate_limited" in line and "anthropic" in line for line in world.lines)
+    # The sync provider's subject work went on regardless.
+    assert runner.status(run_dir)["models"]["openrouter/vendor/fake-sync"]["pending"] == 0
+    world.batch.find_error = OSError("dns")
+    assert world.cont(run_dir) == runner.EXIT_STOPPED  # a transport error: no crash either
+
+
+def test_p2_7_drive_survives_an_unexpected_step_error(tmp_path):
+    world = World(tmp_path)
+    run_dir = tmp_path / "run"
+    runner.init_state(run_dir, world.manifest, run_id="r", date="d")
+    calls = {"n": 0}
+    factory = world.factory
+
+    def flaky(ref, budget, env):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("synthetic bug")
+        return factory(ref, budget, env)
+
+    clock = FakeClock()
+    code = drive_mod.drive(
+        run_dir,
+        world.manifest,
+        env=world.env,
+        factory=flaky,
+        clock=clock,
+        sleep=clock.sleep,
+        max_steps=20,
+        out=world.lines.append,
+    )
+    assert code == runner.EXIT_OK
+    assert "synthetic bug" in (run_dir / "drive.log").read_text()
+
+
+def test_p2_8_openai_batch_http_quota_error_is_a_money_stop():
+    from evals.tool_jev.providers import openai as openai_mod
+
+    body = json.dumps({"error": {"code": "insufficient_quota", "message": "x"}}).encode()
+    found = runner.classify_exception(openai_mod._HttpError(429, body), "openai")
+    assert found.reason == "insufficient_credit"
+    plain = runner.classify_exception(openai_mod._HttpError(429, b"{}"), "openai")
+    assert plain.reason == "rate_limited"
+
+
+def test_p2_9_a_batch_money_probe_blocks_the_provider_until_its_result(tmp_path):
+    world = World(tmp_path)
+    world.batch.batch_fail = "402"
+    run_dir = tmp_path / "run"
+    runner.init_state(run_dir, world.manifest, run_id="r", date="d")
+    clock = FakeClock()
+
+    def go():
+        return _step(world, run_dir, clock=clock, retry_money=False, recheck_seconds=1800)
+
+    go()
+    stops = json.loads((run_dir / "run.json").read_text())["stops"]["providers"]
+    assert stops["anthropic"]["kind"] == "money"
+    world.batch.batch_fail = None
+    world.batch.slow = True
+    clock.now += 1800
+    go()  # the probe: one batch holding one call, still processing
+    assert world.batch.batch_sizes == [1]
+    stop = json.loads((run_dir / "run.json").read_text())["stops"]["providers"]["anthropic"]
+    assert stop["kind"] == "money" and stop["probe"]
+    clock.now += 60
+    go()  # the probe's result arrives OK: the stop clears, the rest may go
+    assert "anthropic" not in json.loads((run_dir / "run.json").read_text())["stops"]["providers"]
+    assert any("probe" in line and "cleared" in line for line in world.lines)
+    assert len(world.batch.batch_sizes) > 1
+
+
+def test_p2_9_no_other_submission_while_a_probe_is_pending(tmp_path):
+    world = World(tmp_path)
+    world.batch.batch_fail = "402"
+    run_dir = tmp_path / "run"
+    runner.init_state(run_dir, world.manifest, run_id="r", date="d")
+    clock = FakeClock()
+    _step(world, run_dir, clock=clock, retry_money=False, recheck_seconds=1800)
+    world.batch.batch_fail = None
+    # The probe batch never finishes: nothing else may go, however long it takes.
+    world.batch._check_batch = lambda handle: BatchStatus(handle.batch_id, complete=False)
+    for _ in range(4):
+        clock.now += 1800
+        _step(world, run_dir, clock=clock, retry_money=False, recheck_seconds=1800)
+    assert world.batch.batch_sizes == [1]
+
+
+def test_p2_10_one_limiter_per_provider_shared_across_models():
+    from evals.tool_jev.manifest import Budget, Reference
+
+    budget = Budget("nvidia", usd_cap=0.0, concurrency_cap=1, requests_per_minute=40.0)
+    first = runner.default_factory(Reference("nvidia", "vendor/a"), budget, {})
+    second = runner.default_factory(Reference("nvidia", "vendor/b"), budget, {})
+    assert first._rate_limiter is second._rate_limiter is not None
+    other = runner.default_factory(
+        Reference("openrouter", "vendor/c"),
+        Budget("openrouter", usd_cap=0.0, concurrency_cap=1, requests_per_minute=40.0),
+        {},
+    )
+    assert other._rate_limiter is not first._rate_limiter
+
+
+def test_p2_11_a_rejected_judge_is_released_when_judging_params_change(tmp_path):
+    world = World(tmp_path)
+    original = world.sync.outcome
+
+    def reject_judging(request):
+        if request.interface == "text" and request.params.get("max_output_tokens") == 300:
+            return fake.ScriptedOutcome("unsupported_parameter")
+        return original(request)
+
+    world.sync.outcome = reject_judging
+    run_dir = tmp_path / "run"
+    assert world.run(run_dir) == runner.EXIT_STOPPED
+    stop = json.loads((run_dir / "run.json").read_text())["stops"]["models"]
+    assert stop["openrouter/vendor/fake-sync"]["kind"] == "rejected"
+    world.manifest.write_text(
+        world.manifest.read_text().replace("max_output_tokens = 300", "max_output_tokens = 400")
+    )
+    assert world.cont(run_dir) == runner.EXIT_OK, world.lines
+
+
+def test_p2_12_state_writes_are_durable_and_race_free(tmp_path, monkeypatch):
+    import os
+    import threading
+
+    from evals.tool_jev import runstate
+
+    synced = []
+    real_fsync = os.fsync
+    monkeypatch.setattr(os, "fsync", lambda fd: (synced.append(fd), real_fsync(fd))[1])
+    target = tmp_path / "state.json"
+    errors = []
+
+    def writer(n):
+        try:
+            for i in range(20):
+                runstate.write_json_durable(target, {"writer": n, "i": i})
+        except Exception as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [threading.Thread(target=writer, args=(n,)) for n in range(6)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert errors == []
+    assert json.loads(target.read_text())["i"] == 19
+    assert len(synced) >= 2 * 120  # the file and its directory, every write
+    assert [p.name for p in tmp_path.iterdir()] == ["state.json"]
+
+
+def test_p2_12_the_run_lock_is_held_while_state_is_read_and_written(tmp_path, monkeypatch):
+    from evals.tool_jev import runstate
+    from evals.tool_jev.ledger import Ledger
+
+    world = World(tmp_path)
+    run_dir = tmp_path / "run"
+    seen = []
+    real_load, real_save = runstate.load_state, runstate.save_state
+
+    def locked():
+        try:
+            Ledger(run_dir).close()
+        except Exception:  # noqa: BLE001 -- LedgerLocked: someone holds it
+            return True
+        return False
+
+    monkeypatch.setattr(runstate, "load_state", lambda d: (seen.append(locked()), real_load(d))[1])
+    monkeypatch.setattr(
+        runstate, "save_state", lambda d, s: (seen.append(locked()), real_save(d, s))[1]
+    )
+    assert world.run(run_dir) == runner.EXIT_OK
+    assert seen and all(seen)
+
+
+def test_p2_13_a_truncated_choice_reply_is_invalid_even_with_a_valid_letter(tmp_path):
+    world = World(tmp_path)
+    world.sync.cut_choice = True
+    world.manifest.write_text(
+        world.manifest.read_text().replace("min_answers = 3", "min_answers = 50")
+    )
+    run_dir = tmp_path / "run"
+    assert world.run(run_dir) == runner.EXIT_OK, world.lines
+    lines = (run_dir / "traces" / "openrouter.vendor-fake-sync.B.syn-test.jsonl").read_text()
+    raws = [json.loads(line)["raw"] for line in lines.splitlines()]
+    assert {(r["outcome"], r["invalid_reason"]) for r in raws} == {("invalid", "truncated")}

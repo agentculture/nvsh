@@ -3,12 +3,16 @@
 Usage::
 
     uv run --group evals python -m evals.tool_jev run      --manifest M --run-dir D
-        [--run-id ID] [--date YYYY-MM-DD]
+        [--run-id ID] [--date YYYY-MM-DD] [--expand]
     uv run --group evals python -m evals.tool_jev continue --manifest M --run-dir D
+        [--retry-rejected]
     uv run --group evals python -m evals.tool_jev status   --run-dir D [--json]
     uv run --group evals python -m evals.tool_jev smoke    --manifest M --run-dir D [--cases 10]
     uv run --group evals python -m evals.tool_jev drive    --manifest M --run-dir D
-        [--poll-seconds 60] [--recheck-minutes 30] [--smoke N]
+        [--poll-seconds 60] [--recheck-minutes 30]
+
+A smoke run dir stays a smoke run under ``continue`` and ``drive``; ``run
+--expand`` turns it into the full run (the smoke answers are reused).
 
 ``--manifest`` defaults to ``$NVSH_EVALS_MANIFEST`` and ``--run-dir`` to
 ``$NVSH_EVALS_RUN_DIR``; the run dir must be outside every git worktree.
@@ -58,6 +62,9 @@ def _parser() -> argparse.ArgumentParser:
     start = common("run", "start a gate run and take the first pass")
     start.add_argument("--run-id")
     start.add_argument("--date")
+    start.add_argument(
+        "--expand", action="store_true", help="expand a smoke run dir into the full run"
+    )
     resume = common("continue", "resume a run: re-attach batches, send what is pending")
     resume.add_argument(
         "--retry-rejected",
@@ -72,7 +79,6 @@ def _parser() -> argparse.ArgumentParser:
     loop.add_argument(
         "--recheck-minutes", type=float, default=drive_mod.DEFAULT_RECHECK_SECONDS / 60
     )
-    loop.add_argument("--smoke", type=int, default=None, metavar="N")
     return parser
 
 
@@ -108,8 +114,12 @@ def main(
             return runner.EXIT_OK
         manifest = _require(args.manifest, "--manifest", ENV_MANIFEST_PATH)
         kwargs = {"env": env, "factory": factory, "out": say}
+        if clock is not None:
+            kwargs["clock"] = clock
         if args.command == "run":
-            outcome = runner.start(run_dir, manifest, run_id=args.run_id, date=args.date, **kwargs)
+            outcome = runner.start(
+                run_dir, manifest, run_id=args.run_id, date=args.date, expand=args.expand, **kwargs
+            )
         elif args.command == "continue":
             outcome = runner.step(run_dir, manifest, retry_rejected=args.retry_rejected, **kwargs)
         elif args.command == "smoke":
@@ -121,7 +131,6 @@ def main(
             if threading.current_thread() is threading.main_thread():
                 for signum in (signal.SIGTERM, signal.SIGINT):
                     signal.signal(signum, lambda *_: stop.set())
-            extra = {"clock": clock} if clock is not None else {}
             return drive_mod.drive(
                 run_dir,
                 manifest,
@@ -129,8 +138,6 @@ def main(
                 sleep=sleep,
                 poll_seconds=args.poll_seconds,
                 recheck_seconds=args.recheck_minutes * 60,
-                smoke_cases=args.smoke,
-                **extra,
                 **kwargs,
             )
         if args.json:
