@@ -1,0 +1,18 @@
+{
+  "custom_id": "{custom_id}",
+  "result": {
+    "type": "succeeded",
+    "message": {
+      "id": "{message_id}",
+      "type": "message",
+      "role": "assistant",
+      "model": "claude-sonnet-5",
+      "content": [
+        {"type": "tool_use", "id": "toolu_batch_1", "name": "propose", "input": {"operation": "service_restart", "arguments": {"service": "synthetic.service"}}}
+      ],
+      "stop_reason": "tool_use",
+      "stop_sequence": null,
+      "usage": {"input_tokens": 90, "output_tokens": 25}
+    }
+  }
+}

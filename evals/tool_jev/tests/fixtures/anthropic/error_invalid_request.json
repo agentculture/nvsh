@@ -1,0 +1,8 @@
+{
+  "type": "error",
+  "error": {
+    "type": "invalid_request_error",
+    "message": "'claude-opus-5-5' does not support tool types: computer_20251124. Did you mean one of: computer_toolset_20260801"
+  },
+  "request_id": "req_01InvalidRequestFixture"
+}

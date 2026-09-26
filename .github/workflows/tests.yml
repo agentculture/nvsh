@@ -58,13 +58,13 @@ jobs:
       - run: uv sync
 
       - name: black --check
-        run: uv run black --check nvsh tests scripts
+        run: uv run black --check nvsh tests scripts evals
 
       - name: isort --check
-        run: uv run isort --check-only nvsh tests scripts
+        run: uv run isort --check-only nvsh tests scripts evals
 
       - name: flake8
-        run: uv run flake8 nvsh tests scripts
+        run: uv run flake8 nvsh tests scripts evals
 
       - name: bandit
         run: uv run bandit -c pyproject.toml -r nvsh
@@ -76,6 +76,35 @@ jobs:
 
       - name: afi rubric gate
         run: uv run teken cli doctor . --strict
+
+  evals:
+    # The DeepEval release-gate suite (issue #64). It lives in the `evals`
+    # dependency group, not `dev`, so it needs its own `uv sync --group
+    # evals` — a plain `uv sync` (the `test`/`lint`/`harness-smoke` jobs
+    # above) never installs deepeval or runs anything under evals/. No
+    # secrets are configured for this job: CONFIDENT_API_KEY must never be
+    # set, and evals/tool_jev/__init__.py refuses to import if it is.
+    # `--rootdir=.` matters: pytest's `testpaths` ini option is only honored
+    # when invocation_dir == rootdir, and `-c evals/pytest.ini` alone would
+    # set rootdir to `evals/` while `uv run` invokes from the repo root
+    # (where pyproject.toml lives) — without `--rootdir=.` pytest silently
+    # falls back to scanning the whole repo instead of just evals/.
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      DEEPEVAL_TELEMETRY_OPT_OUT: "1"
+      DEEPEVAL_DISABLE_DOTENV: "1"
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4
+
+      - run: uv python install 3.12
+
+      - run: uv sync --group evals
+
+      - run: uv run pytest -c evals/pytest.ini --rootdir=. -q
 
   harness-smoke:
     # All four harnesses (Claude Code, Pi/associate, colleague, Qwen Code) are

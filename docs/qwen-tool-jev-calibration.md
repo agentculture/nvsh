@@ -27,7 +27,8 @@ missing-candidate escalation is 85.5% on test and **76.7% on the held-out,
 the one missed bar** (D48). Three private repositories hold the bf16 model,
 the GGUF with its calibration and gate, and the data set (D49). Still open:
 the report (t22), `/validate-delivery`, `/summarize-delivery`, the version
-bump and the PR (t23); DeepEval evaluation is issue #64. See the
+bump and the PR (t23); DeepEval evaluation is issue #64 (in progress: see
+[`deepeval-gate.md`](deepeval-gate.md)). See the
 [decision path](#decision-path) for every choice and why, and the
 [pre-registered decision rule](#the-pre-registered-checkpoint-decision-rule-t9)
 for how the checkpoint was picked.

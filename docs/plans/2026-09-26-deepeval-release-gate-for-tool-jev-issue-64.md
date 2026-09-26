@@ -1,0 +1,227 @@
+# Build Plan — DeepEval release gate for Tool-Jev (issue 64)
+
+slug: `deepeval-release-gate-for-tool-jev-issue-64` · status: `exported` · from frame: `deepeval-release-gate-for-tool-jev-issue-64`
+
+> nvsh has a repeatable DeepEval release gate for its Tool-Jev models: one command scores any fine-tuned checkpoint and reference models (frontier models via the OpenAI and Anthropic platform APIs, open models via OpenRouter and build.nvidia.com, and local models) on the same fixed cases, model-only and through explicit nvsh harness policies, so a3-heal and scorer-r3b can be judged for release and wiring into the tier stack, and the next fine-tune is judged the same way
+
+## Tasks
+
+### t1 — Scaffold evals/: dependency group, env guard, isolated pytest, CI lint + evals job
+
+- instruction: Add \[dependency-groups\] evals = \[deepeval pinned exact\] to pyproject.toml (NOT optional-dependencies, NOT default-groups) and uv lock; evals/`__init__.py` and evals/`tool_jev`/`__init__.py` (sets `DEEPEVAL_TELEMETRY_OPT_OUT`=1 and `DEEPEVAL_DISABLE_DOTENV`=1 before anything imports deepeval; refuses to run if `CONFIDENT_API_KEY` is set); evals/`tool_jev`/providers/`__init__.py` and evals/`tool_jev`/tests/ (no `__init__.py`; evals/pytest.ini with importmode=importlib, testpaths=`tool_jev`/tests) so later tasks only ADD their own module + test file; root pytest keeps testpaths=\[tests\]; add -p no:plugins to root addopts only if deepeval is importable in the dev env; tests.yml: add evals to black/isort/flake8 paths and an 'evals' job running uv sync --group evals && uv run pytest -c evals/pytest.ini -q with no secrets
+- covers: c10, h9, c11, h10, c12, h11, c6, h5
+- acceptance:
+  - uv build wheel contains no evals/ file and its METADATA gains no Requires-Dist (test in evals/`tool_jev`/tests/`test_scaffold.py` reads the built wheel)
+  - uv run pytest -n auto from the repo root collects zero evals tests and the deepeval pytest plugin is not loaded (checked with --trace-config in a test)
+  - importing evals.`tool_jev` sets `DEEPEVAL_TELEMETRY_OPT_OUT`=1 before deepeval import and raises if `CONFIDENT_API_KEY` is set
+  - grep -rn 'deepeval\|evals' nvsh/ finds nothing (test)
+
+### t2 — Case model and case-set loader with split guards
+
+- instruction: evals/`tool_jev`/cases.py: Case dataclass (id, split tag test|test-mc|heldout|heldout-mc, request text, offered candidates, expected outcome/operation/args, `read_only`/mutating from nvsh.ops.table, tags); load a case set from split files whose paths come from the private manifest; refuse held-out unless `include_heldout`=True; `training_overlap`(`case_ids`, `train_split_path`) refuses scoring a checkpoint on its own training ids; tests use synthetic fixtures only
+- depends on: t1
+- covers: c31, h21, c17, h14, c22
+- acceptance:
+  - loading a held-out case set without `include_heldout` raises; with it, the loader never returns request text for held-out cases (ids and expectations only)
+  - scoring a checkpoint whose train split contains any case id raises with the overlapping ids named (fixture test)
+  - `read_only`/mutating classification comes from nvsh.ops.table, never from the model output
+
+### t5 — Run manifest: candidates, baselines, references, policies, case sets
+
+- instruction: evals/`tool_jev`/manifest.py + evals/`tool_jev`/manifest.example.toml: TOML manifest listing candidates (a3-heal.`q4_k_m`, scorer-r3b.`q4_k_m`) and baselines (stock, scorer-b1) with saved-prediction paths, the 15-model reference roster with provider, model id, batch yes/no, reasoning=medium, capabilities; judge panel; case sets; per-provider budget caps; private paths live in an operator file outside the repo referenced by env `NVSH_EVALS_MANIFEST`; committed example has no private paths or non-localhost URLs
+- depends on: t1
+- covers: h16
+- acceptance:
+  - adding a new checkpoint is one \[\[candidate\]\] table in the manifest; a test adds one to the fixture manifest and it appears in the planned run without code changes
+  - the committed example manifest passes scripts/scan-secrets.py and contains no home or absolute private path
+  - manifest validation rejects an unknown provider, a duplicate (provider, model) pair, and a judge not in the roster
+
+### t6 — Trace schema: raw and per-policy final records side by side, private run dir
+
+- instruction: evals/`tool_jev`/trace.py: RawRecord built from a metrics.py-schema predictions line (outcome, operation, arguments, candidates or None, tokens, latency, `invalid_reason`) or from a provider answer; Trace {`case_id`, split, raw, final{policy: {decision, reason}}, `ground_truth`, subject}; JSONL writer only into the run dir (outside the repo); raw never mutated by policies
+- depends on: t1
+- covers: c3, h3, c32, h22
+- acceptance:
+  - a fixture predictions line round-trips into RawRecord and back without loss
+  - applying two policies yields two final entries and the raw record is byte-identical before and after
+  - the trace writer refuses a path inside the git worktree
+
+### t7 — Metrics bridge onto scripts/lfm-finetune (raw quality + corpus metrics)
+
+- instruction: evals/`tool_jev`/`metrics_bridge.py`: import scripts/lfm-finetune/metrics.py and gate.py by path the way tests/`test_lfm_finetune_`\*.py do (no copies); expose top-1, top-k, Brier, 10-bin ECE, log loss where full distribution exists, normalized entropy, top1-top2 margin, abstain P/R, missing-candidate, wrong-mutating, per-slice; rows with no distribution report calibration as `not_measurable`
+- depends on: t1
+- covers: c5, h4, c9, h8
+- acceptance:
+  - on a fixture predictions file every numeric metric equals what metrics.compute / gate helpers return on the same file (parity test)
+  - a subject with no candidate distribution gets `not_measurable` for ECE, Brier, log loss, entropy and margin, never an estimate
+
+### t8 — Harness policies as versioned JSON configs applied offline
+
+- instruction: evals/`tool_jev`/policies.py + evals/`tool_jev`/policies/raw.json + scorer-r3b-shipped.json (temperature 1.5366, `read_only` margin 0.2, no mutating threshold) + a stricter mutating-gate example; apply = calibration then gate.decide over the saved candidates; allowed-operation filtering noted as not replayable (changes what was scored)
+- depends on: t1
+- covers: c8, h7
+- acceptance:
+  - applying a policy never calls a model (fake provider asserts zero calls)
+  - raw and shipped policies report `read_only` and mutating gates separately
+  - policy JSON carries a version field and the trace records it
+
+### t9 — Durable call ledger and response cache (resume across stops and resets)
+
+- instruction: evals/`tool_jev`/ledger.py: key = sha256(provider, model, subject role, case id, interface or judge id, prompt hash, params); states pending|submitted(`batch_id`)|done|invalid; write-temp-then-rename + fsync per update; cache stores raw provider response bytes + returned model id + response id + usage; continue: done from cache, submitted re-attached, pending sent; expired/failed batch -> its unfinished keys pending
+- depends on: t1
+- covers: c42, h28, h29, c34, h24, h32
+- acceptance:
+  - a fake run killed between two ledger writes (simulated by raising mid-update) continues to byte-identical results as an uninterrupted run
+  - a warm-cache rerun makes zero provider calls and yields identical JSON
+  - a submitted batch id is re-attached and polled on continue, never resubmitted; an expired batch requeues only its unfinished keys
+
+### t10 — Provider base, error taxonomy, fake provider, redaction and no-exec guard
+
+- instruction: evals/`tool_jev`/providers/base.py (Provider protocol: capabilities, `submit_sync`, `submit_batch`, `poll_batch`, `fetch_batch`), providers/errors.py (classify: model-answer failures -> invalid; 402/insufficient credit, budget cap, 429, timeout, network, reset, expired batch -> pending + stop reason), providers/fake.py (scriptable for tests); every outgoing case text passes nvsh.redact first; keys read only from env names in the manifest; nothing in evals/ spawns processes with model content
+- depends on: t1
+- covers: c45, h31, c35, h25, c36, h26, c13, h12, h15
+- acceptance:
+  - a fake 402 stops the run cleanly with a message naming the provider and remaining call count, leaves those calls pending, and continue after 'top-up' finishes with the same results as an uninterrupted run
+  - a refusal or malformed answer is recorded invalid and counted in the denominator; row case count equals case set size
+  - a test asserts redact() is applied to every payload the fake provider receives, and a hostile argument string is stored verbatim and never executed (no subprocess import in evals/)
+  - the provider layer refuses any case whose split tag is heldout or heldout-mc before any network call (fake-provider test)
+
+### t11 — Request contract shared with the candidates (both interfaces)
+
+- instruction: evals/`tool_jev`/request.py: build Track A tool-call messages from nvsh.tiers.lfm `tools_for`/`system_brief` + the case request (+ ground snapshot) and Track B choice messages from scorer.`prompt_messages`; parse answers into (operation, arguments) or a chosen candidate label; references answer through BOTH interfaces, recorded per row (resolves parked v3); transport framing is per provider, content is not
+- depends on: t2
+- covers: c33, h23, c9
+- acceptance:
+  - for a fixture case the system and user content is byte-identical across the openai, anthropic and `openai_compat` request builders
+  - an answer naming an operation outside the offered set parses as invalid (answer failure), not as a pick
+
+### t12 — OpenAI adapter: sync + Batch API
+
+- instruction: evals/`tool_jev`/providers/openai.py: stdlib urllib; Responses/Chat for sync, /v1/files + /v1/batches for batch (JSONL, 24h window); reasoning effort medium; logprobs capability false for gpt-6 (recorded); returned model id captured; errors mapped via errors.py
+- depends on: t10, t9
+- covers: c2, h2
+- acceptance:
+  - recorded-HTTP fixture tests cover submit, poll, fetch and an expired batch; no live network in tests
+  - requests go only to api.openai.com and the key comes only from `OPENAI_API_KEY`
+
+### t13 — Anthropic adapter: sync + Message Batches API
+
+- instruction: evals/`tool_jev`/providers/anthropic.py: stdlib urllib; Messages API sync, Message Batches for batch; medium effort via the model's thinking/effort setting; no logprobs (capability recorded); tool-call interface uses Anthropic tool schema transport
+- depends on: t10, t9
+- covers: c2, h2
+- acceptance:
+  - recorded-HTTP fixture tests cover submit, poll, results and a canceled/expired batch
+  - requests go only to api.anthropic.com and the key comes only from `ANTHROPIC_API_KEY`
+
+### t14 — OpenAI-compatible adapter for OpenRouter, build.nvidia.com and local servers
+
+- instruction: evals/`tool_jev`/providers/`openai_compat.py`: one adapter parameterized by base URL (openrouter.ai/api/v1, integrate.api.nvidia.com/v1, localhost), key env (`OPEN_ROUTER_API_KEY`, `NGC_API_KEY`, none), logprobs capability per model, reasoning param mapping, concurrency cap (NVIDIA ~40 RPM); OpenRouter provider preference `data_collection` deny
+- depends on: t10, t9
+- covers: c2, h2, c9, h8
+- acceptance:
+  - fixture tests: logprobs present -> candidate distribution; absent -> `not_measurable`; 429 -> pending
+  - base URLs come from code defaults or the private manifest; the committed example contains only localhost URLs
+
+### t15 — DeepEval layer: test cases, exact metrics, local export
+
+- instruction: evals/`tool_jev`/`deepeval_layer.py`: one LLMTestCase per (subject, case, policy) with trace fields in `additional_metadata`; custom BaseMetric per exact check (right action, wrong mutating, correct abstain/escalate, missing-candidate handled) setting self.score/self.success; evaluate() with `run_async`=False, results to `DEEPEVAL_RESULTS_FOLDER` inside the run dir; corpus metrics from `metrics_bridge`, not DeepEval
+- depends on: t6, t7, t1
+- covers: c6, h5, c7, h6
+- acceptance:
+  - evaluate() on fixture traces writes `test_run_`\*.json into the run dir and makes no network call (socket blocked in test)
+  - every exact metric's pass/fail equals the `metrics_bridge` verdict for the same case
+
+### t16 — Blind all-to-all judge panel with two-pass DeepEval record/replay
+
+- instruction: evals/`tool_jev`/judge.py + evals/`tool_jev`/rubric/explain-v1.md: G-Eval with fixed `evaluation_steps` (single scoring call); RecordingModel(DeepEvalBaseLLM) captures prompts in pass 1 -> ledger keys; ReplayModel answers from cache in pass 2 and raises on a miss; answers anonymized and order shuffled with a seeded RNG; self-scores kept apart; panel score = mean over other judges; per-judge scores and inter-judge agreement; judge scores never enter release bars
+- depends on: t9, t15
+- covers: c43, h30, c7, h6
+- acceptance:
+  - pass 2 makes zero network calls and its prompts equal pass 1's byte for byte (fixture)
+  - no judge prompt contains a subject's model name or provider; a judge's score of its own answer is excluded from that subject's panel score
+  - if a metric needs a second dependent call the run refuses with a clear message (guards parked v6)
+
+### t17 — Runner: run / continue / status with budgets and clean stops
+
+- instruction: evals/`tool_jev`/`__main__.py` + run.py: 'uv run --group evals python -m evals.`tool_jev` run|continue|status|smoke --manifest ...'; plans ledger keys from manifest x case sets; routes OpenAI/Anthropic to batch, others sync; per-provider budget caps and concurrency; stop reasons printed with remaining counts; records every host that received case text; replay of saved candidate outputs needs no GPU
+- depends on: t5, t8, t11, t12, t13, t14, t16
+- covers: c1, h1, c26, c35
+- acceptance:
+  - end-to-end fixture run with fake providers produces the JSON result, traces and page; Ctrl+C mid-run then continue gives identical output
+  - status shows per-provider done/submitted/pending/invalid counts and spend so far
+  - the run record lists every host that received case text
+
+### t18 — Report: JSON result + markdown comparison page from one run
+
+- instruction: evals/`tool_jev`/report.py: issue-64 table (variant, harness policy, top-1, ECE, Brier, coverage, abstain P/R, missing-candidate, wrong mutations), model-only vs model+harness per candidate, slices (read-only/mutating, candidate count, confidence bucket, missing candidate, permutation, semantic vs epistemic), reference rows, judge section apart; generated, never hand-edited; no case text
+- depends on: t6, t7, t8
+- covers: c14, h13, c28, h20
+- acceptance:
+  - the page is regenerated byte-identically from the same run dir
+  - a test asserts no fixture request text appears in the page or JSON result
+
+### t19 — evals/README.md: operator and next-cycle agent guide
+
+- instruction: evals/README.md: install (uv sync --group evals), manifest, keys via grant run --inject (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `OPEN_ROUTER_API_KEY`; `NGC_API_KEY` env), smoke, run, stop/continue after budget or reset, adding a checkpoint, where private outputs live, cost table; no home paths
+- depends on: t17
+- covers: c25, h18
+- acceptance:
+  - markdownlint-cli2 and scripts/harness-smoke.py pass; no ~ or /home paths
+  - a reader can go from clean checkout to a fixture run using only the README (checked by running its commands in a test script)
+
+### t20 — Live: one a3-heal.`q4_k_m` run on issue-53 test + missing-candidate slice (c38)
+
+- instruction: on a quiet spark GPU, serialize with any other serving (issue 58); pipeline.sh measure-final-style run of a3-heal.`q4_k_m` against q53-run-d7 test + `eval_slices` missing-candidate, --predictions into the private run tree under a new label; no held-out
+- depends on: t2
+- covers: c31
+- acceptance:
+  - exactly one labelled a3-heal predictions file per case set exists, measure.py refused any rerun under the same label
+  - no case id in the run overlaps a3-heal's issue-46 training split (checked by cases.`training_overlap`)
+
+### t21 — Live: local reference serving (Qwen3.8 27B, gemma-4-26b-a4b)
+
+- instruction: serve both on spark/spark2 via the lobes gateway or a pinned vLLM container on localhost; record engine, image digest and weights revision in the manifest; stop lobes only with operator OK; never overlap with t18
+- acceptance:
+  - both endpoints answer a fixture request on localhost and their weights revisions are recorded
+  - the run manifest lists them with provider=local and batch=false
+
+### t22 — Live: 10-case smoke across the roster, measure tokens, set budget caps
+
+- instruction: after OpenRouter top-up: python -m evals.`tool_jev` smoke (10 test cases, both interfaces, 1 judge pass); record per-model input/output/reasoning tokens and cost; set per-provider caps at 1.5x the projected full run; verify every roster id answers and NGC key works for inference
+- depends on: t17, t21
+- acceptance:
+  - every one of the 15 references returns a parsed answer or a recorded capability gap
+  - projected full-run cost per provider is written to the run record and the caps in the private manifest match it
+
+### t23 — Permutation stability for the release candidates (test side only)
+
+- instruction: reuse the saved issue-53 probe for scorer-r3b (final/probe-scorer-r3b-test.json); run `permutation_probe.py` for a3-heal on the issue-53 test if the probe supports generative checkpoints, else record `not_measurable` with the reason; never on held-out
+- depends on: t20, t7
+- acceptance:
+  - the report shows order/letters/subset/paraphrase change rates with CIs for r3b and either rates or a `not_measurable` reason for a3-heal
+  - no probe input came from a held-out file
+
+### t24 — Live: full gate run, reproduce recorded figures, benchmark page
+
+- instruction: run -> continue until done; compare candidate and baseline rows with docs/benchmarks figures (r3b.`q4_k_m` test 79/83 right gated, 0 wrong mutating, held-out mc escalation 76.7%; a3-heal.`q4_k_m` issue-46 test 32/32, 2 wrong mutating); file every difference; commit only the generated page docs/benchmarks/2026-09-26-tool-jev-deepeval-gate.md (dated by run) and the result JSON without case text
+- depends on: t17, t18, t20, t22, t23
+- covers: c29, h17, c22, c27, h19
+- acceptance:
+  - the reproduced figures match exactly or each difference is explained in the page and filed
+  - scan-secrets passes and no committed file contains case text
+
+### t25 — Delivery hygiene: non-goals verified, follow-up issue, version bump
+
+- instruction: confirm nvsh/ untouched and no HF visibility change; file the tier-wiring follow-up (Verifier seam, issue 54) and the execution-layer follow-up; version-bump minor + CHANGELOG; PR 'part of #64'
+- depends on: t24
+- acceptance:
+  - git diff main --stat shows no nvsh/ change; hub repo visibility unchanged (read via API)
+  - a follow-up issue for wiring the released model into tiers exists and is linked from the page
+
+## Risks
+
+- [unknown_nonblocking] OpenRouter key has $5 credit and a $10 key limit, below one run (~$11.4 at medium); live tasks t22/t24 need a top-up and a raised key limit first (task t22)
+- [unknown_nonblocking] `permutation_probe.py` may only support one-position scorers; a3-heal (generative) permutation may be not measurable (task t23)
+- [unknown_nonblocking] Local Qwen3.8 27B and gemma-4-26b-a4b need GPU memory next to the lobes and the a3-heal run; serving on the same measuring port races (issue 58) — t20 and t21 must be serialized (task t21)
+- [unknown_nonblocking] Judge metrics must be single-pass for the two-pass batching (frame park v6); G-Eval's logprob-weighted score is unavailable on judges without logprobs, so scores are raw G-Eval scores (task t16)
+- [unknown_nonblocking] build.nvidia.com free tier (~40 RPM, unpublished per-model limits) may throttle ~5 hosted models x 562 calls; a full NVIDIA pass may take hours and hit daily caps (task t14)

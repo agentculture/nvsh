@@ -1,0 +1,6 @@
+{
+  "id": "resp_004",
+  "model": "gpt-6-luna-2026-01-15",
+  "output": [{"type": "reasoning", "id": "rs_4"}],
+  "usage": {}
+}

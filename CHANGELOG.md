@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/). This project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.21.0] - 2026-09-26
+
+### Added
+
+- DeepEval release gate for the Tool-Jev checkpoints under `evals/` (issue 64, its own `evals` dependency group, not imported by `nvsh/` nor shipped in the wheel): case sets with a held-out guard, a run manifest, per-case traces with raw and per-policy decisions side by side, a metrics bridge to `scripts/lfm-finetune/metrics.py` and `gate.py`, harness policies, a durable call ledger and response cache, and DeepEval test cases graded per policy.
+- Reference-model adapters for OpenAI (Responses + Batch), Anthropic (Messages + Message Batches) and OpenAI-compatible hosts (OpenRouter, build.nvidia.com, a local server), with one redaction and held-out choke point; references answer Track A through the candidates' own multi-round `LfmTier` loop (deviation d1).
+- A blind all-to-all judge panel with fixed G-Eval steps and two-pass record/replay, and permutation-stability entries.
+- The runner `python -m evals.tool_jev run|continue|status|smoke|drive`: resumable passes, budget caps with per-call cost reservations and an append-only billing record, money/rejected/truncation/uncertain stops, and the run-dir layout the report reads.
+- An autonomous docker compose driver (`evals/docker/`, deviation d2) with Discord progress, spend, stop and 30-minute status alerts (deviations d5, d6), and the operator guide `evals/README.md` with a no-network fixture run.
+- Baseline measurements of stock Qwen3.5-0.8B and `scorer-b1.q4_k_m` on the issue-53 test set and missing-candidate slice (deviation d4), and the a3-heal run on the same set (decision c38).
+
+### Changed
+
+- CI runs the `evals` suite in its own job with DeepEval telemetry and dotenv loading off; lint covers `evals/`.
+- Harness prompt files and `docs/deepeval-gate.md` describe the gate and its current state.
+
 ## [0.20.0] - 2026-09-25
 
 ### Added

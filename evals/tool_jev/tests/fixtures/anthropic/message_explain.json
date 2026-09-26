@@ -1,0 +1,24 @@
+{
+  "id": "msg_01ExplainFixture",
+  "type": "message",
+  "role": "assistant",
+  "model": "claude-sonnet-5",
+  "content": [
+    {
+      "type": "tool_use",
+      "id": "toolu_01Fixture",
+      "name": "explain",
+      "input": {
+        "text": "synthetic explanation, no command needed"
+      }
+    }
+  ],
+  "stop_reason": "tool_use",
+  "stop_sequence": null,
+  "usage": {
+    "input_tokens": 120,
+    "output_tokens": 40,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 15
+  }
+}

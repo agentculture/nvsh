@@ -1,0 +1,24 @@
+{
+  "id": "gen-synthetic-choice-3",
+  "model": "qwen/qwen3.8-max-0902",
+  "choices": [
+    {
+      "index": 0,
+      "message": {"role": "assistant", "content": "A"},
+      "logprobs": {
+        "content": [
+          {
+            "token": "A",
+            "logprob": -0.1,
+            "top_logprobs": [
+              {"token": "A", "logprob": -0.1},
+              {"token": "X", "logprob": -3.0}
+            ]
+          }
+        ]
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {"prompt_tokens": 200, "completion_tokens": 1}
+}

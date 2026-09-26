@@ -1,0 +1,1 @@
+{"id": "batch_req_2", "custom_id": "case-2::tool_call", "response": null, "error": {"code": "invalid_request", "message": "The model produced an unsupported response."}}

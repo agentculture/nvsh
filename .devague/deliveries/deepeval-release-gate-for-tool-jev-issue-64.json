@@ -1,0 +1,199 @@
+{
+  "plan_slug": "deepeval-release-gate-for-tool-jev-issue-64",
+  "schema_version": 2,
+  "created": "2026-09-26T06:47:33Z",
+  "updated": "2026-09-26T15:11:06Z",
+  "deviations": [
+    {
+      "id": "d1",
+      "what": "Reference models' Track A runs through the candidates' own multi-round LfmTier loop (up to 4 rounds, read-only inspections executed against the recorded ground snapshot, then propose/explain/escalate) instead of t11's single-turn tool_call request: each case is replayed through the real LfmTier with a deferred chat client (cached replies replayed; the first uncached reply becomes a pending ledger call keyed by its exact prompt hash and round); OpenAI and Anthropic batch one loop round at a time. New module evals/tool_jev/track_a_loop.py built before the runner (t17)",
+      "task_ref": "t11",
+      "reason": "The candidates (a3-heal) were measured by measure.py through LfmTier's multi-round loop; single-turn reference requests score an inspect-first model as malformed, breaking c33/h23 (same request contract incl. ground snapshot). Operator approved 2026-09-26: batch per round; cost ~$40-50 per fresh run batched (was ~$27), wall clock hours to days",
+      "affects": [
+        "t17",
+        "t9",
+        "t22",
+        "t24",
+        "c33",
+        "h23"
+      ],
+      "origin": "user",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 1
+    },
+    {
+      "id": "d2",
+      "what": "Add an autonomous driver: a docker compose service (pinned python:3.12-slim + uv image, network_mode host for the localhost lobes gateway, private run dir mounted read-write and case data read-only, restart unless-stopped, logs via docker logs plus a log file in the run dir, deepeval telemetry off) that runs the gate's 'continue' loop until done, survives the session ending and reboots, and continues on its own. Keys by grant passthrough: 'grant run --inject ... -- docker compose up -d' with only variable names in the compose file, no key file on disk. On a money stop (402, quota, budget cap) it keeps other providers going and re-checks the stopped provider every 30 min with one probe call; a rejected request stops only that model's calls and is logged; batches keep being polled",
+      "task_ref": "t17",
+      "reason": "Operator request 2026-09-26: a full run spans hours to days (per-round batching, d1) and must not depend on this Claude session; operator chose docker compose, grant passthrough for keys, wait-and-recheck on stops",
+      "affects": [
+        "t19",
+        "t22",
+        "t24",
+        "c35",
+        "c41",
+        "c45"
+      ],
+      "origin": "user",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 2
+    },
+    {
+      "id": "d3",
+      "what": "OpenRouter reference lineup changed to fit its budget: add qwen/qwen3.8-27b and deepseek/deepseek-v4.1-flash; move moonshotai/kimi-k3 to build.nvidia.com only (kimi host-to-host comparison dropped); keep qwen/qwen3.8-max-0902 as a reference and a judge (every judge also answers). 16 references; judges unchanged. Estimated OpenRouter cost about $15 per fresh full run plus about $0.6 for the smoke run, within the $20 key limit; the operator accepts hitting the ceiling as a test of the money-stop path and will top up as needed",
+      "task_ref": "t6",
+      "reason": "Operator request 2026-09-26: smaller OpenRouter models to fit $20; live OpenRouter price list showed kimi-k3 ($3/$15 per M) was most of the OpenRouter cost; no deepseek v4.1 pro exists, only v4.1-flash",
+      "affects": [
+        "t14",
+        "t24",
+        "c41"
+      ],
+      "origin": "user",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 3
+    },
+    {
+      "id": "d4",
+      "what": "Run the two baselines locally once on the issue-53 test set (198) and its missing-candidate slice (83) with the same measure.py command shape as the approved a3-heal run: stock Qwen3.5-0.8B (Track A) and scorer-b1 (Track B); no held-out runs; no API cost",
+      "task_ref": "t20",
+      "reason": "Operator decision 2026-09-26: neither baseline had saved issue-53 test predictions (scorer-b1's are on the issue-46 test, whose ids are in issue-53's training split), so the gate would have no baseline rows",
+      "affects": [
+        "c38",
+        "t24"
+      ],
+      "origin": "user",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 4
+    },
+    {
+      "id": "d5",
+      "what": "Add Discord webhook alerts to the unattended driver (extends deviation d2): every 10% of each provider's calls answered, every whole dollar of total spend, each provider/model stop, and the run's end (complete or stop-and-ask); counts, dollars, names and stop reasons only, never case text; webhook URL read from NVSH_EVALS_ALERT_WEBHOOK (grant-injected), sent milestones recorded in the run dir so restarts never repeat them",
+      "task_ref": "t17",
+      "reason": "Operator request 2026-09-26: know the unattended run's progress, spend (so each dollar used is visible) and finish state without watching the terminal",
+      "affects": [
+        "t19",
+        "t24"
+      ],
+      "origin": "user",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 5
+    },
+    {
+      "id": "d6",
+      "what": "Extend deviation d5's alerts with a status summary every 30 minutes (per provider: percent answered, calls to go, invalid, spend of cap; plus active stops), posted by a heartbeat thread in the driver so it keeps flowing during long steps",
+      "task_ref": "t17",
+      "reason": "Operator request 2026-09-26: a 30-minute cadence status update",
+      "affects": [
+        "t24"
+      ],
+      "origin": "user",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 6
+    }
+  ],
+  "evidence": [
+    {
+      "id": "e1",
+      "obligation_ref": "o1",
+      "test_ref": "evals/tool_jev/tests/test_scaffold.py::test_wheel_contains_no_evals_files + test_wheel_metadata_has_no_deepeval_requires_dist + test_nvsh_package_never_mentions_deepeval_or_evals",
+      "behavior_text": "builds the wheel and asserts no evals files and no deepeval Requires-Dist; greps nvsh/ for deepeval/evals",
+      "contract_text": "Nothing under nvsh/ imports deepeval, the eval suite or scripts/lfm-finetune; dependencies = [] and deepeval never ships",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "evals suite 784 passed at f71c765 (rc 0)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-26T18:09:18+03:00",
+        "commit": "f71c765"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 7
+    },
+    {
+      "id": "e2",
+      "obligation_ref": "o2",
+      "test_ref": "evals/tool_jev/tests/test_scaffold.py::test_root_suite_collects_zero_evals_tests + test_root_suite_never_loads_the_deepeval_plugin; full root suite",
+      "behavior_text": "root collection has zero evals tests, no deepeval plugin; root suite 4710 passed / 55 skipped, evals 784 passed, both rc 0",
+      "contract_text": "The suite lives in a top-level evals/ tree outside pytest testpaths, deepeval in its own dependency group; the main suite is unaffected",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "both suites ran green at f71c765, rc taken from pytest itself",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-26T18:09:18+03:00",
+        "commit": "f71c765"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 8
+    },
+    {
+      "id": "e3",
+      "obligation_ref": "o3",
+      "test_ref": "evals/tool_jev/tests/test_run.py::test_interrupt_then_continue_gives_identical_outputs_and_sends_nothing_twice + test_item14_a_kill_after_billing_before_the_cache_never_bills_twice",
+      "behavior_text": "interrupt then continue yields identical outputs with no call sent twice; a kill between billing and cache never bills twice",
+      "contract_text": "Every run is continuous and resumable; never paying twice for a call",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "evals suite green at f71c765; also observed live: several driver redeploys of run 8b59d0afa150 resumed from the ledger",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-26T18:09:18+03:00",
+        "commit": "f71c765"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 9
+    },
+    {
+      "id": "e4",
+      "obligation_ref": "o4",
+      "test_ref": "evals/tool_jev/tests/test_readme.py::test_fixture_run_commands_reach_a_real_run_outside_the_repo",
+      "behavior_text": "runs the README's fixture-run commands in tmp and asserts a complete run with result.json and report page",
+      "contract_text": "One command produces a machine-readable result and a markdown comparison page with issue 64's table",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "evals suite green at f71c765; fixture only, the live full run has not completed yet",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-26T18:09:18+03:00",
+        "commit": "f71c765"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 10
+    },
+    {
+      "id": "e5",
+      "obligation_ref": "o5",
+      "test_ref": "scratch replay: Runner.subject_answers-equivalent + deepeval_layer.evaluate_traces(raw) on a copy of run 8b59d0afa150",
+      "behavior_text": "computed right/escalated/wrong-mutating from the saved candidate and baseline outputs via the gate's own scoring",
+      "contract_text": "the gate reproduces the recorded final figures from the saved outputs exactly",
+      "evidence_type": "observation",
+      "strength": "execution",
+      "strength_basis": "a3-heal test 77/83, 71/79, 4 wm, 0 invalid; mc 10/83 esc, 11 wm; r3b 79/83, 75/79, 0 wm; mc 68/83, 0 wm; stock 6/83, 86 invalid; b1 68/83, 1 wm -- all equal to metrics.json",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-26T18:09:18+03:00",
+        "commit": "f71c765"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 11
+    }
+  ],
+  "deltas": [],
+  "supersessions": []
+}

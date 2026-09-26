@@ -1,0 +1,7 @@
+{
+  "error": {
+    "type": "rate_limited",
+    "code": "rate_limited",
+    "message": "Rate limit exceeded, please try again later."
+  }
+}

@@ -1,0 +1,377 @@
+# Example run manifest for the tool_jev DeepEval release gate (issue #64).
+#
+# This file is committed and MUST stay free of private paths (no absolute
+# path, no `~`/`$HOME`-shaped path) and free of non-localhost URLs — see
+# scripts/scan-secrets.py and evals/tool_jev/tests/test_manifest.py.
+#
+# The operator's real manifest is a private file living outside this repo
+# (in the operator's lfm-train work tree), never at a hard-coded path.
+# Point NVSH_EVALS_MANIFEST at it:
+#
+#   export NVSH_EVALS_MANIFEST=/path/outside/this/repo/manifest.toml
+#
+# `${NVSH_EVALS_PRIVATE}` below is a literal placeholder string, not a real
+# path: the operator's own manifest resolves it to wherever saved
+# predictions live on their machine. This module (evals/tool_jev/manifest.py)
+# does not expand it — it is only ever a plain string field.
+#
+# Each [[case_set]]'s `path` is different: it is a plain path RELATIVE to a
+# private data root the caller supplies out of band (the
+# NVSH_EVALS_PRIVATE_ROOT environment variable), resolved by
+# evals/tool_jev/cases.py's case_sets_from_manifest — never absolute, never
+# home-shaped (`~`), and never a `${...}`-style placeholder. manifest.py
+# rejects any [[case_set]] whose path breaks that rule.
+#
+# Every list below is an array-of-tables ([[...]]). Adding a checkpoint, a
+# reference model, a judge or a case set is a data change here — no code
+# change to manifest.py or any runner that consumes it.
+
+# ---------------------------------------------------------------------------
+# Track A (generative): a3-heal candidate vs. the stock baseline.
+# ---------------------------------------------------------------------------
+
+[[candidate]]
+name = "a3-heal.q4_k_m"
+track = "A"
+predictions_path = "${NVSH_EVALS_PRIVATE}/predictions/a3-heal.q4_k_m.jsonl"
+# train_split names this checkpoint's own training-side split file, so a
+# runner can refuse (cases.training_overlap) to score it on an id it was
+# trained on. Optional -- a reference model with no local training split
+# simply omits it, as the entries below do.
+train_split = "${NVSH_EVALS_PRIVATE}/splits/a3-heal.q4_k_m.train.json"
+
+[[baseline]]
+name = "stock"
+track = "A"
+predictions_path = "${NVSH_EVALS_PRIVATE}/predictions/stock.jsonl"
+
+# ---------------------------------------------------------------------------
+# Track B (scorer): scorer-r3b candidate vs. the scorer-b1 baseline.
+# ---------------------------------------------------------------------------
+
+[[candidate]]
+name = "scorer-r3b.q4_k_m"
+track = "B"
+predictions_path = "${NVSH_EVALS_PRIVATE}/predictions/scorer-r3b.q4_k_m.jsonl"
+
+[[baseline]]
+name = "scorer-b1"
+track = "B"
+predictions_path = "${NVSH_EVALS_PRIVATE}/predictions/scorer-b1.jsonl"
+
+# ---------------------------------------------------------------------------
+# Reference roster: 16 (provider, model) pairs. Uniqueness is on the pair,
+# not on model id alone (the same model may appear under two providers).
+# OpenRouter carries the cheaper open models (deviation d3, 2026-09-26):
+# kimi-k3 runs on build.nvidia.com only; qwen3.8-max-0902 stays, as a
+# reference and a judge (every judge also answers). api_key_env names the environment variable that
+# holds the credential; the value itself never lives here.
+#
+# Runner knobs per reference (evals/tool_jev/run.py):
+# - reasoning: "none" | "low" | "medium" | "high" (c44 default "medium";
+#   "none" is mapped per provider, see run.py's provider_reasoning);
+# - max_output_tokens: output budget per call (plan risk r10: 512 may cut a
+#   reasoning model short; the smoke run measures it before the full run);
+# - usd_per_mtok_in / usd_per_mtok_out: list prices per million tokens for
+#   spend tracking. PLACEHOLDERS here -- the operator's private manifest
+#   carries the real prices. Batch routing takes [budget.<provider>]
+#   batch_discount (default 0.5) off them.
+# ---------------------------------------------------------------------------
+
+[[reference]]
+provider = "openai"
+model = "gpt-6-luna"
+reasoning = "medium"
+batch = true
+capabilities = ["chat"]
+api_key_env = "OPENAI_API_KEY"
+max_output_tokens = 512
+usd_per_mtok_in = 2.00
+usd_per_mtok_out = 8.00
+
+[[reference]]
+provider = "openai"
+model = "gpt-6-sol"
+reasoning = "medium"
+batch = true
+capabilities = ["chat"]
+api_key_env = "OPENAI_API_KEY"
+max_output_tokens = 512
+usd_per_mtok_in = 2.00
+usd_per_mtok_out = 8.00
+
+[[reference]]
+provider = "anthropic"
+model = "claude-opus-5-5"
+reasoning = "medium"
+batch = true
+capabilities = ["chat"]
+api_key_env = "ANTHROPIC_API_KEY"
+max_output_tokens = 512
+usd_per_mtok_in = 3.00
+usd_per_mtok_out = 15.00
+
+[[reference]]
+provider = "anthropic"
+model = "claude-sonnet-5"
+reasoning = "medium"
+batch = true
+capabilities = ["chat"]
+api_key_env = "ANTHROPIC_API_KEY"
+max_output_tokens = 512
+usd_per_mtok_in = 3.00
+usd_per_mtok_out = 15.00
+
+[[reference]]
+provider = "openrouter"
+model = "qwen/qwen3.8-27b"
+reasoning = "medium"
+batch = false
+capabilities = ["chat"]
+api_key_env = "OPEN_ROUTER_API_KEY"
+max_output_tokens = 512
+usd_per_mtok_in = 0.30
+usd_per_mtok_out = 1.20
+
+[[reference]]
+provider = "openrouter"
+model = "qwen/qwen3.8-max-0902"
+reasoning = "medium"
+batch = false
+capabilities = ["chat"]
+api_key_env = "OPEN_ROUTER_API_KEY"
+max_output_tokens = 512
+usd_per_mtok_in = 0.30
+usd_per_mtok_out = 1.20
+
+[[reference]]
+provider = "openrouter"
+model = "deepseek/deepseek-v4-flash"
+reasoning = "medium"
+batch = false
+capabilities = ["chat"]
+api_key_env = "OPEN_ROUTER_API_KEY"
+max_output_tokens = 512
+usd_per_mtok_in = 0.30
+usd_per_mtok_out = 1.20
+
+[[reference]]
+provider = "openrouter"
+model = "deepseek/deepseek-v4-pro-0813"
+reasoning = "medium"
+batch = false
+capabilities = ["chat"]
+api_key_env = "OPEN_ROUTER_API_KEY"
+max_output_tokens = 512
+usd_per_mtok_in = 0.30
+usd_per_mtok_out = 1.20
+
+[[reference]]
+provider = "openrouter"
+model = "deepseek/deepseek-v4.1-flash"
+reasoning = "medium"
+batch = false
+capabilities = ["chat"]
+api_key_env = "OPEN_ROUTER_API_KEY"
+max_output_tokens = 512
+usd_per_mtok_in = 0.30
+usd_per_mtok_out = 1.20
+
+[[reference]]
+provider = "nvidia"
+model = "moonshotai/kimi-k3"
+reasoning = "medium"
+batch = false
+capabilities = ["chat"]
+api_key_env = "NGC_API_KEY"
+max_output_tokens = 512
+usd_per_mtok_in = 0.0
+usd_per_mtok_out = 0.0
+
+[[reference]]
+provider = "nvidia"
+model = "z-ai/glm-5.3"
+reasoning = "medium"
+batch = false
+capabilities = ["chat"]
+api_key_env = "NGC_API_KEY"
+max_output_tokens = 512
+usd_per_mtok_in = 0.0
+usd_per_mtok_out = 0.0
+
+[[reference]]
+provider = "nvidia"
+model = "nvidia/nemotron-3-ultra-550b-a55b"
+reasoning = "medium"
+batch = false
+capabilities = ["chat"]
+api_key_env = "NGC_API_KEY"
+max_output_tokens = 512
+usd_per_mtok_in = 0.0
+usd_per_mtok_out = 0.0
+
+[[reference]]
+provider = "nvidia"
+model = "nvidia/nemotron-3-super-120b-a12b"
+reasoning = "medium"
+batch = false
+capabilities = ["chat"]
+api_key_env = "NGC_API_KEY"
+max_output_tokens = 512
+usd_per_mtok_in = 0.0
+usd_per_mtok_out = 0.0
+
+[[reference]]
+provider = "nvidia"
+model = "google/gemma-4-31b-it"
+reasoning = "medium"
+batch = false
+capabilities = ["chat"]
+api_key_env = "NGC_API_KEY"
+max_output_tokens = 512
+usd_per_mtok_in = 0.0
+usd_per_mtok_out = 0.0
+
+[[reference]]
+provider = "local"
+model = "unsloth/Qwen3.8-27B-NVFP4"
+reasoning = "medium"
+batch = false
+capabilities = ["chat"]
+api_key_env = "LOBES_GATEWAY_API_KEY"
+quantization = "NVFP4"
+max_output_tokens = 512
+usd_per_mtok_in = 0.0
+usd_per_mtok_out = 0.0
+
+[[reference]]
+provider = "local"
+model = "nvidia/Gemma-4-26B-A4B-NVFP4"
+reasoning = "medium"
+batch = false
+capabilities = ["chat"]
+api_key_env = "LOBES_GATEWAY_API_KEY"
+quantization = "NVFP4"
+max_output_tokens = 512
+usd_per_mtok_in = 0.0
+usd_per_mtok_out = 0.0
+
+# ---------------------------------------------------------------------------
+# Judge panel: every entry must also be a [[reference]] above (same
+# (provider, model) pair) — manifest.py rejects a judge that is not a
+# roster member.
+# ---------------------------------------------------------------------------
+
+[[judge]]
+provider = "anthropic"
+model = "claude-opus-5-5"
+
+[[judge]]
+provider = "openai"
+model = "gpt-6-sol"
+
+[[judge]]
+provider = "nvidia"
+model = "moonshotai/kimi-k3"
+
+[[judge]]
+provider = "nvidia"
+model = "nvidia/nemotron-3-ultra-550b-a55b"
+
+[[judge]]
+provider = "openrouter"
+model = "qwen/qwen3.8-max-0902"
+
+# ---------------------------------------------------------------------------
+# Case sets. The issue-53 sets are sendable to providers; the heldout sets
+# are saved-only and flagged include_heldout so a runner never sends them.
+# Counts here mirror the issue-53 sets; the heldout counts are placeholders.
+# ---------------------------------------------------------------------------
+
+[[case_set]]
+name = "issue-53-test"
+count = 198
+split = "test"
+path = "splits/issue-53-test.json"
+include_heldout = false
+
+[[case_set]]
+name = "issue-53-missing-candidate"
+count = 83
+split = "test-mc"
+path = "splits/issue-53-missing-candidate.json"
+include_heldout = false
+
+[[case_set]]
+name = "heldout-track-a"
+count = 40
+split = "heldout"
+path = "splits/heldout-track-a.json"
+include_heldout = true
+
+[[case_set]]
+name = "heldout-track-b"
+count = 40
+split = "heldout-mc"
+path = "splits/heldout-track-b.json"
+include_heldout = true
+
+# ---------------------------------------------------------------------------
+# Per-provider budget caps. Placeholder values — the operator's private
+# manifest carries the real caps.
+# ---------------------------------------------------------------------------
+
+[budget.openai]
+usd_cap = 25.0
+concurrency_cap = 4
+
+[budget.anthropic]
+usd_cap = 25.0
+concurrency_cap = 4
+
+[budget.openrouter]
+usd_cap = 15.0
+concurrency_cap = 6
+
+[budget.nvidia]
+usd_cap = 15.0
+concurrency_cap = 6
+# build.nvidia.com's free tier is rate-limited (plan risk r5).
+requests_per_minute = 40
+
+[budget.local]
+usd_cap = 0.0
+concurrency_cap = 2
+# A large local reasoning model on a shared GPU needs more than the 60 s
+# default per sync call.
+timeout_seconds = 300
+
+# ---------------------------------------------------------------------------
+# Track A grounding for the references' LfmTier loop (deviation d1): the
+# recorded ground snapshot (relative to NVSH_EVALS_PRIVATE_ROOT, like a case
+# set's path) and the tier platform the candidates were measured with.
+# ---------------------------------------------------------------------------
+
+[track_a]
+snapshot = "snapshots/ground-snapshot.json"
+platform = "dgx-spark"
+device_cli = "dgx-spark-cli"
+
+# ---------------------------------------------------------------------------
+# Model-level stops (plan risk r10): once a model has min_answers answers and
+# at least max_truncated_share of them were cut at the output budget, the
+# runner stops that model's calls and asks the operator to decide.
+# ---------------------------------------------------------------------------
+
+[stops]
+min_answers = 5
+max_truncated_share = 0.3
+
+# ---------------------------------------------------------------------------
+# Judge panel: shuffle seed, output budget per judge call, rubric version.
+# ---------------------------------------------------------------------------
+
+[judging]
+seed = 64
+max_output_tokens = 1024
+rubric = "explain-v1"

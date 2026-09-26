@@ -1,0 +1,21 @@
+{
+  "id": "resp_text_only",
+  "model": "gpt-6-luna-2026-01-15",
+  "output": [
+    {
+      "type": "message",
+      "role": "assistant",
+      "content": [
+        {
+          "type": "output_text",
+          "text": "synthetic plain-text reply with no tool call"
+        }
+      ]
+    }
+  ],
+  "usage": {
+    "input_tokens": 120,
+    "output_tokens": 10,
+    "total_tokens": 130
+  }
+}

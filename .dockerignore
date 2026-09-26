@@ -1,0 +1,16 @@
+# Build context for evals/docker/Dockerfile: code only, never private data.
+.git
+.venv
+.devague
+.claude
+.qwen
+.colleague
+.pi
+.local
+.teken
+.deepeval
+**/__pycache__
+**/.pytest_cache
+node_modules
+docs
+tests

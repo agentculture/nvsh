@@ -1,0 +1,3 @@
+{"id": "readme-1", "expected": {"operation": "machine_status", "args": {}}, "outcome": "propose", "operation": "machine_status", "arguments": {}, "candidates": {"machine_status": 0.8, "disk_stats": 0.2}, "tokens": 12, "ttfd_ms": 5.0, "latency_ms": 40.0}
+{"id": "readme-2", "expected": {"explain": true}, "outcome": "explain", "operation": null, "arguments": null, "candidates": {"explain": 0.6, "disk_stats": 0.4}, "tokens": 20, "ttfd_ms": 5.0, "latency_ms": 60.0, "explanation": "This is a synthetic fixture explanation, not real request text."}
+{"id": "readme-3", "expected": {"escalate": true}, "outcome": "escalate", "operation": null, "arguments": null, "candidates": {"escalate": 0.9, "disk_stats": 0.1}, "tokens": 8, "ttfd_ms": 5.0, "latency_ms": 30.0}
