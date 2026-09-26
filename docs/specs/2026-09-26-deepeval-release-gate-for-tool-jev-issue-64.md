@@ -49,6 +49,18 @@
 - Provider credentials come only from environment variables or grant injection at run time, never from committed files; cases are redacted with nvsh/redact.py before any leave the machine; provider endpoints are code defaults or operator config outside the repo, never committed JSON with non-localhost URLs
   - instruction: run python3 scripts/scan-secrets.py; unit test that the provider layer calls redact before sending
   - honesty: No provider key or non-localhost endpoint appears in any tracked file (scan-secrets passes), and every case text sent to a provider passed through nvsh/redact.py first
+- Per-case traces, raw provider responses and the response cache contain private case text (the issue-46/53 test sets are not in git) and stay outside the repository in a private run directory; git gets only the aggregate comparison page, policy configs, the manifest without private paths, and synthetic fixtures for CI
+  - instruction: scan-secrets plus a unit test that the page writer emits no case text; fixtures are generated, never copied from real splits
+  - honesty: No committed file contains a case request text or id-to-text mapping from the issue-46/53 splits
+- Reference models answer through the same request contract the candidates were measured with (the measure.py prompt, offered candidate list and ground snapshot), adapted per provider only in transport; the interface used (tool call vs candidate choice with logprobs) is recorded per row
+  - instruction: reuse measure.py's prompt composition by import; a unit test pins the prompt bytes for a fixture case across providers
+  - honesty: For a fixture case, every provider adapter sends identical system and user content (modulo transport framing)
+- Every reference call records the provider, requested model id, provider-returned model id/version, request parameters and response id; raw responses are cached by (provider, model, case, prompt hash) so a rerun replays the cache byte-identically and a fresh call is always a new dated run; parameters a model rejects (temperature, logprobs on reasoning models) are recorded in a per-model capability entry
+  - instruction: cache-hit rerun test with a fake provider; capability matrix in the manifest
+  - honesty: A rerun with a warm cache makes zero network calls and produces identical JSON
+- Provider runs are bounded and resumable: a per-run call budget and concurrency cap, retries with backoff, and every timeout, refusal, malformed or empty answer is recorded per case as invalid and counted in the denominator, never dropped
+  - instruction: fake-provider tests for timeout, 429, refusal and malformed JSON; the page shows invalid counts per model
+  - honesty: Every model row's case count equals the case set size; invalid answers appear as their own count
 
 ## Honesty conditions
 
@@ -63,6 +75,9 @@
 - The before-state facts are checkable in the repo at the base commit (grep deepeval empty; benchmark page built from chained tools)
 - The gate's output answers the release question for each candidate separately for model-only and model+harness
 - The reproduced figures match the recorded benchmark pages exactly, or every difference is explained and filed
+- The gate refuses to score a checkpoint on a case id that appears in that checkpoint's training split, checked from split files before scoring
+- No code path in evals/ spawns a process with model-returned content
+- The run record lists every host that received case text
 
 ## Success signals
 
@@ -77,10 +92,14 @@
   - instruction: judge metric only on explain-kind cases, separate report section
 - Nothing under nvsh/ imports deepeval, the eval suite or scripts/lfm-finetune; the runtime keeps dependencies = \[\] and deepeval never ships in the wheel or as a PyPI extra
   - instruction: check with uv build + unzip -l and grep -rn deepeval nvsh/
-- The sealed held-out sets are never read by the development side, and the release candidates are not re-run on test or held-out: the gate replays their saved final-run outputs; any new inference by a release candidate on test or held-out is a recorded deviation
+- The sealed held-out sets are never read by the development side, and the release candidates are not re-run on test or held-out beyond the one approved a3-heal run on the issue-53 test (c38): the gate replays saved final-run outputs; any other new inference by a release candidate on test or held-out is a recorded deviation
   - instruction: held-out predictions are read from saved files only when --include-heldout is passed
 - Reference models run on the test side only (and its missing-candidate slice); the sealed held-out sets never leave the machine
   - instruction: provider layer asserts case split in {test, test-mc}; unit test for refusal
+- The two candidates have no shared measured cases: a3-heal was measured on the issue-46 test (64) and r3b on the issue-53 test (198), zero shared ids, and all 64 issue-46 test ids are in the issue-53 training split (d4), so r3b is never scored on issue-46 cases and any a3-heal vs r3b comparison uses the issue-53 test
+  - instruction: id-overlap probe over the saved prediction files and q53-run-d7 splits (train 64/64 overlap, val 0, test 0)
+- The gate executes nothing: operations and arguments a model returns are untrusted data that are compared and rendered as text only, never passed to a shell, nvsh.ops.render execution, or any subprocess
+  - instruction: grep evals/ for subprocess/os.system; a test that a hostile argument string is stored verbatim
 
 ## Non-goals
 
@@ -90,8 +109,10 @@
 
 ## Assumptions
 
-- The first release-gate run replays already-saved per-case outputs and needs no GPU and no re-serving: issue 46 has test, missing-candidate and sealed held-out predictions for stock, a3, a3-heal and scorer-b1 (bf16 and `Q4_K_M`); issue 53 has scorer-r3b bf16 and `Q4_K_M` raw, calibrated and gated predictions on test, missing-candidate, held-out and held-out missing-candidate, plus Orin gated runs
+- The first gate run replays already-saved per-case outputs with no GPU for: stock, a3, scorer-b1 (issue 46 test, missing-candidate, sealed held-out) and scorer-r3b bf16 and `Q4_K_M` (issue 53 test, missing-candidate, held-out, held-out missing-candidate, raw/calibrated/gated); the shipped a3-heal and a3-heal.`q4_k_m` have saved issue-46 TEST predictions only
 - Permutation stability for the release candidates needs new inference (no permutation outputs are saved); it runs on the test side only via `permutation_probe.py`, as issue 53 did, never on the sealed held-out
+- Sending the issue-53 test side (and missing-candidate slice) to OpenAI, Anthropic, OpenRouter (which forwards to third-party hosts) and NVIDIA is acceptable exposure: the set is already spent for final-run claims, and provider retention is accepted for it
+  - instruction: state provider data-retention settings used (e.g. OpenRouter data-collection off) in the run record
 
 ## Scope exploration
 
@@ -129,12 +150,33 @@
   - seeds: `c18`
 - `s17` — `nvsh/tiers/manager.py, router.py, registry.py`: runtime has only Needle (Tier 1) and LFM (Tier 2) slots (manager.py:170-220, router.py:337-347); no Tool-Jev/scorer loader; the Verifier protocol (router.py:99-113) is the natural seam for a calibrated scorer and is tracked as issue 54; nvsh tiers bench (bench.py) has a corpus + c20 targets (p95<150ms, >=90% accuracy, 1 GiB) but --tier accepts only fixture/needle
   - seeds: `c19`
+- `s18` — `challenge pass / counter-evidence lens: saved final predictions + q53-run-d7 splits`: q46 test 64 ids vs q53 test 198 ids overlap 0; q46 test ids 64/64 inside q53-d7 train.json; reference models on 'the same cases' must mean one named case set per comparison
+  - seeds: `c31`
+- `s19` — `challenge pass / counter-evidence lens: q46 final/a3-heal, a3-heal.q4_k_m`: only final-\*-a3-heal\*.predictions.jsonl exist; held-out and missing-candidate predictions exist for a3 and a3-exact (pre-heal), not for the shipped heal build
+  - seeds: `c4`
+- `s20` — `challenge pass / security lens: repo tracked files`: git ls-files has no split or dataset JSON for issue 46/53 (only plan docs and nvsh/tiers/corpus); the splits live only in the private work tree and private HF dataset repos, so traces would be the first place their text enters git
+  - seeds: `c32`
+- `s21` — `challenge pass / adjacent-systems lens: scripts/lfm-finetune/measure.py request path (explorer report)`: Track A runs through RecordingChat/ToolChat like the daemon, Track B through scorer.py's candidate readout; frontier APIs expose neither natively, so the fairness of the comparison rests on reusing that prompt; I did not read the composer myself
+  - seeds: `c33`
+- `s22` — `challenge pass / reproducibility lens: provider /models catalogs (live 2026-09-26)`: gpt-6-luna/sol carry no dated suffix; OpenRouter lists ~aliased 'latest' ids next to dated ones; Anthropic returns no logprobs; outputs from hosted models drift over time, so c29's byte-identical rerun only holds from cache
+  - seeds: `c34`
+- `s23` — `challenge pass / failure-mode + operations lens: provider layer (not yet built)`: 13 remote model rows x 198 test (+83 mc) cases is ~3,650 calls per full run; rate limits and refusals are certain at that volume
+  - seeds: `c35`
+- `s24` — `challenge pass / security lens: provider responses`: OpenRouter routes to third-party hosts; any returned argument could be adversarial; nvsh's own rule is propose-don't-run
+  - seeds: `c36`
+- `s25` — `challenge pass / operations + concurrency lens: serve_for_measure.sh, issue 58`: local serving shares GPUs with the lobes (cortex max-num-seqs 2 OOM guard) and a concurrent stop/start on one measuring port can kill the replacement server (issue 58); local reference runs and any new a3-heal inference must be serialized
+- `s26` — `challenge pass / migration + reversibility lens: pyproject, evals/, CI`: clean pass: evals/ is additive, no schema or state migration, removal is deleting a tree and a dependency group; residual risk only in uv.lock churn from deepeval's transitive deps
+- `s27` — `challenge pass / observability lens: gate outputs`: clean pass beyond C5: per-case traces are the inspection surface; residual gap is that no alert fires when a provider silently swaps the model behind an unversioned id (covered only by recording the returned model id)
 
 ## Decisions
 
 - Release candidates are a3-heal.`q4_k_m` (Track A, issue 46) and scorer-r3b.`q4_k_m` (Track B, issue 53); scorer-b1 and stock appear as baseline rows
 - Reference models (frontier via OpenAI/Anthropic platform APIs, open via OpenRouter and build.nvidia.com, local) are comparison subjects scored by the same exact metrics; an LLM judge is used only on explain text and reported separately from the release bars
 - Provider keys live in grant as hidden secrets `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` and `OPEN_ROUTER_API_KEY` (note the underscore in `OPEN_ROUTER`), injected only at run time via grant run --inject; build.nvidia.com uses the `NGC_API_KEY` already in the environment
+- Reference roster: OpenAI gpt-6-luna, gpt-6-sol; Anthropic claude-opus-5-5, claude-sonnet-5; OpenRouter qwen/qwen3.8-max-0902, deepseek/deepseek-v4-flash, deepseek/deepseek-v4-pro-0813, moonshotai/kimi-k3; build.nvidia.com moonshotai/kimi-k3, z-ai/glm-5.3, nvidia/nemotron-3-ultra-550b-a55b, nvidia/nemotron-3-super-120b-a12b; local Qwen3.8 27B and Gemma 4 (served locally); kimi-k3 deliberately on two hosts
+  - instruction: roster lives in the eval manifest; ids checked against each provider's live /models list on 2026-09-26
+- a3-heal.`q4_k_m` gets exactly one new inference run on the issue-53 test (198) plus its missing-candidate slice, an approved exception to c17 recorded here; the issue-46 and issue-53 sealed held-outs stay untouched and a3-heal gets no held-out run
+  - instruction: serialize with any local serving (issue 58); label the run so measure.py refuses a silent rerun
 
 ## Hard questions
 
@@ -150,6 +192,9 @@
 ## Open parks
 
 - [unknown_nonblocking] Calibration of quantized builds from served routes: issue 46 could not measure scorer-b1 Q4/AWQ distributions (d17/l6), while issue 53 measured r3b Q4 complete (198/198); whether every candidate's deployed artifact has complete distributions in the saved files is unverified per artifact
+- [unknown_nonblocking] Which interface each reference model answers through (generative tool call like Track A, or choosing among offered candidates like Track B, or both) and how its choice maps onto the 18-key candidate space
+- [unknown_nonblocking] Local reference models Qwen3.8 27B and Gemma 4 need serving on spark/spark2 (weights, engine, memory next to the lobes); the catalogs list gemma-4-26b-a4b-it and gemma-4-31b-it but no 27B, so the exact Gemma weights are undecided
+- [unknown_nonblocking] Judge model for explain text: using a model that is also a subject (same family) biases the judge; which judge and whether it is excluded from its own family's rows is undecided
 
 ## Resolved vagueness
 

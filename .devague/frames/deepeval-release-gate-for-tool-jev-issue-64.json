@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-09-26T04:16:04Z",
-  "updated": "2026-09-26T04:33:12Z",
+  "updated": "2026-09-26T04:46:12Z",
   "claims": [
     {
       "id": "c1",
@@ -80,14 +80,20 @@
     {
       "id": "c4",
       "kind": "assumption",
-      "text": "The first release-gate run replays already-saved per-case outputs and needs no GPU and no re-serving: issue 46 has test, missing-candidate and sealed held-out predictions for stock, a3, a3-heal and scorer-b1 (bf16 and Q4_K_M); issue 53 has scorer-r3b bf16 and Q4_K_M raw, calibrated and gated predictions on test, missing-candidate, held-out and held-out missing-candidate, plus Orin gated runs",
+      "text": "The first gate run replays already-saved per-case outputs with no GPU for: stock, a3, scorer-b1 (issue 46 test, missing-candidate, sealed held-out) and scorer-r3b bf16 and Q4_K_M (issue 53 test, missing-candidate, held-out, held-out missing-candidate, raw/calibrated/gated); the shipped a3-heal and a3-heal.q4_k_m have saved issue-46 TEST predictions only",
       "origin": "llm",
       "status": "confirmed",
       "honesty_conditions": [],
       "hard_questions": [],
       "links": [],
       "instruction": "",
-      "revisions": []
+      "revisions": [
+        {
+          "text": "The first release-gate run replays already-saved per-case outputs and needs no GPU and no re-serving: issue 46 has test, missing-candidate and sealed held-out predictions for stock, a3, a3-heal and scorer-b1 (bf16 and Q4_K_M); issue 53 has scorer-r3b bf16 and Q4_K_M raw, calibrated and gated predictions on test, missing-candidate, held-out and held-out missing-candidate, plus Orin gated runs",
+          "kind": "assumption",
+          "reason": "challenge probe: a3-heal final dirs hold only final-*.predictions.jsonl"
+        }
+      ]
     },
     {
       "id": "c5",
@@ -314,7 +320,7 @@
     {
       "id": "c17",
       "kind": "boundary",
-      "text": "The sealed held-out sets are never read by the development side, and the release candidates are not re-run on test or held-out: the gate replays their saved final-run outputs; any new inference by a release candidate on test or held-out is a recorded deviation",
+      "text": "The sealed held-out sets are never read by the development side, and the release candidates are not re-run on test or held-out beyond the one approved a3-heal run on the issue-53 test (c38): the gate replays saved final-run outputs; any other new inference by a release candidate on test or held-out is a recorded deviation",
       "origin": "llm",
       "status": "confirmed",
       "honesty_conditions": [
@@ -336,7 +342,13 @@
       ],
       "links": [],
       "instruction": "held-out predictions are read from saved files only when --include-heldout is passed",
-      "revisions": []
+      "revisions": [
+        {
+          "text": "The sealed held-out sets are never read by the development side, and the release candidates are not re-run on test or held-out: the gate replays their saved final-run outputs; any new inference by a release candidate on test or held-out is a recorded deviation",
+          "kind": "boundary",
+          "reason": "operator approved one a3-heal run on issue-53 test (c38)"
+        }
+      ]
     },
     {
       "id": "c18",
@@ -531,6 +543,163 @@
       "links": [],
       "instruction": "diff the gate's candidate rows against docs/benchmarks figures; run twice and diff the JSON (excluding timestamps); reference runs are cached so a rerun does not call providers again",
       "revisions": []
+    },
+    {
+      "id": "c30",
+      "kind": "decision",
+      "text": "Reference roster: OpenAI gpt-6-luna, gpt-6-sol; Anthropic claude-opus-5-5, claude-sonnet-5; OpenRouter qwen/qwen3.8-max-0902, deepseek/deepseek-v4-flash, deepseek/deepseek-v4-pro-0813, moonshotai/kimi-k3; build.nvidia.com moonshotai/kimi-k3, z-ai/glm-5.3, nvidia/nemotron-3-ultra-550b-a55b, nvidia/nemotron-3-super-120b-a12b; local Qwen3.8 27B and Gemma 4 (served locally); kimi-k3 deliberately on two hosts",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "roster lives in the eval manifest; ids checked against each provider's live /models list on 2026-09-26",
+      "revisions": []
+    },
+    {
+      "id": "c31",
+      "kind": "boundary",
+      "text": "The two candidates have no shared measured cases: a3-heal was measured on the issue-46 test (64) and r3b on the issue-53 test (198), zero shared ids, and all 64 issue-46 test ids are in the issue-53 training split (d4), so r3b is never scored on issue-46 cases and any a3-heal vs r3b comparison uses the issue-53 test",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h21",
+          "text": "The gate refuses to score a checkpoint on a case id that appears in that checkpoint's training split, checked from split files before scoring",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "id-overlap probe over the saved prediction files and q53-run-d7 splits (train 64/64 overlap, val 0, test 0)",
+      "revisions": []
+    },
+    {
+      "id": "c32",
+      "kind": "requirement",
+      "text": "Per-case traces, raw provider responses and the response cache contain private case text (the issue-46/53 test sets are not in git) and stay outside the repository in a private run directory; git gets only the aggregate comparison page, policy configs, the manifest without private paths, and synthetic fixtures for CI",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h22",
+          "text": "No committed file contains a case request text or id-to-text mapping from the issue-46/53 splits",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "scan-secrets plus a unit test that the page writer emits no case text; fixtures are generated, never copied from real splits",
+      "revisions": []
+    },
+    {
+      "id": "c33",
+      "kind": "requirement",
+      "text": "Reference models answer through the same request contract the candidates were measured with (the measure.py prompt, offered candidate list and ground snapshot), adapted per provider only in transport; the interface used (tool call vs candidate choice with logprobs) is recorded per row",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h23",
+          "text": "For a fixture case, every provider adapter sends identical system and user content (modulo transport framing)",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "reuse measure.py's prompt composition by import; a unit test pins the prompt bytes for a fixture case across providers",
+      "revisions": []
+    },
+    {
+      "id": "c34",
+      "kind": "requirement",
+      "text": "Every reference call records the provider, requested model id, provider-returned model id/version, request parameters and response id; raw responses are cached by (provider, model, case, prompt hash) so a rerun replays the cache byte-identically and a fresh call is always a new dated run; parameters a model rejects (temperature, logprobs on reasoning models) are recorded in a per-model capability entry",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h24",
+          "text": "A rerun with a warm cache makes zero network calls and produces identical JSON",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "cache-hit rerun test with a fake provider; capability matrix in the manifest",
+      "revisions": []
+    },
+    {
+      "id": "c35",
+      "kind": "requirement",
+      "text": "Provider runs are bounded and resumable: a per-run call budget and concurrency cap, retries with backoff, and every timeout, refusal, malformed or empty answer is recorded per case as invalid and counted in the denominator, never dropped",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h25",
+          "text": "Every model row's case count equals the case set size; invalid answers appear as their own count",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "fake-provider tests for timeout, 429, refusal and malformed JSON; the page shows invalid counts per model",
+      "revisions": []
+    },
+    {
+      "id": "c36",
+      "kind": "boundary",
+      "text": "The gate executes nothing: operations and arguments a model returns are untrusted data that are compared and rendered as text only, never passed to a shell, nvsh.ops.render execution, or any subprocess",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h26",
+          "text": "No code path in evals/ spawns a process with model-returned content",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "grep evals/ for subprocess/os.system; a test that a hostile argument string is stored verbatim",
+      "revisions": []
+    },
+    {
+      "id": "c37",
+      "kind": "assumption",
+      "text": "Sending the issue-53 test side (and missing-candidate slice) to OpenAI, Anthropic, OpenRouter (which forwards to third-party hosts) and NVIDIA is acceptable exposure: the set is already spent for final-run claims, and provider retention is accepted for it",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h27",
+          "text": "The run record lists every host that received case text",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "state provider data-retention settings used (e.g. OpenRouter data-collection off) in the run record",
+      "revisions": []
+    },
+    {
+      "id": "c38",
+      "kind": "decision",
+      "text": "a3-heal.q4_k_m gets exactly one new inference run on the issue-53 test (198) plus its missing-candidate slice, an approved exception to c17 recorded here; the issue-46 and issue-53 sealed held-outs stay untouched and a3-heal gets no held-out run",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "serialize with any local serving (issue 58); label the run so measure.py refuses a silent rerun",
+      "revisions": []
     }
   ],
   "open_vagueness": [
@@ -551,6 +720,33 @@
       "resolved": true,
       "resolution": "Operator added OPENAI_API_KEY, ANTHROPIC_API_KEY, OPEN_ROUTER_API_KEY to grant (hidden) on 2026-09-26",
       "resolution_claim_id": "c24"
+    },
+    {
+      "id": "v3",
+      "text": "Which interface each reference model answers through (generative tool call like Track A, or choosing among offered candidates like Track B, or both) and how its choice maps onto the 18-key candidate space",
+      "kind": "unknown_nonblocking",
+      "claim_id": "c33",
+      "resolved": false,
+      "resolution": "",
+      "resolution_claim_id": null
+    },
+    {
+      "id": "v4",
+      "text": "Local reference models Qwen3.8 27B and Gemma 4 need serving on spark/spark2 (weights, engine, memory next to the lobes); the catalogs list gemma-4-26b-a4b-it and gemma-4-31b-it but no 27B, so the exact Gemma weights are undecided",
+      "kind": "unknown_nonblocking",
+      "claim_id": "c30",
+      "resolved": false,
+      "resolution": "",
+      "resolution_claim_id": null
+    },
+    {
+      "id": "v5",
+      "text": "Judge model for explain text: using a model that is also a subject (same family) biases the judge; which judge and whether it is excluded from its own family's rows is undecided",
+      "kind": "unknown_nonblocking",
+      "claim_id": "c21",
+      "resolved": false,
+      "resolution": "",
+      "resolution_claim_id": null
     }
   ],
   "scope_entries": [
@@ -689,8 +885,94 @@
       "seeds": [
         "c19"
       ]
+    },
+    {
+      "id": "s18",
+      "surface": "challenge pass / counter-evidence lens: saved final predictions + q53-run-d7 splits",
+      "finding": "q46 test 64 ids vs q53 test 198 ids overlap 0; q46 test ids 64/64 inside q53-d7 train.json; reference models on 'the same cases' must mean one named case set per comparison",
+      "seeds": [
+        "c31"
+      ]
+    },
+    {
+      "id": "s19",
+      "surface": "challenge pass / counter-evidence lens: q46 final/a3-heal, a3-heal.q4_k_m",
+      "finding": "only final-*-a3-heal*.predictions.jsonl exist; held-out and missing-candidate predictions exist for a3 and a3-exact (pre-heal), not for the shipped heal build",
+      "seeds": [
+        "c4"
+      ]
+    },
+    {
+      "id": "s20",
+      "surface": "challenge pass / security lens: repo tracked files",
+      "finding": "git ls-files has no split or dataset JSON for issue 46/53 (only plan docs and nvsh/tiers/corpus); the splits live only in the private work tree and private HF dataset repos, so traces would be the first place their text enters git",
+      "seeds": [
+        "c32"
+      ]
+    },
+    {
+      "id": "s21",
+      "surface": "challenge pass / adjacent-systems lens: scripts/lfm-finetune/measure.py request path (explorer report)",
+      "finding": "Track A runs through RecordingChat/ToolChat like the daemon, Track B through scorer.py's candidate readout; frontier APIs expose neither natively, so the fairness of the comparison rests on reusing that prompt; I did not read the composer myself",
+      "seeds": [
+        "c33"
+      ]
+    },
+    {
+      "id": "s22",
+      "surface": "challenge pass / reproducibility lens: provider /models catalogs (live 2026-09-26)",
+      "finding": "gpt-6-luna/sol carry no dated suffix; OpenRouter lists ~aliased 'latest' ids next to dated ones; Anthropic returns no logprobs; outputs from hosted models drift over time, so c29's byte-identical rerun only holds from cache",
+      "seeds": [
+        "c34"
+      ]
+    },
+    {
+      "id": "s23",
+      "surface": "challenge pass / failure-mode + operations lens: provider layer (not yet built)",
+      "finding": "13 remote model rows x 198 test (+83 mc) cases is ~3,650 calls per full run; rate limits and refusals are certain at that volume",
+      "seeds": [
+        "c35"
+      ]
+    },
+    {
+      "id": "s24",
+      "surface": "challenge pass / security lens: provider responses",
+      "finding": "OpenRouter routes to third-party hosts; any returned argument could be adversarial; nvsh's own rule is propose-don't-run",
+      "seeds": [
+        "c36"
+      ]
+    },
+    {
+      "id": "s25",
+      "surface": "challenge pass / operations + concurrency lens: serve_for_measure.sh, issue 58",
+      "finding": "local serving shares GPUs with the lobes (cortex max-num-seqs 2 OOM guard) and a concurrent stop/start on one measuring port can kill the replacement server (issue 58); local reference runs and any new a3-heal inference must be serialized",
+      "seeds": []
+    },
+    {
+      "id": "s26",
+      "surface": "challenge pass / migration + reversibility lens: pyproject, evals/, CI",
+      "finding": "clean pass: evals/ is additive, no schema or state migration, removal is deleting a tree and a dependency group; residual risk only in uv.lock churn from deepeval's transitive deps",
+      "seeds": []
+    },
+    {
+      "id": "s27",
+      "surface": "challenge pass / observability lens: gate outputs",
+      "finding": "clean pass beyond C5: per-case traces are the inspection surface; residual gap is that no alert fires when a provider silently swaps the model behind an unversioned id (covered only by recording the returned model id)",
+      "seeds": []
     }
   ],
-  "lapses": [],
+  "lapses": [
+    {
+      "id": "l1",
+      "code": "provenance-missing",
+      "what": "Scope claim c4 said a3-heal has saved held-out and missing-candidate predictions, relying on an explorer's inventory; the challenge probe found only final (test) predictions for a3-heal and a3-heal.q4_k_m",
+      "skipped_check": "list the a3-heal final dir myself before capturing c4",
+      "refs": [
+        "challenge pass / counter-evidence lens: q46 final/a3-heal*"
+      ],
+      "origin": "llm",
+      "status": "approved"
+    }
+  ],
   "obligations": []
 }
