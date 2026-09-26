@@ -66,6 +66,16 @@ predictions_path = "${NVSH_EVALS_PRIVATE}/predictions/scorer-b1.jsonl"
 # kimi-k3 runs on build.nvidia.com only; qwen3.8-max-0902 stays, as a
 # reference and a judge (every judge also answers). api_key_env names the environment variable that
 # holds the credential; the value itself never lives here.
+#
+# Runner knobs per reference (evals/tool_jev/run.py):
+# - reasoning: "none" | "low" | "medium" | "high" (c44 default "medium";
+#   "none" is mapped per provider, see run.py's provider_reasoning);
+# - max_output_tokens: output budget per call (plan risk r10: 512 may cut a
+#   reasoning model short; the smoke run measures it before the full run);
+# - usd_per_mtok_in / usd_per_mtok_out: list prices per million tokens for
+#   spend tracking. PLACEHOLDERS here -- the operator's private manifest
+#   carries the real prices. Batch routing takes [budget.<provider>]
+#   batch_discount (default 0.5) off them.
 # ---------------------------------------------------------------------------
 
 [[reference]]
@@ -75,6 +85,9 @@ reasoning = "medium"
 batch = true
 capabilities = ["chat"]
 api_key_env = "OPENAI_API_KEY"
+max_output_tokens = 512
+usd_per_mtok_in = 2.00
+usd_per_mtok_out = 8.00
 
 [[reference]]
 provider = "openai"
@@ -83,6 +96,9 @@ reasoning = "medium"
 batch = true
 capabilities = ["chat"]
 api_key_env = "OPENAI_API_KEY"
+max_output_tokens = 512
+usd_per_mtok_in = 2.00
+usd_per_mtok_out = 8.00
 
 [[reference]]
 provider = "anthropic"
@@ -91,6 +107,9 @@ reasoning = "medium"
 batch = true
 capabilities = ["chat"]
 api_key_env = "ANTHROPIC_API_KEY"
+max_output_tokens = 512
+usd_per_mtok_in = 3.00
+usd_per_mtok_out = 15.00
 
 [[reference]]
 provider = "anthropic"
@@ -99,6 +118,9 @@ reasoning = "medium"
 batch = true
 capabilities = ["chat"]
 api_key_env = "ANTHROPIC_API_KEY"
+max_output_tokens = 512
+usd_per_mtok_in = 3.00
+usd_per_mtok_out = 15.00
 
 [[reference]]
 provider = "openrouter"
@@ -107,6 +129,9 @@ reasoning = "medium"
 batch = false
 capabilities = ["chat"]
 api_key_env = "OPEN_ROUTER_API_KEY"
+max_output_tokens = 512
+usd_per_mtok_in = 0.30
+usd_per_mtok_out = 1.20
 
 [[reference]]
 provider = "openrouter"
@@ -115,6 +140,9 @@ reasoning = "medium"
 batch = false
 capabilities = ["chat"]
 api_key_env = "OPEN_ROUTER_API_KEY"
+max_output_tokens = 512
+usd_per_mtok_in = 0.30
+usd_per_mtok_out = 1.20
 
 [[reference]]
 provider = "openrouter"
@@ -123,6 +151,9 @@ reasoning = "medium"
 batch = false
 capabilities = ["chat"]
 api_key_env = "OPEN_ROUTER_API_KEY"
+max_output_tokens = 512
+usd_per_mtok_in = 0.30
+usd_per_mtok_out = 1.20
 
 [[reference]]
 provider = "openrouter"
@@ -131,6 +162,9 @@ reasoning = "medium"
 batch = false
 capabilities = ["chat"]
 api_key_env = "OPEN_ROUTER_API_KEY"
+max_output_tokens = 512
+usd_per_mtok_in = 0.30
+usd_per_mtok_out = 1.20
 
 [[reference]]
 provider = "openrouter"
@@ -139,6 +173,9 @@ reasoning = "medium"
 batch = false
 capabilities = ["chat"]
 api_key_env = "OPEN_ROUTER_API_KEY"
+max_output_tokens = 512
+usd_per_mtok_in = 0.30
+usd_per_mtok_out = 1.20
 
 [[reference]]
 provider = "nvidia"
@@ -147,6 +184,9 @@ reasoning = "medium"
 batch = false
 capabilities = ["chat"]
 api_key_env = "NGC_API_KEY"
+max_output_tokens = 512
+usd_per_mtok_in = 0.0
+usd_per_mtok_out = 0.0
 
 [[reference]]
 provider = "nvidia"
@@ -155,6 +195,9 @@ reasoning = "medium"
 batch = false
 capabilities = ["chat"]
 api_key_env = "NGC_API_KEY"
+max_output_tokens = 512
+usd_per_mtok_in = 0.0
+usd_per_mtok_out = 0.0
 
 [[reference]]
 provider = "nvidia"
@@ -163,6 +206,9 @@ reasoning = "medium"
 batch = false
 capabilities = ["chat"]
 api_key_env = "NGC_API_KEY"
+max_output_tokens = 512
+usd_per_mtok_in = 0.0
+usd_per_mtok_out = 0.0
 
 [[reference]]
 provider = "nvidia"
@@ -171,6 +217,9 @@ reasoning = "medium"
 batch = false
 capabilities = ["chat"]
 api_key_env = "NGC_API_KEY"
+max_output_tokens = 512
+usd_per_mtok_in = 0.0
+usd_per_mtok_out = 0.0
 
 [[reference]]
 provider = "nvidia"
@@ -179,6 +228,9 @@ reasoning = "medium"
 batch = false
 capabilities = ["chat"]
 api_key_env = "NGC_API_KEY"
+max_output_tokens = 512
+usd_per_mtok_in = 0.0
+usd_per_mtok_out = 0.0
 
 [[reference]]
 provider = "local"
@@ -188,6 +240,9 @@ batch = false
 capabilities = ["chat"]
 api_key_env = "LOBES_GATEWAY_API_KEY"
 quantization = "NVFP4"
+max_output_tokens = 512
+usd_per_mtok_in = 0.0
+usd_per_mtok_out = 0.0
 
 [[reference]]
 provider = "local"
@@ -197,6 +252,9 @@ batch = false
 capabilities = ["chat"]
 api_key_env = "LOBES_GATEWAY_API_KEY"
 quantization = "NVFP4"
+max_output_tokens = 512
+usd_per_mtok_in = 0.0
+usd_per_mtok_out = 0.0
 
 # ---------------------------------------------------------------------------
 # Judge panel: every entry must also be a [[reference]] above (same
@@ -278,7 +336,39 @@ concurrency_cap = 6
 [budget.nvidia]
 usd_cap = 15.0
 concurrency_cap = 6
+# build.nvidia.com's free tier is rate-limited (plan risk r5).
+requests_per_minute = 40
 
 [budget.local]
 usd_cap = 0.0
 concurrency_cap = 2
+
+# ---------------------------------------------------------------------------
+# Track A grounding for the references' LfmTier loop (deviation d1): the
+# recorded ground snapshot (relative to NVSH_EVALS_PRIVATE_ROOT, like a case
+# set's path) and the tier platform the candidates were measured with.
+# ---------------------------------------------------------------------------
+
+[track_a]
+snapshot = "snapshots/ground-snapshot.json"
+platform = "dgx-spark"
+device_cli = "dgx-spark-cli"
+
+# ---------------------------------------------------------------------------
+# Model-level stops (plan risk r10): once a model has min_answers answers and
+# at least max_truncated_share of them were cut at the output budget, the
+# runner stops that model's calls and asks the operator to decide.
+# ---------------------------------------------------------------------------
+
+[stops]
+min_answers = 5
+max_truncated_share = 0.3
+
+# ---------------------------------------------------------------------------
+# Judge panel: shuffle seed, output budget per judge call, rubric version.
+# ---------------------------------------------------------------------------
+
+[judging]
+seed = 64
+max_output_tokens = 1024
+rubric = "explain-v1"

@@ -1,0 +1,953 @@
+"""End-to-end tests for the gate runner (issue #64, task t17): run / continue /
+status / smoke / drive, with synthetic case sets, synthetic saved predictions
+and in-process fake providers (one batch-kind, one sync-kind).
+
+Covered:
+
+- a fixture run produces result.json, traces, metrics, judge results and the
+  page; Ctrl+C mid-run then ``continue`` gives byte-identical outputs and no
+  call is sent twice (acceptance 1);
+- ``status`` shows per-provider done/submitted/pending/invalid counts and
+  spend (acceptance 2);
+- the run record lists every host that received case text (acceptance 3);
+- a money stop on one provider while another finishes; the drive loop
+  re-checks it after 30 minutes on a fake clock with one probe call;
+- an unresolved batch lookup stops and asks, never resubmits;
+- a rejected request stops only that model and becomes a capability entry;
+- a truncation stop (plan risk r10) stops only the model whose replies are
+  cut; the smoke run reports tokens, cost, projection and OK/CAPPED.
+
+The run dir and the private data root live under ``tmp_path`` (outside the
+repository). No network, no real keys, no real case text.
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+
+from evals.tool_jev import drive as drive_mod
+from evals.tool_jev import request as contract
+from evals.tool_jev import run as runner
+from evals.tool_jev.__main__ import main
+from evals.tool_jev.providers import fake
+from evals.tool_jev.providers.base import BatchStatus, ProviderCapabilities
+
+SERVICE = {"service": "synthetic.service"}
+OFFERED = ["service_status", "service_logs", "service_restart"]
+CASES = [
+    {
+        "id": "s-1",
+        "text": "please restart the synthetic service",
+        "expect": {"operation": "service_restart", "args": SERVICE},
+        "candidates": OFFERED,
+    },
+    {
+        "id": "s-2",
+        "text": "why is the synthetic service slow",
+        "expect": {"explain": True},
+        "candidates": OFFERED,
+    },
+    {
+        "id": "s-3",
+        "text": "wipe the synthetic disk now",
+        "expect": {"escalate": True},
+        "candidates": ["service_status"],
+    },
+]
+HELDOUT = [
+    {"id": "h-1", "text": "sealed", "expect": {"escalate": True}},
+    {"id": "h-2", "text": "sealed", "expect": {"explain": True}},
+]
+
+MANIFEST = """
+[[candidate]]
+name = "cand-b"
+track = "B"
+predictions_path = "${NVSH_EVALS_PRIVATE}/predictions/cand-b.jsonl"
+policies = ["raw", "scorer-r3b-shipped"]
+repo_id = "org/cand-b"
+revision = "rev-1"
+
+[[baseline]]
+name = "base-a"
+track = "A"
+predictions_path = "predictions/base-a.jsonl"
+
+[[reference]]
+provider = "anthropic"
+model = "fake-batch"
+batch = true
+api_key_env = "UNUSED_KEY_ENV"
+usd_per_mtok_in = 3.0
+usd_per_mtok_out = 15.0
+
+[[reference]]
+provider = "openrouter"
+model = "vendor/fake-sync"
+usd_per_mtok_in = 1.0
+usd_per_mtok_out = 2.0
+{extra_refs}
+[[judge]]
+provider = "anthropic"
+model = "fake-batch"
+
+[[judge]]
+provider = "openrouter"
+model = "vendor/fake-sync"
+
+[[case_set]]
+name = "syn-test"
+count = 3
+split = "test"
+path = "splits/syn-test.json"
+
+[[case_set]]
+name = "syn-heldout"
+count = 2
+split = "heldout"
+path = "splits/syn-heldout.json"
+include_heldout = true
+
+[budget.anthropic]
+usd_cap = 10.0
+concurrency_cap = 2
+
+[budget.openrouter]
+usd_cap = {openrouter_cap}
+concurrency_cap = 1
+
+[budget.nvidia]
+usd_cap = 0.0
+concurrency_cap = 1
+
+[track_a]
+snapshot = "snapshots/ground.json"
+platform = "jetson"
+
+[stops]
+min_answers = 3
+max_truncated_share = 0.5
+
+[judging]
+seed = 5
+max_output_tokens = 300
+"""
+
+EXTRA_NVIDIA = """
+[[reference]]
+provider = "nvidia"
+model = "vendor/fake-cut"
+max_output_tokens = 64
+"""
+
+EXPECTED_CHOICE = {"s-1": "service_restart", "s-2": "explain", "s-3": "escalate"}
+USAGE = {"input_tokens": 1000, "output_tokens": 100}
+
+
+def _call(name: str, arguments: dict) -> str:
+    return json.dumps({"name": name, "arguments": arguments}, sort_keys=True)
+
+
+def _round(request) -> int:
+    return 1 + sum(1 for turn in request.history if turn["role"] == "assistant")
+
+
+def tool_answer(request) -> str:
+    """Scripted Track A: inspect then restart; explain; escalate."""
+    if request.case_id == "s-1":
+        if _round(request) == 1:
+            return _call("service_status", SERVICE)
+        return _call("propose", {"operation": "service_restart", "arguments": SERVICE})
+    if request.case_id == "s-2":
+        return _call("explain", {"text": "The synthetic service waits on its disk."})
+    return _call("escalate", {"reason": "destructive"})
+
+
+class CaseFake(fake.FakeProvider):
+    """A fake 'server' answering from the request itself (order-independent).
+
+    ``interrupt_at`` raises KeyboardInterrupt on that (1-based) send, before
+    the call counts as sent; ``fail`` maps a send number to an infra kind
+    (``"402"``, ``"400"``); ``cut`` makes every reply truncated; ``slow``
+    reports a batch incomplete on its first poll.
+    """
+
+    def __init__(self, name, *, batch, host, logprobs=False, cut=False, slow=False):
+        super().__init__(
+            name,
+            capabilities=ProviderCapabilities(logprobs=logprobs, batch=batch, reasoning=True),
+            model=name,
+        )
+        self.host = host
+        self.cut = cut
+        self.cut_judge = False
+        self.slow = slow
+        self.sends = 0
+        self.interrupt_at: int | None = None
+        self.fail: dict[int, str] = {}
+        self.fail_always: str | None = None
+        self.sent: list[tuple] = []
+        self.polls: dict[str, int] = {}
+
+    def outcome(self, request) -> fake.ScriptedOutcome:
+        if request.interface == "text":
+            reply = json.dumps({"reason": "synthetic", "score": 7})
+            return fake.ScriptedOutcome(
+                "answer",
+                answer=reply,
+                text=reply,
+                usage=USAGE,
+                truncated=self.cut or self.cut_judge,
+            )
+        if request.interface == "choice":
+            labels = request.params["labels"]
+            name = EXPECTED_CHOICE[request.case_id]
+            dist = None
+            if self.capabilities.logprobs:
+                dist = {n: (0.7 if n == name else 0.3 / (len(labels) - 1)) for n in labels}
+            return fake.ScriptedOutcome(
+                "answer",
+                answer=labels[name],
+                text=labels[name],
+                candidates=dist,
+                usage=USAGE,
+                truncated=self.cut,
+            )
+        if self.cut:
+            return fake.ScriptedOutcome(
+                "malformed", text="Thinking about", usage=USAGE, truncated=True
+            )
+        return fake.ScriptedOutcome("answer", answer=tool_answer(request), usage=USAGE)
+
+    def _identity(self, request) -> tuple:
+        from evals.tool_jev.track_a_loop import content_hash
+
+        return (request.case_id, request.interface, content_hash(request))
+
+    def _send(self, request):
+        self.sends += 1
+        if self.interrupt_at == self.sends:
+            raise KeyboardInterrupt
+        kind = self.fail.get(self.sends) or self.fail_always
+        self.sent.append(self._identity(request))
+        if kind:
+            return self._resolve(request, fake.ScriptedOutcome(kind))
+        return self._resolve(request, self.outcome(request))
+
+    def _resolve(self, request, outcome):
+        if request.interface == "choice" and outcome.kind == "answer":
+            classification = contract.parse_choice(outcome.answer, request.params["labels"])[0]
+            return self._result(request, outcome, classification)
+        return super()._resolve(request, outcome)
+
+    def _send_sync(self, request):
+        self.received.append(request)
+        return self._send(request)
+
+    def _send_batch(self, requests, submit_ref):
+        self.sends += 1
+        if self.interrupt_at == self.sends:
+            raise KeyboardInterrupt
+        return super()._send_batch(requests, submit_ref)
+
+    def _check_batch(self, handle):
+        self.polls[handle.batch_id] = self.polls.get(handle.batch_id, 0) + 1
+        done = not self.slow or self.polls[handle.batch_id] > 1
+        return BatchStatus(batch_id=handle.batch_id, complete=done)
+
+    def _collect_batch(self, handle):
+        out = []
+        for request in self._batches.get(handle.batch_id, []):
+            self.sent.append(self._identity(request))
+            out.append(self._resolve(request, self.outcome(request)))
+        return out
+
+
+def _write_private(root: Path, *, extra_refs: str = "", openrouter_cap: float = 10.0) -> Path:
+    (root / "splits").mkdir(parents=True)
+    (root / "predictions").mkdir()
+    (root / "snapshots").mkdir()
+    (root / "splits" / "syn-test.json").write_text(json.dumps({"header": {}, "entries": CASES}))
+    (root / "splits" / "syn-heldout.json").write_text(
+        json.dumps({"header": {}, "entries": HELDOUT})
+    )
+    (root / "snapshots" / "ground.json").write_text(
+        json.dumps(
+            {
+                "services": ["synthetic.service"],
+                "containers": [],
+                "source": "synthetic",
+                "created": "2026-09-26",
+            }
+        )
+    )
+    cand_lines = []
+    for case in CASES + HELDOUT:
+        expect = case["expect"]
+        if expect.get("operation"):
+            line = {"outcome": "propose", "operation": expect["operation"], "arguments": SERVICE}
+            dist = {"service_restart": 0.8, "service_status": 0.1, "escalate": 0.1}
+        elif expect.get("explain"):
+            line = {"outcome": "explain", "operation": None, "arguments": None}
+            dist = {"explain": 0.6, "service_status": 0.4}
+        else:
+            line = {"outcome": "escalate", "operation": None, "arguments": None}
+            dist = {"escalate": 0.9, "service_status": 0.1}
+        cand_lines.append(
+            {
+                "id": case["id"],
+                "expected": expect,
+                **line,
+                "candidates": dist,
+                "tokens": 3,
+                "ttfd_ms": 1.0,
+                "latency_ms": 2.0,
+            }
+        )
+    (root / "predictions" / "cand-b.jsonl").write_text(
+        "\n".join(json.dumps(line) for line in cand_lines) + "\n"
+    )
+    base_lines = []
+    for case in CASES:
+        base_lines.append(
+            {
+                "id": case["id"],
+                "expected": case["expect"],
+                "outcome": "explain",
+                "operation": None,
+                "arguments": None,
+                "candidates": None,
+                "tokens": 5,
+                "ttfd_ms": 1.0,
+                "latency_ms": 2.0,
+                "explanation": f"Saved explanation for {case['id']}.",
+            }
+        )
+    (root / "predictions" / "base-a.jsonl").write_text(
+        "\n".join(json.dumps(line) for line in base_lines) + "\n"
+    )
+    manifest = root / "manifest.toml"
+    manifest.write_text(
+        MANIFEST.replace("{extra_refs}", extra_refs).replace(
+            "{openrouter_cap}", str(openrouter_cap)
+        )
+    )
+    return manifest
+
+
+class World:
+    """One private data root, one manifest, and the fake 'servers'."""
+
+    def __init__(self, tmp_path: Path, *, extra_refs: str = "", openrouter_cap: float = 10.0):
+        self.root = tmp_path / "private"
+        self.manifest = _write_private(
+            self.root, extra_refs=extra_refs, openrouter_cap=openrouter_cap
+        )
+        self.env = {"NVSH_EVALS_PRIVATE_ROOT": str(self.root)}
+        self.batch = CaseFake("anthropic:fake-batch", batch=True, host="batch-host.test")
+        self.sync = CaseFake(
+            "openrouter:vendor/fake-sync", batch=False, host="sync-host.test", logprobs=True
+        )
+        self.cut = CaseFake("nvidia:vendor/fake-cut", batch=False, host="cut-host.test", cut=True)
+        self.lines: list[str] = []
+
+    def factory(self, ref, budget, env):
+        return {"anthropic": self.batch, "openrouter": self.sync, "nvidia": self.cut}[ref.provider]
+
+    def main(self, *argv: str, **kwargs) -> int:
+        return main(list(argv), factory=self.factory, env=self.env, out=self.lines.append, **kwargs)
+
+    def run(self, run_dir: Path, *extra: str) -> int:
+        return self.main(
+            "run",
+            "--manifest",
+            str(self.manifest),
+            "--run-dir",
+            str(run_dir),
+            "--run-id",
+            "fixture-run",
+            "--date",
+            "2026-09-26",
+            *extra,
+        )
+
+    def cont(self, run_dir: Path) -> int:
+        return self.main("continue", "--manifest", str(self.manifest), "--run-dir", str(run_dir))
+
+
+OUTPUTS = ("result.json", "report.md", "manifest.json", "judge_results.json", "permutation.json")
+
+
+def _outputs(run_dir: Path) -> dict[str, bytes]:
+    files = {name: (run_dir / name).read_bytes() for name in OUTPUTS}
+    for sub in ("traces", "metrics"):
+        for path in sorted((run_dir / sub).iterdir()):
+            files[f"{sub}/{path.name}"] = path.read_bytes()
+    return files
+
+
+# ---------------------------------------------------------------------------
+# acceptance 1: a full fixture run
+# ---------------------------------------------------------------------------
+
+
+def test_fixture_run_produces_result_traces_and_page(tmp_path):
+    world = World(tmp_path)
+    run_dir = tmp_path / "run"
+    assert world.run(run_dir) == runner.EXIT_OK, world.lines
+    result = json.loads((run_dir / "result.json").read_text())
+    page = (run_dir / "report.md").read_text()
+    subjects = {row["subject"] for row in result["rows"]}
+    assert subjects == {"cand-b.syn-test", "cand-b.syn-heldout", "base-a.syn-test"}
+    references = {row["subject"] for row in result["reference_rows"]}
+    assert references == {
+        "anthropic.fake-batch.A.syn-test",
+        "anthropic.fake-batch.B.syn-test",
+        "openrouter.vendor-fake-sync.A.syn-test",
+        "openrouter.vendor-fake-sync.B.syn-test",
+    }
+    cand_rows = [r for r in result["rows"] if r["subject"] == "cand-b.syn-test"]
+    assert [r["policy"] for r in cand_rows] == ["raw", "scorer-r3b-shipped"]
+    assert cand_rows[0]["artifact"]["repo_id"] == "org/cand-b"
+    assert len(cand_rows[0]["artifact"]["predictions_sha256"]) == 64
+    assert "## Artifacts" in page and "## Judge panel" in page
+    # No case text reaches the page or the result.
+    for case in CASES:
+        assert case["text"] not in page and case["text"] not in json.dumps(result)
+
+    traces = (run_dir / "traces" / "openrouter.vendor-fake-sync.A.syn-test.jsonl").read_text()
+    decisions = {
+        json.loads(line)["case_id"]: json.loads(line)["raw"] for line in traces.splitlines()
+    }
+    assert decisions["s-1"]["outcome"] == "propose"
+    assert decisions["s-1"]["operation"] == "service_restart"
+    assert decisions["s-2"]["outcome"] == "explain"
+    assert decisions["s-3"]["outcome"] == "escalate"
+    choice = (run_dir / "traces" / "openrouter.vendor-fake-sync.B.syn-test.jsonl").read_text()
+    first = json.loads(choice.splitlines()[0])["raw"]
+    assert first["outcome"] == "propose" and first["candidates"]  # logprobs -> distribution
+
+    judged = json.loads((run_dir / "judge_results.json").read_text())
+    assert judged["judges"] == ["anthropic/fake-batch", "openrouter/vendor/fake-sync"]
+    verdicts = {(r["subject"], r["judge"]): r["verdict"] for r in judged["results"]}
+    assert verdicts[("anthropic.fake-batch.A.syn-test", "anthropic/fake-batch")] == "self_score"
+    assert verdicts[("base-a.syn-test", "anthropic/fake-batch")] == "scored"
+    # Track B scorers have no prose: not applicable, never invented.
+    assert verdicts[("cand-b.syn-test", None)] == "not_applicable"
+    permutation = json.loads((run_dir / "permutation.json").read_text())
+    assert permutation["base-a.syn-test__raw"]["measurable"] is False
+    # Held-out cases were never sent anywhere.
+    for provider in (world.batch, world.sync):
+        assert all(request.split != "heldout" for request in provider.received)
+
+
+def test_run_record_lists_every_host_that_received_case_text(tmp_path):
+    world = World(tmp_path)
+    run_dir = tmp_path / "run"
+    assert world.run(run_dir) == runner.EXIT_OK
+    record = json.loads((run_dir / "run.json").read_text())
+    assert record["hosts"] == {
+        "batch-host.test": ["anthropic/fake-batch"],
+        "sync-host.test": ["openrouter/vendor/fake-sync"],
+    }
+
+
+def test_interrupt_then_continue_gives_identical_outputs_and_sends_nothing_twice(tmp_path):
+    clean = World(tmp_path / "a")
+    assert clean.run(tmp_path / "a" / "run") == runner.EXIT_OK
+    reference = _outputs(tmp_path / "a" / "run")
+
+    world = World(tmp_path / "b")
+    world.sync.interrupt_at = 4  # mid Track A: some rounds answered, some not
+    run_dir = tmp_path / "b" / "run"
+    assert world.run(run_dir) == runner.EXIT_INTERRUPTED
+    assert not (run_dir / "result.json").exists()
+    assert world.cont(run_dir) == runner.EXIT_OK, world.lines
+    assert _outputs(run_dir) == reference
+    for provider in (world.sync, world.batch):
+        assert len(provider.sent) == len(set(provider.sent)), "a call was sent twice"
+        assert len(provider.submitted_refs) == len(set(provider.submitted_refs))
+
+
+def test_interrupt_during_a_batch_submission_then_continue(tmp_path):
+    clean = World(tmp_path / "a")
+    assert clean.run(tmp_path / "a" / "run") == runner.EXIT_OK
+    world = World(tmp_path / "b")
+    world.batch.interrupt_at = 2
+    run_dir = tmp_path / "b" / "run"
+    assert world.run(run_dir) == runner.EXIT_INTERRUPTED
+    assert world.cont(run_dir) == runner.EXIT_OK, world.lines
+    assert _outputs(run_dir) == _outputs(tmp_path / "a" / "run")
+    assert len(world.batch.sent) == len(set(world.batch.sent))
+
+
+def test_slow_batches_wait_then_continue_completes(tmp_path):
+    world = World(tmp_path)
+    world.batch.slow = True
+    run_dir = tmp_path / "run"
+    assert world.run(run_dir) == runner.EXIT_WAITING
+    assert any("waiting on" in line for line in world.lines)
+    code = runner.EXIT_WAITING
+    for _ in range(10):
+        code = world.cont(run_dir)
+        if code != runner.EXIT_WAITING:
+            break
+    assert code == runner.EXIT_OK
+
+
+# ---------------------------------------------------------------------------
+# acceptance 2: status
+# ---------------------------------------------------------------------------
+
+
+def test_status_shows_per_provider_counts_and_spend(tmp_path):
+    world = World(tmp_path)
+    world.sync.fail = {3: "402"}
+    run_dir = tmp_path / "run"
+    assert world.run(run_dir) == runner.EXIT_STOPPED
+    assert world.main("status", "--run-dir", str(run_dir), "--json") == runner.EXIT_OK
+    doc = json.loads(world.lines[-1])
+    sync = doc["providers"]["openrouter"]
+    assert sync["done"] == 2 and sync["pending"] >= 1 and sync["submitted"] == 0
+    assert sync["spend_usd"] == pytest.approx(2 * (1000 * 1.0 + 100 * 2.0) / 1e6)
+    assert sync["usd_cap"] == 10.0
+    batch = doc["providers"]["anthropic"]
+    assert batch["done"] > 0 and batch["invalid"] == 0
+    # Batch routing takes the 50% discount off list prices.
+    per_call = (1000 * 3.0 + 100 * 15.0) / 1e6 * 0.5
+    assert batch["spend_usd"] == pytest.approx(batch["done"] * per_call)
+    assert doc["stops"]["providers"]["openrouter"]["kind"] == "money"
+
+    world.lines.clear()
+    assert world.main("status", "--run-dir", str(run_dir)) == runner.EXIT_OK
+    text = "\n".join(world.lines)
+    assert "provider openrouter: done 2 submitted 0 pending" in text
+    assert "STOPPED (money)" in text and "insufficient_credit" in text
+    assert "hosts that received case text:" in text
+
+
+# ---------------------------------------------------------------------------
+# stops
+# ---------------------------------------------------------------------------
+
+
+def test_money_stop_on_one_provider_lets_the_other_finish(tmp_path):
+    world = World(tmp_path)
+    world.sync.fail_always = "402"
+    run_dir = tmp_path / "run"
+    assert world.run(run_dir) == runner.EXIT_STOPPED
+    message = [line for line in world.lines if "insufficient_credit" in line]
+    assert message and "openrouter" in message[0] and "call(s) left pending" in message[0]
+    assert len(world.sync.sent) == 1  # stopped after the first 402
+    doc = runner.status(run_dir)
+    batch = doc["models"]["anthropic/fake-batch"]
+    # Every subject call of the batch provider is answered; only judges wait.
+    assert batch["pending"] == 0 and batch["done"] == 3 + 3 + 1  # A rounds + B + s-1 round 2
+
+
+def test_budget_cap_is_a_money_stop_that_names_the_remaining_calls(tmp_path):
+    world = World(tmp_path, openrouter_cap=0.002)
+    run_dir = tmp_path / "run"
+    assert world.run(run_dir) == runner.EXIT_STOPPED
+    capped = [line for line in world.lines if "budget_cap_reached" in line]
+    assert capped and "call(s) left pending" in capped[0]
+    assert len(world.sync.sent) == 2  # $0.0012 per call: the second one crosses $0.002
+
+
+def test_rejected_request_stops_only_that_model_and_is_a_capability(tmp_path):
+    world = World(tmp_path)
+    world.sync.fail_always = "400"
+    run_dir = tmp_path / "run"
+    assert world.run(run_dir) == runner.EXIT_STOPPED
+    record = json.loads((run_dir / "run.json").read_text())
+    stop = record["stops"]["models"]["openrouter/vendor/fake-sync"]
+    assert stop["kind"] == "rejected" and "request rejected" in stop["message"]
+    assert record["capabilities"]["openrouter/vendor/fake-sync"][0]["request_rejected"]
+    assert len(world.sync.sent) == 1
+    # Continuing unchanged does not resend into the same wall.
+    assert world.cont(run_dir) == runner.EXIT_STOPPED
+    assert len(world.sync.sent) == 1
+
+
+def test_truncation_stop_stops_only_the_cut_model(tmp_path):
+    world = World(tmp_path, extra_refs=EXTRA_NVIDIA)
+    run_dir = tmp_path / "run"
+    assert world.run(run_dir) == runner.EXIT_STOPPED
+    record = json.loads((run_dir / "run.json").read_text())
+    stop = record["stops"]["models"]["nvidia/vendor/fake-cut"]
+    assert stop["kind"] == "truncation"
+    assert stop["truncated"] == 3 and stop["answers"] == 3
+    assert runner.TRUNCATION_DECISION in stop["message"]
+    assert set(record["stops"]["models"]) == {"nvidia/vendor/fake-cut"}
+    assert record["stops"]["providers"] == {}
+    assert len(world.cut.sent) == 3  # min_answers, then no more
+    other = runner.status(run_dir)["models"]
+    assert other["openrouter/vendor/fake-sync"]["pending"] == 0
+    assert other["anthropic/fake-batch"]["pending"] == 0
+    # A continue with the same settings never re-pays or resends.
+    assert world.cont(run_dir) == runner.EXIT_STOPPED
+    assert len(world.cut.sent) == 3
+
+
+def test_unresolved_batch_lookup_stops_and_asks_without_resubmitting(tmp_path):
+    world = World(tmp_path)
+    run_dir = tmp_path / "run"
+
+    original = world.batch._send_batch
+
+    def accept_then_drop(requests, submit_ref):
+        original(requests, submit_ref)  # the provider accepted it...
+        world.batch.mark_unresolved(submit_ref)
+        raise OSError("connection reset before the reply")  # ...but we never heard back
+
+    world.batch._send_batch = accept_then_drop
+    assert world.run(run_dir) == runner.EXIT_STOPPED
+    world.batch._send_batch = original
+    assert world.cont(run_dir) == runner.EXIT_ASK
+    asked = world.lines[-1]
+    assert asked.startswith("stop and ask:") and "anthropic/fake-batch" in asked
+    assert "NOT resubmitted" in asked and "tj-" in asked
+    assert len(world.batch.submitted_refs) == 1
+
+
+def test_orphan_batch_found_by_ref_is_reattached_not_resent(tmp_path):
+    world = World(tmp_path)
+    run_dir = tmp_path / "run"
+    original = world.batch._send_batch
+
+    def accept_then_drop(requests, submit_ref):
+        original(requests, submit_ref)
+        raise OSError("reply lost")
+
+    world.batch._send_batch = accept_then_drop
+    assert world.run(run_dir) == runner.EXIT_STOPPED
+    world.batch._send_batch = original
+    assert world.cont(run_dir) == runner.EXIT_OK, world.lines
+    assert world.batch.finds and len(world.batch.sent) == len(set(world.batch.sent))
+
+
+# ---------------------------------------------------------------------------
+# drive (deviation d2 loop)
+# ---------------------------------------------------------------------------
+
+
+class FakeClock:
+    def __init__(self):
+        self.now = 1000.0
+
+    def __call__(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.now += seconds
+
+
+def test_drive_rechecks_a_money_stopped_provider_with_one_probe(tmp_path):
+    world = World(tmp_path)
+    world.sync.fail_always = "402"
+    run_dir = tmp_path / "run"
+    runner.init_state(run_dir, world.manifest, run_id="fixture-run", date="2026-09-26")
+    clock = FakeClock()
+    sends_at: list[tuple[float, int]] = []
+
+    def sleep(seconds):
+        clock.sleep(seconds)
+        sends_at.append((clock.now, len(world.sync.sent)))
+        if clock.now - 1000.0 >= 3600:
+            world.sync.fail_always = None  # operator topped up after an hour
+
+    code = drive_mod.drive(
+        run_dir,
+        world.manifest,
+        env=world.env,
+        factory=world.factory,
+        clock=clock,
+        sleep=sleep,
+        poll_seconds=60,
+        recheck_seconds=1800,
+        max_steps=200,
+        out=world.lines.append,
+    )
+    assert code == runner.EXIT_OK, world.lines
+    assert (run_dir / "result.json").exists()
+    # One 402 at the start, one probe at +30 min (402 again), one at +60 min
+    # that goes through; nothing is sent in between.
+    log = [json.loads(line) for line in (run_dir / "drive.log").read_text().splitlines()]
+    probes = [entry for entry in log if "probed ['openrouter']" in entry["msg"]]
+    assert len(probes) >= 2
+    assert probes[0]["t"] - 1000.0 >= 1800
+    # Between probes the stopped provider sent nothing.
+    # (each entry is the send count after sleeping, before the next step)
+    counts = [count for at, count in sends_at if at - 1000.0 <= 1800]
+    assert set(counts) == {1}
+    counts = [count for at, count in sends_at if 1800 < at - 1000.0 <= 3600]
+    assert set(counts) == {2}
+    assert "money stop cleared" in (run_dir / "drive.log").read_text()
+
+
+def test_drive_exits_non_zero_on_stop_and_ask(tmp_path):
+    world = World(tmp_path)
+    run_dir = tmp_path / "run"
+    original = world.batch._send_batch
+
+    def accept_then_drop(requests, submit_ref):
+        original(requests, submit_ref)
+        world.batch.mark_unresolved(submit_ref)
+        raise OSError("lost")
+
+    world.batch._send_batch = accept_then_drop
+    runner.init_state(run_dir, world.manifest, run_id="r", date="d")
+    clock = FakeClock()
+    code = drive_mod.drive(
+        run_dir,
+        world.manifest,
+        env=world.env,
+        factory=world.factory,
+        clock=clock,
+        sleep=clock.sleep,
+        max_steps=5,
+        out=world.lines.append,
+    )
+    assert code == runner.EXIT_ASK
+    assert "stop and ask" in (run_dir / "drive.log").read_text()
+
+
+def test_drive_stops_cleanly_between_steps_on_a_signal(tmp_path):
+    import threading
+
+    world = World(tmp_path)
+    world.batch.slow = True
+    run_dir = tmp_path / "run"
+    runner.init_state(run_dir, world.manifest, run_id="r", date="d")
+    stop = threading.Event()
+    clock = FakeClock()
+
+    def sleep(seconds):
+        clock.sleep(seconds)
+        stop.set()  # SIGTERM arrives while waiting
+
+    code = drive_mod.drive(
+        run_dir,
+        world.manifest,
+        env=world.env,
+        factory=world.factory,
+        clock=clock,
+        sleep=sleep,
+        stop=stop,
+        out=world.lines.append,
+    )
+    assert code == runner.EXIT_OK
+    assert "exiting cleanly" in (run_dir / "drive.log").read_text()
+    assert not (run_dir / "result.json").exists()
+
+
+# ---------------------------------------------------------------------------
+# smoke
+# ---------------------------------------------------------------------------
+
+
+def test_smoke_reports_tokens_cost_projection_and_flags(tmp_path):
+    world = World(tmp_path, extra_refs=EXTRA_NVIDIA)
+    run_dir = tmp_path / "run"
+    code = world.main(
+        "smoke", "--manifest", str(world.manifest), "--run-dir", str(run_dir), "--cases", "3"
+    )
+    # The cut model's truncation stop keeps the smoke from completing its judge pass.
+    assert code == runner.EXIT_STOPPED
+    # The operator raises the cut model's output budget: new calls, new keys.
+    world.cut.cut = False
+    manifest = world.manifest.read_text()
+    world.manifest.write_text(manifest.replace("max_output_tokens = 64", "max_output_tokens = 128"))
+    code = world.main(
+        "smoke", "--manifest", str(world.manifest), "--run-dir", str(run_dir), "--cases", "3"
+    )
+    assert code == runner.EXIT_OK, world.lines
+    smoke = json.loads((run_dir / "smoke.json").read_text())
+    assert smoke["cases"] == 3 and smoke["full_run_cases"] == 3
+    sync = smoke["models"]["openrouter/vendor/fake-sync"]
+    assert sync["flag"] == "OK" and sync["truncated"] == 0
+    assert sync["input_tokens"] == sync["calls"] * 1000
+    assert sync["cost_usd"] == pytest.approx(sync["calls"] * 0.0012)
+    assert sync["projected_full_run_usd"] == pytest.approx(round(sync["cost_usd"], 4))
+    assert smoke["providers"]["anthropic"]["cost_usd"] > 0
+    assert any(line.startswith("smoke openrouter/vendor/fake-sync: OK") for line in world.lines)
+    assert not (run_dir / "result.json").exists()
+
+
+def test_smoke_flags_a_capped_model(tmp_path):
+    world = World(tmp_path, extra_refs=EXTRA_NVIDIA)
+    run_dir = tmp_path / "run"
+    manifest = world.manifest.read_text().replace(
+        "[stops]\nmin_answers = 3", "[stops]\nmin_answers = 50"
+    )
+    world.manifest.write_text(manifest)
+    code = world.main(
+        "smoke", "--manifest", str(world.manifest), "--run-dir", str(run_dir), "--cases", "2"
+    )
+    assert code == runner.EXIT_OK, world.lines
+    smoke = json.loads((run_dir / "smoke.json").read_text())
+    cut = smoke["models"]["nvidia/vendor/fake-cut"]
+    assert cut["flag"] == "CAPPED" and cut["truncated"] == cut["calls"]
+    assert smoke["full_run_cases"] == 3 and smoke["cases"] == 2
+    assert smoke["models"]["openrouter/vendor/fake-sync"]["flag"] == "OK"
+
+
+# ---------------------------------------------------------------------------
+# configuration refusals
+# ---------------------------------------------------------------------------
+
+
+def test_run_dir_inside_a_git_worktree_is_refused(tmp_path):
+    world = World(tmp_path)
+    repo_run_dir = Path(__file__).resolve().parent / "never-created-run-dir"
+    assert world.run(repo_run_dir) == runner.EXIT_USER
+    assert "inside a git worktree" in world.lines[-1]
+    assert not repo_run_dir.exists()
+
+
+def test_run_refuses_a_second_start_and_continue_needs_a_run(tmp_path):
+    world = World(tmp_path)
+    run_dir = tmp_path / "run"
+    assert world.cont(run_dir) == runner.EXIT_USER
+    assert world.run(run_dir) == runner.EXIT_OK
+    assert world.run(run_dir) == runner.EXIT_USER
+    assert "use `continue`" in world.lines[-1]
+
+
+def test_case_count_mismatch_is_refused(tmp_path):
+    world = World(tmp_path)
+    world.manifest.write_text(world.manifest.read_text().replace("count = 3", "count = 4"))
+    assert world.run(tmp_path / "run") == runner.EXIT_USER
+    assert "the manifest says 4 cases" in world.lines[-1]
+
+
+def test_reasoning_none_maps_per_provider():
+    assert runner.provider_reasoning("openai", "none") == "minimal"
+    assert runner.provider_reasoning("anthropic", "none") == "low"
+    assert runner.provider_reasoning("openrouter", "none") == "none"
+    assert runner.provider_reasoning("nvidia", "none") is None
+    assert runner.provider_reasoning("local", "none") is None
+    assert runner.provider_reasoning("nvidia", "high") == "high"
+
+
+def test_a_truncated_judge_reply_is_an_invalid_judge_answer(tmp_path):
+    world = World(tmp_path)
+    world.sync.cut_judge = True
+    run_dir = tmp_path / "run"
+    assert world.run(run_dir) == runner.EXIT_OK, world.lines
+    judged = json.loads((run_dir / "judge_results.json").read_text())
+    by_judge = {s["judge"] for s in judged["scores"] if s["verdict"] == "invalid"}
+    assert by_judge == {"openrouter/vendor/fake-sync"}
+    assert all(
+        s["score"] is not None for s in judged["scores"] if s["judge"] == "anthropic/fake-batch"
+    )
+    doc = runner.status(run_dir)
+    assert doc["models"]["openrouter/vendor/fake-sync"]["invalid"] > 0
+
+
+def test_status_reads_without_the_ledger_lock(tmp_path):
+    from evals.tool_jev.ledger import Ledger
+
+    world = World(tmp_path)
+    run_dir = tmp_path / "run"
+    assert world.run(run_dir) == runner.EXIT_OK
+    with Ledger(run_dir):  # a live drive holds the lock
+        assert world.main("status", "--run-dir", str(run_dir)) == runner.EXIT_OK
+    assert world.lines[-1].startswith("hosts that received case text:")
+
+
+def test_missing_private_root_is_an_environment_error(tmp_path):
+    world = World(tmp_path)
+    world.env = {}
+    assert world.run(tmp_path / "run") == runner.EXIT_ENV
+    assert "NVSH_EVALS_PRIVATE_ROOT" in world.lines[-1]
+
+
+def test_missing_manifest_is_a_user_error(tmp_path):
+    world = World(tmp_path)
+    code = world.main(
+        "run", "--manifest", str(tmp_path / "absent.toml"), "--run-dir", str(tmp_path / "r")
+    )
+    assert code == runner.EXIT_USER and "cannot read" in world.lines[-1]
+
+
+def test_default_factory_builds_each_adapter_without_reading_keys(monkeypatch):
+    from evals.tool_jev.manifest import Budget, Reference
+    from evals.tool_jev.providers import anthropic, openai, openai_compat
+
+    for name in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "NGC_API_KEY"):
+        monkeypatch.delenv(name, raising=False)
+    env = {"NVSH_EVALS_BASE_URL_LOCAL": "http://127.0.0.1:18001/v1"}
+    budget = Budget("nvidia", usd_cap=0.0, concurrency_cap=1, requests_per_minute=40.0)
+    cases = [
+        (Reference("openai", "gpt-6-sol", batch=True), openai.OpenAIProvider, "api.openai.com"),
+        (
+            Reference("anthropic", "claude-sonnet-5", batch=True),
+            anthropic.AnthropicProvider,
+            "api.anthropic.com",
+        ),
+        (
+            Reference("nvidia", "vendor/m", capabilities=("chat", "reasoning")),
+            openai_compat.OpenAICompatProvider,
+            "integrate.api.nvidia.com",
+        ),
+        (Reference("local", "vendor/l"), openai_compat.OpenAICompatProvider, "127.0.0.1"),
+    ]
+    for ref, cls, host in cases:
+        provider = runner.default_factory(ref, budget, env)
+        assert isinstance(provider, cls)
+        assert runner.provider_host(provider) == host
+    nvidia = runner.default_factory(cases[2][0], budget, env)
+    assert nvidia.capabilities.reasoning is True and nvidia._rate_limiter is not None
+    assert runner.default_factory(cases[1][0], None, env).name == "anthropic:claude-sonnet-5"
+
+
+def test_continue_retry_rejected_retries_a_model_after_the_operator_fixes_it(tmp_path):
+    world = World(tmp_path)
+    world.sync.fail_always = "401"
+    run_dir = tmp_path / "run"
+    assert world.run(run_dir) == runner.EXIT_STOPPED
+    world.sync.fail_always = None  # the operator fixed the key behind the 401
+    assert world.cont(run_dir) == runner.EXIT_STOPPED  # unchanged params: still stopped
+    code = world.main(
+        "continue",
+        "--manifest",
+        str(world.manifest),
+        "--run-dir",
+        str(run_dir),
+        "--retry-rejected",
+    )
+    assert code == runner.EXIT_OK, world.lines
+
+
+def test_continue_while_a_drive_holds_the_run_dir_is_refused_cleanly(tmp_path):
+    from evals.tool_jev.ledger import Ledger
+
+    world = World(tmp_path)
+    run_dir = tmp_path / "run"
+    runner.init_state(run_dir, world.manifest, run_id="r", date="d")
+    with Ledger(run_dir):
+        assert world.cont(run_dir) == runner.EXIT_USER
+    assert "in use by another runner" in world.lines[-1]
+
+
+def test_run_json_output_is_one_document(tmp_path):
+    world = World(tmp_path)
+    run_dir = tmp_path / "run"
+    assert world.run(run_dir, "--json") == runner.EXIT_OK
+    doc = json.loads(world.lines[-1])
+    assert doc["status"] == "complete" and doc["exit_code"] == 0
+    assert any(line.startswith("complete:") for line in doc["messages"])
+
+
+def test_a_configuration_error_does_not_mark_the_run_started(tmp_path):
+    world = World(tmp_path)
+    run_dir = tmp_path / "run"
+    env = world.env
+    world.env = {}
+    assert world.run(run_dir) == runner.EXIT_ENV
+    world.env = env
+    assert world.run(run_dir) == runner.EXIT_OK, world.lines

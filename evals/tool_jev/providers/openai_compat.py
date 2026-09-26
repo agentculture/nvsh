@@ -377,7 +377,8 @@ class OpenAICompatProvider(BaseProvider):
         "content"}`` -- the same shape ``nvsh.tiers.lfm`` sends the local
         candidates.
         """
-        out: list = [{"role": "system", "content": system_text}]
+        # A judge call ("text") has no system text; an empty one is omitted.
+        out: list = [{"role": "system", "content": system_text}] if system_text else []
         for message in messages:
             role = message["role"]
             if role == "assistant":
@@ -423,7 +424,7 @@ class OpenAICompatProvider(BaseProvider):
                 payload["tools"] = tools
                 forced = tool_choice_forced(request, self.forced_tool_choice)
                 payload["tool_choice"] = "required" if forced else "auto"
-        else:  # "choice"
+        elif request.interface == "choice":
             if self.capabilities.logprobs:
                 payload["logprobs"] = True
                 payload["top_logprobs"] = 20
@@ -467,7 +468,7 @@ class OpenAICompatProvider(BaseProvider):
                     return answer, None, False, False
             return None, None, True, False
 
-        # interface == "choice": the model's text, stripped.
+        # interface == "choice" or "text": the model's text, stripped.
         content = message.get("content")
         answer = content.strip() if isinstance(content, str) else ""
         _system, _user, _tools, labels = contract.canonical_content(request)

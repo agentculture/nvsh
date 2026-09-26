@@ -177,7 +177,7 @@ def _decode_custom_id(custom_id: str) -> tuple[str, str]:
     """
     if "::" in custom_id:
         case_id, _, interface = custom_id.rpartition("::")
-        if interface in ("tool_call", "choice"):
+        if interface in ("tool_call", "choice", "text"):
             return case_id, interface
     return custom_id, "tool_call"
 
@@ -280,11 +280,13 @@ def _build_request_body(
     system_text, messages, tools, labels = contract.canonical_content(request)
     body: dict = {
         "model": model,
-        "instructions": system_text,
         "input": _responses_input(messages),
         "reasoning": {"effort": request.params.get("reasoning", "medium")},
         "metadata": {"nvsh_case_id": request.case_id, "nvsh_interface": request.interface},
     }
+    if system_text:
+        # A judge call ("text") has no system text; an empty one is omitted.
+        body["instructions"] = system_text
     max_output_tokens = request.params.get("max_output_tokens")
     if max_output_tokens is not None:
         body["max_output_tokens"] = max_output_tokens

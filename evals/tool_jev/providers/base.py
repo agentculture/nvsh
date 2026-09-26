@@ -51,8 +51,10 @@ from nvsh.redact import redact
 
 from .errors import Outcome
 
-#: The two answer interfaces a request can use (tool call vs. constrained choice).
-INTERFACES = frozenset({"tool_call", "choice"})
+#: The answer interfaces a request can use: a tool call (Track A), a constrained
+#: choice (Track B), or free text (a judge's G-Eval reply, read with
+#: :meth:`Provider.reply_text`; no tools, no labels, no logprobs).
+INTERFACES = frozenset({"tool_call", "choice", "text"})
 
 #: Split tags that must never reach a network call. Both spellings from the
 #: issue-64 spec: the plain held-out set and its missing-candidate slice.

@@ -67,6 +67,7 @@ from typing import Any, Mapping, Sequence
 
 from nvsh.platform._model import Platform
 from nvsh.tiers import lfm
+from nvsh.tiers.base import Explanation
 from nvsh.tiers.toolchat import ChatReply, ToolCall, parse_raw_tool_calls
 
 from . import request as contract
@@ -135,11 +136,22 @@ class RoundResult:
 
     ``finished`` maps a case id to its final record (the loop ended);
     ``pending`` holds the calls to submit before the next pass, at most one
-    per case, in case order.
+    per case, in case order. ``explanations`` maps a finished case whose
+    record is an explanation to the text LfmTier read (the explain tool's
+    ``text`` or a plain-words reply) -- what the judge panel scores.
     """
 
     finished: dict[str, RawRecord] = field(default_factory=dict)
     pending: list[PendingCall] = field(default_factory=list)
+    explanations: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class CaseOutcome:
+    """One case's replay: its final record or pending round, plus any explain text."""
+
+    outcome: RawRecord | PendingCall
+    explanation: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -411,6 +423,35 @@ def run_case(
     *params* are the request knobs keyed into every call (default: the
     request contract's reasoning effort and output budget).
     """
+    return run_case_detail(
+        case,
+        provider=provider,
+        model=model,
+        ledger=ledger,
+        snapshot=snapshot,
+        platform=platform,
+        params=params,
+        subject_role=subject_role,
+    ).outcome
+
+
+def run_case_detail(
+    case: Case,
+    *,
+    provider: Provider,
+    model: str,
+    ledger: Ledger,
+    snapshot: Mapping[str, object],
+    platform: Platform,
+    params: Mapping[str, Any] | None = None,
+    subject_role: str = DEFAULT_SUBJECT_ROLE,
+) -> CaseOutcome:
+    """:func:`run_case`, plus the explanation text when the loop ended in one.
+
+    The text is ``Explanation.text`` from LfmTier's own result, taken only
+    when the final record's outcome is ``explain`` -- never invented, never
+    read from a reply the loop did not accept as an explanation.
+    """
     knobs = dict(
         params
         if params is not None
@@ -439,8 +480,12 @@ def run_case(
     if chat.error is not None:
         raise chat.error
     if chat.pending is not None:
-        return chat.pending
-    return _final_record(chat, agent_request, result, provider=provider, model=model)
+        return CaseOutcome(chat.pending)
+    record = _final_record(chat, agent_request, result, provider=provider, model=model)
+    explanation = None
+    if record.outcome == "explain" and isinstance(result, Explanation):
+        explanation = result.text
+    return CaseOutcome(record, explanation)
 
 
 def run_round(
@@ -462,7 +507,7 @@ def run_round(
     """
     out = RoundResult()
     for case in cases:
-        outcome = run_case(
+        detail = run_case_detail(
             case,
             provider=provider,
             model=model,
@@ -472,10 +517,12 @@ def run_round(
             params=params,
             subject_role=subject_role,
         )
-        if isinstance(outcome, PendingCall):
-            out.pending.append(outcome)
+        if isinstance(detail.outcome, PendingCall):
+            out.pending.append(detail.outcome)
         else:
-            out.finished[case.id] = outcome
+            out.finished[case.id] = detail.outcome
+            if detail.explanation is not None:
+                out.explanations[case.id] = detail.explanation
     return out
 
 

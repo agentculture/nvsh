@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import os
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Mapping
 
@@ -55,6 +55,15 @@ ALLOWED_PROVIDERS = frozenset({"openai", "anthropic", "openrouter", "nvidia", "l
 #: The two tool_jev tracks: A = generative (heals a failing command), B =
 #: scorer (grades a proposed fix).
 ALLOWED_TRACKS = frozenset({"A", "B"})
+
+#: Reasoning levels a ``[[reference]]`` may ask for (c44's default is
+#: ``"medium"``). ``"none"`` is mapped per provider by the runner
+#: (``evals/tool_jev/run.py``'s ``provider_reasoning``): some providers take
+#: a minimal value, others get the parameter omitted.
+REASONING_LEVELS = ("none", "low", "medium", "high")
+
+#: Batch-API price discount applied when a provider routes to its batch API.
+DEFAULT_BATCH_DISCOUNT = 0.5
 
 
 class ManifestError(ValueError):
@@ -83,6 +92,20 @@ class RunEntry:
     track: str
     predictions_path: str
     train_split: str | None = None
+    #: case set name -> that case set's saved predictions file (overrides
+    #: ``predictions_path`` for that case set only).
+    predictions: Mapping[str, str] = field(default_factory=dict)
+    #: Harness policies scored for this checkpoint; ``"raw"`` is model-only.
+    policies: tuple[str, ...] = ("raw",)
+    #: The exact artifact (h1): repo id and revision, when the operator has them.
+    repo_id: str | None = None
+    revision: str | None = None
+    #: case set name -> a saved ``permutation_probe.py`` report for that set.
+    permutation_probes: Mapping[str, str] = field(default_factory=dict)
+
+    def predictions_for(self, case_set: str) -> str:
+        """The saved predictions file for *case_set* (the override, else the default)."""
+        return self.predictions.get(case_set, self.predictions_path)
 
 
 @dataclass(frozen=True)
@@ -102,6 +125,11 @@ class Reference:
     capabilities: tuple[str, ...] = ()
     api_key_env: str | None = None
     quantization: str | None = None
+    #: Output budget per call; ``None`` = the request contract's default.
+    max_output_tokens: int | None = None
+    #: Price per million input / output tokens, for spend tracking (c26).
+    usd_per_mtok_in: float = 0.0
+    usd_per_mtok_out: float = 0.0
 
     @property
     def key(self) -> tuple[str, str]:
@@ -156,6 +184,47 @@ class Budget:
     provider: str
     usd_cap: float
     concurrency_cap: int
+    #: Fraction taken off list prices when this provider routes to its batch API.
+    batch_discount: float = DEFAULT_BATCH_DISCOUNT
+    #: Client-side request spacing for sync calls (e.g. a free tier's RPM).
+    requests_per_minute: float | None = None
+
+
+@dataclass(frozen=True)
+class TrackAConfig:
+    """Grounding for references' Track A loop (deviation d1).
+
+    ``snapshot`` is the recorded ground snapshot (``measure.py snapshot``
+    output), RELATIVE to the private data root like a case set's path.
+    ``platform``/``device_cli`` rebuild the tier platform the candidates
+    ran with (``nvsh.tiers.bench.world_platform``'s two fields).
+    """
+
+    snapshot: str | None = None
+    platform: str = "unknown"
+    device_cli: str | None = None
+
+
+@dataclass(frozen=True)
+class StopRules:
+    """When a model's own answers stop its calls (plan risk r10).
+
+    Once a model has ``min_answers`` answers and at least
+    ``max_truncated_share`` of them were cut at the output budget, the
+    runner stops sending that model's calls until the operator decides.
+    """
+
+    min_answers: int = 5
+    max_truncated_share: float = 0.3
+
+
+@dataclass(frozen=True)
+class JudgingConfig:
+    """Judge panel knobs: shuffle seed, output budget per judge call, rubric."""
+
+    seed: int = 64
+    max_output_tokens: int = 1024
+    rubric: str = "explain-v1"
 
 
 @dataclass(frozen=True)
@@ -167,6 +236,7 @@ class RunTarget:
     predictions_path: str
     kind: str  # "candidate" | "baseline"
     train_split: str | None = None
+    policies: tuple[str, ...] = ("raw",)
 
 
 @dataclass(frozen=True)
@@ -177,6 +247,16 @@ class Manifest:
     judges: tuple[Judge, ...]
     case_sets: tuple[CaseSet, ...]
     budgets: tuple[Budget, ...]
+    track_a: TrackAConfig = TrackAConfig()
+    stops: StopRules = StopRules()
+    judging: JudgingConfig = JudgingConfig()
+
+    def budget_for(self, provider: str) -> Budget | None:
+        """The ``[budget.<provider>]`` table, or ``None`` when absent."""
+        for budget in self.budgets:
+            if budget.provider == provider:
+                return budget
+        return None
 
     def plan_run(self) -> tuple[RunTarget, ...]:
         """The candidates and baselines a run must score, in manifest order.
@@ -186,11 +266,11 @@ class Manifest:
         here with no code change anywhere.
         """
         targets = [
-            RunTarget(c.name, c.track, c.predictions_path, "candidate", c.train_split)
+            RunTarget(c.name, c.track, c.predictions_path, "candidate", c.train_split, c.policies)
             for c in self.candidates
         ]
         targets.extend(
-            RunTarget(b.name, b.track, b.predictions_path, "baseline", b.train_split)
+            RunTarget(b.name, b.track, b.predictions_path, "baseline", b.train_split, b.policies)
             for b in self.baselines
         )
         return tuple(targets)
@@ -237,9 +317,57 @@ def _parse_run_entry(table: Mapping, where: str) -> RunEntry:
     train_split = table.get("train_split")
     if train_split is not None and not isinstance(train_split, str):
         raise ManifestError(f"{where} (name={name!r}): train_split must be a string")
+    where = f"{where} (name={name!r})"
+    policies = table.get("policies", ["raw"])
+    if (
+        not isinstance(policies, list)
+        or not policies
+        or not all(isinstance(p, str) and p for p in policies)
+    ):
+        raise ManifestError(f"{where}: policies must be a non-empty list of policy names")
     return RunEntry(
-        name=name, track=track, predictions_path=predictions_path, train_split=train_split
+        name=name,
+        track=track,
+        predictions_path=predictions_path,
+        train_split=train_split,
+        predictions=_str_table(table, "predictions", where),
+        policies=tuple(policies),
+        repo_id=_optional_str(table, "repo_id", where),
+        revision=_optional_str(table, "revision", where),
+        permutation_probes=_str_table(table, "permutation_probes", where),
     )
+
+
+def _optional_str(table: Mapping, key: str, where: str) -> str | None:
+    value = table.get(key)
+    if value is not None and (not isinstance(value, str) or not value):
+        raise ManifestError(f"{where}: {key} must be a non-empty string")
+    return value
+
+
+def _str_table(table: Mapping, key: str, where: str) -> dict[str, str]:
+    value = table.get(key, {})
+    if not isinstance(value, Mapping) or not all(
+        isinstance(k, str) and isinstance(v, str) and v for k, v in value.items()
+    ):
+        raise ManifestError(f"{where}: {key} must be a table of case-set name -> path strings")
+    return dict(value)
+
+
+def _number(table: Mapping, key: str, where: str, default: float) -> float:
+    value = table.get(key, default)
+    if not isinstance(value, (int, float)) or isinstance(value, bool) or value < 0:
+        raise ManifestError(f"{where}: {key} must be a non-negative number")
+    return float(value)
+
+
+def _positive_int(table: Mapping, key: str, where: str, default: int | None) -> int | None:
+    value = table.get(key, default)
+    if value is None:
+        return None
+    if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+        raise ManifestError(f"{where}: {key} must be a positive integer")
+    return value
 
 
 def _parse_reference(table: Mapping, where: str) -> Reference:
@@ -262,6 +390,8 @@ def _parse_reference(table: Mapping, where: str) -> Reference:
     quantization = table.get("quantization")
     if quantization is not None and not isinstance(quantization, str):
         raise ManifestError(f"{where}: quantization must be a string")
+    if reasoning not in REASONING_LEVELS:
+        raise ManifestError(f"{where}: reasoning must be one of {list(REASONING_LEVELS)}")
     return Reference(
         provider=provider,
         model=model,
@@ -270,6 +400,9 @@ def _parse_reference(table: Mapping, where: str) -> Reference:
         capabilities=tuple(raw_capabilities),
         api_key_env=api_key_env,
         quantization=quantization,
+        max_output_tokens=_positive_int(table, "max_output_tokens", where, None),
+        usd_per_mtok_in=_number(table, "usd_per_mtok_in", where, 0.0),
+        usd_per_mtok_out=_number(table, "usd_per_mtok_out", where, 0.0),
     )
 
 
@@ -332,14 +465,78 @@ def _parse_budgets(raw: Mapping, where: str) -> tuple[Budget, ...]:
             or concurrency_cap < 1
         ):
             raise ManifestError(f"{entry_where}: concurrency_cap must be a positive integer")
+        batch_discount = _number(table, "batch_discount", entry_where, DEFAULT_BATCH_DISCOUNT)
+        if batch_discount > 1:
+            raise ManifestError(f"{entry_where}: batch_discount must be between 0 and 1")
+        rpm = table.get("requests_per_minute")
+        if rpm is not None and (
+            not isinstance(rpm, (int, float)) or isinstance(rpm, bool) or rpm <= 0
+        ):
+            raise ManifestError(f"{entry_where}: requests_per_minute must be a positive number")
         budgets.append(
             Budget(
                 provider=provider,
                 usd_cap=float(usd_cap),
                 concurrency_cap=concurrency_cap,
+                batch_discount=batch_discount,
+                requests_per_minute=None if rpm is None else float(rpm),
             )
         )
     return tuple(budgets)
+
+
+def _private_relative(value: object, where: str) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value:
+        raise ManifestError(f"{where} must be a non-empty string")
+    if value.startswith("/") or "~" in value:
+        raise ManifestError(
+            f"{where} must be relative to the private data root (NVSH_EVALS_PRIVATE_ROOT), "
+            f"never absolute or home-shaped, got {value!r}"
+        )
+    return value
+
+
+def _parse_track_a(raw: Mapping) -> TrackAConfig:
+    if not isinstance(raw, Mapping):
+        raise ManifestError("track_a must be a table")
+    platform = raw.get("platform", "unknown")
+    if not isinstance(platform, str) or not platform:
+        raise ManifestError("track_a.platform must be a non-empty string")
+    return TrackAConfig(
+        snapshot=_private_relative(raw.get("snapshot"), "track_a.snapshot"),
+        platform=platform,
+        device_cli=_optional_str(raw, "device_cli", "track_a"),
+    )
+
+
+def _parse_stops(raw: Mapping) -> StopRules:
+    if not isinstance(raw, Mapping):
+        raise ManifestError("stops must be a table")
+    min_answers = _positive_int(raw, "min_answers", "stops", StopRules.min_answers)
+    share = raw.get("max_truncated_share", StopRules.max_truncated_share)
+    if not isinstance(share, (int, float)) or isinstance(share, bool) or not 0 < float(share) <= 1:
+        raise ManifestError("stops.max_truncated_share must be a number in (0, 1]")
+    return StopRules(min_answers=int(min_answers), max_truncated_share=float(share))
+
+
+def _parse_judging(raw: Mapping) -> JudgingConfig:
+    if not isinstance(raw, Mapping):
+        raise ManifestError("judging must be a table")
+    seed = raw.get("seed", JudgingConfig.seed)
+    if not isinstance(seed, int) or isinstance(seed, bool):
+        raise ManifestError("judging.seed must be an integer")
+    rubric = raw.get("rubric", JudgingConfig.rubric)
+    if not isinstance(rubric, str) or not rubric:
+        raise ManifestError("judging.rubric must be a non-empty string")
+    return JudgingConfig(
+        seed=seed,
+        max_output_tokens=int(
+            _positive_int(raw, "max_output_tokens", "judging", JudgingConfig.max_output_tokens)
+        ),
+        rubric=rubric,
+    )
 
 
 def parse_manifest(data: Mapping) -> Manifest:
@@ -387,6 +584,9 @@ def parse_manifest(data: Mapping) -> Manifest:
         judges=judges,
         case_sets=case_sets,
         budgets=budgets,
+        track_a=_parse_track_a(data.get("track_a", {})),
+        stops=_parse_stops(data.get("stops", {})),
+        judging=_parse_judging(data.get("judging", {})),
     )
 
 
