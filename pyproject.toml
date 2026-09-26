@@ -66,6 +66,9 @@ dev = [
     "teken>=0.8",
     "pyyaml>=6.0",
 ]
+evals = [
+    "deepeval==4.2.6",
+]
 
 [tool.coverage.run]
 source = ["nvsh"]
@@ -98,4 +101,13 @@ skips = ["B101", "B404", "B603"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-ra"
+# -p no:deepeval: deepeval (the evals/ dependency group, see
+# [dependency-groups]) registers a pytest11 entry point
+# (deepeval.plugins.plugin) that auto-loads into ANY pytest run in a venv
+# where it happens to be installed, and starts telemetry at import. A
+# contributor who has synced the evals group into the same .venv as dev
+# (uv manages one venv per project) must not have that plugin silently
+# active on the root suite. Disabling a plugin that isn't installed is a
+# harmless no-op, so this stays on unconditionally rather than only when
+# deepeval happens to be present.
+addopts = "-ra -p no:deepeval"
