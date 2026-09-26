@@ -20,6 +20,7 @@ from __future__ import annotations
 import os
 import subprocess  # nosec B404 - fixed argv below, no shell=True
 import sys
+import tempfile
 import zipfile
 from pathlib import Path
 
@@ -145,9 +146,14 @@ def _run_probe(code: str, env_overrides: dict) -> subprocess.CompletedProcess:
     ):
         env.pop(key, None)
     env.update(env_overrides)
+    # Run from a scratch dir, never the repo root: importing deepeval creates
+    # a relative .deepeval/ directory in the cwd. PYTHONPATH keeps
+    # `import evals.tool_jev` resolvable from there.
+    env["PYTHONPATH"] = str(REPO_ROOT) + os.pathsep + env.get("PYTHONPATH", "")
+    scratch = tempfile.mkdtemp(prefix="evals-probe-")
     return subprocess.run(  # nosec B603
         [sys.executable, "-c", code],
-        cwd=str(REPO_ROOT),
+        cwd=scratch,
         env=env,
         capture_output=True,
         text=True,
