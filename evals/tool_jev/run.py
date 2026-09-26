@@ -1099,13 +1099,13 @@ class Runner:
         if not work:
             return False
         semaphores: dict[str, threading.Semaphore] = {}
-        workers = 0
+        caps: dict[str, int] = {}
         for model, _item in work:
             if model.kind not in semaphores:
                 budget = self.plan.manifest.budget_for(model.kind)
                 cap = budget.concurrency_cap if budget else 1
                 semaphores[model.kind] = threading.Semaphore(cap)
-                workers += cap
+                caps[model.kind] = cap
 
         deadline = time.monotonic() + ROUND_SECONDS
 
@@ -1142,8 +1142,17 @@ class Runner:
                 return True
 
         progress = False
-        pool = concurrent.futures.ThreadPoolExecutor(max_workers=max(1, workers))
-        futures = [pool.submit(task, model, item) for model, item in work]
+        # One pool per provider, sized to its cap: with one shared pool, the
+        # threads queued behind a slow provider's semaphore (local, cap 2)
+        # starved every other provider for the whole round (full run
+        # 2026-09-26: OpenRouter and build.nvidia.com sent nothing for hours).
+        pools = {
+            kind: concurrent.futures.ThreadPoolExecutor(
+                max_workers=max(1, caps[kind]), thread_name_prefix=f"sync-{kind}"
+            )
+            for kind in semaphores
+        }
+        futures = [pools[model.kind].submit(task, model, item) for model, item in work]
         failure: BaseException | None = None
         try:
             for future in concurrent.futures.as_completed(futures):
@@ -1157,7 +1166,8 @@ class Runner:
                         for other in futures:
                             other.cancel()
         finally:
-            pool.shutdown(wait=True, cancel_futures=True)
+            for pool in pools.values():
+                pool.shutdown(wait=True, cancel_futures=True)
         if failure is not None:
             raise failure
         return progress

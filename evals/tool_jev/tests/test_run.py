@@ -1572,6 +1572,31 @@ def test_item2_a_sync_timeout_bills_one_uncertain_charge_and_two_stop_the_model(
     assert spend == pytest.approx(sum(b["cost_usd"] for b in uncertain))
 
 
+def test_a_slow_provider_never_starves_another_providers_sync_calls(tmp_path):
+    """Full run 2026-09-26: one shared pool let a slow provider's queued calls hold
+    every thread, so OpenRouter and build.nvidia.com sent nothing for hours."""
+    import threading
+
+    world = World(tmp_path, extra_refs=EXTRA_NVIDIA)
+    other_sent = threading.Event()
+    released: list[bool] = []
+    slow_send, fast_send = world.cut._send_sync, world.sync._send_sync
+
+    def slow(request):  # "nvidia" sorts first and holds its call until the other sends
+        released.append(other_sent.wait(timeout=5))
+        return slow_send(request)
+
+    def fast(request):
+        result = fast_send(request)
+        other_sent.set()
+        return result
+
+    world.cut._send_sync = slow
+    world.sync._send_sync = fast
+    world.run(tmp_path / "run")
+    assert released and released[0], "the slow provider's call blocked the other provider"
+
+
 def test_a_rate_limit_pause_expires_within_the_pass(tmp_path):
     """Full run 2026-09-26: one 429 idled OpenRouter for an hours-long pass."""
     world = World(tmp_path)
