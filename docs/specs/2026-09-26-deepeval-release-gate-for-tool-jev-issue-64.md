@@ -173,7 +173,7 @@
 - Release candidates are a3-heal.`q4_k_m` (Track A, issue 46) and scorer-r3b.`q4_k_m` (Track B, issue 53); scorer-b1 and stock appear as baseline rows
 - Reference models (frontier via OpenAI/Anthropic platform APIs, open via OpenRouter and build.nvidia.com, local) are comparison subjects scored by the same exact metrics; an LLM judge is used only on explain text and reported separately from the release bars
 - Provider keys live in grant as hidden secrets `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` and `OPEN_ROUTER_API_KEY` (note the underscore in `OPEN_ROUTER`), injected only at run time via grant run --inject; build.nvidia.com uses the `NGC_API_KEY` already in the environment
-- Reference roster: OpenAI gpt-6-luna, gpt-6-sol; Anthropic claude-opus-5-5, claude-sonnet-5; OpenRouter qwen/qwen3.8-max-0902, deepseek/deepseek-v4-flash, deepseek/deepseek-v4-pro-0813, moonshotai/kimi-k3; build.nvidia.com moonshotai/kimi-k3, z-ai/glm-5.3, nvidia/nemotron-3-ultra-550b-a55b, nvidia/nemotron-3-super-120b-a12b; local Qwen3.8 27B and Gemma 4 (served locally); kimi-k3 deliberately on two hosts
+- Reference roster: OpenAI gpt-6-luna, gpt-6-sol; Anthropic claude-opus-5-5, claude-sonnet-5; OpenRouter qwen/qwen3.8-max-0902, deepseek/deepseek-v4-flash, deepseek/deepseek-v4-pro-0813, moonshotai/kimi-k3; build.nvidia.com moonshotai/kimi-k3, z-ai/glm-5.3, nvidia/nemotron-3-ultra-550b-a55b, nvidia/nemotron-3-super-120b-a12b, google/gemma-4-31b-it; local Qwen3.8 27B and Gemma 4 26B-A4B (gemma-4-26b-a4b-it), both served locally; kimi-k3 deliberately on two hosts
   - instruction: roster lives in the eval manifest; ids checked against each provider's live /models list on 2026-09-26
 - a3-heal.`q4_k_m` gets exactly one new inference run on the issue-53 test (198) plus its missing-candidate slice, an approved exception to c17 recorded here; the issue-46 and issue-53 sealed held-outs stay untouched and a3-heal gets no held-out run
   - instruction: serialize with any local serving (issue 58); label the run so measure.py refuses a silent rerun
@@ -193,9 +193,9 @@
 
 - [unknown_nonblocking] Calibration of quantized builds from served routes: issue 46 could not measure scorer-b1 Q4/AWQ distributions (d17/l6), while issue 53 measured r3b Q4 complete (198/198); whether every candidate's deployed artifact has complete distributions in the saved files is unverified per artifact
 - [unknown_nonblocking] Which interface each reference model answers through (generative tool call like Track A, or choosing among offered candidates like Track B, or both) and how its choice maps onto the 18-key candidate space
-- [unknown_nonblocking] Local reference models Qwen3.8 27B and Gemma 4 need serving on spark/spark2 (weights, engine, memory next to the lobes); the catalogs list gemma-4-26b-a4b-it and gemma-4-31b-it but no 27B, so the exact Gemma weights are undecided
 - [unknown_nonblocking] Judge model for explain text: using a model that is also a subject (same family) biases the judge; which judge and whether it is excluded from its own family's rows is undecided
 
 ## Resolved vagueness
 
 - [unknown_nonblocking] Provider API keys for OpenAI, Anthropic and OpenRouter are not present on this machine (only `NGC_API_KEY`); live reference runs wait on the operator supplying them via grant — resolved: Operator added `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `OPEN_ROUTER_API_KEY` to grant (hidden) on 2026-09-26
+- [unknown_nonblocking] Local reference models Qwen3.8 27B and Gemma 4 need serving on spark/spark2 (weights, engine, memory next to the lobes); the catalogs list gemma-4-26b-a4b-it and gemma-4-31b-it but no 27B, so the exact Gemma weights are undecided — resolved: Gemma: google/gemma-4-31b-it on build.nvidia.com AND gemma-4-26b-a4b-it served locally; local Qwen3.8 27B also served locally (serving mechanics are a plan task)

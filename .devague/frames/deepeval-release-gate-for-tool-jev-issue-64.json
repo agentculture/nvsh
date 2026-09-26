@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-09-26T04:16:04Z",
-  "updated": "2026-09-26T04:46:12Z",
+  "updated": "2026-09-26T04:49:04Z",
   "claims": [
     {
       "id": "c1",
@@ -547,14 +547,20 @@
     {
       "id": "c30",
       "kind": "decision",
-      "text": "Reference roster: OpenAI gpt-6-luna, gpt-6-sol; Anthropic claude-opus-5-5, claude-sonnet-5; OpenRouter qwen/qwen3.8-max-0902, deepseek/deepseek-v4-flash, deepseek/deepseek-v4-pro-0813, moonshotai/kimi-k3; build.nvidia.com moonshotai/kimi-k3, z-ai/glm-5.3, nvidia/nemotron-3-ultra-550b-a55b, nvidia/nemotron-3-super-120b-a12b; local Qwen3.8 27B and Gemma 4 (served locally); kimi-k3 deliberately on two hosts",
+      "text": "Reference roster: OpenAI gpt-6-luna, gpt-6-sol; Anthropic claude-opus-5-5, claude-sonnet-5; OpenRouter qwen/qwen3.8-max-0902, deepseek/deepseek-v4-flash, deepseek/deepseek-v4-pro-0813, moonshotai/kimi-k3; build.nvidia.com moonshotai/kimi-k3, z-ai/glm-5.3, nvidia/nemotron-3-ultra-550b-a55b, nvidia/nemotron-3-super-120b-a12b, google/gemma-4-31b-it; local Qwen3.8 27B and Gemma 4 26B-A4B (gemma-4-26b-a4b-it), both served locally; kimi-k3 deliberately on two hosts",
       "origin": "user",
       "status": "confirmed",
       "honesty_conditions": [],
       "hard_questions": [],
       "links": [],
       "instruction": "roster lives in the eval manifest; ids checked against each provider's live /models list on 2026-09-26",
-      "revisions": []
+      "revisions": [
+        {
+          "text": "Reference roster: OpenAI gpt-6-luna, gpt-6-sol; Anthropic claude-opus-5-5, claude-sonnet-5; OpenRouter qwen/qwen3.8-max-0902, deepseek/deepseek-v4-flash, deepseek/deepseek-v4-pro-0813, moonshotai/kimi-k3; build.nvidia.com moonshotai/kimi-k3, z-ai/glm-5.3, nvidia/nemotron-3-ultra-550b-a55b, nvidia/nemotron-3-super-120b-a12b; local Qwen3.8 27B and Gemma 4 (served locally); kimi-k3 deliberately on two hosts",
+          "kind": "decision",
+          "reason": "operator 2026-09-26: add gemma-4-31b-it on build.nvidia.com; local Gemma = 26B-A4B"
+        }
+      ]
     },
     {
       "id": "c31",
@@ -735,9 +741,9 @@
       "text": "Local reference models Qwen3.8 27B and Gemma 4 need serving on spark/spark2 (weights, engine, memory next to the lobes); the catalogs list gemma-4-26b-a4b-it and gemma-4-31b-it but no 27B, so the exact Gemma weights are undecided",
       "kind": "unknown_nonblocking",
       "claim_id": "c30",
-      "resolved": false,
-      "resolution": "",
-      "resolution_claim_id": null
+      "resolved": true,
+      "resolution": "Gemma: google/gemma-4-31b-it on build.nvidia.com AND gemma-4-26b-a4b-it served locally; local Qwen3.8 27B also served locally (serving mechanics are a plan task)",
+      "resolution_claim_id": "c30"
     },
     {
       "id": "v5",
