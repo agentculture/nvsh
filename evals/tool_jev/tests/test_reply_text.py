@@ -91,3 +91,37 @@ def test_openai_compat_reply_text_reads_content_not_reasoning_content():
     response["choices"][0]["finish_reason"] = "length"
     assert provider.reply_text(json.dumps(response).encode()).truncated is True
     assert provider.reply_text(b"not json").text == ""
+
+
+def test_openai_and_compat_skip_a_malformed_first_call():
+    """Codex d1 review P2: the first WELL-FORMED call is the answer, as in ToolChat."""
+    request = _request()
+    body = {
+        "status": "completed",
+        "output": [
+            {"type": "function_call", "name": "escalate", "arguments": "{not json"},
+            {"type": "function_call", "name": "escalate", "arguments": '{"reason": "big"}'},
+        ],
+    }
+    result = openai.OpenAIProvider("gpt-6-luna").result_from_raw(request, json.dumps(body).encode())
+    assert json.loads(result.answer) == {"name": "escalate", "arguments": {"reason": "big"}}
+    response = {
+        "choices": [
+            {
+                "finish_reason": "tool_calls",
+                "message": {
+                    "tool_calls": [
+                        {"function": {"name": "", "arguments": "{}"}},
+                        {"function": {"name": "escalate", "arguments": '{"reason": "big"}'}},
+                    ]
+                },
+            }
+        ]
+    }
+    result = openai_compat.OpenAICompatProvider(kind="local", model="m").result_from_raw(
+        request, json.dumps(response).encode()
+    )
+    assert json.loads(result.answer) == {"name": "escalate", "arguments": {"reason": "big"}}
+    body["output"] = body["output"][:1]
+    result = openai.OpenAIProvider("gpt-6-luna").result_from_raw(request, json.dumps(body).encode())
+    assert (result.outcome.value, result.reason) == ("invalid", "malformed")

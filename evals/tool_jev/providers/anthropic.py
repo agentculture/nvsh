@@ -354,6 +354,45 @@ class AnthropicProvider(BaseProvider):
             )
         return converted
 
+    @classmethod
+    def _native_prefix(cls, native: list, calls: list, wire_ids: dict) -> list:
+        """The model's own blocks, in order, up to the tool call the loop acted on.
+
+        Thinking, redacted-thinking and text blocks keep their place (a
+        thinking signature is bound to what came before it). The first
+        well-formed ``tool_use`` is the call the loop acted on (every adapter
+        answers with the first well-formed call): it is replayed under the
+        model's own id with the loop's arguments, and everything after it --
+        later thinking, text or calls the loop never ran -- is dropped, which
+        also leaves no ``tool_use`` without a ``tool_result``. A malformed
+        ``tool_use`` before it is dropped for the same reason.
+        """
+        blocks: list = []
+        for item in native:
+            if not isinstance(item, dict):
+                continue
+            kind = item.get("type")
+            if kind in ("thinking", "redacted_thinking", "text"):
+                blocks.append(dict(item))
+                continue
+            if kind != "tool_use" or not calls:
+                continue
+            if tool_call_answer(item.get("name"), item.get("input", {})) is None:
+                continue
+            call = calls[0]
+            wire_id = item.get("id") if isinstance(item.get("id"), str) else call["id"]
+            wire_ids[call["id"]] = wire_id
+            blocks.append(
+                {
+                    "type": "tool_use",
+                    "id": wire_id,
+                    "name": call["name"],
+                    "input": cls._tool_input(call["arguments"]),
+                }
+            )
+            break
+        return blocks
+
     @staticmethod
     def _tool_input(arguments: str) -> dict:
         """A neutral tool call's JSON arguments text as a ``tool_use`` input object."""
@@ -367,15 +406,19 @@ class AnthropicProvider(BaseProvider):
     def _messages_payload(cls, messages: list) -> list:
         """``canonical_content``'s messages as Messages API turns.
 
-        A history assistant turn becomes an ``assistant`` message: the
-        turn's own Anthropic thinking blocks first when it carries them
-        (``native["anthropic"]``, replayed unchanged -- the API needs them
-        back on the same model), then its text, then one ``tool_use`` block
-        per neutral tool call (``input`` decoded from the neutral
-        ``arguments`` text). A tool turn becomes a ``tool_result`` block in a
-        ``user`` message; consecutive results share one message. When the
-        native blocks carry the model's own ``tool_use`` ids, those ids are
-        kept and the matching results point at them.
+        A history assistant turn becomes an ``assistant`` message. When it
+        carries the model's own blocks (``native["anthropic"]``), they are
+        replayed in their original order -- thinking blocks unchanged, since
+        their signature binds their position -- up to and including the one
+        well-formed ``tool_use`` the loop acted on (``input`` from the loop's
+        own arguments); every block after it is dropped, as the loop never
+        acted on it (see :meth:`_native_prefix`). Without native blocks the
+        turn is its text, then one ``tool_use`` block per neutral tool call
+        (``input`` decoded from the neutral ``arguments`` text). A tool turn
+        becomes a ``tool_result`` block in a ``user`` message; consecutive
+        results share one message. When the native blocks carry the model's
+        own ``tool_use`` ids, those ids are kept and the matching results
+        point at them.
         """
         out: list = []
         wire_ids: dict = {}
@@ -400,28 +443,17 @@ class AnthropicProvider(BaseProvider):
                 continue
             if role == "assistant":
                 native = (message.get("native") or {}).get("anthropic") or []
-                blocks = [
-                    dict(item)
-                    for item in native
-                    if isinstance(item, dict)
-                    and item.get("type") in ("thinking", "redacted_thinking")
-                ]
-                native_ids = [
-                    item.get("id")
-                    for item in native
-                    if isinstance(item, dict) and item.get("type") == "tool_use"
-                ]
-                if message.get("content"):
+                calls = list(message.get("tool_calls", []))
+                blocks = cls._native_prefix(native, calls[:1], wire_ids) if native else []
+                if not native and message.get("content"):
                     blocks.append({"type": "text", "text": message["content"]})
-                for position, call in enumerate(message.get("tool_calls", [])):
-                    wire_id = call["id"]
-                    if position < len(native_ids) and isinstance(native_ids[position], str):
-                        wire_id = native_ids[position]
-                    wire_ids[call["id"]] = wire_id
+                replayed = int(bool(calls and blocks and blocks[-1].get("type") == "tool_use"))
+                for call in calls[replayed:]:
+                    wire_ids.setdefault(call["id"], call["id"])
                     blocks.append(
                         {
                             "type": "tool_use",
-                            "id": wire_id,
+                            "id": wire_ids[call["id"]],
                             "name": call["name"],
                             "input": cls._tool_input(call["arguments"]),
                         }
@@ -487,9 +519,12 @@ class AnthropicProvider(BaseProvider):
         elif interface == "tool_call":
             # The RAW first tool_use block (module docstring's answer
             # contract); a text-only reply is not a tool call -> malformed.
-            tool_use = next((block for block in content if block.get("type") == "tool_use"), None)
-            if tool_use is not None:
-                answer = tool_call_answer(tool_use.get("name"), tool_use.get("input", {}))
+            # The first WELL-FORMED tool_use, as nvsh's ToolChat drops malformed calls.
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "tool_use":
+                    answer = tool_call_answer(block.get("name"), block.get("input", {}))
+                    if answer is not None:
+                        break
             malformed = answer is None
         else:  # "choice": the model's text, stripped
             text = "".join(

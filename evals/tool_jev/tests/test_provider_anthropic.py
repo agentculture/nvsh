@@ -956,3 +956,78 @@ def test_result_from_raw_rereads_a_sync_body_and_a_batch_line_alike():
         assert result.raw == raw
     native = provider.native_turn(line_raw)
     assert native["anthropic"][0]["type"] == "tool_use"
+
+
+def test_interleaved_native_blocks_keep_their_order_up_to_the_acted_call():
+    """Codex d1 review P3: thinking keeps its signed position; later blocks are dropped."""
+    think_a = {"type": "thinking", "thinking": "", "signature": "c2lnQQ=="}
+    think_b = {"type": "thinking", "thinking": "", "signature": "c2lnQg=="}
+    think_c = {"type": "thinking", "thinking": "", "signature": "c2lnQw=="}
+    native_history = (
+        {
+            **HISTORY[0],
+            "native": {
+                "anthropic": [
+                    think_a,
+                    {"type": "text", "text": "checking"},
+                    # Malformed (input is not an object): skipped by every adapter.
+                    {"type": "tool_use", "id": "toolu_bad", "name": "service_status", "input": 3},
+                    think_b,
+                    {"type": "tool_use", "id": "toolu_A", "name": "service_status", "input": {}},
+                    think_c,
+                    {"type": "tool_use", "id": "toolu_C", "name": "service_logs", "input": {}},
+                ]
+            },
+        },
+        HISTORY[1],
+    )
+    sent: list = []
+    provider = _sync_provider(sent, _fixture("message_propose.json"))
+    provider.submit_sync(_request(case_text="ask", prompt="sys", history=native_history))
+    assistant, results = sent[0]["messages"][1:]
+    assert assistant["content"] == [
+        think_a,
+        {"type": "text", "text": "checking"},
+        think_b,
+        {
+            "type": "tool_use",
+            "id": "toolu_A",
+            "name": "service_status",
+            "input": {"service": "x.service"},
+        },
+    ]
+    assert results["content"] == [
+        {"type": "tool_result", "tool_use_id": "toolu_A", "content": "exit 0\nactive"}
+    ]
+
+
+def test_native_blocks_with_no_usable_call_fall_back_to_the_neutral_call():
+    native_history = (
+        {**HISTORY[0], "native": {"anthropic": [{"type": "text", "text": "hm"}]}},
+        HISTORY[1],
+    )
+    sent: list = []
+    provider = _sync_provider(sent, _fixture("message_propose.json"))
+    provider.submit_sync(_request(case_text="ask", prompt="sys", history=native_history))
+    assistant, results = sent[0]["messages"][1:]
+    assert assistant["content"][0] == {"type": "text", "text": "hm"}
+    assert assistant["content"][1]["id"] == "call_0"
+    assert results["content"][0]["tool_use_id"] == "call_0"
+
+
+def test_a_malformed_first_tool_use_is_skipped_for_the_next_well_formed_one():
+    """Codex d1 review P2: nvsh's ToolChat drops malformed calls; so does the adapter."""
+    provider = anthropic.AnthropicProvider("claude-sonnet-5", transport=FakeTransport({}))
+    message = {
+        "id": "m",
+        "model": "claude-sonnet-5",
+        "stop_reason": "tool_use",
+        "content": [
+            {"type": "tool_use", "id": "t1", "name": "escalate", "input": "not an object"},
+            {"type": "tool_use", "id": "t2", "name": "escalate", "input": {"reason": "big"}},
+        ],
+        "usage": {"input_tokens": 1, "output_tokens": 1},
+    }
+    result = provider.result_from_raw(_request(case_text="t"), json.dumps(message).encode())
+    assert result.outcome is errors.Outcome.OK
+    assert json.loads(result.answer) == {"name": "escalate", "arguments": {"reason": "big"}}

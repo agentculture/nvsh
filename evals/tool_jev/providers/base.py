@@ -353,6 +353,31 @@ def _redact_text(text: str) -> str:
     )
 
 
+def _secret_field_marker() -> str:
+    """The marker ``nvsh.redact`` puts in place of a secret JSON field's value."""
+    return json.loads(_redact_text(json.dumps({"password": "x"})))["password"]
+
+
+def _redact_field(key: str, value: str) -> str:
+    """One string field of a JSON object, redacted with its key in view.
+
+    ``nvsh.redact``'s JSON-field rule (``"password": "..."``, ``"token"``,
+    ``"api_key"``, ...) needs the key next to the value, so the field is
+    redacted as the one-field object it is; a rewrite that no longer decodes
+    (the value held an escaped quote) masks the whole value. Then the value
+    alone goes through every other rule.
+    """
+    probe = json.dumps({key: value})
+    redacted = _redact_text(probe)
+    if redacted != probe:
+        try:
+            decoded = json.loads(redacted)
+            value = decoded[key] if isinstance(decoded[key], str) else _secret_field_marker()
+        except (ValueError, KeyError, TypeError):
+            value = _secret_field_marker()
+    return _redact_text(value)
+
+
 def _redact_value(value):
     """Every string inside a decoded JSON value redacted; shape and keys kept."""
     if isinstance(value, str):
@@ -360,7 +385,14 @@ def _redact_value(value):
     if isinstance(value, list):
         return [_redact_value(item) for item in value]
     if isinstance(value, dict):
-        return {key: _redact_value(item) for key, item in value.items()}
+        return {
+            key: (
+                _redact_field(key, item)
+                if isinstance(key, str) and isinstance(item, str)
+                else _redact_value(item)
+            )
+            for key, item in value.items()
+        }
     return value
 
 

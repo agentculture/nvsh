@@ -459,12 +459,13 @@ class OpenAICompatProvider(BaseProvider):
             return None, None, False, True
 
         if request.interface == "tool_call":
-            tool_calls = message.get("tool_calls") or []
-            if not tool_calls:
-                return None, None, True, False
-            function = tool_calls[0].get("function") or {}
-            answer = tool_call_answer(function.get("name"), function.get("arguments"))
-            return answer, None, answer is None, False
+            # The first WELL-FORMED call, as nvsh's ToolChat drops malformed ones.
+            for call in message.get("tool_calls") or []:
+                function = (call.get("function") if isinstance(call, dict) else None) or {}
+                answer = tool_call_answer(function.get("name"), function.get("arguments"))
+                if answer is not None:
+                    return answer, None, False, False
+            return None, None, True, False
 
         # interface == "choice": the model's text, stripped.
         content = message.get("content")

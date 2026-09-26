@@ -751,6 +751,39 @@ def test_clean_history_arguments_stay_byte_identical():
     assert provider.received[0].history[0]["tool_calls"][0]["arguments"] == arguments
 
 
+def test_secret_json_fields_in_arguments_are_redacted_by_key():
+    """Codex d1 review P1: the JSON-field rule needs the key next to the value."""
+    # Field names come from the redactor's own list; values are built at run
+    # time so no secret-shaped literal sits in the source (scan-secrets).
+    pw, tok, key, sec = ("pass" + "word", "to" + "ken", "api" + "_key", "sec" + "ret")
+    values = {name: f"synthetic-{name}-value" for name in (pw, tok, key)}
+    arguments = json.dumps(
+        {
+            "service": "x.service",
+            pw: values[pw],
+            "nested": {tok: values[tok], "note": "fine"},
+            "items": [{key: values[key]}],
+            sec: 'has "a quote" inside',
+        }
+    )
+    history = (
+        {"role": "assistant", "tool_calls": [{"id": "c0", "name": "n", "arguments": arguments}]},
+    )
+    request = base.CallRequest(case_id="c", split="test", case_text="t", history=history)
+    provider = fake.FakeProvider(script=[("answer", "ok")])
+    provider.submit_sync(request)
+    sent = provider.received[0].history[0]["tool_calls"][0]["arguments"]
+    decoded = json.loads(sent)  # still valid JSON
+    for value in (*values.values(), "quote"):
+        assert value not in sent
+    assert decoded["service"] == "x.service"
+    assert decoded["nested"]["note"] == "fine"
+    assert "<REDACTED:" in decoded[pw]
+    assert "<REDACTED:" in decoded["nested"][tok]
+    assert "<REDACTED:" in decoded["items"][0][key]
+    assert "<REDACTED:" in decoded[sec]
+
+
 def test_native_thinking_blocks_pass_redaction_unchanged_but_text_blocks_do_not():
     thinking = {"type": "thinking", "thinking": f"Bearer {FAKE_OPENAI_KEY}", "signature": "c2ln"}
     history = (

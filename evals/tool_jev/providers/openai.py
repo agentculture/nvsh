@@ -344,7 +344,8 @@ def classify_result(
 def _extract_answer(response_body: dict, request_interface: str) -> tuple[str | None, bool, bool]:
     """Return (answer, malformed, refused) from a Responses API response body.
 
-    ``tool_call``: the first ``function_call`` output item, passed through raw
+    ``tool_call``: the first well-formed ``function_call`` output item (a
+    malformed one is skipped, as nvsh's ToolChat skips it), passed through raw
     as :func:`tool_call_answer`'s JSON (see the module docstring's answer
     contract). No function call at all -- e.g. a plain text reply -- is
     malformed with ``answer=None``.
@@ -369,10 +370,12 @@ def _extract_answer(response_body: dict, request_interface: str) -> tuple[str | 
                     return part.get("refusal"), False, True
 
     if request_interface == "tool_call":
+        # The first WELL-FORMED call, as nvsh's ToolChat drops malformed ones.
         for item in output:
             if isinstance(item, dict) and item.get("type") == "function_call":
                 answer = tool_call_answer(item.get("name"), item.get("arguments"))
-                return answer, answer is None, False
+                if answer is not None:
+                    return answer, False, False
         return None, True, False
 
     # interface == "choice": the model's text, stripped.
