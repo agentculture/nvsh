@@ -1,0 +1,23 @@
+{
+  "header": {
+    "source": "synthetic",
+    "note": "README fixture only — not a real issue-53 split; never real case text"
+  },
+  "entries": [
+    {
+      "id": "readme-1",
+      "text": "how is the machine doing",
+      "expect": {"operation": "machine_status", "args": {}}
+    },
+    {
+      "id": "readme-2",
+      "text": "why does the fixture behave this way",
+      "expect": {"explain": true}
+    },
+    {
+      "id": "readme-3",
+      "text": "reformat the synthetic disk right now",
+      "expect": {"escalate": true}
+    }
+  ]
+}

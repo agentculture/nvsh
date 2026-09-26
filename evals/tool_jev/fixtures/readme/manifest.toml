@@ -1,0 +1,35 @@
+# Synthetic fixture manifest for the "Fixture run" section of evals/README.md.
+#
+# This is NOT the issue-64 gate manifest: it carries no reference models, no
+# judges and no budgets, only two synthetic candidate/baseline pairs (one per
+# track) replaying saved predictions on three synthetic, non-held-out cases.
+# It exists so a reader can run the gate end to end with no network and no
+# provider keys, straight from a clean checkout. Every path below is
+# relative to NVSH_EVALS_PRIVATE_ROOT, exactly like the real manifest
+# (see manifest.example.toml).
+
+[[candidate]]
+name = "readme-heal"
+track = "A"
+predictions_path = "predictions/readme-heal.jsonl"
+
+[[baseline]]
+name = "readme-heal-stock"
+track = "A"
+predictions_path = "predictions/readme-heal-stock.jsonl"
+
+[[candidate]]
+name = "readme-scorer"
+track = "B"
+predictions_path = "predictions/readme-scorer.jsonl"
+
+[[baseline]]
+name = "readme-scorer-stock"
+track = "B"
+predictions_path = "predictions/readme-scorer-stock.jsonl"
+
+[[case_set]]
+name = "readme-test"
+count = 3
+split = "test"
+path = "splits/readme-test.json"
