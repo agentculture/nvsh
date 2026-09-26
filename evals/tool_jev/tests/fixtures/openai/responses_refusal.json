@@ -1,0 +1,12 @@
+{
+  "id": "resp_003",
+  "model": "gpt-6-luna-2026-01-15",
+  "output": [
+    {
+      "type": "message",
+      "role": "assistant",
+      "content": [{"type": "refusal", "refusal": "I can't help with that."}]
+    }
+  ],
+  "usage": {"input_tokens": 50, "output_tokens": 10, "total_tokens": 60}
+}
