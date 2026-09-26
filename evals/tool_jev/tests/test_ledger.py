@@ -79,21 +79,21 @@ class FakeBatchProvider:
     def paid_keys(self) -> list[str]:
         return [k for batch in self.submits for k in batch]
 
-    def submit(self, keys: list[str], token: str) -> str:
+    def submit(self, keys: list[str], submit_ref: str) -> str:
         index = len(self.submits)
         self.submits.append(list(keys))
         batch_id = f"batch_{index:03d}"
         self._batches[batch_id] = {
             "keys": list(keys),
-            "token": token,
+            "submit_ref": submit_ref,
             "status": self.plan.get(index, "ended"),
         }
         return batch_id
 
-    def find(self, token: str) -> str | None:
-        self.finds.append(token)
+    def find(self, submit_ref: str) -> str | None:
+        self.finds.append(submit_ref)
         for batch_id, batch in self._batches.items():
-            if batch["token"] == token:
+            if batch["submit_ref"] == submit_ref:
                 return batch_id
         return None
 
@@ -135,8 +135,8 @@ def run_until_settled(led: Ledger, provider: FakeBatchProvider, batch_size: int 
     plan = led.continue_plan()
     rounds = 0
     # Submissions whose batch id never reached disk: ask the provider first.
-    for token, keys in plan.orphans.items():
-        batch_id = provider.find(token)
+    for submit_ref, keys in plan.orphans.items():
+        batch_id = provider.find(submit_ref)
         if batch_id is None:
             led.abandon_submit(keys)
         else:
@@ -163,8 +163,8 @@ def run_until_settled(led: Ledger, provider: FakeBatchProvider, batch_size: int 
                 return
             continue
         chunk = pending[:batch_size]
-        token = led.begin_submit(chunk)
-        batch_id = provider.submit(chunk, token)
+        submit_ref = led.begin_submit(chunk)
+        batch_id = provider.submit(chunk, submit_ref)
         led.mark_submitted(chunk, batch_id)
 
 
@@ -236,9 +236,9 @@ def test_state_transitions_persist_across_reopen(tmp_path):
     with Ledger(tmp_path) as led:
         k0, k1, k2 = led.register_many(specs)
         assert led.keys(PENDING) == sorted([k0, k1, k2])
-        token = led.begin_submit([k0, k1])
+        submit_ref = led.begin_submit([k0, k1])
         led.mark_submitted([k0, k1], "batch_x")
-        assert token
+        assert submit_ref
         led.record_done(k0, _answer(k0, False))
         led.mark_invalid(k2, "answer is not JSON")
     with Ledger(tmp_path) as led:
@@ -446,10 +446,10 @@ def test_operator_stop_leaves_calls_pending_not_invalid(tmp_path):
     specs = _specs(4)
 
     class StopAfterFirst(FakeBatchProvider):
-        def submit(self, keys, token):
+        def submit(self, keys, submit_ref):
             if self.submits:
                 raise KeyboardInterrupt
-            return super().submit(keys, token)
+            return super().submit(keys, submit_ref)
 
     provider = StopAfterFirst()
     with Ledger(tmp_path) as led:
@@ -499,8 +499,8 @@ def test_submitted_batch_is_reattached_and_polled_not_resubmitted(tmp_path):
     provider = FakeBatchProvider()
     with Ledger(tmp_path) as led:
         keys = led.register_many(specs)
-        token = led.begin_submit(keys)
-        batch_id = provider.submit(keys, token)
+        submit_ref = led.begin_submit(keys)
+        batch_id = provider.submit(keys, submit_ref)
         led.mark_submitted(keys, batch_id)
     # --- stop / reset here; the batch keeps running server-side ---
     with Ledger(tmp_path) as led:
@@ -520,8 +520,8 @@ def test_expired_batch_requeues_only_its_unfinished_keys(tmp_path):
         keys = led.register_many(specs)
         first = sorted(keys)[:3]
         other = sorted(keys)[3]
-        token = led.begin_submit(first)
-        led.mark_submitted(first, provider.submit(first, token))
+        submit_ref = led.begin_submit(first)
+        led.mark_submitted(first, provider.submit(first, submit_ref))
         led.mark_submitted([other], "batch_other")
         answered = provider.fetch("batch_000")
         for key, response in answered.items():
@@ -541,12 +541,12 @@ def test_orphaned_submission_is_found_by_token_not_resent(tmp_path):
     provider = FakeBatchProvider()
     with Ledger(tmp_path) as led:
         keys = led.register_many(specs)
-        token = led.begin_submit(keys)
-        provider.submit(keys, token)  # accepted server-side, then power-off
+        submit_ref = led.begin_submit(keys)
+        provider.submit(keys, submit_ref)  # accepted server-side, then power-off
     with Ledger(tmp_path) as led:
         plan = led.continue_plan()
-        assert plan.orphans == {token: sorted(keys)}
+        assert plan.orphans == {submit_ref: sorted(keys)}
         run_until_settled(led, provider)
         assert led.keys(DONE) == sorted(keys)
     assert len(provider.submits) == 1
-    assert provider.finds == [token]
+    assert provider.finds == [submit_ref]
