@@ -90,7 +90,7 @@ from deepeval.test_case import LLMTestCase
 import evals.tool_jev  # noqa: F401  (env guard: must precede any deepeval import)
 from evals.tool_jev import metrics_bridge
 from evals.tool_jev import policies as policy_module
-from evals.tool_jev.trace import Trace
+from evals.tool_jev.trace import Trace, _is_inside_git_worktree
 
 
 class DeepevalLayerError(ValueError):
@@ -553,6 +553,19 @@ class EvaluationOutcome:
     corpus_metrics: dict
 
 
+def _refuse_inside_repo(path: Path, what: str) -> None:
+    """Refuse a deepeval destination inside a git worktree, before anything is created.
+
+    deepeval writes per-case results (and its relative ``.deepeval/`` state)
+    under these folders; the repository must never receive them.
+    """
+    if _is_inside_git_worktree(path):
+        raise DeepevalLayerError(
+            f"{what} {path} is inside a git worktree; deepeval output must go to a "
+            f"private run directory outside the repository"
+        )
+
+
 def evaluate_traces(
     traces: Sequence[Trace],
     policy: Mapping[str, Any] | str,
@@ -609,6 +622,11 @@ def evaluate_traces(
     # otherwise be resolved against the temporary run_dir instead of the
     # caller's own cwd.
     results_folder = Path(results_folder).resolve()
+    _refuse_inside_repo(results_folder, "results_folder")
+    if display_config is not None and getattr(display_config, "results_folder", None):
+        _refuse_inside_repo(
+            Path(display_config.results_folder).resolve(), "display_config.results_folder"
+        )
     if display_config is None:
         display_config = DisplayConfig(
             results_folder=str(results_folder),

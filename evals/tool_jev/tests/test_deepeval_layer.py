@@ -851,3 +851,29 @@ def test_evaluate_traces_corpus_metrics_are_not_recomputed_by_deepeval(
     assert "abstain" in outcome.corpus_metrics
     assert "wrong_mutating" in outcome.corpus_metrics
     assert "slices" in outcome.corpus_metrics
+
+
+# ---------------------------------------------------------------------------
+# Codex wave-2 review: every effective deepeval destination must be outside
+# the repository, checked before anything is created.
+# ---------------------------------------------------------------------------
+
+
+def test_evaluate_traces_refuses_a_results_folder_inside_the_repo():
+    target = REPO_ROOT / "evals-results-should-not-exist"
+    with pytest.raises(deepeval_layer.DeepevalLayerError):
+        deepeval_layer.evaluate_traces([], "raw", results_folder=target)
+    assert not target.exists()
+
+
+def test_evaluate_traces_refuses_a_display_config_folder_inside_the_repo(tmp_path):
+    from deepeval.evaluate.configs import DisplayConfig
+
+    inside = REPO_ROOT / "evals-display-should-not-exist"
+    config = DisplayConfig(results_folder=str(inside), print_results=False, show_indicator=False)
+    with pytest.raises(deepeval_layer.DeepevalLayerError):
+        deepeval_layer.evaluate_traces(
+            [], "raw", results_folder=tmp_path / "run", display_config=config
+        )
+    assert not inside.exists()
+    assert not (tmp_path / "run").exists()
