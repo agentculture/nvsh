@@ -772,3 +772,23 @@ def test_result_from_raw_rereads_the_cached_answer():
     fresh = provider.submit_sync(_tool_call_request())
     again = provider.result_from_raw(_tool_call_request(), fresh.raw)
     assert again == fresh
+
+
+def test_a_restricted_key_missing_a_scope_is_reported_as_missing_scope():
+    """Live smoke 2026-09-26: a restricted key without api.files.write 401s the batch upload."""
+    body = json.dumps(
+        {
+            "error": {
+                "message": "You have insufficient permissions for this operation. Missing "
+                "scopes: api.files.write. Check that you have the correct role.",
+                "type": "invalid_request_error",
+            }
+        }
+    ).encode()
+    classification = openai_provider._classify_http(401, body)
+    assert classification.rejected and not classification.retryable
+    assert classification.reason == "request_rejected:missing_scope:api.files.write"
+    plain = openai_provider._classify_http(
+        401, json.dumps({"error": {"code": "invalid_api_key"}}).encode()
+    )
+    assert "missing_scope" not in plain.reason

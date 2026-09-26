@@ -101,7 +101,7 @@ from .base import (
     tool_choice_forced,
     visible_text,
 )
-from .errors import Classification, classify_answer, classify_transport
+from .errors import Classification, classify_answer, classify_transport, rejected
 
 #: Requests never go anywhere but this host (acceptance criterion 2).
 API_BASE = "https://api.openai.com"
@@ -212,7 +212,12 @@ def _openai_error_fields(body: bytes) -> tuple[str | None, str | None]:
 
 
 def _classify_http(status: int, body: bytes):
-    error_type, _message = _openai_error_fields(body)
+    error_type, message = _openai_error_fields(body)
+    if status == 401 and "missing scopes" in (message or "").lower():
+        # A restricted key without a needed scope (e.g. api.files.write for the
+        # Batch API's upload) is a permission to add, not a bad key.
+        scopes = message.split("Missing scopes:", 1)[-1].split(".", 1)[0].strip()
+        return rejected(f"missing_scope:{scopes}"[:80])
     return classify_transport("openai", status_code=status, error_type=error_type)
 
 

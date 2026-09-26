@@ -84,6 +84,11 @@ def _pending(reason: str) -> Classification:
     return Classification(Outcome.PENDING, reason, stop=True, retryable=True)
 
 
+def rejected(reason: str) -> Classification:
+    """A request-level rejection with *reason* (not retryable until something changes)."""
+    return _rejected(reason)
+
+
 def _rejected(detail: str) -> Classification:
     """A permanent request error: stop, stay pending, fix the request first."""
     return Classification(
