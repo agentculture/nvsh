@@ -5,7 +5,7 @@
   "schema_version": 5,
   "status": "exported",
   "created": "2026-09-26T04:58:49Z",
-  "updated": "2026-09-26T07:10:17Z",
+  "updated": "2026-09-26T07:13:26Z",
   "targets": [
     {
       "id": "c1",
@@ -991,6 +991,14 @@
       "task_id": "t11",
       "resolved": true,
       "resolution": "fixC (merged): every adapter returns the raw first tool call as JSON {name, arguments}; request.parse_tool_call interprets it; fixtures use nvsh's real tools; test_contract_integration.py drives each adapter into the parser"
+    },
+    {
+      "id": "r9",
+      "text": "Fairness gap from d1: in the Track A loop, adapters classify a reference model's prose-only reply as malformed (invalid), while measure.py counts a candidate's prose reply as an explanation; before the full run, loop replies without a tool call must be passed to LfmTier as text so both are treated alike. Also unverified: Anthropic thinking-block replay with LfmTier-clamped tool_use inputs, OpenAI reasoning items not replayed, OpenAI 'incomplete' responses without an error read as answers",
+      "kind": "unknown_nonblocking",
+      "task_id": "t17",
+      "resolved": false,
+      "resolution": ""
     }
   ],
   "obligations": []
