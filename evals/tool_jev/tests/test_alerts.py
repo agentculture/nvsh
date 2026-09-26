@@ -114,3 +114,17 @@ def test_only_counts_and_names_are_sent(tmp_path):
 def test_post_webhook_refuses_a_non_https_url():
     with pytest.raises(ValueError):
         alerts.post_webhook("http://example.invalid/hook", "x")
+
+
+def test_a_status_summary_every_thirty_minutes(tmp_path):
+    env = {alerts.ENV_WEBHOOK: URL}
+    poster = Poster()
+    first = alerts.notify(tmp_path, _doc(3, 97, spend=0.2), env=env, poster=poster, now=1000.0)
+    assert first[0] == "run r1 status (waiting): total spend $0.20"
+    assert first[1] == "  openrouter: 3% answered, 97 to go, 0 invalid, $0.20 of $14"
+    assert alerts.notify(tmp_path, _doc(4, 96), env=env, poster=poster, now=1000.0 + 1799) == []
+    later = alerts.notify(tmp_path, _doc(5, 95), env=env, poster=poster, now=1000.0 + 1800)
+    assert later[0].startswith("run r1 status")
+    stops = {"providers": {}, "models": {"m/x": {"kind": "rejected", "reason": "auth"}}}
+    lines = alerts.status_lines(_doc(1, 1, stops=stops))
+    assert lines[-1] == "  stopped: m/x (auth)"

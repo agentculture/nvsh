@@ -10,6 +10,9 @@ alert webhook is configured it posts one short message per new event:
   first time it is crossed);
 - **spend**: total spend crossing another whole dollar ($1, $2, ...), with
   each provider's spend so far;
+- **status**: a summary of every provider (percent answered, calls to go,
+  invalid, spend of cap) and the active stops, every
+  :data:`STATUS_EVERY_SECONDS` (30 minutes) while the run is going;
 - **stops**: a provider or model stop the first time it appears (money,
   budget cap, truncation, rejected request, uncertain attempts, failed
   batches), and the run's end: complete, or stopped to ask the operator.
@@ -39,6 +42,7 @@ ENV_WEBHOOK = "NVSH_EVALS_ALERT_WEBHOOK"
 ALERTS_FILE = "alerts.json"
 PROGRESS_STEP = 10  # percent
 SPEND_STEP = 1.0  # US dollars
+STATUS_EVERY_SECONDS = 1800.0
 #: Discord rejects a message longer than 2000 characters.
 MAX_MESSAGE = 1900
 
@@ -70,6 +74,7 @@ def _load(run_dir: Path) -> dict:
     doc.setdefault("spend_dollars", 0)
     doc.setdefault("stops", [])
     doc.setdefault("finished", None)
+    doc.setdefault("status_at", None)
     return doc
 
 
@@ -88,8 +93,38 @@ def _percent(row: Mapping[str, Any]) -> int:
     return int(100 * answered / total) if total else 0
 
 
-def events(doc: Mapping[str, Any], sent: Mapping[str, Any]) -> tuple[list[str], dict]:
-    """The new alert lines for status *doc*, and the updated *sent* record."""
+def status_lines(doc: Mapping[str, Any]) -> list[str]:
+    """The periodic summary: one line per provider, then the active stops."""
+    run = f"run {doc.get('run_id', '?')}"
+    providers = doc.get("providers", {})
+    total = sum(float(row.get("spend_usd", 0.0)) for row in providers.values())
+    lines = [f"{run} status ({doc.get('status', '?')}): total spend ${total:.2f}"]
+    for kind, row in sorted(providers.items()):
+        to_go = int(row.get("pending", 0)) + int(row.get("submitted", 0))
+        lines.append(
+            f"  {kind}: {_percent(row)}% answered, {to_go} to go, "
+            f"{int(row.get('invalid', 0))} invalid, "
+            f"${float(row.get('spend_usd', 0.0)):.2f} of ${float(row.get('usd_cap', 0.0)):.0f}"
+        )
+    stops = doc.get("stops", {})
+    for scope in ("providers", "models"):
+        for name, stop in sorted(stops.get(scope, {}).items()):
+            lines.append(f"  stopped: {name} ({stop.get('reason') or stop.get('kind')})")
+    return lines
+
+
+def events(
+    doc: Mapping[str, Any],
+    sent: Mapping[str, Any],
+    *,
+    now: float | None = None,
+    status_every: float = STATUS_EVERY_SECONDS,
+) -> tuple[list[str], dict]:
+    """The new alert lines for status *doc*, and the updated *sent* record.
+
+    *now* (seconds) enables the periodic status summary: it is added when
+    none was sent yet or *status_every* seconds have passed since the last.
+    """
     record = json.loads(json.dumps(sent))
     lines: list[str] = []
     run = f"run {doc.get('run_id', '?')}"
@@ -131,6 +166,10 @@ def events(doc: Mapping[str, Any], sent: Mapping[str, Any]) -> tuple[list[str], 
             lines.append(f"{run}: COMPLETE (total spend ${total:.2f}); result.json and report.md")
         else:
             lines.append(f"{run}: STOPPED TO ASK the operator; see drive.log")
+    last = record.get("status_at")
+    if now is not None and (last is None or now - float(last) >= status_every):
+        record["status_at"] = now
+        lines.extend(status_lines(doc))
     return lines, record
 
 
@@ -141,6 +180,8 @@ def notify(
     env: Mapping[str, str] | None = None,
     poster: Poster = post_webhook,
     finished: str | None = None,
+    now: float | None = None,
+    status_every: float = STATUS_EVERY_SECONDS,
 ) -> list[str]:
     """Post every new alert for *doc*; the lines posted (none when no webhook is set).
 
@@ -155,7 +196,7 @@ def notify(
     sent = _load(run_dir)
     if finished is not None:
         doc = {**doc, "status": finished}
-    lines, record = events(doc, sent)
+    lines, record = events(doc, sent, now=now, status_every=status_every)
     if not lines:
         return []
     poster(url, "\n".join(lines))

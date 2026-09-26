@@ -21,7 +21,8 @@ this module is the loop itself, runnable anywhere:
   most 30 minutes) and tries again: it never crash-loops;
 - one line per step is appended to ``<run_dir>/drive.log``;
 - after every step, when ``NVSH_EVALS_ALERT_WEBHOOK`` is set, progress (every
-  10% per provider), spend (every whole dollar), stops and the run's end go
+  10% per provider), spend (every whole dollar), a status summary every 30
+  minutes, stops and the run's end go
   to that webhook (:mod:`evals.tool_jev.alerts`, deviation d5); a failed post
   is logged and retried next step, never stopping the run;
 - SIGTERM / SIGINT set a flag and the loop exits cleanly between steps;
@@ -38,6 +39,7 @@ The clock and sleep are injectable so tests never wait for real.
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 from pathlib import Path
@@ -50,6 +52,8 @@ backoff_delay = runner.backoff_delay
 DEFAULT_POLL_SECONDS = runner.DEFAULT_POLL_SECONDS
 DEFAULT_RECHECK_SECONDS = runner.DEFAULT_RECHECK_SECONDS
 LOG_FILE = "drive.log"
+#: How often the alert heartbeat thread looks for due alerts during a step.
+HEARTBEAT_SECONDS = 60.0
 
 
 def _log(run_dir: Path, clock: Callable[[], float], text: str) -> None:
@@ -74,6 +78,7 @@ def drive(
     start: bool = False,
     idle_when_done: bool = False,
     poster: alerts.Poster | None = None,
+    status_seconds: float = alerts.STATUS_EVERY_SECONDS,
 ) -> int:
     """Run :func:`run.step` until the run completes, asks or is told to stop; the exit code."""
     run_dir = Path(run_dir)
@@ -86,13 +91,21 @@ def drive(
         else:
             stop.wait(seconds)
 
+    alert_lock = threading.Lock()
+
     def alert(finished: str | None = None) -> None:
+        with alert_lock:
+            _alert(finished)
+
+    def _alert(finished: str | None) -> None:
         try:
             sent = alerts.notify(
                 run_dir,
                 runner.status(run_dir),
                 env=env,
                 finished=finished,
+                now=clock(),
+                status_every=status_seconds,
                 **({"poster": poster} if poster is not None else {}),
             )
         except Exception as exc:  # noqa: BLE001 -- an alert never stops the run
@@ -111,6 +124,17 @@ def drive(
             if sleep is not None:  # an injected sleep never sets the flag: tests end here
                 break
         return code
+
+    def heartbeat() -> None:
+        # A step can run for an hour or more (a whole round of sync calls):
+        # this thread keeps the 30-minute status and the milestones flowing
+        # meanwhile. It reads status lock-free, like `status` does.
+        while not stop.wait(HEARTBEAT_SECONDS):
+            if (run_dir / runner.RUN_FILE).exists():
+                alert()
+
+    if sleep is None and alerts.ENV_WEBHOOK in (env if env is not None else os.environ):
+        threading.Thread(target=heartbeat, name="alerts-heartbeat", daemon=True).start()
 
     steps = 0
     errors = 0
