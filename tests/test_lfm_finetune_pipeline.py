@@ -729,7 +729,24 @@ def test_measure_stages_pass_the_snapshot_thinking_and_extra_args(
     assert _option(argv, "--enable-thinking") == ["false"]
     assert _option(argv, "--ctx") == ["2048"]  # from MEASURE_CTX, never an extra arg
     assert _option(argv, "--slice") == ["missing-candidate"]
-    assert _option(argv, "--max-logprobs") == ["22"]
+    assert _option(argv, "--max-logprobs") == ["20000"]
+
+
+def test_measure_max_logprobs_default_matches_scorer_readout_top(tmp_path: Path) -> None:
+    """Issue 53 t3: the served cap must not truncate below what scorer.py asks for."""
+    scorer_path = _REPO_ROOT / "scripts" / "lfm-finetune" / "scorer.py"
+    spec = importlib.util.spec_from_file_location("t3_scorer", scorer_path)
+    scorer = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = scorer  # its dataclasses look their module up there
+    spec.loader.exec_module(scorer)
+    assert scorer.READOUT_TOP >= 5000
+
+    pipe = _Pipeline(tmp_path)
+    pipe.ready()
+    result = pipe.run("measure-val", "a1")
+    assert result.returncode == 0, result.stderr
+    [(_, argv)] = pipe.calls("measure.py")
+    assert _option(argv, "--max-logprobs") == [str(scorer.READOUT_TOP)]
 
 
 def test_enable_thinking_comes_from_the_env_file(tmp_path: Path) -> None:
@@ -897,7 +914,7 @@ def _serve(tmp_path: Path, *args: str, **env: str) -> subprocess.CompletedProces
         "TOOL_CALL_PARSER": "qwen3_coder",
         "MEASURE_CTX": "2048",
         "MEASURE_GPU_FRACTION": "0.08",
-        "MEASURE_MAX_LOGPROBS": "22",
+        "MEASURE_MAX_LOGPROBS": "20000",
     }
     return subprocess.run(
         ["bash", str(_SERVE), *args],
@@ -941,7 +958,7 @@ def test_serve_start_builds_exactly_the_pinned_flags(tmp_path: Path) -> None:
         "--tool-call-parser",
         "qwen3_coder",
         "--max-logprobs",
-        "22",
+        "20000",
         "--limit-mm-per-prompt",
         '{"image": 0, "video": 0}',
     ]
@@ -1077,7 +1094,7 @@ def test_both_env_examples_name_the_measure_server_settings() -> None:
         assert "\nMEASURE_PORT=18060\n" in text
         assert "\nMEASURE_CTX=2048\n" in text
         assert "\nMEASURE_GPU_FRACTION=0.08\n" in text
-        assert "\nMEASURE_MAX_LOGPROBS=22\n" in text
+        assert "\nMEASURE_MAX_LOGPROBS=20000\n" in text
         assert f"\nTOOL_CALL_PARSER={parser}\n" in text
 
 
@@ -2777,3 +2794,281 @@ def test_bundle_then_upload_bundle_end_to_end_with_the_real_scripts(tmp_path: Pa
     assert result.returncode == 0, result.stderr
     assert "private=True" in result.stdout
     assert (tmp_path / "remote" / (_PREFIX + "tool-jev") / "README.md").read_text() == card
+
+
+# -- issue 53, deviation d2: Track B trains on build_dataset.py's scorer file --
+
+
+def _train_python(tmp_path: Path) -> tuple[Path, Path]:
+    """A fake TRAIN_PY: prints a site dir for `-c`, records any other argv as one
+    JSON line, and gives a --merge-only call a merged dir gen_config.py can write to."""
+    site = tmp_path / "train-site-packages"
+    site.mkdir(exist_ok=True)
+    log = tmp_path / "train-py.log"
+    train_py = tmp_path / "train-python"
+    train_py.write_text(
+        "#!/usr/bin/env bash\n"
+        f'if [ "$1" = -c ]; then echo "{site}"; exit 0; fi\n'
+        f'"{sys.executable}" -c \'import json, sys; print(json.dumps(sys.argv[1:]))\' "$@"'
+        f' >> "{log}"\n'
+        'case " $* " in *" --merge-only "*)\n'
+        '  out=""; prev=""; for arg in "$@"; do [ "$prev" = --out ] && out=$arg; prev=$arg; done\n'
+        '  mkdir -p "$out/merged"; echo "{}" > "$out/merged/config.json" ;;\n'
+        "esac\n",
+        encoding="utf-8",
+    )
+    train_py.chmod(0o755)
+    return train_py, log
+
+
+#: `systemd-run --user --scope ... -- CMD`: runs CMD uncapped (a test double).
+_FAKE_SYSTEMD_RUN = """#!/usr/bin/env bash
+while [ "$#" -gt 0 ] && [ "$1" != -- ]; do shift; done
+shift
+exec "$@"
+"""
+
+
+def _scorer_pipeline(tmp_path: Path) -> tuple[_Pipeline, Path]:
+    train_py, log = _train_python(tmp_path)
+    pipe = _Pipeline(
+        tmp_path, f"TRAIN_PY={train_py}\nTRAIN_MEMORY_FLOOR=1K\nTRAIN_WATCHDOG_SECONDS=1\n"
+    )
+    fake = tmp_path / "bin" / "systemd-run"
+    fake.write_text(_FAKE_SYSTEMD_RUN, encoding="utf-8")
+    fake.chmod(0o755)
+    return pipe, log
+
+
+def _train_scorer_argv(log: Path) -> list[str]:
+    calls = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    [argv] = [call for call in calls if call and call[0].endswith("train_scorer.py")]
+    return argv
+
+
+def test_assemble_without_scorer_build_args_is_unchanged(tmp_path: Path) -> None:
+    """Issue-46 runs reproduce: no SCORER_BUILD_ARGS, no scorer file, no t14 flags."""
+    train_py, _ = _train_python(tmp_path)
+    pipe = _Pipeline(tmp_path, f"TRAIN_PY={train_py}\n")
+    result = pipe.run("assemble")
+    assert result.returncode == 0, result.stderr
+    [(_, build)] = pipe.calls("build_dataset.py")
+    for flag in ("--scorer-out", "--randomize-labels", "--reasons", "--perm-seed"):
+        assert flag not in build
+
+
+def test_assemble_passes_scorer_build_args_and_writes_the_scorer_file(tmp_path: Path) -> None:
+    train_py, _ = _train_python(tmp_path)
+    pipe = _Pipeline(tmp_path, f"TRAIN_PY={train_py}\n")
+    args = "--randomize-labels --perm-seed 53 --missing-candidate-rate 0.3 --reasons"
+    result = pipe.run("assemble", SCORER_BUILD_ARGS=args)
+    assert result.returncode == 0, result.stderr
+    [(_, build)] = pipe.calls("build_dataset.py")
+    assert _option(build, "--split") == [str(pipe.work / "data" / "train-augmented.json")]
+    assert _option(build, "--out") == [str(pipe.work / "data" / "nvsh-train.jsonl")]
+    assert _option(build, "--scorer-out") == [str(pipe.work / "data" / "scorer-train.json")]
+    assert "--randomize-labels" in build
+    assert "--reasons" in build
+    assert _option(build, "--perm-seed") == ["53"]
+    assert _option(build, "--missing-candidate-rate") == ["0.3"]
+
+
+def test_train_scorer_uses_the_scorer_file_when_it_is_newer(tmp_path: Path) -> None:
+    pipe, log = _scorer_pipeline(tmp_path)
+    data = pipe.work / "data"
+    data.mkdir(parents=True)
+    (data / "train-augmented.json").write_text("{}", encoding="utf-8")
+    os.utime(data / "train-augmented.json", (1_000_000, 1_000_000))
+    (data / "scorer-train.json").write_text("{}", encoding="utf-8")
+    result = pipe.run("train-scorer", "d2")
+    assert result.returncode == 0, result.stderr
+    assert _option(_train_scorer_argv(log), "--train") == [str(data / "scorer-train.json")]
+    assert f"train-scorer: training on {data / 'scorer-train.json'}" in result.stdout
+
+
+def test_train_scorer_ignores_a_scorer_file_older_than_the_training_set(tmp_path: Path) -> None:
+    """A stale scorer file (assemble re-run without SCORER_BUILD_ARGS) is not used."""
+    pipe, log = _scorer_pipeline(tmp_path)
+    data = pipe.work / "data"
+    data.mkdir(parents=True)
+    (data / "scorer-train.json").write_text("{}", encoding="utf-8")
+    os.utime(data / "scorer-train.json", (1_000_000, 1_000_000))
+    (data / "train-augmented.json").write_text("{}", encoding="utf-8")
+    result = pipe.run("train-scorer", "d2")
+    assert result.returncode == 0, result.stderr
+    assert _option(_train_scorer_argv(log), "--train") == [str(data / "train-augmented.json")]
+    assert f"train-scorer: training on {data / 'train-augmented.json'}" in result.stdout
+
+
+def test_train_scorer_without_a_scorer_file_trains_on_the_training_set(tmp_path: Path) -> None:
+    pipe, log = _scorer_pipeline(tmp_path)
+    data = pipe.work / "data"
+    data.mkdir(parents=True)
+    (data / "train-augmented.json").write_text("{}", encoding="utf-8")
+    result = pipe.run("train-scorer", "d2")
+    assert result.returncode == 0, result.stderr
+    argv = _train_scorer_argv(log)
+    assert _option(argv, "--train") == [str(data / "train-augmented.json")]
+    assert _option(argv, "--val") == [str(pipe.work / "splits" / "val.json")]
+    assert f"train-scorer: training on {data / 'train-augmented.json'}" in result.stdout
+
+
+# -- MEASURE_REASONS: a --reasons scorer is measured on its own pool (issue 53) --
+
+
+def _scorer_stack_pipeline(tmp_path: Path, extra_env: str = "") -> "_Pipeline":
+    site = tmp_path / "train-site-packages"
+    site.mkdir()
+    train_py = tmp_path / "train-python"
+    train_py.write_text(f'#!/usr/bin/env bash\necho "{site}"\n', encoding="utf-8")
+    train_py.chmod(0o755)
+    pipe = _Pipeline(
+        tmp_path, f"TRAIN_PY={train_py}\nHELDOUT_SPLIT={_held_out(tmp_path)}\n" + extra_env
+    )
+    pipe.ready()
+    _mark_scorer_run(pipe)
+    return pipe
+
+
+@pytest.mark.parametrize("stage", ["measure-val", "measure-final", "measure-heldout"])
+def test_measure_reasons_adds_reasons_to_every_scorer_stage(stage: str, tmp_path: Path) -> None:
+    pipe = _scorer_stack_pipeline(tmp_path)
+    result = pipe.run(stage, "a1", "--scorer", "served", MEASURE_REASONS="1")
+    assert result.returncode == 0, result.stderr
+    [(_, argv)] = pipe.calls("measure.py")
+    assert argv.count("--reasons") == 1
+    assert _option(argv, "--tokenizer") == [str(pipe.work / "runs" / "a1" / "merged")]
+
+
+def test_measure_reasons_can_come_from_the_env_file(tmp_path: Path) -> None:
+    pipe = _scorer_stack_pipeline(tmp_path, "MEASURE_REASONS=1\n")
+    result = pipe.run("measure-final", "a1", "--scorer=in-process")
+    assert result.returncode == 0, result.stderr
+    [(_, argv)] = pipe.calls("measure.py")
+    assert "--reasons" in argv
+
+
+@pytest.mark.parametrize("value", ["", "0"])
+def test_without_measure_reasons_a_scorer_stage_is_unchanged(value: str, tmp_path: Path) -> None:
+    pipe = _scorer_stack_pipeline(tmp_path)
+    result = pipe.run("measure-final", "a1", "--scorer", "served", MEASURE_REASONS=value)
+    assert result.returncode == 0, result.stderr
+    [(_, argv)] = pipe.calls("measure.py")
+    assert "--reasons" not in argv
+
+
+def test_measure_reasons_refuses_a_generative_run(tmp_path: Path) -> None:
+    pipe = _Pipeline(tmp_path)
+    pipe.ready()
+    result = pipe.run("measure-val", "a1", MEASURE_REASONS="1")
+    assert result.returncode != 0
+    assert "MEASURE_REASONS" in result.stderr
+    assert not pipe.calls("measure.py")
+    assert not [c for c in _docker_calls(tmp_path) if c[0] == "run"]
+
+
+def test_measure_reasons_refuses_an_unknown_value(tmp_path: Path) -> None:
+    pipe = _scorer_stack_pipeline(tmp_path)
+    result = pipe.run("measure-final", "a1", "--scorer", "served", MEASURE_REASONS="yes")
+    assert result.returncode != 0
+    assert "MEASURE_REASONS" in result.stderr
+    assert not pipe.calls("measure.py")
+
+
+def test_measure_val_of_a_bf16_gguf_build_serves_the_bf16_file(tmp_path: Path) -> None:
+    """Issue 53 t17: <run>.bf16_gguf serves quantize's unquantized GGUF with
+    llama-server, so the served readout can be checked against in-process."""
+    port = _free_port()
+    pipe = _Pipeline(tmp_path, f"MEASURE_PORT={port}\n")
+    pipe.ready(stock=False)
+    quant = _quantized(pipe)
+    (quant / "model-bf16.gguf").write_bytes(b"GGUF fake bf16")
+    llama = _fake_llama_server(tmp_path)
+    result = pipe.run("measure-final", "a1.bf16_gguf", **llama)
+    assert result.returncode == 0, result.stderr
+    [served] = _llama_calls(tmp_path)
+    assert _option(served, "--model") == [str(quant / "model-bf16.gguf")]
+    assert _option(served, "--alias") == ["a1.bf16_gguf"]
+    [(_, argv)] = pipe.calls("measure.py")
+    assert _option(argv, "--label") == ["final-a1.bf16_gguf"]
+    assert _option(argv, "--revision") == [_build_revision(quant)]
+
+
+def test_a_bf16_gguf_build_without_its_file_is_refused(tmp_path: Path) -> None:
+    pipe = _Pipeline(tmp_path)
+    pipe.ready(stock=False)
+    _quantized(pipe)
+    result = pipe.run("measure-final", "a1.bf16_gguf")
+    assert result.returncode != 0
+    assert "model-bf16.gguf" in result.stderr
+
+
+# Issue 53 t21: the bundle stages carry the cycle's own issue, the scorer's
+# training file and its frozen calibration and gate.
+
+
+def test_bundle_dataset_names_bundle_issue_and_ships_the_scorer_file(tmp_path: Path) -> None:
+    pipe = _bundle_pipeline(
+        tmp_path, extra_env="BUNDLE_ISSUE=53\nBUNDLE_DEFAULT_SOURCE=draft-sources\n"
+    )
+    (pipe.work / "data").mkdir(parents=True)
+    (pipe.work / "data" / "train-augmented.json").write_text("{}", encoding="utf-8")
+    (pipe.work / "data" / "scorer-train.json").write_text("{}", encoding="utf-8")
+    os.utime(pipe.work / "data" / "train-augmented.json", (1000, 1000))
+    result = pipe.run("bundle-dataset", "tool-jev-v2-dataset")
+    assert result.returncode == 0, result.stderr
+    ((_, argv),) = pipe.calls("dataset_bundle.py")
+    assert _option(argv, "--issue") == ["53"]
+    assert _option(argv, "--default-source") == ["draft-sources"]
+    assert _option(argv, "--scorer-train") == [str(pipe.work / "data" / "scorer-train.json")]
+
+
+def test_bundle_dataset_without_a_scorer_file_passes_none(tmp_path: Path) -> None:
+    pipe = _bundle_pipeline(tmp_path)
+    (pipe.work / "data").mkdir(parents=True)
+    (pipe.work / "data" / "train-augmented.json").write_text("{}", encoding="utf-8")
+    assert pipe.run("bundle-dataset", "tool-jev-dataset").returncode == 0
+    ((_, argv),) = pipe.calls("dataset_bundle.py")
+    assert "--scorer-train" not in argv
+    assert "--default-source" not in argv
+
+
+def test_bundle_of_a_scorer_passes_its_frozen_calibration_and_gate(tmp_path: Path) -> None:
+    calibration, gate = tmp_path / "params.json", tmp_path / "gate.json"
+    calibration.write_text("{}", encoding="utf-8")
+    gate.write_text("{}", encoding="utf-8")
+    pipe = _bundle_pipeline(
+        tmp_path, extra_env=f"BUNDLE_CALIBRATION={calibration}\nBUNDLE_GATE={gate}\n"
+    )
+    pipe.ready(stock=False, run="scorer-r3b")
+    _mark_scorer_run(pipe, "scorer-r3b")
+    _quant(pipe, "scorer-r3b")
+    result = pipe.run(
+        "bundle", "gguf", "scorer-r3b.q4_k_m", "tool-jev-scorer-v2-gguf", str(_report(tmp_path))
+    )
+    assert result.returncode == 0, result.stderr
+    ((_, argv),) = pipe.calls("release_bundle.py")
+    assert _option(argv, "--calibration") == [str(calibration)]
+    assert _option(argv, "--gate") == [str(gate)]
+
+
+def test_bundle_refuses_a_missing_calibration_file(tmp_path: Path) -> None:
+    pipe = _bundle_pipeline(tmp_path, extra_env=f"BUNDLE_CALIBRATION={tmp_path}/nope.json\n")
+    pipe.ready(stock=False, run="scorer-r3b")
+    _mark_scorer_run(pipe, "scorer-r3b")
+    result = pipe.run("bundle", "bf16", "scorer-r3b", "tool-jev-scorer-v2", str(_report(tmp_path)))
+    assert result.returncode != 0
+    assert "BUNDLE_CALIBRATION" in result.stderr
+
+
+def test_bundle_dataset_skips_a_stale_scorer_file(tmp_path: Path) -> None:
+    """PR #65 review: like train-scorer, only a scorer file newer than the frozen
+    training set is the one the scorer trained on."""
+    pipe = _bundle_pipeline(tmp_path)
+    (pipe.work / "data").mkdir(parents=True)
+    (pipe.work / "data" / "scorer-train.json").write_text("{}", encoding="utf-8")
+    (pipe.work / "data" / "train-augmented.json").write_text("{}", encoding="utf-8")
+    os.utime(pipe.work / "data" / "scorer-train.json", (1000, 1000))
+    assert pipe.run("bundle-dataset", "tool-jev-dataset").returncode == 0
+    ((_, argv),) = pipe.calls("dataset_bundle.py")
+    assert "--scorer-train" not in argv

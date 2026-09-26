@@ -90,6 +90,11 @@ _PRIVATE_NAME_RE = re.compile(
 )
 #: Tailscale and carrier-grade NAT (100.64.0.0/10) are private in practice, not in ipaddress.
 _CGNAT = ipaddress.ip_network("100.64.0.0/10")
+#: RFC 5737 documentation networks: never a real host, so never a finding
+#: (Python's ``is_private`` counts them private; issue 53 t21).
+_DOCUMENTATION = tuple(
+    ipaddress.ip_network(net) for net in ("192.0.2.0/24", "198.51.100.0/24", "203.0.113.0/24")
+)
 
 #: Model weight files are expected binaries: listed under scan.json's ``binaries``
 #: key rather than decoded as text -- once their contents prove the format
@@ -163,6 +168,8 @@ def private_hosts(text: str) -> list[tuple[int, str]]:
             except ValueError:
                 continue
             if address.is_loopback or address.is_unspecified:
+                continue
+            if any(address in net for net in _DOCUMENTATION):
                 continue
             if address.is_private or address in _CGNAT:
                 found.append((number, match.group(1)))

@@ -261,3 +261,21 @@ def _load(name: str):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def test_a_decline_reason_class_survives_the_merge() -> None:
+    """t14: reasons-mode gold depends on an escalate entry's `class` field
+    (decline:<reason>) surviving from split.py's source entries into a
+    merged train file untouched -- merge() already keeps every field but
+    models/seed_format/verdicts, so this pins that behaviour."""
+    split = _split()
+    split["entries"][0]["class"] = "decline:repair"
+    merged, _ = _module().merge(split, [])
+    assert merged["entries"][0]["class"] == "decline:repair"
+
+
+def test_a_supplement_entry_keeps_its_own_source_id() -> None:
+    supplement = _supplement()
+    supplement["entries"][0]["source_id"] = "g1"
+    merged, _ = _module().add_supplement(_split(), supplement)
+    assert merged["entries"][-1]["source_id"] == "g1"

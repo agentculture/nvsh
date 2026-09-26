@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import sys
 from pathlib import Path
 
 import pytest
@@ -585,6 +586,18 @@ def test_an_awq_bundle_copies_the_compressed_folder_and_names_its_vllm_args(tmp_
     assert "compressed-tensors" in card
 
 
+def test_scorer_max_logprobs_matches_scorer_readout_top() -> None:
+    """Issue 53 t3: the served-instructions cap must not truncate scorer.py's own ask."""
+    scorer_path = _SCRIPT.parent / "scorer.py"
+    spec = importlib.util.spec_from_file_location("t3_release_bundle_scorer", scorer_path)
+    scorer = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = scorer  # its dataclasses look their module up there
+    spec.loader.exec_module(scorer)
+    module = _module()
+    assert module.SCORER_MAX_LOGPROBS == scorer.READOUT_TOP
+    assert module.SCORER_MAX_LOGPROBS >= 5000
+
+
 def test_an_awq_bundle_needs_its_quantize_record(tmp_path) -> None:
     awq = _awq(tmp_path)
     (awq.parent / "quantize-run.json").unlink()
@@ -606,6 +619,7 @@ def test_a_scorer_card_describes_a_candidate_scorer_not_a_tool_caller(tmp_path) 
     assert "log-probabilities" in card
     assert "tool_call_parser" not in card
     assert "train_scorer.py" in card
+    assert f"--max-logprobs {_module().SCORER_MAX_LOGPROBS}" in card
 
 
 def test_main_builds_a_gguf_bundle_from_the_command_line(tmp_path, capsys) -> None:
@@ -680,3 +694,34 @@ def test_main_needs_the_accepted_and_train_files_with_teacher_models(tmp_path) -
     module = _module()
     with pytest.raises(SystemExit):
         module.main(argv)
+
+
+def test_a_scorer_bundle_ships_its_frozen_calibration_and_gate(tmp_path) -> None:
+    """Issue 53 t21: the served probabilities are only reproducible with the
+    temperature and gate thresholds fitted for this exact build."""
+    calibration = tmp_path / "params.json"
+    calibration.write_text('{"temperature": 1.5, "vector": {}}')
+    gate = tmp_path / "gate.json"
+    gate.write_text('{"gate": {"escalate": null}}')
+    _qwen_build(
+        tmp_path,
+        scorer=True,
+        repo=_QWEN_REPO + "-scorer",
+        run="scorer-r3b",
+        calibration=calibration,
+        gate=gate,
+    )
+    out = tmp_path / "bundle"
+    assert (out / "calibration.json").read_bytes() == calibration.read_bytes()
+    assert (out / "gate.json").read_bytes() == gate.read_bytes()
+    card = (out / "README.md").read_text()
+    assert "## Calibration and gate" in card
+    assert "calibration.json" in card
+    assert "gate.json" in card
+
+
+def test_calibration_and_gate_are_for_a_scorer_only(tmp_path) -> None:
+    calibration = tmp_path / "params.json"
+    calibration.write_text("{}")
+    with pytest.raises(ValueError, match="scorer"):
+        _qwen_build(tmp_path, calibration=calibration)

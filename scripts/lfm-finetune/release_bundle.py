@@ -114,10 +114,6 @@ TOKENIZER_FILES = (
 #: The measure.py report section an Apache card quotes.
 RESULTS_HEADING = "## Issue 46 metrics"
 
-#: A served Track B scorer needs this many next-token log-probabilities (18
-#: labels plus 4, risk r8), as the measure stages serve it.
-SCORER_MAX_LOGPROBS = 22
-
 #: Who wrote and checked the synthetic training requests of issue 39's LFM2.5
 #: run (spec c45), as the operator's local gateway served them. An Apache
 #: bundle never uses this: it names its own run's teachers (``run_teachers``).
@@ -143,12 +139,32 @@ _APACHE_TEACHERS_NEEDED = (
 def _sibling(name: str):
     spec = importlib.util.spec_from_file_location(f"release_{name}", _HERE / f"{name}.py")
     module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module  # its dataclasses look their module up there
     spec.loader.exec_module(module)
     return module
 
 
 def _stage_cache():
     return _sibling("stage_cache")
+
+
+def _scorer_max_logprobs() -> int:
+    """The served logprobs cap the model card must quote.
+
+    Derived from ``scorer.READOUT_TOP`` (the count the scorer itself
+    requests, issue 53 t3) the same way ``dataset_bundle`` is loaded above;
+    falls back to the literal 20000 -- kept equal to ``scorer.READOUT_TOP`` --
+    if scorer.py cannot be imported standalone.
+    """
+    try:
+        return int(_sibling("scorer").READOUT_TOP)
+    except Exception:  # pragma: no cover -- defensive fallback
+        return 20000
+
+
+#: A served Track B scorer needs this many next-token log-probabilities, as
+#: the measure stages serve it (kept equal to scorer.READOUT_TOP, issue 53 t3).
+SCORER_MAX_LOGPROBS = _scorer_max_logprobs()
 
 
 class RunTeachers:
@@ -529,10 +545,10 @@ def model_card(
 
     if scorer:
         what = (
-            "for [nvsh](https://github.com/agentculture/nvsh)'s Tier 2 as a **candidate\n"
-            "scorer** (Track B): every candidate -- each operation in nvsh's table, plus\n"
-            "`explain` and `escalate` -- is listed in the prompt under a one-letter label,\n"
-            "and the model's next-token log-probabilities over those labels are read\n"
+            "for [nvsh](https://github.com/agentculture/nvsh)'s Tier 2 as a **Jev-style\n"
+            "candidate scorer** (Track B): every candidate -- each operation in nvsh's table,\n"
+            "plus `explain` and `escalate` -- is listed in the prompt under a one-letter\n"
+            "label, and the model's next-token log-probabilities over those labels are read\n"
             "once. The highest-scoring label is the choice; an operation's arguments come\n"
             "from nvsh's deterministic grounding, never from the model. It is not a\n"
             "generative tool caller."
@@ -540,11 +556,13 @@ def model_card(
         tags_tool = "- candidate-scoring\n"
     else:
         what = (
-            "for [nvsh](https://github.com/agentculture/nvsh)'s Tier 2:\n"
-            "given an operator's request at a Jetson or DGX Spark shell, answer with one\n"
-            "of three tools: `propose` (an operation from nvsh's table, for the operator\n"
-            "to approve), `explain` (a short answer) or `escalate` (hand the request to a\n"
-            "full agent)."
+            "for [nvsh](https://github.com/agentculture/nvsh)'s Tier 2 as a **specialized\n"
+            "generative tool router** (Track A): given an operator's request at a Jetson\n"
+            "or DGX Spark shell, answer with one of three tools: `propose` (an operation\n"
+            "from nvsh's table, for the operator to approve), `explain` (a short answer)\n"
+            "or `escalate` (hand the request to a full agent). Track A generates structured\n"
+            "tool calls directly; its probability distribution over candidates is\n"
+            "reconstructed offline by `track_a_calibration.py`, not from its runtime output."
         )
         tags_tool = "- tool-calling\n"
 
@@ -731,9 +749,18 @@ def build(
     teachers: RunTeachers | None = None,
     scorer: bool = False,
     quantized_from: str | None = None,
+    calibration: Path | None = None,
+    gate: Path | None = None,
 ) -> str:
-    """Write the upload folder to *out*; return the merged checkpoint's revision."""
+    """Write the upload folder to *out*; return the merged checkpoint's revision.
+
+    *calibration* and *gate* (a scorer only, issue 53 t21) are the frozen
+    calibration parameters and gate settings fitted for this exact build; they
+    ship as ``calibration.json`` and ``gate.json``, byte for byte.
+    """
     _check_kind(kind, gguf, awq_dir)
+    if (calibration or gate) and not scorer:
+        raise ValueError("--calibration and --gate describe a candidate scorer; pass --scorer")
     reports = [results] if isinstance(results, Path) else list(results)
     if not reports:
         raise ValueError("pass at least one --results report")
@@ -811,8 +838,37 @@ def build(
     missing = [p for p in (*required, *KIND_REQUIRED_CARD_PHRASES[kind]) if p not in card]
     if missing:
         raise ValueError(f"model card is missing {missing}")
+    if calibration or gate:
+        for source, name in ((calibration, "calibration.json"), (gate, "gate.json")):
+            if source is not None:
+                shutil.copyfile(source, out / name)
+        card += calibration_section(calibration is not None, gate is not None)
     (out / "README.md").write_text(card, encoding="utf-8")
     return stage_cache.revision_of(merged)
+
+
+def calibration_section(has_calibration: bool, has_gate: bool) -> str:
+    """The card's section on the frozen calibration and gate files (issue 53 t21)."""
+    lines = ["", "## Calibration and gate", ""]
+    if has_calibration:
+        lines += [
+            "`calibration.json` holds the temperature (and a per-label vector, all 1.0",
+            "when unused) fitted on the validation side's fit fold for this exact build.",
+            "Divide each offered label's log-probability by the temperature, apply the",
+            "vector, and renormalise over the offered labels",
+            "(`scripts/lfm-finetune/calibration_fit.py apply` in nvsh does this).",
+        ]
+    if has_gate:
+        if has_calibration:
+            lines.append("")
+        lines += [
+            "`gate.json` holds the decision gate the reported figures use: on the",
+            "calibrated distribution, escalate, explain, propose, or abstain when a",
+            "threshold (top-1 floor, top-1/top-2 margin, entropy) is not met, with",
+            "separate thresholds for read-only and mutating operations",
+            "(`scripts/lfm-finetune/gate.py` in nvsh).",
+        ]
+    return "\n".join(lines) + "\n"
 
 
 def _base_identity(base_snapshot: Path) -> tuple[str, str]:
@@ -867,6 +923,10 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--quantized-from", help="a quantized bundle: the bf16 fine-tune's repository id"
     )
+    parser.add_argument(
+        "--calibration", type=Path, help="a scorer: the frozen calibration parameters (json)"
+    )
+    parser.add_argument("--gate", type=Path, help="a scorer: the frozen gate settings (json)")
     return parser
 
 
@@ -901,6 +961,8 @@ def main(argv: list[str] | None = None) -> int:
             teachers=teachers,
             scorer=args.scorer,
             quantized_from=args.quantized_from,
+            calibration=args.calibration,
+            gate=args.gate,
         )
     except ValueError as exc:
         parser.error(str(exc))

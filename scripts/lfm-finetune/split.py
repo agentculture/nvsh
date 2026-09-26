@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """Seeded train/val/test split for the Tier 2 (LFM2.5) fine-tune benchmark corpus.
 
-A development-machine tool for ``docs/lfm-finetune.md`` (part of #39). It is
-NEVER imported by the nvsh package -- nothing under nvsh/ may depend on it.
+A development-machine tool for ``docs/lfm-finetune.md`` (part of #39, #53). It
+is NEVER imported by the nvsh package -- nothing under nvsh/ may depend on it.
 It does not depend on ``scripts/lfm-finetune/build_dataset.py`` or
 ``nvsh.tiers.bench.load_corpus`` either: it reads a corpus file's JSON
 directly, so this script and its tests never depend on task t1.
 
-Usage::
+Usage (legacy, single corpus, fractions -- unchanged since #39)::
 
     python scripts/lfm-finetune/split.py --corpus nvsh/tiers/corpus/dev.json \\
         --out-dir out/ --seed 39
@@ -25,14 +25,59 @@ yields the identical split. Every output entry carries a ``source_id`` field
 (its own ``id``), so a later variation of an entry (e.g. a rephrasing added
 by task t6) can record that same ``source_id`` and inherit its original's
 side without ever appearing on two sides itself.
+
+Usage (v2, multiple corpora, target sizes -- new for #53)::
+
+    python scripts/lfm-finetune/split.py \\
+        --corpus nvsh/tiers/corpus/dev.json --corpus /work/i53/drafted.json \\
+        --version v2 --val-size 150 --test-size 150 --seed 39 \\
+        --fold-seed 7 --out-dir /work/i53/corpus-v2
+
+v2 mode (triggered by ``--version``, more than one ``--corpus``, or either
+``--val-size``/``--test-size``) merges every ``--corpus`` input's entries
+(de-duplicated by ``id``, first occurrence wins), takes validation and test
+as absolute target sizes rather than fractions (the rest goes to train),
+still stratified by expectation kind, and additionally interleaves entries
+by their ``class`` field (present on escalation entries) so a contiguous
+slice draws from every class roughly evenly where counts allow. Every v2
+output's ``header`` is still a plain string carrying the legacy path's own
+note, ``Split '<side>' of corpus-<version> (seed=N).``, because every
+downstream reader (train_scorer, build_dataset, merge_variations, measure,
+quantize, augment, dataset_bundle, and the test/held-out refusals in
+calibration_fit and permutation_probe) finds a side and seed there. A v2
+split merges several corpora, so the note names ``corpus-<version>`` (e.g.
+``corpus-v2``) rather than one input's file name; ``--version`` must be a
+plain name that says nothing about a side. The structured metadata sits
+beside the header under a top-level ``split`` object: the corpus
+``version``, the ``seed``, each input's path and sha256, and the resulting
+side sizes. After ``val.json`` is written, its ids are handed to
+``calibration_fit.make_folds`` (task t4) with ``--fold-seed``, and the
+resulting ``{fold_seed, fit_ids, selection_ids}`` are folded into
+``val.json``'s own ``split`` object and also written standalone to
+``folds.json`` next to it, ready for ``calibration_fit``'s own ``fit``
+subcommand. v2 refuses to write to any path that resolves inside ``nvsh/``
+(the committed corpus lives there; a v2 corpus never does -- operator
+decisions q10/q11) and, like the legacy path, refuses the held-out split as
+an input.
+
+``--train-only CORPUS`` (repeatable, v2; issue 53 deviation d3) appends a
+corpus's entries to the train side only: the validation and test sides are
+split from the ``--corpus`` inputs alone, exactly as without the flag. Issue
+53 passes ``dev.json`` this way, so scorer-b1's own training data and the
+issue-46 sides the lead has read never land on the fresh evaluation sides.
+Each such entry carries ``train_only: true``; its file is listed in
+``sources`` with ``"train_only": true``.
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
+import importlib.util
 import json
 import math
 import random
+import re
 import sys
 from collections import Counter
 from pathlib import Path
@@ -40,6 +85,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # runnable from any directory
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
+_HERE = Path(__file__).resolve().parent
+_NVSH_DIR = (_REPO_ROOT / "nvsh").resolve()
 
 #: Mirrors build_dataset.py's own constant and refusal: the held-out split is
 #: for judging a tuned model, never for building train/val/test splits from.
@@ -56,6 +103,9 @@ SPLIT_NAMES = ("train", "val", "test")
 #: Every expectation kind the corpus schema knows about, in report order.
 #: "explain" is new (see docs/lfm-finetune.md); dev.json has none yet.
 EXPECTATION_KINDS = ("operation", "escalate", "explain")
+
+#: A v2 ``--version``: it lands in every side's header note, which has no spaces.
+_VERSION_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 
 
 def expectation_kind(expect: dict) -> str:
@@ -187,6 +237,213 @@ def build_splits(
     return sides, missing_kinds, header
 
 
+def _load_calibration_fit():
+    """Load ``calibration_fit.py`` (task t4) by path -- these scripts are not a package."""
+    path = _HERE / "calibration_fit.py"
+    spec = importlib.util.spec_from_file_location("lfm_finetune_calibration_fit", path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def refuse_if_under_nvsh(path: Path) -> None:
+    """Raise :class:`ValueError` when *path* resolves inside this repo's ``nvsh/``.
+
+    The committed benchmark corpus lives at ``nvsh/tiers/corpus/``; a v2
+    corpus (built from operator decisions q10/q11) is a run-work-dir /
+    private-data-repo artifact and must never land there or anywhere else
+    under ``nvsh/``.
+    """
+    resolved = path.resolve()
+    if resolved == _NVSH_DIR or _NVSH_DIR in resolved.parents:
+        raise ValueError(f"refusing to write inside nvsh/: {path} resolves to {resolved}")
+
+
+def sha256_file(path: Path) -> str:
+    """The hex sha256 digest of *path*'s bytes."""
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(65536), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def merge_corpora(paths: list[Path]) -> tuple[list[dict], list[dict]]:
+    """Merge every *paths* corpus file's entries, de-duplicated by ``id``.
+
+    Refuses the held-out split exactly like :func:`build_splits`. The first
+    occurrence of a given ``id`` wins; a later duplicate (e.g. the same
+    entry present in both ``dev.json`` and a drafted source file) is
+    dropped silently -- the caller's ``merged=`` accounting in the printed
+    summary is where that shows up. Returns ``(entries, sources)`` where
+    *sources* is ``[{"path": str, "sha256": str}, ...]`` in input order, for
+    the v2 header.
+    """
+    seen: set[str] = set()
+    merged: list[dict] = []
+    sources: list[dict] = []
+    for path in paths:
+        if path.name == HELD_OUT_NAME:
+            raise ValueError(
+                "the held-out split is for judging a tuned model, never for training it"
+            )
+        with open(path, encoding="utf-8") as handle:
+            raw = json.load(handle)
+        entries = raw.get("entries", []) if isinstance(raw, dict) else raw
+        for entry in entries:
+            if entry["id"] in seen:
+                continue
+            seen.add(entry["id"])
+            merged.append(entry)
+        sources.append({"path": str(path), "sha256": sha256_file(path)})
+    return merged, sources
+
+
+def add_train_only(
+    sides: dict[str, list[dict]], sources: list[dict], paths: list[Path]
+) -> tuple[dict[str, list[dict]], list[dict]]:
+    """*sides* with every *paths* corpus entry appended to train only (deviation d3).
+
+    Issue 53's corpus v2 keeps ``dev.json`` -- scorer-b1's own training data and
+    the issue-46 validation/test sides the lead has read -- off the fresh
+    validation and test sides: those come only from the corpora that were
+    split. A train-only entry whose ``id`` is already on any side is refused
+    (it would put one source on two sides); each carries ``train_only: true``
+    and its own ``source_id`` (default: its ``id``). Returns the new sides and
+    *sources* extended with each train-only file, marked ``"train_only": true``.
+    """
+    taken = {entry["id"] for side in sides.values() for entry in side}
+    extra, merged_sources = [], []
+    for path in paths:
+        more, more_sources = merge_corpora([path])
+        for entry in more:
+            if entry["id"] in taken:
+                raise ValueError(
+                    f"train-only entry {entry['id']!r} ({path}) is already on a split side"
+                )
+            taken.add(entry["id"])
+            extra.append(
+                {**entry, "source_id": entry.get("source_id", entry["id"]), "train_only": True}
+            )
+        merged_sources.extend({**src, "train_only": True} for src in more_sources)
+    train = sorted([*sides["train"], *extra], key=lambda entry: entry["id"])
+    return {**sides, "train": train}, [*sources, *merged_sources]
+
+
+def _class_of(entry: dict) -> object:
+    return entry.get("class")
+
+
+def _stratify_by_class(
+    source_ids: list[str],
+    sources: dict[str, list[dict]],
+    seed: int,
+    fractions: tuple[float, float, float],
+) -> dict[str, list[str]]:
+    """Assign *source_ids* to train/val/test, proportional to *fractions* per class.
+
+    Groups ids by the first member's ``class`` field (``None`` when absent),
+    shuffles each class group independently (seeded, so deterministic), then
+    allocates *each class's own group* across the three sides with
+    :func:`_allocate`'s largest-remainder rounding -- the same rule already
+    used to divide entries across sides by expectation kind, now applied a
+    level deeper, per class within a kind.
+
+    A prior version instead built one contiguous order (round-robin across
+    classes) and sliced it once for all three sides; with a rare class
+    (e.g. 10 of 100 entries) and small val/test targets, the whole class
+    could land entirely in train and never reach val or test (#53 review
+    finding P2). Allocating per class avoids that: :func:`_allocate`
+    guarantees every side gets at least one member of a class once that
+    class has at least as many source ids as there are sides (>= 3 here).
+
+    A corpus with no ``class`` field on any entry in the group behaves like
+    a single class and reduces to the old per-kind allocation.
+    """
+    by_class: dict[object, list[str]] = {}
+    for source_id in source_ids:
+        cls = _class_of(sources[source_id][0])
+        by_class.setdefault(cls, []).append(source_id)
+
+    assigned: dict[str, list[str]] = {name: [] for name in SPLIT_NAMES}
+    for cls in sorted(by_class, key=lambda c: (c is None, str(c))):
+        group = sorted(by_class[cls])
+        random.Random(seed).shuffle(group)
+        counts = _allocate(len(group), fractions)
+        offset = 0
+        for name, count in zip(SPLIT_NAMES, counts):
+            assigned[name].extend(group[offset : offset + count])
+            offset += count
+    return assigned
+
+
+def stratified_split_sized(
+    entries: list[dict],
+    seed: int,
+    val_size: int,
+    test_size: int,
+) -> tuple[dict[str, list[dict]], list[str]]:
+    """Like :func:`stratified_split`, but val/test are absolute target counts.
+
+    The rest goes to train. Internally this still uses the same
+    largest-remainder allocation per expectation kind that
+    :func:`stratified_split` uses (via fractions derived from the target
+    sizes over the total entry count), so a kind's own proportional share
+    of val/test is preserved; the difference is :func:`_stratify_by_class`,
+    used here instead of a plain per-kind shuffle so entries sharing a
+    ``class`` field (escalation entries) are themselves allocated across
+    train/val/test proportionally to *fractions*, one class at a time --
+    a rare class no longer risks being swept entirely into train (#53
+    review finding P2). Because each kind (and each class within it) rounds
+    its own share independently, the *total* val/test size lands close to,
+    but is not always exactly, ``val_size``/``test_size`` -- the acceptance
+    target is itself approximate ("test ~150").
+    """
+    total = len(entries)
+    if total == 0:
+        raise ValueError("cannot split an empty corpus")
+    val_frac = val_size / total
+    test_frac = test_size / total
+    train_frac = 1.0 - val_frac - test_frac
+    if train_frac < 0:
+        raise ValueError(
+            f"val_size + test_size ({val_size + test_size}) exceeds the corpus size ({total})"
+        )
+    fractions = (train_frac, val_frac, test_frac)
+
+    id_counts = Counter(entry["id"] for entry in entries)
+    duplicates = sorted(entry_id for entry_id, count in id_counts.items() if count > 1)
+    if duplicates:
+        raise ValueError(f"duplicate entry ids would split one source across sides: {duplicates}")
+
+    sources: dict[str, list[dict]] = {}
+    for entry in entries:
+        sources.setdefault(entry.get("source_id", entry["id"]), []).append(entry)
+
+    by_kind: dict[str, list[str]] = {kind: [] for kind in EXPECTATION_KINDS}
+    for source_id, members in sources.items():
+        kinds = {expectation_kind(member["expect"]) for member in members}
+        if len(kinds) > 1:
+            raise ValueError(f"source {source_id!r} mixes expectation kinds {sorted(kinds)}")
+        by_kind[kinds.pop()].append(source_id)
+
+    missing_kinds = [kind for kind in EXPECTATION_KINDS if not by_kind[kind]]
+
+    sides: dict[str, list[dict]] = {name: [] for name in SPLIT_NAMES}
+    for kind in EXPECTATION_KINDS:
+        assigned = _stratify_by_class(sorted(by_kind[kind]), sources, seed, fractions)
+        for name in SPLIT_NAMES:
+            for source_id in assigned[name]:
+                for entry in sources[source_id]:
+                    sides[name].append({**entry, "source_id": source_id})
+
+    for name in SPLIT_NAMES:
+        sides[name].sort(key=lambda entry: entry["id"])
+
+    return sides, missing_kinds
+
+
 def _write_side(
     out_dir: Path,
     name: str,
@@ -213,17 +470,216 @@ def _write_side(
     return out_path
 
 
+def v2_corpus_name(version: str) -> str:
+    """The corpus name a v2 side's header note uses: ``corpus-<version>``.
+
+    A v2 split merges several ``--corpus`` inputs, so no one input's file
+    name describes it; the version name is stable and deterministic, and the
+    inputs themselves are listed (with sha256) under the ``split`` object.
+    """
+    return f"corpus-{version}"
+
+
+def check_version(version: str) -> None:
+    """Refuse a ``--version`` the side readers could misread.
+
+    The version lands inside every side's ``Split '<side>' of
+    corpus-<version> (seed=N).`` note, which readers match with ``\\S+``
+    (no whitespace) and scan for the words ``test``/``val``/``train`` and
+    ``held-out``: a version naming a side would make every side look like it.
+    """
+    if not _VERSION_RE.fullmatch(version):
+        raise ValueError(
+            f"--version {version!r} must be letters, digits, '.', '_' or '-' (e.g. v2)"
+        )
+    words = {word for word in re.split(r"[^a-z0-9]+", version.lower()) if word}
+    compact = re.sub(r"[^a-z0-9]", "", version.lower())
+    if words & set(SPLIT_NAMES) or "heldout" in compact:
+        raise ValueError(f"--version {version!r} must not name a split side")
+
+
+def _write_side_v2(
+    out_dir: Path,
+    name: str,
+    entries: list[dict],
+    metadata: dict,
+    world: dict | None = None,
+) -> Path:
+    """Like :func:`_write_side`, plus a structured ``split`` object (v2).
+
+    ``header`` stays a string holding exactly :func:`_write_side`'s note
+    (so every reader's ``Split '<side>' of ... (seed=N).`` match still
+    works), followed by a sentence pointing at ``split``. *metadata* --
+    ``version``, ``seed``, every input's ``sources`` (path + sha256) and
+    the resulting ``sizes``, plus ``fold_seed``/``fit_ids``/``selection_ids``
+    on the val side only -- goes under the top-level ``split`` key. Paths
+    stay out of the header: a side reader scans it for ``test`` and
+    ``held-out``, and an input path could innocently contain either.
+    """
+    corpus_name = v2_corpus_name(metadata["version"])
+    note = f"Split '{name}' of {corpus_name} (seed={metadata['seed']})."
+    header = (
+        f"{note} Corpus {metadata['version']}, merged by split.py from "
+        f"{len(metadata['sources'])} corpus file(s); its version, seed, sources "
+        'and sizes are under "split".'
+    )
+    payload: dict = {"header": header, "split": {**metadata, "side": name}, "entries": entries}
+    if world is not None:
+        payload["world"] = world
+    out_path = out_dir / f"{name}.json"
+    with open(out_path, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, ensure_ascii=False, indent=2, sort_keys=True)
+        handle.write("\n")
+    return out_path
+
+
+def write_json(path: Path, payload: object) -> None:
+    with open(path, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=2, sort_keys=True)
+        handle.write("\n")
+
+
+def _main_v2(
+    parser: argparse.ArgumentParser,
+    args: argparse.Namespace,
+    corpus_paths: list[Path],
+    out_dir: Path,
+) -> int:
+    if args.val_size is None or args.test_size is None:
+        parser.error(
+            "v2 mode (--version, multiple --corpus, or --val-size/--test-size) "
+            "requires both --val-size and --test-size"
+        )
+    if args.fold_seed is None:
+        parser.error("v2 mode requires --fold-seed (passed to calibration_fit.make_folds)")
+    version = args.version or "v2"
+
+    train_only_paths = [Path(p) for p in (args.train_only or [])]
+    try:
+        check_version(version)
+        entries, sources = merge_corpora(corpus_paths)
+        sides, missing_kinds = stratified_split_sized(
+            entries, args.seed, args.val_size, args.test_size
+        )
+        if train_only_paths:
+            sides, sources = add_train_only(sides, sources, train_only_paths)
+            entries = entries + [e for e in sides["train"] if e.get("train_only")]
+    except ValueError as exc:
+        parser.error(str(exc))
+    gaps = absent_from_sides(sides)
+    if gaps:
+        described = ", ".join(f"{kind!r} on {name}" for kind, name in gaps)
+        parser.error(f"too few entries to reach every side: missing {described}")
+
+    world = None
+    for path in corpus_paths:
+        with open(path, encoding="utf-8") as handle:
+            raw = json.load(handle)
+        if isinstance(raw, dict) and raw.get("world") is not None:
+            world = raw["world"]
+            break
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    sizes = {name: len(sides[name]) for name in SPLIT_NAMES}
+
+    calibration_fit = _load_calibration_fit()
+    val_ids = [entry["id"] for entry in sides["val"]]
+    # Group by source_id so a source's variations never split across the fit
+    # and selection folds (#53 review finding P1).
+    val_group_of = {entry["id"]: entry.get("source_id", entry["id"]) for entry in sides["val"]}
+    fit_ids, selection_ids = calibration_fit.make_folds(
+        val_ids, args.fold_seed, group_of=val_group_of
+    )
+
+    for name in SPLIT_NAMES:
+        metadata = {
+            "version": version,
+            "seed": args.seed,
+            "sources": sources,
+            "sizes": sizes,
+        }
+        if name == "val":
+            metadata["fold_seed"] = args.fold_seed
+            metadata["fit_ids"] = fit_ids
+            metadata["selection_ids"] = selection_ids
+        _write_side_v2(out_dir, name, sides[name], metadata, world)
+
+    write_json(
+        out_dir / "folds.json",
+        {
+            "seed": args.fold_seed,
+            "source": str(out_dir / "val.json"),
+            "fit_ids": fit_ids,
+            "selection_ids": selection_ids,
+        },
+    )
+
+    for kind in missing_kinds:
+        print(f"note: no {kind!r} entries in the merged corpus; not present on any side")
+    for name in SPLIT_NAMES:
+        print(f"{name}={len(sides[name])}")
+    plural = "y" if len(entries) == 1 else "ies"
+    print(f"merged {len(entries)} unique entr{plural} from {len(corpus_paths)} corpus file(s)")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--corpus", default=str(_REPO_ROOT / "nvsh/tiers/corpus/dev.json"))
+    parser.add_argument(
+        "--corpus",
+        action="append",
+        default=None,
+        help="corpus file to read; repeatable in v2 mode (default: nvsh/tiers/corpus/dev.json)",
+    )
     parser.add_argument("--out-dir", default=".")
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
     parser.add_argument("--train-frac", type=float, default=DEFAULT_FRACTIONS[0])
     parser.add_argument("--val-frac", type=float, default=DEFAULT_FRACTIONS[1])
     parser.add_argument("--test-frac", type=float, default=DEFAULT_FRACTIONS[2])
+    parser.add_argument(
+        "--val-size", type=int, default=None, help="v2: absolute validation size (e.g. 150)"
+    )
+    parser.add_argument(
+        "--test-size", type=int, default=None, help="v2: absolute test size (e.g. 150)"
+    )
+    parser.add_argument("--version", default=None, help="v2: corpus version name, e.g. v2")
+    parser.add_argument(
+        "--train-only",
+        action="append",
+        default=None,
+        help=(
+            "v2: corpus file whose entries go to the train side only, never val/test "
+            "(repeatable; issue 53 deviation d3)"
+        ),
+    )
+    parser.add_argument(
+        "--fold-seed",
+        type=int,
+        default=None,
+        help="v2: seed for calibration_fit.make_folds on the written val ids",
+    )
     args = parser.parse_args(argv)
 
-    corpus = Path(args.corpus)
+    corpus_paths = [
+        Path(p) for p in (args.corpus or [str(_REPO_ROOT / "nvsh/tiers/corpus/dev.json")])
+    ]
+    out_dir = Path(args.out_dir)
+    try:
+        refuse_if_under_nvsh(out_dir)
+    except ValueError as exc:
+        parser.error(str(exc))
+
+    v2_mode = (
+        bool(args.version)
+        or args.val_size is not None
+        or args.test_size is not None
+        or len(corpus_paths) > 1
+        or bool(args.train_only)
+    )
+    if v2_mode:
+        return _main_v2(parser, args, corpus_paths, out_dir)
+
+    corpus = corpus_paths[0]
     fractions = (args.train_frac, args.val_frac, args.test_frac)
     try:
         sides, missing_kinds, header = build_splits(corpus, args.seed, fractions)
@@ -238,7 +694,6 @@ def main(argv: list[str] | None = None) -> int:
         raw = json.load(handle)
     world = raw.get("world") if isinstance(raw, dict) else None
 
-    out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     for name in SPLIT_NAMES:
         _write_side(out_dir, name, sides[name], header, corpus.name, args.seed, world)

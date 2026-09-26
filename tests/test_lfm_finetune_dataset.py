@@ -762,3 +762,399 @@ def test_cli_base_and_revision_flags_pass_through(tmp_path, monkeypatch):
     module.main(["--out", str(out), "--base", _QWEN_BASE, "--revision", _QWEN_REVISION])
     assert captured["base"] == _QWEN_BASE
     assert captured["revision"] == _QWEN_REVISION
+
+
+# -- t14: per-example candidate sets and letter maps, missing-candidate/no-valid-option, reasons --
+
+_REASONS_PATH = _SCRIPT.parent / "data" / "reasons.json"
+_PARAPHRASES_PATH = _SCRIPT.parent / "data" / "paraphrases.json"
+
+
+def test_every_example_carries_permutation_gold_and_perm_seed():
+    module = _module()
+    examples = module.build(dev_corpus_path())
+    for example in examples:
+        assert set(example["permutation"]) == {"order", "labels"}
+        assert isinstance(example["gold"], str)
+        assert isinstance(example["perm_seed"], int)
+
+
+def test_default_permutation_matches_todays_fixed_scorer_map():
+    """No --randomize-labels: byte-identical to scorer.candidates()/labels_for (scorer-b1)."""
+    module = _module()
+    scorer = module.scorer
+    example = module.build(dev_corpus_path())[0]
+    assert tuple(example["permutation"]["order"]) == scorer.candidates()
+    assert example["permutation"]["labels"] == scorer.labels_for(scorer.candidates())
+    assert "descriptions" not in example
+
+
+def test_default_examples_carry_no_perm_seed_randomness_between_runs():
+    """Seeded and replayable: two builds of the same source agree exactly."""
+    module = _module()
+    first = module.build(dev_corpus_path())
+    second = module.build(dev_corpus_path())
+    assert [e["permutation"] for e in first] == [e["permutation"] for e in second]
+    assert [e["perm_seed"] for e in first] == [e["perm_seed"] for e in second]
+
+
+def test_gold_matches_the_entrys_own_answer():
+    module = _module()
+    entries = load_corpus(dev_corpus_path()).entries
+    examples = module.build(dev_corpus_path())
+    by_id = dict(zip((e.id for e in entries), examples))
+    propose_entry = next(e for e in entries if e.expect.get("operation"))
+    escalate_entry = next(e for e in entries if e.expect.get("escalate"))
+    assert by_id[propose_entry.id]["gold"] == propose_entry.expect["operation"]
+    assert by_id[escalate_entry.id]["gold"] == lfm.ESCALATE_TOOL
+
+
+def test_randomize_labels_is_seeded_and_replayable(tmp_path):
+    module = _module()
+    first = module.build(dev_corpus_path(), randomize_labels=True, perm_seed=7)
+    second = module.build(dev_corpus_path(), randomize_labels=True, perm_seed=7)
+    assert [e["permutation"] for e in first] == [e["permutation"] for e in second]
+    assert [e["perm_seed"] for e in first] == [e["perm_seed"] for e in second]
+
+
+def test_randomize_labels_keeps_the_gold_candidate_in_every_subset():
+    module = _module()
+    examples = module.build(dev_corpus_path(), randomize_labels=True, perm_seed=3)
+    for example in examples:
+        assert example["gold"] in example["permutation"]["order"]
+
+
+def test_randomize_labels_offers_a_bounded_subset():
+    module = _module()
+    scorer = module.scorer
+    examples = module.build(dev_corpus_path(), randomize_labels=True, perm_seed=3)
+    pool_size = len(scorer.candidates())
+    for example in examples:
+        size = len(example["permutation"]["order"])
+        assert module.DEFAULT_MIN_SUBSET <= size <= pool_size
+
+
+def test_without_randomize_labels_examples_keep_the_fixed_map_regardless_of_perm_seed():
+    module = _module()
+    default_a = module.build(dev_corpus_path(), perm_seed=1)
+    default_b = module.build(dev_corpus_path(), perm_seed=2)
+    assert [e["permutation"] for e in default_a] == [e["permutation"] for e in default_b]
+
+
+# -- missing-candidate / no-valid-option derived examples --
+
+
+def test_missing_candidate_rate_one_adds_one_derived_scorer_entry_per_operation_entry(tmp_path):
+    module = _module()
+    corpus = _write_corpus(
+        tmp_path,
+        [
+            _entry("op01", {"operation": "thermal_stats", "args": {}}),
+            _entry("esc01", {"escalate": True}),
+        ],
+    )
+    _, base = module.build_with_scorer_entries(corpus)
+    _, with_missing = module.build_with_scorer_entries(corpus, missing_candidate_rate=1.0)
+    assert len(with_missing) == len(base) + 1
+    derived = next(e for e in with_missing if e["id"] == "op01-nocand")
+    assert derived["gold"] == "escalate"
+    assert derived["expect"] == {"escalate": True}
+    assert "thermal_stats" not in derived["permutation"]["order"]
+
+
+def test_missing_candidate_entries_are_never_rendered_as_track_a_rows(tmp_path):
+    """Codex review of d2: a rendered -nocand row keeps the full tools and the
+    propose enum, so it would teach escalate for its propose twin's exact input."""
+    module = _module()
+    corpus = _write_corpus(tmp_path, [_entry("op01", {"operation": "thermal_stats", "args": {}})])
+    assert module.build(corpus, missing_candidate_rate=1.0) == module.build(corpus)
+    examples, entries = module.build_with_scorer_entries(corpus, missing_candidate_rate=1.0)
+    assert [_calls(example)["name"] for example in examples] == [lfm.PROPOSE_TOOL]
+    assert [entry["id"] for entry in entries] == ["op01", "op01-nocand"]
+
+
+def test_missing_candidate_entries_keep_the_eval_slices_id_suffix(tmp_path):
+    module = _module()
+    corpus = _write_corpus(tmp_path, [_entry("op01", {"operation": "thermal_stats", "args": {}})])
+    _, entries = module.build_with_scorer_entries(corpus, missing_candidate_rate=1.0)
+    original, derived = entries
+    # eval_slices.py's own shape: text is byte-identical, only the offered set/answer change.
+    assert derived["id"] == f"{original['id']}-nocand"
+    assert derived["text"] == original["text"]
+    assert derived["kind"] == original["kind"]
+
+
+def test_missing_candidate_rate_zero_adds_nothing_by_default(tmp_path):
+    module = _module()
+    corpus = _write_corpus(tmp_path, [_entry("op01", {"operation": "thermal_stats", "args": {}})])
+    _, default = module.build_with_scorer_entries(corpus)
+    _, zero = module.build_with_scorer_entries(corpus, missing_candidate_rate=0.0)
+    assert default == zero
+
+
+def test_missing_candidate_rate_is_deterministic_by_seed(tmp_path):
+    module = _module()
+    entries = [_entry(f"op{i:02d}", {"operation": "thermal_stats", "args": {}}) for i in range(20)]
+    corpus = _write_corpus(tmp_path, entries)
+    _, first = module.build_with_scorer_entries(corpus, missing_candidate_rate=0.5, perm_seed=11)
+    _, second = module.build_with_scorer_entries(corpus, missing_candidate_rate=0.5, perm_seed=11)
+    assert [e["id"] for e in first] == [e["id"] for e in second]
+    assert 0 < len(first) - len(entries) < len(entries)
+
+
+def test_missing_candidate_examples_never_come_from_a_val_split(tmp_path):
+    module = _module()
+    split = _write_split(
+        tmp_path,
+        [_entry("op01", {"operation": "thermal_stats", "args": {}})],
+        name="val.json",
+        header="Split 'val' of fixture.json (seed=39).",
+    )
+    with pytest.raises(ValueError, match="'val'"):
+        module.build(split, is_split=True, missing_candidate_rate=1.0)
+
+
+def test_missing_candidate_examples_never_come_from_a_test_split(tmp_path):
+    module = _module()
+    split = _write_split(
+        tmp_path,
+        [_entry("op01", {"operation": "thermal_stats", "args": {}})],
+        name="test.json",
+        header="Split 'test' of fixture.json (seed=39).",
+    )
+    with pytest.raises(ValueError, match="'test'"):
+        module.build(split, is_split=True, missing_candidate_rate=1.0)
+
+
+def test_missing_candidate_rate_refuses_a_plain_corpus_named_test(tmp_path):
+    """No --split header to check, so a corpus merely named like an eval side is still refused."""
+    module = _module()
+    corpus = _write_corpus(
+        tmp_path,
+        [_entry("op01", {"operation": "thermal_stats", "args": {}})],
+        name="test.json",
+    )
+    with pytest.raises(ValueError, match="test"):
+        module.build(corpus, missing_candidate_rate=1.0)
+
+
+def test_missing_candidate_rate_refuses_a_plain_corpus_named_held_out(tmp_path):
+    module = _module()
+    corpus = _write_corpus(
+        tmp_path,
+        [_entry("op01", {"operation": "thermal_stats", "args": {}})],
+        name="held-out-extra.json",
+    )
+    with pytest.raises(ValueError, match="held-out"):
+        module.build(corpus, missing_candidate_rate=1.0)
+
+
+def test_missing_candidate_rate_allows_a_train_split(tmp_path):
+    module = _module()
+    split = _write_split(tmp_path, [_entry("op01", {"operation": "thermal_stats", "args": {}})])
+    examples, entries = module.build_with_scorer_entries(
+        split, is_split=True, missing_candidate_rate=1.0
+    )
+    assert len(examples) == 1
+    assert len(entries) == 2
+
+
+def test_missing_candidate_rate_does_not_false_positive_on_dev_json():
+    """dev.json's own header names held-out.json in prose; that must not trip the check."""
+    module = _module()
+    examples = module.build(dev_corpus_path(), missing_candidate_rate=0.0)
+    assert examples  # no ValueError raised building it at all
+
+
+# -- reasons mode --
+
+
+def test_reasons_mode_pool_replaces_bare_escalate_with_the_eight_reasons():
+    module = _module()
+    pool = module.candidate_pool(reasons=True)
+    assert lfm.ESCALATE_TOOL not in pool
+    assert set(module.REASON_CANDIDATES) <= set(pool)
+    assert len(pool) == len(ops_table.names()) + 1 + 8  # + explain + 8 reasons
+
+
+def test_reasons_mode_pool_fits_the_label_alphabet():
+    module = _module()
+    scorer = module.scorer
+    assert len(module.candidate_pool(reasons=True)) <= len(scorer.LABEL_ALPHABET)
+
+
+def test_reasons_mode_maps_an_escalate_entrys_class_to_its_reason_candidate(tmp_path):
+    module = _module()
+    corpus = _write_corpus(
+        tmp_path,
+        [{**_entry("g1", {"escalate": True}), "class": "decline:repair"}],
+    )
+    examples = module.build(corpus, reasons=True)
+    assert examples[0]["gold"] == "escalate:repair"
+    assert _calls(examples[0])["name"] == lfm.ESCALATE_TOOL
+
+
+def test_reasons_mode_rolls_up_an_unknown_class_to_outside_table(tmp_path):
+    module = _module()
+    corpus = _write_corpus(
+        tmp_path,
+        [
+            {**_entry("g1", {"escalate": True}), "class": "decline:no_such_reason"},
+            _entry("g2", {"escalate": True}),  # no class at all
+        ],
+    )
+    examples = module.build(corpus, reasons=True)
+    assert {e["gold"] for e in examples} == {"escalate:outside_table"}
+
+
+def test_reasons_mode_leaves_operation_and_explain_gold_unchanged(tmp_path):
+    module = _module()
+    corpus = _write_corpus(
+        tmp_path,
+        [
+            _entry("op01", {"operation": "thermal_stats", "args": {}}),
+            _entry("exp01", {"explain": True, "answer": "it means the fan is loud"}),
+        ],
+    )
+    examples = module.build(corpus, reasons=True)
+    by_id = {e["source_id"]: e for e in examples}
+    assert by_id["op01"]["gold"] == "thermal_stats"
+    assert by_id["exp01"]["gold"] == lfm.EXPLAIN_TOOL
+
+
+def test_reasons_mode_adds_description_overrides_only_for_offered_reasons(tmp_path):
+    module = _module()
+    corpus = _write_corpus(
+        tmp_path, [{**_entry("g1", {"escalate": True}), "class": "decline:repair"}]
+    )
+    examples = module.build(corpus, reasons=True)
+    descriptions = examples[0]["descriptions"]
+    assert set(descriptions) == set(module.REASON_CANDIDATES)
+    for name in module.REASON_CANDIDATES:
+        assert descriptions[name] == module.REASON_DESCRIPTIONS[name]
+
+
+def test_missing_candidate_in_reasons_mode_uses_outside_table(tmp_path):
+    module = _module()
+    corpus = _write_corpus(tmp_path, [_entry("op01", {"operation": "thermal_stats", "args": {}})])
+    _, entries = module.build_with_scorer_entries(corpus, reasons=True, missing_candidate_rate=1.0)
+    derived = next(e for e in entries if e["gold"].startswith("escalate"))
+    assert derived["gold"] == "escalate:outside_table"
+    assert derived["class"] == "decline:outside_table"
+
+
+def test_without_reasons_examples_never_carry_descriptions(tmp_path):
+    module = _module()
+    corpus = _write_corpus(tmp_path, [_entry("esc01", {"escalate": True})])
+    examples = module.build(corpus)
+    assert "descriptions" not in examples[0]
+
+
+# -- data/reasons.json and data/paraphrases.json --
+
+
+def test_reasons_json_covers_exactly_the_eight_reason_candidates():
+    module = _module()
+    data = json.loads(_REASONS_PATH.read_text(encoding="utf-8"))
+    assert set(data) == set(module.REASON_CANDIDATES)
+    for text in data.values():
+        assert isinstance(text, str)
+        assert text.strip()
+
+
+def test_reasons_json_descriptions_never_name_a_table_operation():
+    data = json.loads(_REASONS_PATH.read_text(encoding="utf-8"))
+    names = set(ops_table.names())
+    for text in data.values():
+        words = set(re.findall(r"[a-z_]+", text.lower()))
+        assert not (words & names)
+
+
+def test_paraphrases_json_covers_every_candidate_name():
+    module = _module()
+    data = json.loads(_PARAPHRASES_PATH.read_text(encoding="utf-8"))
+    expected = (
+        set(ops_table.names())
+        | {lfm.EXPLAIN_TOOL, lfm.ESCALATE_TOOL}
+        | set(module.REASON_CANDIDATES)
+    )
+    assert set(data) == expected
+
+
+def test_paraphrases_json_has_at_least_two_non_empty_alternatives_each():
+    data = json.loads(_PARAPHRASES_PATH.read_text(encoding="utf-8"))
+    for name, alternatives in data.items():
+        assert isinstance(alternatives, list), name
+        assert len(alternatives) >= 2, name
+        for text in alternatives:
+            assert isinstance(text, str), name
+            assert text.strip(), name
+
+
+def test_paraphrases_json_never_repeats_the_default_description():
+    module = _module()
+    scorer = module.scorer
+    reasons = json.loads(_REASONS_PATH.read_text(encoding="utf-8"))
+    data = json.loads(_PARAPHRASES_PATH.read_text(encoding="utf-8"))
+    for name, alternatives in data.items():
+        default = scorer._description(name, reasons)
+        assert default not in alternatives, name
+
+
+def test_paraphrases_json_alternatives_are_not_duplicates_of_each_other():
+    data = json.loads(_PARAPHRASES_PATH.read_text(encoding="utf-8"))
+    for name, alternatives in data.items():
+        assert len(alternatives) == len(set(alternatives)), name
+
+
+# -- CLI wiring for the new flags --
+
+
+def test_cli_reasons_and_randomize_and_missing_candidate_flags_pass_through(tmp_path, monkeypatch):
+    module = _module()
+    captured = {}
+
+    def _fake_build(source, arguments_as=module.ARGUMENTS_AS_OBJECT, is_split=False, **kwargs):
+        captured.update(kwargs)
+        return []
+
+    monkeypatch.setattr(module, "build", _fake_build)
+    out = tmp_path / "train.jsonl"
+    module.main(
+        [
+            "--out",
+            str(out),
+            "--reasons",
+            "--randomize-labels",
+            "--perm-seed",
+            "9",
+            "--missing-candidate-rate",
+            "0.2",
+            "--min-subset",
+            "4",
+            "--full-set-probability",
+            "0.1",
+        ]
+    )
+    assert captured["reasons"] is True
+    assert captured["randomize_labels"] is True
+    assert captured["perm_seed"] == 9
+    assert captured["missing_candidate_rate"] == 0.2
+    assert captured["min_subset"] == 4
+    assert captured["full_set_probability"] == 0.1
+
+
+def test_cli_defaults_leave_reasons_and_randomize_and_missing_candidate_off(tmp_path, monkeypatch):
+    module = _module()
+    captured = {}
+
+    def _fake_build(source, arguments_as=module.ARGUMENTS_AS_OBJECT, is_split=False, **kwargs):
+        captured.update(kwargs)
+        return []
+
+    monkeypatch.setattr(module, "build", _fake_build)
+    out = tmp_path / "train.jsonl"
+    module.main(["--out", str(out)])
+    assert captured["reasons"] is False
+    assert captured["randomize_labels"] is False
+    assert captured["missing_candidate_rate"] == 0.0

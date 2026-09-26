@@ -254,6 +254,405 @@ def test_cli_fails_when_a_kind_cannot_reach_every_side(tmp_path, capsys) -> None
     assert not (tmp_path / "out" / "train.json").exists()
 
 
+def test_refuse_if_under_nvsh_flags_a_path_under_nvsh() -> None:
+    module = _module()
+    with pytest.raises(ValueError, match="nvsh/"):
+        module.refuse_if_under_nvsh(module._REPO_ROOT / "nvsh" / "tiers" / "corpus" / "v2")
+
+
+def test_refuse_if_under_nvsh_allows_a_path_outside_nvsh(tmp_path) -> None:
+    module = _module()
+    module.refuse_if_under_nvsh(tmp_path / "corpus-v2")  # must not raise
+
+
+def test_v2_cli_refuses_an_out_dir_inside_nvsh(tmp_path, capsys) -> None:
+    module = _module()
+    corpus = _fixture_corpus(tmp_path)
+    bad_out = str(module._REPO_ROOT / "nvsh" / "tiers" / "corpus" / "v2-attempt")
+    with pytest.raises(SystemExit):
+        module.main(
+            [
+                "--corpus",
+                str(corpus),
+                "--version",
+                "v2",
+                "--val-size",
+                "4",
+                "--test-size",
+                "4",
+                "--fold-seed",
+                "1",
+                "--out-dir",
+                bad_out,
+            ]
+        )
+    assert "nvsh" in capsys.readouterr().err
+    assert not Path(bad_out).exists()
+
+
+def test_v2_writes_versioned_header_with_seed_and_source_hashes(tmp_path) -> None:
+    module = _module()
+    corpus = _fixture_corpus(tmp_path)
+    out_dir = tmp_path / "out"
+    exit_code = module.main(
+        [
+            "--corpus",
+            str(corpus),
+            "--version",
+            "v2",
+            "--seed",
+            "39",
+            "--val-size",
+            "4",
+            "--test-size",
+            "4",
+            "--fold-seed",
+            "7",
+            "--out-dir",
+            str(out_dir),
+        ]
+    )
+    assert exit_code == 0
+    expected_hash = module.sha256_file(corpus)
+    for name in module.SPLIT_NAMES:
+        payload = json.loads((out_dir / f"{name}.json").read_text(encoding="utf-8"))
+        # The header stays split.py's v1-style string note (every downstream
+        # reader parses it); the structured metadata sits under "split".
+        assert payload["header"].startswith(f"Split '{name}' of corpus-v2 (seed=39). ")
+        metadata = payload["split"]
+        assert metadata["side"] == name
+        assert metadata["version"] == "v2"
+        assert metadata["seed"] == 39
+        assert metadata["sources"] == [{"path": str(corpus), "sha256": expected_hash}]
+        assert metadata["sizes"] == {"train": 13, "val": 4, "test": 4}
+
+
+def test_v2_target_sizes_are_absolute_and_stratified_by_kind(tmp_path) -> None:
+    module = _module()
+    entries = [_operation_entry(f"op{i:02d}") for i in range(60)]
+    entries += [_escalate_entry(f"esc{i:02d}") for i in range(30)]
+    entries += [_explain_entry(f"exp{i:02d}") for i in range(10)]
+    corpus = tmp_path / "big.json"
+    corpus.write_text(json.dumps({"header": "h", "entries": entries}), encoding="utf-8")
+    out_dir = tmp_path / "out"
+    module.main(
+        [
+            "--corpus",
+            str(corpus),
+            "--version",
+            "v2",
+            "--val-size",
+            "15",
+            "--test-size",
+            "15",
+            "--fold-seed",
+            "3",
+            "--out-dir",
+            str(out_dir),
+        ]
+    )
+    val = json.loads((out_dir / "val.json").read_text())["entries"]
+    test = json.loads((out_dir / "test.json").read_text())["entries"]
+    train = json.loads((out_dir / "train.json").read_text())["entries"]
+    # Each expectation kind rounds its own share independently (the same
+    # largest-remainder allocation stratified_split has always used), so the
+    # total lands close to, not always exactly at, the requested size.
+    assert abs(len(val) - 15) <= 2
+    assert abs(len(test) - 15) <= 2
+    assert len(train) + len(val) + len(test) == len(entries)
+    for side in (val, test):
+        kinds = {module.expectation_kind(e["expect"]) for e in side}
+        assert kinds == set(module.EXPECTATION_KINDS)
+
+
+def test_v2_records_fold_assignment_in_val_header_and_folds_json(tmp_path) -> None:
+    module = _module()
+    corpus = _fixture_corpus(tmp_path)
+    out_dir = tmp_path / "out"
+    module.main(
+        [
+            "--corpus",
+            str(corpus),
+            "--version",
+            "v2",
+            "--val-size",
+            "4",
+            "--test-size",
+            "4",
+            "--fold-seed",
+            "11",
+            "--out-dir",
+            str(out_dir),
+        ]
+    )
+    val_payload = json.loads((out_dir / "val.json").read_text())
+    val_header = val_payload["split"]
+    val_ids = [e["id"] for e in val_payload["entries"]]
+    assert val_header["fold_seed"] == 11
+    assert sorted(val_header["fit_ids"] + val_header["selection_ids"]) == sorted(val_ids)
+    folds = json.loads((out_dir / "folds.json").read_text())
+    assert folds["seed"] == 11
+    assert folds["fit_ids"] == val_header["fit_ids"]
+    assert folds["selection_ids"] == val_header["selection_ids"]
+    # train/test headers carry no fold assignment -- val-only, per the brief.
+    for name in ("train", "test"):
+        assert "fit_ids" not in json.loads((out_dir / f"{name}.json").read_text())["split"]
+
+
+def test_v2_merges_multiple_corpora_deduped_by_id(tmp_path) -> None:
+    module = _module()
+    entries_a = _fixture_entries()
+    corpus_a = tmp_path / "a.json"
+    corpus_a.write_text(json.dumps({"header": "a", "entries": entries_a}), encoding="utf-8")
+    # corpus_b repeats op00 (dropped as a duplicate) and adds 4 new entries.
+    entries_b = [entries_a[0]] + [_operation_entry(f"new{i:02d}") for i in range(4)]
+    corpus_b = tmp_path / "b.json"
+    corpus_b.write_text(json.dumps({"header": "b", "entries": entries_b}), encoding="utf-8")
+    out_dir = tmp_path / "out"
+    module.main(
+        [
+            "--corpus",
+            str(corpus_a),
+            "--corpus",
+            str(corpus_b),
+            "--val-size",
+            "4",
+            "--test-size",
+            "4",
+            "--fold-seed",
+            "1",
+            "--out-dir",
+            str(out_dir),
+        ]
+    )
+    all_ids: list[str] = []
+    for name in module.SPLIT_NAMES:
+        payload = json.loads((out_dir / f"{name}.json").read_text())
+        all_ids += [e["id"] for e in payload["entries"]]
+    assert len(all_ids) == len(set(all_ids))
+    assert len(all_ids) == len(entries_a) + 4
+    metadata = json.loads((out_dir / "train.json").read_text())["split"]
+    assert [source["path"] for source in metadata["sources"]] == [str(corpus_a), str(corpus_b)]
+
+
+def test_v2_refuses_held_out_among_multiple_corpora(tmp_path) -> None:
+    module = _module()
+    corpus = _fixture_corpus(tmp_path)
+    held_out = _fixture_corpus(tmp_path, name="held-out.json")
+    with pytest.raises(ValueError, match="held-out"):
+        module.merge_corpora([corpus, held_out])
+
+
+def test_v2_balances_escalation_classes_across_sides_where_counts_allow(tmp_path) -> None:
+    module = _module()
+    entries = [_operation_entry(f"op{i:02d}") for i in range(20)]
+    entries += [
+        {**_escalate_entry(f"escA{i:02d}"), "class": "decline:outside_table"} for i in range(10)
+    ]
+    entries += [
+        {**_escalate_entry(f"escB{i:02d}"), "class": "decline:destructive"} for i in range(10)
+    ]
+    corpus = tmp_path / "c.json"
+    corpus.write_text(json.dumps({"header": "h", "entries": entries}), encoding="utf-8")
+    out_dir = tmp_path / "out"
+    module.main(
+        [
+            "--corpus",
+            str(corpus),
+            "--version",
+            "v2",
+            "--val-size",
+            "10",
+            "--test-size",
+            "10",
+            "--fold-seed",
+            "2",
+            "--out-dir",
+            str(out_dir),
+        ]
+    )
+    val = json.loads((out_dir / "val.json").read_text())["entries"]
+    val_classes = {e["class"] for e in val if "class" in e}
+    assert {"decline:outside_table", "decline:destructive"} <= val_classes
+
+
+def test_v2_requires_val_size_and_test_size(tmp_path, capsys) -> None:
+    module = _module()
+    corpus = _fixture_corpus(tmp_path)
+    with pytest.raises(SystemExit):
+        module.main(["--corpus", str(corpus), "--version", "v2", "--out-dir", str(tmp_path / "o")])
+    assert "val-size" in capsys.readouterr().err
+
+
+def test_v2_requires_fold_seed(tmp_path, capsys) -> None:
+    module = _module()
+    corpus = _fixture_corpus(tmp_path)
+    with pytest.raises(SystemExit):
+        module.main(
+            [
+                "--corpus",
+                str(corpus),
+                "--version",
+                "v2",
+                "--val-size",
+                "4",
+                "--test-size",
+                "4",
+                "--out-dir",
+                str(tmp_path / "o"),
+            ]
+        )
+    assert "fold-seed" in capsys.readouterr().err
+
+
+def test_legacy_single_corpus_invocation_is_unaffected_by_v2(tmp_path) -> None:
+    """The pre-#53 invocation shape (single --corpus, fractions) must behave
+    exactly as before: string header, no version/sources/sizes keys."""
+    module = _module()
+    corpus = _fixture_corpus(tmp_path)
+    out_dir = tmp_path / "out"
+    module.main(["--corpus", str(corpus), "--out-dir", str(out_dir)])
+    header = json.loads((out_dir / "train.json").read_text())["header"]
+    assert isinstance(header, str)
+
+
+def test_v2_fold_assignment_keeps_source_id_groups_on_one_side(tmp_path) -> None:
+    """#53 review finding P1: fold creation (~split.py line 478) shuffled
+    individual val ids and ignored source_id grouping, so a source's
+    variations could land in both the fit and selection folds. --seed 3
+    lands the whole "sib" group in val for this fixture; sweeping
+    --fold-seed reliably reproduces the pre-fix split under the old code."""
+    module = _module()
+    entries = [_operation_entry(f"op{i:02d}") for i in range(40)]
+    entries += [_escalate_entry(f"esc{i:02d}") for i in range(34)]
+    entries += [
+        {**_escalate_entry("sib0"), "source_id": "sib"},
+        {**_escalate_entry("sib1"), "source_id": "sib"},
+        {**_escalate_entry("sib2"), "source_id": "sib"},
+    ]
+    corpus = tmp_path / "c.json"
+    corpus.write_text(json.dumps({"header": "h", "entries": entries}), encoding="utf-8")
+    # --seed 3 lands the whole "sib" group in val for this fixture (confirmed
+    # by direct enumeration); vary --fold-seed to hit the buggy per-id shuffle.
+    saw_sib_in_val = False
+    for fold_seed in range(15):
+        out_dir = tmp_path / f"out{fold_seed}"
+        module.main(
+            [
+                "--corpus",
+                str(corpus),
+                "--version",
+                "v2",
+                "--val-size",
+                "15",
+                "--test-size",
+                "15",
+                "--seed",
+                "3",
+                "--fold-seed",
+                str(fold_seed),
+                "--out-dir",
+                str(out_dir),
+            ]
+        )
+        val_payload = json.loads((out_dir / "val.json").read_text())
+        sib_ids_in_val = {e["id"] for e in val_payload["entries"] if e["source_id"] == "sib"}
+        if not sib_ids_in_val:
+            continue
+        saw_sib_in_val = True
+        fit_ids = set(val_payload["split"]["fit_ids"])
+        selection_ids = set(val_payload["split"]["selection_ids"])
+        assert sib_ids_in_val <= fit_ids or sib_ids_in_val <= selection_ids, fold_seed
+    # Guard against this test passing vacuously (e.g. if the fixture ever
+    # changes and --seed 3 stops putting the "sib" group in val at all).
+    assert saw_sib_in_val, '"sib" source_id group never landed in val across any swept fold-seed'
+
+
+def test_v2_stratifies_a_rare_class_across_val_and_test(tmp_path) -> None:
+    """#53 review finding P2: class round-robin ordering followed by
+    contiguous train/val/test slicing is not stratification -- with 90
+    common + 10 rare escalation entries and 15/15 eval sizes, all 10 rare
+    entries used to land in train, none in val or test."""
+    module = _module()
+    entries = [{**_escalate_entry(f"common{i:03d}"), "class": "decline:common"} for i in range(90)]
+    entries += [{**_escalate_entry(f"rare{i:02d}"), "class": "decline:rare"} for i in range(10)]
+    corpus = tmp_path / "c.json"
+    corpus.write_text(json.dumps({"header": "h", "entries": entries}), encoding="utf-8")
+    out_dir = tmp_path / "out"
+    module.main(
+        [
+            "--corpus",
+            str(corpus),
+            "--version",
+            "v2",
+            "--val-size",
+            "15",
+            "--test-size",
+            "15",
+            "--fold-seed",
+            "1",
+            "--out-dir",
+            str(out_dir),
+        ]
+    )
+    val = json.loads((out_dir / "val.json").read_text())["entries"]
+    test = json.loads((out_dir / "test.json").read_text())["entries"]
+    train = json.loads((out_dir / "train.json").read_text())["entries"]
+    assert "decline:rare" in {e["class"] for e in val}
+    assert "decline:rare" in {e["class"] for e in test}
+    assert abs(len(val) - 15) <= 2
+    assert abs(len(test) - 15) <= 2
+    assert len(train) + len(val) + len(test) == len(entries)
+
+
+def test_v2_class_stratification_respects_source_id_groups(tmp_path) -> None:
+    module = _module()
+    entries = [_operation_entry(f"op{i:02d}") for i in range(30)]
+    entries += [
+        {**_escalate_entry("g0"), "class": "decline:rare"},
+        {**{**_escalate_entry("g0v1"), "source_id": "g0"}, "class": "decline:rare"},
+    ]
+    entries += [{**_escalate_entry(f"other{i:02d}"), "class": "decline:rare"} for i in range(8)]
+    corpus = tmp_path / "c.json"
+    corpus.write_text(json.dumps({"header": "h", "entries": entries}), encoding="utf-8")
+    out_dir = tmp_path / "out"
+    module.main(
+        [
+            "--corpus",
+            str(corpus),
+            "--version",
+            "v2",
+            "--val-size",
+            "10",
+            "--test-size",
+            "10",
+            "--fold-seed",
+            "1",
+            "--out-dir",
+            str(out_dir),
+        ]
+    )
+    sides_by_source: dict[str, set[str]] = {}
+    for name in module.SPLIT_NAMES:
+        entries_out = json.loads((out_dir / f"{name}.json").read_text())["entries"]
+        for entry in entries_out:
+            sides_by_source.setdefault(entry["source_id"], set()).add(name)
+    assert all(len(sides) == 1 for sides in sides_by_source.values())
+
+
+def test_v2_legacy_mode_is_byte_identical_to_before(tmp_path) -> None:
+    """Non-v2 (legacy) invocations must be unaffected by the v2 fixes above."""
+    module = _module()
+    corpus = _fixture_corpus(tmp_path)
+    out_dir = tmp_path / "out"
+    module.main(
+        ["--corpus", str(corpus), "--out-dir", str(out_dir), "--seed", str(module.DEFAULT_SEED)]
+    )
+    payload = json.loads((out_dir / "val.json").read_text())["entries"]
+    ids = sorted(e["id"] for e in payload)
+    assert ids == ["esc02", "exp01", "op00", "op06"]
+
+
 def test_every_side_keeps_the_corpus_world(tmp_path) -> None:
     split = _module()
     world = {"platform": {"kind": "jetson"}}
@@ -265,3 +664,139 @@ def test_every_side_keeps_the_corpus_world(tmp_path) -> None:
     split.main(["--corpus", str(corpus), "--out-dir", str(tmp_path / "out")])
     for name in ("train", "val", "test"):
         assert json.loads((tmp_path / "out" / f"{name}.json").read_text())["world"] == world
+
+
+@pytest.mark.parametrize("version", ["v 2", "test", "v2-val", "held-out-v2", "-v2"])
+def test_v2_refuses_a_version_that_breaks_or_names_a_side(tmp_path, capsys, version) -> None:
+    """The version lands in every side's ``Split '<side>' of corpus-<version>`` note:
+    whitespace would end the readers' corpus match early, and a side word would
+    make every side read as that side (e.g. every side refused as test)."""
+    module = _module()
+    corpus = _fixture_corpus(tmp_path)
+    with pytest.raises(SystemExit):
+        module.main(
+            [
+                "--corpus",
+                str(corpus),
+                "--version",
+                version,
+                "--val-size",
+                "4",
+                "--test-size",
+                "4",
+                "--fold-seed",
+                "1",
+                "--out-dir",
+                str(tmp_path / "o"),
+            ]
+        )
+    assert "--version" in capsys.readouterr().err
+    assert not (tmp_path / "o").exists()
+
+
+def test_v2_header_note_names_the_version_not_an_input_path(tmp_path) -> None:
+    """Several inputs merge into one v2 corpus, so the note names
+    ``corpus-<version>``; input paths (which could contain "test" or
+    "held-out") stay out of the header and live under "split"."""
+    module = _module()
+    corpus = _fixture_corpus(tmp_path, name="test-held-out-drafts.json")
+    out_dir = tmp_path / "out"
+    module.main(
+        [
+            "--corpus",
+            str(corpus),
+            "--version",
+            "v2.1",
+            "--val-size",
+            "4",
+            "--test-size",
+            "4",
+            "--fold-seed",
+            "1",
+            "--out-dir",
+            str(out_dir),
+        ]
+    )
+    header = json.loads((out_dir / "train.json").read_text())["header"]
+    assert header.startswith("Split 'train' of corpus-v2.1 (seed=39). ")
+    assert "drafts" not in header
+    assert "test" not in header
+    assert "held" not in header
+
+
+def _train_only_corpus(tmp_path: Path, ids: list[str], name: str = "dev-like.json") -> Path:
+    path = tmp_path / name
+    entries = [_operation_entry(i) for i in ids]
+    path.write_text(json.dumps({"header": "Train-only corpus.", "entries": entries}))
+    return path
+
+
+def _v2_args(corpus: Path, out_dir: Path, *extra: str) -> list[str]:
+    return [
+        "--corpus",
+        str(corpus),
+        "--version",
+        "v2",
+        "--seed",
+        "39",
+        "--val-size",
+        "4",
+        "--test-size",
+        "4",
+        "--fold-seed",
+        "7",
+        "--out-dir",
+        str(out_dir),
+        *extra,
+    ]
+
+
+def test_v2_train_only_corpus_lands_on_train_and_never_on_val_or_test(tmp_path) -> None:
+    """Deviation d3 (issue 53): dev.json-like data never reaches the fresh sides."""
+    module = _module()
+    corpus = _fixture_corpus(tmp_path)
+    dev_like = _train_only_corpus(tmp_path, ["dev-a", "dev-b", "dev-c"])
+    out_dir = tmp_path / "out"
+    assert module.main(_v2_args(corpus, out_dir, "--train-only", str(dev_like))) == 0
+    sides = {
+        name: json.loads((out_dir / f"{name}.json").read_text(encoding="utf-8"))
+        for name in module.SPLIT_NAMES
+    }
+    train_ids = {entry["id"] for entry in sides["train"]["entries"]}
+    assert {"dev-a", "dev-b", "dev-c"} <= train_ids
+    for name in ("val", "test"):
+        ids = {entry["id"] for entry in sides[name]["entries"]}
+        assert not ids & {"dev-a", "dev-b", "dev-c"}
+    # The val/test sides are exactly what a split without --train-only gives.
+    plain_dir = tmp_path / "plain"
+    assert module.main(_v2_args(corpus, plain_dir)) == 0
+    for name in ("val", "test"):
+        plain = json.loads((plain_dir / f"{name}.json").read_text(encoding="utf-8"))
+        assert [e["id"] for e in plain["entries"]] == [e["id"] for e in sides[name]["entries"]]
+    sources = sides["train"]["split"]["sources"]
+    assert [src.get("train_only", False) for src in sources] == [False, True]
+    assert sides["train"]["split"]["sizes"]["train"] == len(train_ids)
+    marked = [e for e in sides["train"]["entries"] if e.get("train_only")]
+    assert sorted(e["id"] for e in marked) == ["dev-a", "dev-b", "dev-c"]
+    assert all(e["source_id"] == e["id"] for e in marked)
+
+
+def test_v2_train_only_refuses_an_id_already_on_a_side(tmp_path, capsys) -> None:
+    module = _module()
+    corpus = _fixture_corpus(tmp_path)
+    clash_id = _fixture_entries()[0]["id"]
+    dev_like = _train_only_corpus(tmp_path, [clash_id])
+    argv = _v2_args(corpus, tmp_path / "out", "--train-only", str(dev_like))
+    with pytest.raises(SystemExit):
+        module.main(argv)
+    assert "already on a split side" in capsys.readouterr().err
+
+
+def test_v2_train_only_refuses_the_held_out_file(tmp_path, capsys) -> None:
+    module = _module()
+    corpus = _fixture_corpus(tmp_path)
+    held_out = _train_only_corpus(tmp_path, ["h-1"], name="held-out.json")
+    argv = _v2_args(corpus, tmp_path / "out", "--train-only", str(held_out))
+    with pytest.raises(SystemExit):
+        module.main(argv)
+    assert "held-out" in capsys.readouterr().err

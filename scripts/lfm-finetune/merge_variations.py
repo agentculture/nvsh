@@ -103,7 +103,10 @@ def add_supplement(
 
     The supplement (deviation d3) must name the train side in its header, none
     of its ids may collide with an entry already in the split, and none of its
-    texts may repeat an entry of an excluded side.
+    texts may repeat an entry of an excluded side. An entry is its own source
+    unless it carries a ``source_id`` already (issue 53, t15: a contrastive
+    pair, or a stripped request and its complete original, share one), which
+    is kept so later grouping keeps the pair together.
     """
     if not _TRAIN_HEADER.search(str(supplement.get("header", ""))):
         raise ValueError("the supplement's header does not name the train side")
@@ -117,7 +120,7 @@ def add_supplement(
                 f"supplement entry {entry['id']!r} repeats an entry of an excluded side"
                 " (validation or test); remove or reword it"
             )
-        added.append({**entry, "source_id": entry["id"], "side": "train"})
+        added.append({**entry, "source_id": entry.get("source_id") or entry["id"], "side": "train"})
     merged = {**split, "entries": [*split["entries"], *added]}
     merged["header"] = f"{split['header']} Plus {len(added)} train-only supplement entries."
     return merged, len(added)

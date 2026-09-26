@@ -1,0 +1,503 @@
+{
+  "plan_slug": "tool-jev-calibration-cycle-issue-53",
+  "schema_version": 2,
+  "created": "2026-09-24T23:49:55Z",
+  "updated": "2026-09-26T03:59:32Z",
+  "deviations": [
+    {
+      "id": "d1",
+      "what": "t1 criterion 1's train_scorer adoption of the shared label-probability definition moves to t16 (label_variant_ids + label_logits_from_vocab, variant ids recorded in run metadata); the lead updates one t8-owned assertion in tests/test_lfm_finetune_measure.py (served top == READOUT_TOP) at t1's merge; measure.py's --max-logprobs preflight stays with t8",
+      "task_ref": "t1",
+      "reason": "train_scorer.py is owned by t16 and t1 was told not to touch it; t1's required READOUT_TOP change breaks one hard-coded top-22 assertion in a t8 test file, and merges must stay green",
+      "affects": [
+        "t16",
+        "t8",
+        "c39",
+        "h31"
+      ],
+      "origin": "user",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 1
+    },
+    {
+      "id": "d2",
+      "what": "Wire t14's per-example data into Track B training: build_dataset.py gains --scorer-out writing a corpus-format scorer training file (original entries + derived -nocand entries, each with permutation/gold/perm_seed/descriptions); pipeline.sh assemble passes --randomize-labels/--reasons/--missing-candidate-rate/--perm-seed through (env vars) and train-scorer trains on the scorer file when present; an end-to-end test proves rows reaching train_scorer carry randomized maps and -nocand entries",
+      "task_ref": "t14",
+      "reason": "integration gap: t14 enriched the rendered nvsh-train.jsonl but train-scorer reads the corpus-format train-augmented.json, so r1-r3 would silently train on the fixed map without missing-candidate data; no task owned the hand-off",
+      "affects": [
+        "t16",
+        "t18",
+        "c10",
+        "h14",
+        "c11"
+      ],
+      "origin": "llm",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 2
+    },
+    {
+      "id": "d3",
+      "what": "corpus v2 split: nvsh/tiers/corpus/dev.json (all 431, incl. the issue-46 val/test sides) goes to the v2 train side only; the new validation (~150) and test (~140) sides come only from this cycle's teacher drafts (eval pool), unseen by scorer-b1 and by the lead; split.py gains a --train-only CORPUS flag for this",
+      "task_ref": "t12",
+      "reason": "a plain re-split (c29) would place scorer-b1 training entries and issue-46 validation entries the lead read per entry into the new val/test sides, inflating the t17 baseline and making the fresh test side not fresh; operator chose fresh-only eval sides 2026-09-25",
+      "affects": [
+        "t13",
+        "t17",
+        "t15",
+        "t20"
+      ],
+      "origin": "user",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 3
+    },
+    {
+      "id": "d4",
+      "what": "assemble no longer protects issue 39's and issue 46's old (spent) test sides, so all 431 dev.json entries and their variations train, as d3 intended; issue 46's sealed held-out, the v2 val/test sides and the q53 sealed held-out stay protected",
+      "task_ref": "t15",
+      "reason": "leakage_check dropped 123 of 431 dev.json entries as exact matches of the old test sides carried over from issue 46's PROTECTED_EXTRA; this cycle makes no claim on those spent sides and the operator prefers more data",
+      "affects": [
+        "t16",
+        "t18"
+      ],
+      "origin": "user",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 4
+    },
+    {
+      "id": "d5",
+      "what": "metrics.py compares a service argument the way grounding matches it (case-insensitive, '.service' unit suffix optional; containers case-insensitive) instead of by exact string; every figure so far is recomputed or remeasured",
+      "task_ref": "t18",
+      "reason": "the fresh v2 eval sides (and very likely the sealed held-out) write bare service names while grounding returns the systemd unit, so exact comparison scored every right service proposal as wrong arguments (b1 val 59 exact vs 73 canonical; r1 52 vs 71, and 4 of r1's 5 'wrong mutating' were the same unit spelled two ways)",
+      "affects": [
+        "t17",
+        "t20"
+      ],
+      "origin": "user",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 5
+    },
+    {
+      "id": "d6",
+      "what": "checkpoint choice adds a safety-first filter before the rule's calibration step: a candidate must have 0 wrong mutating on the whole validation side (fit + selection) and its missing-candidate slice with the gate off; only r1 passes, so r1 goes to t19 instead of the rule's r3",
+      "task_ref": "t18",
+      "reason": "r3 (the rule's pick by ECE after temperature) proposes power_set on three check-then-change validation requests at 0.97/0.83/0.78 and is safe only behind a 0.95 mutating floor fitted on the same fold; r1 escalates them with no gate, and the final bar is 0 wrong mutating on test and held-out",
+      "affects": [
+        "t19",
+        "t20"
+      ],
+      "origin": "user",
+      "status": "approved",
+      "classification": "risky",
+      "seq": 6
+    },
+    {
+      "id": "d7",
+      "what": "after the freeze, draft and review a train-only check-then-change supplement (multi-step requests that check then change, expect escalate, each paired with its plain read-only check), re-freeze, and retrain the r3 recipe (r3b) for comparison with r1 under the d6 filter before t20; t19 proceeds on r1 meanwhile; t20 waits for that comparison",
+      "task_ref": "t15",
+      "reason": "operator: prepare more data in parallel to retrain r3; r3's failures are all this one request shape and the training set has no recipe that targets it",
+      "affects": [
+        "t18",
+        "t20"
+      ],
+      "origin": "user",
+      "status": "approved",
+      "classification": "needs-follow-up",
+      "seq": 7
+    }
+  ],
+  "evidence": [
+    {
+      "id": "e1",
+      "obligation_ref": "o1",
+      "test_ref": "scripts/lfm-finetune/permutation_probe.py --split test.json --final --per-entry 10 (work/final/probe-scorer-r3b-test.json)",
+      "behavior_text": "answer change: 205/9900 trials = 2.07% pooled; order 2.5% [0.8,4.3], letters 1.0%, subset 1.6%, paraphrase 2.5%, all 2.8% (CIs over entries)",
+      "contract_text": "pooled op-level answer change <= 2.3%",
+      "evidence_type": "integration",
+      "strength": "execution",
+      "strength_basis": "the probe ran once on the final checkpoint on the fresh test side; scorer-b1 was 18.8%",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-25T19:02:00Z",
+        "commit": "8976a6a"
+      },
+      "origin": "llm",
+      "status": "approved",
+      "superseded": false,
+      "seq": 8
+    },
+    {
+      "id": "e2",
+      "obligation_ref": "o2",
+      "test_ref": "docs/benchmarks/2026-09-25-lfm-final-scorer-r3b.q4_k_m.md + calibration_fit apply (frozen params b07eb0f1) + metrics; report docs/benchmarks/2026-09-25-tool-jev-calibration-cycle.md",
+      "behavior_text": "ECE 0.016 [0.011, 0.042] n=198 on Spark, 0.009 [0.009, 0.036] on AGX Orin; per-slice reliability tables in the report (held-out read_only slice 0.147 reported)",
+      "contract_text": "ECE <= 0.10 with bootstrap CI and published reliability tables",
+      "evidence_type": "integration",
+      "strength": "execution",
+      "strength_basis": "complete served distributions (198/198) of the deployed build, temperature fitted on the validation fit fold only",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-25T19:02:00Z",
+        "commit": "8976a6a"
+      },
+      "origin": "llm",
+      "status": "approved",
+      "superseded": false,
+      "seq": 9
+    },
+    {
+      "id": "e3",
+      "obligation_ref": "o3",
+      "test_ref": "sweep_gate.py --final (read_only margin 0.2) on calibrated final predictions, test/held-out and their -nocand slices, Spark and Orin",
+      "behavior_text": "wrong mutating 0 on test (198), held-out (149), test missing-candidate (83), held-out missing-candidate (60), on both machines",
+      "contract_text": "0 wrong mutating actions at the chosen thresholds",
+      "evidence_type": "integration",
+      "strength": "execution",
+      "strength_basis": "each final side measured once after the frozen choice",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-25T19:02:00Z",
+        "commit": "8976a6a"
+      },
+      "origin": "llm",
+      "status": "approved",
+      "superseded": false,
+      "seq": 10
+    },
+    {
+      "id": "e4",
+      "obligation_ref": "o4",
+      "test_ref": "sweep_gate.py --final on calibrated test missing-candidate predictions",
+      "behavior_text": "test: 71/83 = 85.5% escalated (Orin 84.3%)",
+      "contract_text": "escalation (semantic or uncertainty) on >= 80% of the missing-candidate slice",
+      "evidence_type": "integration",
+      "strength": "execution",
+      "strength_basis": "fresh test side, measured once",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-25T19:02:00Z",
+        "commit": "8976a6a"
+      },
+      "origin": "llm",
+      "status": "approved",
+      "superseded": false,
+      "seq": 11
+    },
+    {
+      "id": "e5",
+      "obligation_ref": "o4",
+      "test_ref": "sweep_gate.py --final on calibrated held-out missing-candidate predictions",
+      "behavior_text": "sealed held-out: 46/60 = 76.7% escalated (Orin 76.7%); the 14 misses propose a related read-only operation, 0 mutating",
+      "contract_text": "escalation (semantic or uncertainty) on >= 80% of the missing-candidate slice",
+      "evidence_type": "integration",
+      "strength": "execution",
+      "strength_basis": "sealed held-out, measured once; the bar is missed and reported as missed",
+      "outcome": "fail",
+      "run": {
+        "timestamp": "2026-09-25T19:02:00Z",
+        "commit": "8976a6a"
+      },
+      "origin": "llm",
+      "status": "approved",
+      "superseded": false,
+      "seq": 12
+    },
+    {
+      "id": "e6",
+      "obligation_ref": "o5",
+      "test_ref": "final measure pages (Scorer readouts complete/incomplete rows) and gated outcome counts",
+      "behavior_text": "complete readouts 198/198 test, 149/149 held-out, 83/83 and 60/60 slices, Spark and Orin; abstain_uncertain counted apart from escalate",
+      "contract_text": "complete label distributions for >= 95% of entries, semantic escalate and abstain_uncertain as separate outcomes",
+      "evidence_type": "integration",
+      "strength": "execution",
+      "strength_basis": "scorer-b1's served readout returned 0/64 complete",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-25T19:02:00Z",
+        "commit": "8976a6a"
+      },
+      "origin": "llm",
+      "status": "approved",
+      "superseded": false,
+      "seq": 13
+    },
+    {
+      "id": "e7",
+      "obligation_ref": "o6",
+      "test_ref": "uv run pytest tests/test_lfm_finetune_gate.py tests/test_lfm_finetune_metrics.py (full suite 4700 passed)",
+      "behavior_text": "gate decisions and metrics count escalate and abstain_uncertain separately; no operation name in gate/sweep/metrics/calibration code (grep over nvsh.ops.table.names(): none)",
+      "contract_text": "escalate stays a candidate label; abstain_uncertain is a separate outcome; thresholds keyed by Operation.read_only only",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "tests ran green at the named commit",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-25T23:10:00Z",
+        "commit": "3b66166"
+      },
+      "origin": "llm",
+      "status": "approved",
+      "superseded": false,
+      "seq": 14
+    },
+    {
+      "id": "e8",
+      "obligation_ref": "o7",
+      "test_ref": "grep of gate.py, sweep_gate.py, metrics.py, calibration_fit.py for every nvsh.ops.table name",
+      "behavior_text": "0 matches in all four files",
+      "contract_text": "no code switches on a specific operation name",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "scripted check ran at the named commit",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-25T23:10:00Z",
+        "commit": "3b66166"
+      },
+      "origin": "llm",
+      "status": "approved",
+      "superseded": false,
+      "seq": 15
+    },
+    {
+      "id": "e9",
+      "obligation_ref": "o8",
+      "test_ref": "HfApi.repo_info on the three new repositories",
+      "behavior_text": "tool-jev-scorer-v2 (e362b1fa), -scorer-v2-gguf (604b99e9), -v2-dataset (33667224): private=True",
+      "contract_text": "every repo created in this cycle is private",
+      "evidence_type": "observation",
+      "strength": "execution",
+      "strength_basis": "read back from the Hub API after upload",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-25T23:20:00Z",
+        "commit": "3b66166"
+      },
+      "origin": "llm",
+      "status": "approved",
+      "superseded": false,
+      "seq": 16
+    },
+    {
+      "id": "e10",
+      "obligation_ref": "o9",
+      "test_ref": "HfApi.repo_info on PR #52's six repositories; scan.json of each new bundle",
+      "behavior_text": "six repos last modified 2026-09-24 (before this cycle), private; three new bundles scanned with 0 findings before upload",
+      "contract_text": "scorer-b1's artifacts are not overwritten; new builds go to new private repos; every bundle passes scan_bundle",
+      "evidence_type": "observation",
+      "strength": "execution",
+      "strength_basis": "read back from the Hub API",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-25T23:20:00Z",
+        "commit": "3b66166"
+      },
+      "origin": "llm",
+      "status": "approved",
+      "superseded": false,
+      "seq": 17
+    },
+    {
+      "id": "e11",
+      "obligation_ref": "o10",
+      "test_ref": "comparison of stored validation predictions (scorer-r3b vs scorer-r3b.bf16_gguf vs scorer-r3b.q4_k_m)",
+      "behavior_text": "bf16 GGUF within 0.01 on 196/204 (max 0.072, top-1 agreement 203/204); the 0.01 target is missed on 8 entries; Q4 calibrated on its own predictions (>0.05 on 10 entries)",
+      "contract_text": "bf16 GGUF readout matches the in-process distribution within 0.01; Q4 fitted on its own predictions",
+      "evidence_type": "integration",
+      "strength": "execution",
+      "strength_basis": "measured on the final checkpoint's validation predictions",
+      "outcome": "fail",
+      "run": {
+        "timestamp": "2026-09-25T18:55:00Z",
+        "commit": "8976a6a"
+      },
+      "origin": "llm",
+      "status": "approved",
+      "superseded": false,
+      "seq": 18
+    },
+    {
+      "id": "e12",
+      "obligation_ref": "o11",
+      "test_ref": "check of work/q53-run/splits/folds.json",
+      "behavior_text": "fit 143 / selection 61, disjoint, seed 53; calibration and gates fitted on fit, checkpoint chosen on selection",
+      "contract_text": "fit and selection folds seeded and disjoint; no entry informs both",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "scripted check at the named commit",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-25T23:10:00Z",
+        "commit": "3b66166"
+      },
+      "origin": "llm",
+      "status": "approved",
+      "superseded": false,
+      "seq": 19
+    },
+    {
+      "id": "e13",
+      "obligation_ref": "o12",
+      "test_ref": "git log b1c6cb6 vs the training machine's train log",
+      "behavior_text": "rule committed 2026-09-25T02:45+03:00; first training run (r1) started 2026-09-25T14:17Z; later departures recorded as d6/d7",
+      "contract_text": "the checkpoint rule is committed before the first training command",
+      "evidence_type": "observation",
+      "strength": "execution",
+      "strength_basis": "timestamps from git and the run log",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-25T23:10:00Z",
+        "commit": "3b66166"
+      },
+      "origin": "llm",
+      "status": "approved",
+      "superseded": false,
+      "seq": 20
+    },
+    {
+      "id": "e14",
+      "obligation_ref": "o13",
+      "test_ref": "split.py v2 outputs and file timestamps",
+      "behavior_text": "validation 204, test 198, sealed held-out 149 (written 2026-09-25 11:50, before r1 at 14:17Z); no claim uses the issue-46 test side",
+      "contract_text": "new sealed test side and held-out before any training; validation >= 150; issue-46 test side not used for a claim",
+      "evidence_type": "observation",
+      "strength": "execution",
+      "strength_basis": "file timestamps and split headers",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-25T23:10:00Z",
+        "commit": "3b66166"
+      },
+      "origin": "llm",
+      "status": "approved",
+      "superseded": false,
+      "seq": 21
+    },
+    {
+      "id": "e15",
+      "obligation_ref": "o14",
+      "test_ref": "docs/benchmarks/2026-09-25-lfm-*scorer-r3b*.md and the cycle report",
+      "behavior_text": "every rate and ECE/Brier row carries a 95% bootstrap CI and n",
+      "contract_text": "every reported rate and ECE carries a bootstrap CI and n",
+      "evidence_type": "observation",
+      "strength": "coverage",
+      "strength_basis": "read from the committed pages",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-25T23:10:00Z",
+        "commit": "3b66166"
+      },
+      "origin": "llm",
+      "status": "approved",
+      "superseded": false,
+      "seq": 22
+    }
+  ],
+  "deltas": [
+    {
+      "id": "b1",
+      "kind": "added",
+      "behavior_text": "a check-then-change targeted recipe (76 pairs) and a retrained candidate r3b outside the pre-registered r1-r4; r3b is the shipped checkpoint",
+      "caused_by": [
+        "d7"
+      ],
+      "evidence_refs": [
+        "e3",
+        "e4"
+      ],
+      "origin": "llm",
+      "status": "approved",
+      "superseded": false
+    },
+    {
+      "id": "b2",
+      "kind": "amended",
+      "behavior_text": "checkpoint choice requires 0 wrong mutating on all validation and its missing-candidate slice with the gate off before the calibration step",
+      "caused_by": [
+        "d6"
+      ],
+      "evidence_refs": [
+        "e3"
+      ],
+      "origin": "llm",
+      "status": "approved",
+      "superseded": false
+    },
+    {
+      "id": "b3",
+      "kind": "amended",
+      "behavior_text": "right proposals compare a service argument case-insensitively with the .service suffix optional and a container case-insensitively; grounding strips sentence punctuation",
+      "caused_by": [
+        "d5"
+      ],
+      "evidence_refs": [
+        "e3"
+      ],
+      "origin": "llm",
+      "status": "approved",
+      "superseded": false
+    },
+    {
+      "id": "b4",
+      "kind": "amended",
+      "behavior_text": "all 431 dev.json entries train; the spent issue-39/46 test sides are no longer protected",
+      "caused_by": [
+        "d4"
+      ],
+      "evidence_refs": [
+        "e14"
+      ],
+      "origin": "llm",
+      "status": "approved",
+      "superseded": false
+    },
+    {
+      "id": "b5",
+      "kind": "amended",
+      "behavior_text": "missing-candidate escalation reaches 85.5% on test but 76.7% on the sealed held-out: the bar holds on one fresh side only",
+      "caused_by": [
+        "c27"
+      ],
+      "evidence_refs": [
+        "e4",
+        "e5"
+      ],
+      "origin": "llm",
+      "status": "approved",
+      "superseded": false
+    },
+    {
+      "id": "b6",
+      "kind": "amended",
+      "behavior_text": "served bf16 GGUF readout matches in-process scoring within 0.01 on 196/204 validation entries, not all",
+      "caused_by": [
+        "c40"
+      ],
+      "evidence_refs": [
+        "e11"
+      ],
+      "origin": "llm",
+      "status": "approved",
+      "superseded": false
+    },
+    {
+      "id": "b7",
+      "kind": "added",
+      "behavior_text": "scorer model bundles ship their frozen calibration.json and gate.json; data set bundles ship scorer-train.json with per-record provenance (draft/targeted origins) and publish private addresses as RFC 5737 documentation addresses",
+      "caused_by": [
+        "c44"
+      ],
+      "evidence_refs": [
+        "e10"
+      ],
+      "origin": "llm",
+      "status": "approved",
+      "superseded": false
+    }
+  ],
+  "supersessions": []
+}

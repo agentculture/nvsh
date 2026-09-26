@@ -21,13 +21,17 @@
 #   filter-variations     count accepted variations against the train split with
 #                         --filter-to-split, without touching assemble's own output
 #                         (a leakage check between augment/rereview and assemble)
-#   assemble              training sets: nvsh-train.jsonl, $SKILLS_SET-train.jsonl
+#   assemble              training sets: nvsh-train.jsonl, $SKILLS_SET-train.jsonl;
+#                         with SCORER_BUILD_ARGS (build_dataset.py's t14 flags) also
+#                         the Track B file scorer-train.json (issue 53, deviation d2)
 #   train <name> [nvsh|skills]   train, merge, stage into HF_CACHE as REPO
 #                         (a training stage: runs under TRAIN_MEMORY_MAX, mem.log); writes
 #                         a generation_config.json into <run>/merged (deviation d3)
 #   train-scorer [name]   train the Track B scorer on assemble's frozen training set
 #                         (data/train-augmented.json) with split.py's val side
-#                         (train_scorer.py, a training stage; runs/scorer[-name])
+#                         (train_scorer.py, a training stage; runs/scorer[-name]);
+#                         data/scorer-train.json instead when assemble wrote it
+#                         (SCORER_BUILD_ARGS set) and it is the newer of the two
 #   measure-val <name> [args]    validation run with per-entry details (iterate on
 #                         this)
 #   measure-final <name> [--slice S] [--scorer M]   a final run on the test
@@ -46,6 +50,10 @@
 #                         build of a run (`quantize <run>` first; t25):
 #                           <run>.awq     WORK/quant/<run>/awq, served by vLLM like any
 #                                         model dir (it must pass gen_config.py check)
+#                           <run>.bf16_gguf  WORK/quant/<run>/model-bf16.gguf (quantize's
+#                                         unquantized export), served like .q4_k_m; used to
+#                                         check the served readout against in-process
+#                                         (issue 53 t17)
 #                           <run>.q4_k_m  WORK/quant/<run>/model-q4_k_m.gguf, served by
 #                                         the native llama-server LLAMA_SERVER names
 #                                         (required for it), greedy by --temp 0 --top-k 1
@@ -67,7 +75,13 @@
 #                         measure.py also gets --ground-snapshot GROUND_SNAPSHOT
 #                         (required; see `measure.py snapshot`) and --max-logprobs
 #                         MEASURE_MAX_LOGPROBS, and measure-val hands any further
-#                         [args] to it (e.g. --scorer served).
+#                         [args] to it (e.g. --scorer served). MEASURE_REASONS=1
+#                         (env or env file; default 0) adds measure.py --reasons to
+#                         every --scorer call of measure-val/-final/-heldout: set it
+#                         for a scorer trained with SCORER_BUILD_ARGS containing
+#                         --reasons, so it is measured on the pool (8 escalate:<reason>
+#                         candidates, no bare escalate) and prompt it was trained on
+#                         (issue 53). It refuses a call without --scorer.
 #   scan <name>           scan a trained run's merged checkpoint for secrets/binaries
 #                         (scan_bundle.py scan; writes scan.json next to it)
 #   quantize <name>       Q4_K_M GGUF + INT4 AWQ export of a merged checkpoint
@@ -220,21 +234,26 @@ ground_snapshot() {
 
 build_base() {
   # The run a measured <name> belongs to: <run> for a quantized build
-  # (<run>.awq, <run>.q4_k_m -- what `quantize <run>` wrote), else <name>.
+  # (<run>.awq, <run>.q4_k_m, <run>.bf16_gguf -- what `quantize <run>` wrote),
+  # else <name>.
   case $1 in
-    *.awq | *.q4_k_m) echo "${1%.*}" ;;
+    *.awq | *.q4_k_m | *.bf16_gguf) echo "${1%.*}" ;;
     *) echo "$1" ;;
   esac
 }
 
-is_gguf_build() { [[ $1 == *.q4_k_m ]]; }
+is_gguf_build() { [[ $1 == *.q4_k_m || $1 == *.bf16_gguf ]]; }
 
 quant_build() {
   # quant_build NAME: the served path of a quantized build (the AWQ dir or the
   # GGUF file), after checking `quantize <run>` finished for it.
   local name=$1 base kind path
   base=$(build_base "$name"); kind=${name##*.}
-  if [ "$kind" = awq ]; then path="$WORK/quant/$base/awq"; else path="$WORK/quant/$base/model-q4_k_m.gguf"; fi
+  case $kind in
+    awq) path="$WORK/quant/$base/awq" ;;
+    bf16_gguf) path="$WORK/quant/$base/model-bf16.gguf" ;;
+    *) path="$WORK/quant/$base/model-q4_k_m.gguf" ;;
+  esac
   if [ "$kind" = awq ]; then
     [ -d "$path" ] || die "no $path; run quantize $base first"
   else
@@ -275,14 +294,24 @@ scorer_measure_args() {
   # Track B (--scorer): measure.py's scorer loads a tokenizer (transformers,
   # the training environment's) from a path, not from the served name (issue
   # 46, t23). Prints the extra measure.py args; the caller sets PYTHONPATH.
+  # MEASURE_REASONS=1 adds --reasons: a scorer trained with SCORER_BUILD_ARGS
+  # containing --reasons must be measured on that same candidate pool (issue 53).
   local arg dir
+  case ${MEASURE_REASONS:-0} in
+    0 | 1) ;;
+    *) die "MEASURE_REASONS must be 0 or 1, not '${MEASURE_REASONS}'" ;;
+  esac
   for arg in "$@"; do
     if [ "$arg" = --scorer ] || [[ $arg == --scorer=* ]]; then
       dir=$(tokenizer_dir "$1")
       printf '%s\n' --tokenizer "$dir"
+      if [ "${MEASURE_REASONS:-0}" = 1 ]; then printf '%s\n' --reasons; fi
       return 0
     fi
   done
+  if [ "${MEASURE_REASONS:-0}" = 1 ]; then
+    die "MEASURE_REASONS=1 needs --scorer: reasons mode is a Track B candidate pool"
+  fi
 }
 
 measure_pythonpath() {
@@ -407,7 +436,9 @@ serve_for_measure() {
   MEASURE_PORT=${MEASURE_PORT:-18060}
   MEASURE_CTX=${MEASURE_CTX:-2048}
   MEASURE_GPU_FRACTION=${MEASURE_GPU_FRACTION:-0.08}
-  MEASURE_MAX_LOGPROBS=${MEASURE_MAX_LOGPROBS:-22}
+  # Kept equal to scorer.py's READOUT_TOP (issue 53 t3): the scorer requests
+  # this many next-token log-probabilities per served request.
+  MEASURE_MAX_LOGPROBS=${MEASURE_MAX_LOGPROBS:-20000}
   MEASURE_MODEL_NAME=$name
   # A GGUF build's native llama-server keeps its pid file and log here.
   MEASURE_RUN_DIR="$WORK/measure"
@@ -569,12 +600,22 @@ case "$STAGE" in
     py scripts/lfm-finetune/leakage_check.py --train "$WORK/data/train-augmented.merged.json" \
       --out-filtered "$WORK/data/train-augmented.json" --protected "${protected[@]}" \
       | tee "$WORK/data/leakage.json"
+    # SCORER_BUILD_ARGS (optional, issue 53 deviation d2): build_dataset.py's
+    # t14 flags (e.g. "--randomize-labels --perm-seed 53 --missing-candidate-rate
+    # 0.3 --reasons"); when set, the same build also writes the corpus-format
+    # Track B file data/scorer-train.json that train-scorer then prefers. Unset,
+    # assemble is exactly issue 46's.
+    read -r -a scorer_build <<<"${SCORER_BUILD_ARGS:-}"
+    if [ "${#scorer_build[@]}" -gt 0 ]; then
+      scorer_build+=(--scorer-out "$WORK/data/scorer-train.json")
+    fi
     # build_dataset.py's render check loads the base's tokenizer (transformers),
     # which only the training environment has.
     site=$(train_site_packages)
     PYTHONPATH="$site${PYTHONPATH:+:$PYTHONPATH}" \
       py scripts/lfm-finetune/build_dataset.py --split "$WORK/data/train-augmented.json" \
-      --out "$WORK/data/nvsh-train.jsonl" --base "$BASE" --revision "$BASE_REV"
+      --out "$WORK/data/nvsh-train.jsonl" --base "$BASE" --revision "$BASE_REV" \
+      "${scorer_build[@]}"
     skills_set=${SKILLS_SET:-skills}
     if [ -s "$WORK/aug/$skills_set-accepted.jsonl" ]; then
       py scripts/lfm-finetune/skills_dataset.py --accepted "$WORK/aug/$skills_set-accepted.jsonl" \
@@ -600,6 +641,13 @@ case "$STAGE" in
     # test entries and a duplicate of a test entry).
     data="$WORK/data/train-augmented.json"
     [ -s "$data" ] || die "no $data; run assemble first"
+    # assemble with SCORER_BUILD_ARGS also writes data/scorer-train.json: the
+    # same entries plus -nocand ones, each with its own label map (issue 53,
+    # deviation d2). Used only when newer than the training set, so an
+    # assemble re-run without SCORER_BUILD_ARGS never trains on a stale one.
+    scorer_data="$WORK/data/scorer-train.json"
+    if [ -s "$scorer_data" ] && [ "$scorer_data" -nt "$data" ]; then data=$scorer_data; fi
+    echo "train-scorer: training on $data"
     run="$WORK/runs/scorer${1:+-$1}"; mkdir -p "$run"
     # shellcheck disable=SC2086
     run_capped "$run" "$TRAIN_PY" "$HERE/train_scorer.py" --train "$data" \
@@ -785,6 +833,14 @@ case "$STAGE" in
     if [ "$kind" != bf16 ] && [[ $suffix == *-$kind ]]; then
       extra+=(--quantized-from "$BUNDLE_REPO_PREFIX${suffix%-"$kind"}")
     fi
+    # BUNDLE_CALIBRATION / BUNDLE_GATE (issue 53 t21, optional): a scorer's
+    # frozen calibration parameters and gate settings, shipped in the bundle.
+    for key in BUNDLE_CALIBRATION BUNDLE_GATE; do
+      value=${!key:-}
+      [ -z "$value" ] && continue
+      [ -s "$value" ] || die "$key=$value does not exist or is empty"
+      if [ "$key" = BUNDLE_CALIBRATION ]; then extra+=(--calibration "$value"); else extra+=(--gate "$value"); fi
+    done
     out="$WORK/bundles/$suffix"
     mkdir -p "$WORK/bundles"
     py scripts/lfm-finetune/release_bundle.py --kind "$kind" "${extra[@]}" --merged "$merged" \
@@ -805,6 +861,16 @@ case "$STAGE" in
     [ -s "$train" ] || die "no $train; run assemble first (the frozen training set)"
     read -r -a rejected <<<"${BUNDLE_REJECTED:-$WORK/aug/nvsh-rejected.jsonl}"
     read -r -a model_suffixes <<<"${DATASET_MODEL_REPOS:-}"
+    scorer_train=()
+    # The candidate scorer's own training file (issue 53 t21), when assemble wrote
+    # one and it is newer than the frozen set -- train-scorer's own rule (PR #65).
+    if [ -s "$WORK/data/scorer-train.json" ] && [ "$WORK/data/scorer-train.json" -nt "$train" ]; then
+      scorer_train=(--scorer-train "$WORK/data/scorer-train.json")
+    fi
+    # BUNDLE_DEFAULT_SOURCE (issue 53): the source for records that carry none
+    # (draft_sources.py wrote no source field before t21).
+    default_source=()
+    [ -n "${BUNDLE_DEFAULT_SOURCE:-}" ] && default_source=(--default-source "$BUNDLE_DEFAULT_SOURCE")
     model_repos=()
     for model in "${model_suffixes[@]}"; do
       check_suffix "$model"
@@ -815,7 +881,8 @@ case "$STAGE" in
     py scripts/lfm-finetune/dataset_bundle.py --splits "$WORK/splits" --train-augmented "$train" \
       --accepted "${BUNDLE_ACCEPTED:-$WORK/aug/nvsh-accepted.jsonl}" --rejected "${rejected[@]}" \
       --licence "$REPO_ROOT/LICENSE" --teacher-models "$TEACHER_MODELS" --apache-only \
-      --issue 46 "${model_repos[@]}" --out "$out"
+      --issue "${BUNDLE_ISSUE:-46}" "${scorer_train[@]}" "${default_source[@]}" \
+      "${model_repos[@]}" --out "$out"
     write_bundle_record "$suffix" dataset "$suffix" dataset
     py scripts/lfm-finetune/scan_bundle.py scan "$out"
     ;;

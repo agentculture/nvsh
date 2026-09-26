@@ -9,9 +9,9 @@ reviewed it. The folder holds:
   train-only supplement and the accepted variations (``train-augmented.json``
   from ``merge_variations.py``);
 - ``data/validation.jsonl`` and ``data/test.jsonl``: the seeded split's other
-  two sides, corpus entries only;
-- ``manifest.json``: one row per record: split, origin (corpus, supplement or
-  variation), source, source entry, source file and licence, and for a
+  two sides (corpus entries, or for issue 53 fresh teacher-drafted requests);
+- ``manifest.json``: one row per record: split, origin (corpus, supplement,
+  draft or variation), source, source entry, source file and licence, and for a
   variation the generator, corrector and reviewer models;
 - ``README.md``: the data set card, with every count computed here;
 - ``LICENSE``: nvsh's own Apache-2.0 licence file.
@@ -49,6 +49,7 @@ from __future__ import annotations
 
 import argparse
 import collections
+import ipaddress
 import json
 import re
 import shutil
@@ -81,7 +82,11 @@ DECIDED_BY_BOTH = "both"
 DECIDED_BY_REVIEWER_B = "reviewer_b"
 
 #: Where each issue's run log lives in the nvsh repository.
-RUN_LOGS = {39: "docs/lfm-finetune.md", 46: "docs/qwen-tool-jev-finetune.md"}
+RUN_LOGS = {
+    39: "docs/lfm-finetune.md",
+    46: "docs/qwen-tool-jev-finetune.md",
+    53: "docs/qwen-tool-jev-calibration.md",
+}
 
 _SEED_RE = re.compile(r"\(seed=(\d+)\)")
 
@@ -268,20 +273,77 @@ def _teacher(role_models: dict[str, tuple[str, str]], alias: str) -> tuple[str, 
     return role_models[alias]
 
 
+_IPV4 = re.compile(r"(?<![\d.])(\d{1,3}(?:\.\d{1,3}){3})(?![\d.])")
+#: RFC 5737 TEST-NET-1: an address that is never anyone's real host.
+DOCUMENTATION_NET = "192.0.2."
+#: Carrier-grade NAT (Tailscale and friends): not ``is_private``, but scan_bundle flags it.
+_CGNAT = ipaddress.ip_network("100.64.0.0/10")
+
+
+def publishable_text(text: str) -> str:
+    """*text* with every private (non-loopback) IPv4 address replaced by the
+    documentation address with the same last octet (issue 53 t21: a drafted
+    request named 192.168.1.50, and the bundle scan refuses private hosts)."""
+
+    def swap(match: re.Match[str]) -> str:
+        try:
+            address = ipaddress.ip_address(match.group(1))
+        except ValueError:
+            return match.group(0)
+        if address.is_loopback or address.is_unspecified:
+            return match.group(0)
+        if not (address.is_private or address in _CGNAT):
+            return match.group(0)
+        return DOCUMENTATION_NET + match.group(1).rsplit(".", 1)[1]
+
+    return _IPV4.sub(swap, text)
+
+
 def _record(entry: dict[str, Any], split: str) -> dict[str, Any]:
     keep = ("id", "text", "expect", "kind", "source_id", "class")
     record = {key: entry[key] for key in keep if key in entry}
+    if "text" in record:
+        record["text"] = publishable_text(record["text"])
     record.setdefault("source_id", entry["id"])
     record["split"] = split
     return record
 
 
+#: Issue 53: records written by the pipeline's own drafting tools, by source prefix.
+DRAFT_SOURCE_PREFIX = "draft-"
+TARGETED_SOURCE_PREFIX = "t15-"
+DRAFT_FILE = "scripts/lfm-finetune/draft_sources.py"
+TARGETED_FILE = "scripts/lfm-finetune/targeted_augment.py"
+
+
 def _origin(entry: dict[str, Any]) -> str:
+    source = str(entry.get("source", ""))
     if "~v" in entry["id"]:
         return "variation"
-    if str(entry.get("source", "")).startswith("supplement"):
+    if source.startswith(DRAFT_SOURCE_PREFIX):
+        return "draft"
+    if source.startswith(("supplement", TARGETED_SOURCE_PREFIX)):
         return "supplement"
     return "corpus"
+
+
+def _source_file(origin: str, source: str) -> str:
+    """Which nvsh file (or tool) a record comes from."""
+    if origin == "draft":
+        return DRAFT_FILE
+    if origin == "supplement":
+        return TARGETED_FILE if source.startswith(TARGETED_SOURCE_PREFIX) else SUPPLEMENT_FILE
+    return CORPUS_FILE
+
+
+def _with_source(entry: dict[str, Any], default_source: str | None) -> dict[str, Any]:
+    """*entry*, labelled *default_source* when it carries no source (issue 53:
+    ``draft_sources.py`` wrote none before t21); refuses one with neither."""
+    if entry.get("source"):
+        return entry
+    if not default_source:
+        raise ValueError(f"{entry['id']}: every published record needs a 'source' field")
+    return {**entry, "source": default_source}
 
 
 def build(
@@ -296,8 +358,15 @@ def build(
     apache_only: bool = False,
     issue: int = 39,
     model_repos: list[str] | None = None,
+    scorer_train: Path | None = None,
+    default_source: str | None = None,
 ) -> dict[str, Any]:
     """Write the data set folder to *out*; return the counts shown in the card.
+
+    *scorer_train* (issue 53 t21) is the candidate scorer's own training file
+    (``build_dataset.py --scorer-out``: per-row label maps and missing-candidate
+    rows); it ships as ``data/scorer-train.json`` with the same address
+    redaction as every published record (PR #65 review).
 
     *role_models* is this run's alias -> (name, licence) table (see
     ``load_role_models``). With *apache_only*, a teacher named by any
@@ -305,8 +374,11 @@ def build(
     *rejected* is one file or several (their records are counted together).
     *issue* and *model_repos* name what the card says the data set trained.
     """
-    train = _entries(train_augmented)
-    sides = {"validation": _entries(splits / "val.json"), "test": _entries(splits / "test.json")}
+    train = [_with_source(e, default_source) for e in _entries(train_augmented)]
+    sides = {
+        side: [_with_source(e, default_source) for e in _entries(splits / name)]
+        for side, name in (("validation", "val.json"), ("test", "test.json"))
+    }
     accepted_rows = {row["id"]: row for row in _jsonl(accepted)}
     rejected_files = [rejected] if isinstance(rejected, Path) else list(rejected)
     rejected_count = sum(len(_jsonl(path)) for path in rejected_files)
@@ -341,7 +413,7 @@ def build(
             "origin": origin,
             "source": source,
             "source_id": entry.get("source_id", entry["id"]),
-            "source_file": SUPPLEMENT_FILE if origin == "supplement" else CORPUS_FILE,
+            "source_file": _source_file(origin, source),
             "licence": CORPUS_LICENCE,
             "transformed": origin == "variation",
         }
@@ -356,17 +428,16 @@ def build(
         for entry in entries:
             if "~v" in entry["id"]:
                 raise ValueError(f"{entry['id']}: variations never leave the train side")
-            source = entry.get("source")
-            if not source:
-                raise ValueError(f"{entry['id']}: every published record needs a 'source' field")
+            source = entry["source"]
+            origin = _origin(entry)
             manifest.append(
                 {
                     "id": entry["id"],
                     "split": split,
-                    "origin": "corpus",
+                    "origin": origin,
                     "source": source,
                     "source_id": entry.get("source_id", entry["id"]),
-                    "source_file": CORPUS_FILE,
+                    "source_file": _source_file(origin, source),
                     "licence": CORPUS_LICENCE,
                     "transformed": False,
                     "teachers": {},
@@ -389,6 +460,15 @@ def build(
                 handle.write(json.dumps(record, ensure_ascii=False) + "\n")
     (out / "manifest.json").write_text(json.dumps(manifest, indent=1) + "\n", encoding="utf-8")
     shutil.copyfile(licence, out / "LICENSE")
+    if scorer_train is not None:
+        # The same address redaction as every published record (PR #65 review).
+        scorer_doc = json.loads(scorer_train.read_text(encoding="utf-8"))
+        for entry in scorer_doc.get("entries", []):
+            if isinstance(entry.get("text"), str):
+                entry["text"] = publishable_text(entry["text"])
+        (out / "data" / "scorer-train.json").write_text(
+            json.dumps(scorer_doc, indent=1, ensure_ascii=False) + "\n", encoding="utf-8"
+        )
 
     counts = {
         "train": len(rows["train"]),
@@ -397,21 +477,99 @@ def build(
         "corpus": origins["corpus"],
         "supplement": origins["supplement"],
         "variation": origins["variation"],
+        "draft": origins["draft"],
+        "targeted": sum(
+            1 for e in train if str(e.get("source", "")).startswith(TARGETED_SOURCE_PREFIX)
+        ),
+        "redacted_hosts": sum(
+            1
+            for entry in [*train, *(e for entries in sides.values() for e in entries)]
+            if publishable_text(entry.get("text", "")) != entry.get("text", "")
+        ),
+        "side_origins": {
+            side: sorted({_origin(e) for e in entries}) for side, entries in sides.items()
+        },
         "accepted": len(accepted_rows),
         "rejected": rejected_count,
         "answers": _answer_counts(rows["train"]),
     }
-    (out / "README.md").write_text(
-        card(
-            counts,
-            summary,
-            issue=issue,
-            model_repos=model_repos,
-            seed=split_seed(splits / "val.json"),
-        ),
-        encoding="utf-8",
+    text = card(
+        counts,
+        summary,
+        issue=issue,
+        model_repos=model_repos,
+        seed=split_seed(splits / "val.json"),
     )
+    if scorer_train is not None:
+        text += SCORER_TRAIN_NOTE
+    (out / "README.md").write_text(text, encoding="utf-8")
     return counts
+
+
+#: The card's note on ``data/scorer-train.json`` (issue 53 t21).
+SCORER_TRAIN_NOTE = (
+    "\n## Candidate-scorer training file\n\n"
+    "`data/scorer-train.json` is the file the candidate scorer trained on: the train\n"
+    "records above, each with its own offered candidates, letter map and gold label,\n"
+    "plus missing-candidate rows (the right operation removed, answer: escalate), as\n"
+    "written by nvsh's `scripts/lfm-finetune/build_dataset.py --scorer-out`.\n"
+)
+
+
+def _provenance(counts: dict[str, Any], seeded: str) -> str:
+    """The card's bullets on corpus, supplement and drafted records."""
+    fresh = all(o == ["draft"] for o in counts.get("side_origins", {}).values()) and bool(
+        counts.get("side_origins")
+    )
+    if fresh:
+        split = (
+            f"used on the train side only; validation and test are fresh drafts\n"
+            f"  (`scripts/lfm-finetune/split.py` v2, {seeded})"
+        )
+    else:
+        split = (
+            f"split with\n  `scripts/lfm-finetune/split.py` ({seeded}, stratified by answer,"
+            " 70/15/15)"
+        )
+    lines = [
+        f"- **Corpus entries**: nvsh's development corpus (`{CORPUS_FILE}` in\n"
+        f"  <{REPO_URL}>), written by the nvsh project under Apache-2.0 and {split}.",
+    ]
+    targeted = counts.get("targeted", 0)
+    authored = counts.get("supplement", 0) - targeted
+    if authored:
+        lines.append(
+            f"- **Supplement entries**: a small authored train-only set\n"
+            f"  (`{SUPPLEMENT_FILE}`): requests to stop, shut down or disable a container\n"
+            "  or service, which Tier 2 must escalate because it has no such action,\n"
+            "  next to restart requests as contrasts."
+        )
+    if targeted:
+        lines.append(
+            f"- **Targeted supplement entries** ({targeted}): train-only requests drafted for\n"
+            f"  shapes the model got wrong, by `{TARGETED_FILE}` (missing arguments,\n"
+            "  diagnosis vs explanation, explicit choices, look-alike operations, hard\n"
+            "  negatives, check-then-change requests), each kept only when the deciding\n"
+            "  reviewer accepted it."
+        )
+    if fresh or counts.get("draft"):
+        lines.append(
+            "- **Fresh teacher-drafted requests**: written from nvsh's operation table\n"
+            f"  alone by `{DRAFT_FILE}`, kept only when both reviewer models accepted\n"
+            "  them; all of validation and test"
+            + (f", and {counts['draft']} on the train side." if counts.get("draft") else ".")
+        )
+    return "\n".join(lines) + "\n"
+
+
+def _side_kind(counts: dict[str, Any], side: str) -> str:
+    """What a held-apart side holds, for the card (issue 53: fresh drafts)."""
+    origins = counts.get("side_origins", {}).get(side, ["corpus"])
+    if origins == ["draft"]:
+        return "fresh teacher-drafted requests only (two reviewers each)"
+    if origins == ["corpus"]:
+        return "corpus entries only"
+    return "corpus entries and fresh teacher-drafted requests"
 
 
 def _answer_counts(records: list[dict[str, Any]]) -> dict[str, int]:
@@ -453,6 +611,8 @@ GROUNDING = {
     "  measurement's ground snapshot); values that depend on the machine, such\n"
     "  as power modes and service names, may differ on another device.",
 }
+#: Issue 53 grounded the same way, against a snapshot rebuilt from its own splits.
+GROUNDING[53] = GROUNDING[46]
 
 
 def card(
@@ -494,6 +654,17 @@ def card(
         f"{counts['corpus']} corpus entries, {counts['supplement']} supplement entries,"
         f" {counts['variation']} synthetic variations"
     )
+    if counts.get("draft"):
+        train_parts += f", {counts['draft']} fresh teacher-drafted requests"
+    val_kind, test_kind = _side_kind(counts, "validation"), _side_kind(counts, "test")
+    provenance = _provenance(counts, seeded)
+    redacted = counts.get("redacted_hosts", 0)
+    redaction = (
+        f"\n{redacted} record(s) named a private network address; it is published as the\n"
+        f"documentation address {DOCUMENTATION_NET}x (RFC 5737) with the same last octet.\n"
+        if redacted
+        else ""
+    )
     return f"""---
 license: apache-2.0
 language:
@@ -530,12 +701,12 @@ in words, or **escalate** to a full agent. {_intro(issue, model_repos)}
 | Split | Records | Contents |
 |---|---|---|
 | train | {counts['train']} | {train_parts} |
-| validation | {counts['validation']} | corpus entries only; runs were chosen on this side |
-| test | {counts['test']} | corpus entries only; never trained on or used to choose a run |
+| validation | {counts['validation']} | {val_kind}; runs were chosen on this side |
+| test | {counts['test']} | {test_kind}; never trained on or used to choose a run |
 
 The train side's answers: {answers.get('propose', 0)} propose,
 {answers.get('escalate', 0)} escalate, {answers.get('explain', 0)} explain.
-
+{redaction}
 **Do not train on validation or test** if you want numbers comparable with
 nvsh's. nvsh's separate held-out split (`held-out.json`) is not in this data
 set.
@@ -555,14 +726,7 @@ source's answer and side.
 
 ## Where the records come from
 
-- **Corpus entries**: nvsh's development corpus (`{CORPUS_FILE}` in
-  <{REPO_URL}>), written by the nvsh project under Apache-2.0 and split with
-  `scripts/lfm-finetune/split.py` ({seeded}, stratified by answer, 70/15/15).
-- **Supplement entries**: a small authored train-only set
-  (`{SUPPLEMENT_FILE}`): requests to stop, shut down or disable a container
-  or service, which Tier 2 must escalate because it has no such action,
-  next to restart requests as contrasts.
-- **Variations**: rewrites of train entries, made by a local pipeline
+{provenance}- **Variations**: rewrites of train entries, made by a local pipeline
   (`scripts/lfm-finetune/augment.py`). One model rewrote the request and a
   second copyedited it; **neither saw the expected answer**.
   {decision_sentence(summary.decisions)} Deterministic
@@ -623,6 +787,13 @@ def main(argv: list[str] | None = None) -> int:
         "--issue", type=int, default=39, help="the nvsh issue the data set belongs to"
     )
     parser.add_argument(
+        "--scorer-train", type=Path, help="the candidate scorer's own training file (issue 53)"
+    )
+    parser.add_argument(
+        "--default-source",
+        help="the source recorded for records that carry none (issue 53: draft-sources)",
+    )
+    parser.add_argument(
         "--model-repo",
         action="append",
         dest="model_repos",
@@ -643,6 +814,8 @@ def main(argv: list[str] | None = None) -> int:
             apache_only=args.apache_only,
             issue=args.issue,
             model_repos=args.model_repos,
+            scorer_train=args.scorer_train,
+            default_source=args.default_source,
         )
     except ValueError as exc:
         parser.error(str(exc))

@@ -1,5 +1,9 @@
 # Fine-tuning Qwen3.5-0.8B as nvsh's Tool-Jev
 
+For a domain-general, step-by-step version of this process (your own
+action table, from scratch), see
+[`scorer-finetune-playbook.md`](scorer-finetune-playbook.md).
+
 Tool-Jev is a small model that decides what to do with one operator request:
 propose one of nvsh's typed operations, explain in words, or escalate to the
 full agent. Issue 46 asks whether a 0.8B model with an Apache-2.0 licence can
@@ -10,6 +14,17 @@ generative tool caller (Track A, on spark) and a candidate scorer (Track B, on
 spark2). Both are scored by one harness on one clean test side against stock.
 This page is the design, the code map, the split, a ledger of every problem
 hit and its fix, and the steps to reproduce the run.
+
+**Track A vs Track B: two different architectures.** Track A is a specialized
+generative tool router: it receives an operator's request, calls Qwen to
+generate a structured tool call (propose, explain, or escalate), and outputs
+the result directly. Track A is Jev-inspired but not a native Jev-style
+decision model; its next-token probability distribution over candidates is
+reconstructed offline by `track_a_calibration.py` through teacher-forcing,
+not its runtime interface. Track B is the Jev-style candidate scorer: every
+candidate (16 operations plus explain and escalate) is listed in the prompt
+under a one-letter label, and the model's next-token log-probabilities over
+those labels are read once; the highest-scoring label is the choice.
 
 **Status: in progress, 2026-09-24.** The tooling is built and reviewed, the
 spikes are done, the split is re-seeded, the stock baseline is measured on
@@ -762,8 +777,10 @@ be bind-mounted into a container) and writes its `generation_config.json`.
 The measurement config (`NVSH_CONFIG`) uses the pinned vLLM image
 `vllm/vllm-openai@sha256:8bd082c274fae025b7079498fe1da65182ba1d4c2188c0f5a68c1042c38c3695`
 (vLLM 0.26.1rc1.dev942) with `tool_call_parser = "qwen3_coder"`. Track B
-served scoring needs vLLM started with `--max-logprobs` of at least 22 (18
-labels plus 4), or in-process scoring (plan risk r8).
+served scoring was first run with `--max-logprobs` 22 (18 labels plus 4),
+which returned no complete distribution at all; issue 53 raised it to
+`scorer.READOUT_TOP` (20000), the value `MEASURE_MAX_LOGPROBS` now defaults
+to (see `qwen-tool-jev-calibration.md`, ledger P1 and P13).
 
 ### 4. Split
 
@@ -2626,7 +2643,8 @@ None of these has been done yet.
    `enable_thinking=false`. [`lfm-finetune.md`](lfm-finetune.md) still describes `measure-final` as
    "stock and r1 back to back on the test side"; since d7 it measures one
    model per call.
-7. **Track B serving.** Serve with vLLM `--max-logprobs` of at least 22, or
+7. **Track B serving.** Done in issue 53: 22 logprobs were far too few;
+   serve with `--max-logprobs` equal to `scorer.READOUT_TOP` (20000), or
    score in process (plan risk r8, ledger P20).
 8. **Reviewers.** Across two waves Codex found 15 real defects where the
    qwen worker reviewer approved everything. Keep a strong second reviewer.

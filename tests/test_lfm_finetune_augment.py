@@ -3054,3 +3054,37 @@ def test_decide_by_rejects_an_unknown_rule(tmp_path) -> None:
             per_source=1,
             decide_by="reviewer_a",
         )
+
+
+# issue 53: two over-strict rules threw away good entries
+
+
+def test_parse_verdict_accepts_a_hyphenated_no_compound():
+    accepted, _ = aug.parse_verdict(
+        "yes, because it maps to machine_status, a read-only, no-argument operation."
+    )
+    assert accepted
+
+
+def test_parse_verdict_still_rejects_a_dash_separated_no():
+    assert not aug.parse_verdict("yes, no - the args are wrong")[0]
+    assert not aug.parse_verdict("yes, no — wrong")[0]
+
+
+def test_parse_verdict_allowed_hedges_only_for_the_named_words():
+    reply = "yes. 'restart it' is ambiguous between two restarts, so escalation is right."
+    assert not aug.parse_verdict(reply)[0]
+    assert aug.parse_verdict(reply, ("ambiguous", "unclear"))[0]
+    hedged = "yes, but the stated reason is ambiguous"
+    assert not aug.parse_verdict(hedged, ("ambiguous", "unclear"))[0]
+
+
+def test_parse_verdict_an_allowed_hedge_still_rejects_when_it_leads_the_yes():
+    """Issue 53 t15 (lapse l8): allowing a word mid-sentence must not let a
+    'yes, but ...' or 'yes, though ...' qualify the yes itself."""
+    assert not aug.parse_verdict("yes, but it is vague", ("but",))[0]
+    assert not aug.parse_verdict("Yes -- though it reads oddly", ("though",))[0]
+    assert not aug.parse_verdict("**yes**, however the name is given", ("however",))[0]
+    reply = "yes, the request says “that service” but does not name it, so it is unspecified."
+    assert not aug.parse_verdict(reply)[0]
+    assert aug.parse_verdict(reply, ("but",))[0]

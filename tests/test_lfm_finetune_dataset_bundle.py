@@ -548,3 +548,146 @@ def test_main_takes_several_rejected_files_the_issue_and_model_repos(tmp_path, c
     assert json.loads(capsys.readouterr().out)["rejected"] == 2
     card = (tmp_path / "bundle-cli" / "README.md").read_text()
     assert "qwen3.5-0.8b-nvsh-tool-jev" in card
+
+
+def test_an_issue_53_card_names_its_guide_and_grounding(tmp_path) -> None:
+    inputs = _inputs(tmp_path)
+    inputs["issue"] = 53
+    _module().build(**inputs)
+    card = (tmp_path / "bundle" / "README.md").read_text()
+    assert "nvsh issue 53" in card
+    assert "docs/qwen-tool-jev-calibration.md" in card
+    assert "cannot be rendered there" not in card
+    assert "one fixed snapshot" in card
+
+
+def test_the_scorer_training_file_ships_when_given(tmp_path) -> None:
+    """Issue 53 t21: the scorer trained on scorer-train.json (per-row label maps
+    and missing-candidate rows), not only on train-augmented.json."""
+    inputs = _inputs(tmp_path)
+    scorer_train = tmp_path / "scorer-train.json"
+    scorer_train.write_text('{"header": "h", "entries": []}')
+    inputs["scorer_train"] = scorer_train
+    _module().build(**inputs)
+    out = tmp_path / "bundle"
+    shipped = json.loads((out / "data" / "scorer-train.json").read_text())
+    assert shipped == json.loads(scorer_train.read_text())
+    assert "scorer-train.json" in (out / "README.md").read_text()
+
+
+def test_drafted_and_targeted_records_carry_their_own_provenance(tmp_path) -> None:
+    """Issue 53 t21: the fresh eval pool (draft_sources.py) carries no source
+    field, and the targeted supplement's t15-* records are not dev.json
+    entries; neither may be published as nvsh corpus entries."""
+    inputs = _inputs(tmp_path)
+    splits = inputs["splits"]
+    drafted = {
+        "id": "q53-draft-v2-eval-op-gpu_stats-001",
+        "text": "gpu?",
+        "kind": "explicit",
+        "expect": {"operation": "gpu_stats", "args": {}},
+    }
+    (splits / "test.json").write_text(json.dumps({"entries": [drafted]}))
+    drafted_val = {
+        **drafted,
+        "id": "q53-draft-v2-eval-decline-repair-001",
+        "text": "fix it",
+        "expect": {"escalate": True},
+    }
+    (splits / "val.json").write_text(json.dumps({"entries": [drafted_val]}))
+    train = json.loads(inputs["train_augmented"].read_text())
+    train["entries"].append(
+        _entry("s5-t15-dx-0001", {"escalate": True}, side="train", source="t15-diagnosis-explain")
+    )
+    train["entries"].append(
+        {
+            "id": "q53-draft-v2-eval-op-disk_stats-002",
+            "text": "disk?",
+            "kind": "explicit",
+            "expect": {"operation": "disk_stats", "args": {}},
+            "side": "train",
+        }
+    )
+    inputs["train_augmented"].write_text(json.dumps(train))
+    counts = _module().build(**inputs, default_source="draft-sources")
+    manifest = {
+        row["id"]: row for row in json.loads((tmp_path / "bundle" / "manifest.json").read_text())
+    }
+    test_row = manifest["q53-draft-v2-eval-op-gpu_stats-001"]
+    assert (test_row["origin"], test_row["source"]) == ("draft", "draft-sources")
+    assert test_row["source_file"] == "scripts/lfm-finetune/draft_sources.py"
+    t15 = manifest["s5-t15-dx-0001"]
+    assert t15["origin"] == "supplement"
+    assert t15["source_file"] == "scripts/lfm-finetune/targeted_augment.py"
+    assert manifest["q53-draft-v2-eval-op-disk_stats-002"]["origin"] == "draft"
+    assert counts["draft"] == 1
+    assert manifest["dev-a"]["source_file"] == "nvsh/tiers/corpus/dev.json"
+    card = (tmp_path / "bundle" / "README.md").read_text()
+    assert "1 fresh teacher-drafted" in card
+    test_line = next(line for line in card.splitlines() if line.startswith("| test |"))
+    assert "fresh teacher-drafted" in test_line
+    assert "corpus entries only" not in test_line
+    # the provenance section describes what the data actually holds
+    assert "70/15/15" not in card
+    assert "Fresh teacher-drafted requests" in card
+    assert "`scripts/lfm-finetune/draft_sources.py`" in card
+    assert "Targeted supplement entries" in card
+    assert "`scripts/lfm-finetune/targeted_augment.py`" in card
+
+
+def test_a_record_without_a_source_still_refuses_without_a_default(tmp_path) -> None:
+    inputs = _inputs(tmp_path)
+    (inputs["splits"] / "test.json").write_text(
+        json.dumps(
+            {
+                "entries": [
+                    {"id": "x", "text": "t", "kind": "explicit", "expect": {"escalate": True}}
+                ]
+            }
+        )
+    )
+    module = _module()
+    with pytest.raises(ValueError, match="source"):
+        module.build(**inputs)
+
+
+def test_a_private_address_is_published_as_a_documentation_address(tmp_path) -> None:
+    """Issue 53 t21: a teacher-drafted request named 192.168.1.50; the bundle scan
+    refuses private hosts, and the address may be on the operator's network."""
+    inputs = _inputs(tmp_path)
+    entry = _entry("dev-t2", {"escalate": True})
+    entry["text"] = "ssh into 192.168.1.50 and check postgres, not 127.0.0.1"
+    (inputs["splits"] / "test.json").write_text(json.dumps({"entries": [entry]}))
+    counts = _module().build(**inputs)
+    record = json.loads((tmp_path / "bundle" / "data" / "test.jsonl").read_text())
+    assert record["text"] == "ssh into 192.0.2.50 and check postgres, not 127.0.0.1"
+    assert counts["redacted_hosts"] == 1
+    assert "192.0.2" in (tmp_path / "bundle" / "README.md").read_text()
+
+
+def test_the_scorer_training_file_gets_the_same_address_redaction(tmp_path) -> None:
+    """PR #65 review: scorer-train.json was copied byte for byte, so a private
+    address the train records publish redacted still shipped there."""
+    inputs = _inputs(tmp_path)
+    scorer_train = tmp_path / "scorer-train.json"
+    scorer_train.write_text(
+        json.dumps(
+            {
+                "header": "Split 'train' of x",
+                "entries": [
+                    {"id": "a", "text": "ssh into 192.168.1.50 then 100.93.248.8", "expect": {}}
+                ],
+            }
+        )
+    )
+    inputs["scorer_train"] = scorer_train
+    _module().build(**inputs)
+    shipped = json.loads((tmp_path / "bundle" / "data" / "scorer-train.json").read_text())
+    assert shipped["entries"][0]["text"] == "ssh into 192.0.2.50 then 192.0.2.8"
+    assert shipped["header"] == "Split 'train' of x"
+
+
+def test_a_cgnat_address_is_published_as_a_documentation_address() -> None:
+    assert _module().publishable_text("tailnet 100.93.248.8 or 8.8.8.8") == (
+        "tailnet 192.0.2.8 or 8.8.8.8"
+    )
