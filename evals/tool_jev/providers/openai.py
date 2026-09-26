@@ -82,6 +82,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -216,7 +217,8 @@ def _classify_http(status: int, body: bytes):
     if status == 401 and "missing scopes" in (message or "").lower():
         # A restricted key without a needed scope (e.g. api.files.write for the
         # Batch API's upload) is a permission to add, not a bad key.
-        scopes = message.split("Missing scopes:", 1)[-1].split(".", 1)[0].strip()
+        found = re.search(r"Missing scopes:\s*([\w.,\s]+?)\.(?:\s|$)", message)
+        scopes = found.group(1).strip() if found else "unknown"
         return rejected(f"missing_scope:{scopes}"[:80])
     return classify_transport("openai", status_code=status, error_type=error_type)
 
