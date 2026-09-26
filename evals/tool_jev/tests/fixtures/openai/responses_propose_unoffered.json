@@ -1,0 +1,24 @@
+{
+  "id": "resp_propose_unoffered",
+  "model": "gpt-6-luna-2026-01-15",
+  "output": [
+    {
+      "type": "reasoning",
+      "id": "rs_1"
+    },
+    {
+      "type": "function_call",
+      "call_id": "call_1",
+      "name": "propose",
+      "arguments": "{\"operation\": \"power_set\", \"arguments\": {\"mode\": \"synthetic\"}}"
+    }
+  ],
+  "usage": {
+    "input_tokens": 120,
+    "output_tokens": 40,
+    "output_tokens_details": {
+      "reasoning_tokens": 20
+    },
+    "total_tokens": 160
+  }
+}

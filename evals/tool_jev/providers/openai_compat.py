@@ -40,27 +40,32 @@ as a list of ``{"token", "logprob", "top_logprobs": [...]}`` entries, one
 per generated token, when the request set ``logprobs: true`` -- the same
 shape OpenAI's own API uses.
 
-Track A (``interface="tool_call"``) sends ``tools``/``tool_choice`` from
-``request.params`` and reads the answer back out of
-``message.tool_calls[0].function``. Track B (``interface="choice"``) asks
-for one label and, when ``capabilities.logprobs`` is true, requests
-``logprobs=true, top_logprobs=20`` and builds a candidate distribution from
-the **first content token's** ``top_logprobs`` -- never a reasoning
-token's, since a reasoning model (NVIDIA Nemotron etc.) may stream its
-chain-of-thought as a separate ``reasoning``/``reasoning_content`` field
-ahead of the content token that actually answers.
+The payload is built only from :func:`evals.tool_jev.request.canonical_content`
+(system, user, tools, labels), so system/user text is byte-identical to
+what every other adapter sends.
 
-Sibling task t11 is adding a shared ``request.distribution_from_logprobs()``
-helper (per the wave-2 brief). This module ships a local equivalent,
-:func:`_distribution_from_logprobs`, because t11 does not exist yet in this
-worktree. **This should switch to the shared helper once t11 merges** --
-flagged in this task's report, not silently left as permanent duplication.
+Track A (``interface="tool_call"``) sends the canonical ``tools`` with
+``tool_choice="required"`` (or ``"auto"`` when the provider is built with
+``forced_tool_choice=False``). The answer is the RAW first entry of
+``message.tool_calls``: ``json.dumps({"name": <function name>,
+"arguments": <parsed arguments dict>})``, parsed downstream by
+:func:`evals.tool_jev.request.parse_tool_call`; a text-only reply is
+``answer=None`` classified ``malformed``.
+
+Track B (``interface="choice"``) asks for one label; the answer is the
+model's text, stripped, read by :func:`evals.tool_jev.request.parse_choice`.
+When ``capabilities.logprobs`` is true it requests ``logprobs=true,
+top_logprobs=20`` and builds a candidate distribution with
+:func:`evals.tool_jev.request.distribution_from_logprobs` from the **first
+content token's** ``top_logprobs`` -- never a reasoning token's, since a
+reasoning model (NVIDIA Nemotron etc.) may stream its chain-of-thought as a
+separate ``reasoning``/``reasoning_content`` field ahead of the content
+token that actually answers.
 """
 
 from __future__ import annotations
 
 import json
-import math
 import time
 import urllib.error
 import urllib.request
@@ -68,6 +73,7 @@ from dataclasses import dataclass
 from typing import Callable
 from urllib.parse import urlsplit
 
+from .. import request as contract
 from .base import (
     BaseProvider,
     BatchHandle,
@@ -78,6 +84,7 @@ from .base import (
     read_api_key,
 )
 from .errors import Classification, classify_answer, classify_transport
+from .openai import classify_result, tool_call_answer
 
 #: The three OpenAI-compatible hosts this adapter knows how to talk to.
 KINDS = ("openrouter", "nvidia", "local")
@@ -250,49 +257,6 @@ class OpenAICompatInfraError(Exception):
 
 
 # ---------------------------------------------------------------------------
-# Local equivalent of the (not-yet-merged) request.distribution_from_logprobs.
-# ---------------------------------------------------------------------------
-
-
-def _distribution_from_logprobs(
-    top_logprobs: list[dict],
-    labels: dict[str, str],
-) -> dict[str, float] | None:
-    """Build a renormalized candidate distribution from one token's top_logprobs.
-
-    ``top_logprobs`` is the first content token's ``top_logprobs`` list, each
-    entry ``{"token": str, "logprob": float, ...}``. ``labels`` maps the
-    offered label text (e.g. ``"A"``) to the candidate name it stands for,
-    in offered order (dict insertion order).
-
-    Returns ``None`` -- never an estimate -- unless *every* offered label is
-    found among ``top_logprobs`` (exact token match, falling back to a
-    whitespace-stripped match for a leading-space tokenizer artifact).
-    """
-    by_token: dict[str, float] = {}
-    for entry in top_logprobs:
-        token = entry.get("token")
-        logprob = entry.get("logprob")
-        if isinstance(token, str) and isinstance(logprob, (int, float)):
-            by_token[token] = float(logprob)
-            by_token.setdefault(token.strip(), float(logprob))
-
-    label_probs: dict[str, float] = {}
-    for label, candidate_name in labels.items():
-        logprob = by_token.get(label)
-        if logprob is None:
-            logprob = by_token.get(label.strip())
-        if logprob is None:
-            return None
-        label_probs[candidate_name] = math.exp(logprob)
-
-    total = sum(label_probs.values())
-    if total <= 0:
-        return None
-    return {name: value / total for name, value in label_probs.items()}
-
-
-# ---------------------------------------------------------------------------
 # The adapter itself.
 # ---------------------------------------------------------------------------
 
@@ -346,6 +310,10 @@ class OpenAICompatProvider(BaseProvider):
         inject a canned replacement.
     rate_limiter:
         Optional :class:`RateLimiter`, ``acquire()``-d before every call.
+    forced_tool_choice:
+        ``True`` (default) sends ``tool_choice="required"`` for a
+        ``tool_call`` request; ``False`` sends ``"auto"`` for a model that
+        rejects forced tool use.
     reasoning_param_name:
         The top-level body field used to pass ``request.params["reasoning"]``
         through for ``kind in ("nvidia", "local")`` when
@@ -370,6 +338,7 @@ class OpenAICompatProvider(BaseProvider):
         transport: Transport | None = None,
         rate_limiter: RateLimiter | None = None,
         reasoning_param_name: str = "reasoning_effort",
+        forced_tool_choice: bool = True,
     ) -> None:
         if kind not in KINDS:
             raise ValueError(f"kind must be one of {KINDS}, got {kind!r}")
@@ -390,17 +359,19 @@ class OpenAICompatProvider(BaseProvider):
         self._transport = transport or _default_transport
         self._rate_limiter = rate_limiter
         self._reasoning_param_name = reasoning_param_name
+        self.forced_tool_choice = forced_tool_choice
         self.provider_kind = _PROVIDER_KIND
 
     # -- payload building ----------------------------------------------
 
     def _build_payload(self, request: CallRequest) -> dict:
         params = request.params or {}
+        system_text, user_text, tools, _labels = contract.canonical_content(request)
         payload: dict = {
             "model": self.model,
             "messages": [
-                {"role": "system", "content": request.prompt},
-                {"role": "user", "content": request.case_text},
+                {"role": "system", "content": system_text},
+                {"role": "user", "content": user_text},
             ],
         }
         max_output_tokens = params.get("max_output_tokens")
@@ -408,10 +379,9 @@ class OpenAICompatProvider(BaseProvider):
             payload["max_tokens"] = max_output_tokens
 
         if request.interface == "tool_call":
-            tools = params.get("tools")
             if tools:
                 payload["tools"] = tools
-                payload["tool_choice"] = "required"
+                payload["tool_choice"] = "required" if self.forced_tool_choice else "auto"
         else:  # "choice"
             if self.capabilities.logprobs:
                 payload["logprobs"] = True
@@ -437,51 +407,42 @@ class OpenAICompatProvider(BaseProvider):
 
     def _classify_and_answer(
         self, request: CallRequest, response: dict
-    ) -> tuple[str | None, str, dict[str, float] | None, bool, bool]:
-        """Return (answer, reason-if-malformed-source, candidates, malformed, refused)."""
+    ) -> tuple[str | None, dict[str, float] | None, bool, bool]:
+        """Return (answer, candidates, malformed, refused) -- see the module docstring."""
         choices = response.get("choices") or []
         if not choices:
-            return None, "", None, True, False
+            return None, None, True, False
         message = choices[0].get("message") or {}
         refused = bool(message.get("refusal"))
+        if refused:
+            return None, None, False, True
 
         if request.interface == "tool_call":
             tool_calls = message.get("tool_calls") or []
-            if not tool_calls or refused:
-                return None, "", None, not tool_calls and not refused, refused
+            if not tool_calls:
+                return None, None, True, False
             function = tool_calls[0].get("function") or {}
-            raw_arguments = function.get("arguments")
-            try:
-                parsed = json.loads(raw_arguments) if raw_arguments is not None else None
-            except json.JSONDecodeError:
-                return None, "", None, True, refused
-            # The tool's own arguments blob is the {"operation", "arguments"}
-            # pair the REQUEST CONTRACT specifies -- the tool *name*
-            # (e.g. "propose_fix") is the fixed function the model must
-            # call, not the operation being proposed.
-            if not isinstance(parsed, dict) or not parsed.get("operation"):
-                return None, "", None, True, refused
-            answer = json.dumps(
-                {"operation": parsed.get("operation"), "arguments": parsed.get("arguments")},
-                sort_keys=True,
-            )
-            return answer, "", None, False, refused
+            answer = tool_call_answer(function.get("name"), function.get("arguments"))
+            return answer, None, answer is None, False
 
-        # interface == "choice"
+        # interface == "choice": the model's text, stripped.
         content = message.get("content")
-        answer = content.strip() if isinstance(content, str) else None
-        labels = (request.params or {}).get("labels", {})
-        candidate_name = labels.get(answer, answer) if answer is not None else None
+        answer = content.strip() if isinstance(content, str) else ""
+        _system, _user, _tools, labels = contract.canonical_content(request)
 
         candidates = None
-        if self.capabilities.logprobs:
+        if self.capabilities.logprobs and labels:
             logprobs_block = choices[0].get("logprobs") or {}
             content_tokens = logprobs_block.get("content") or []
             if content_tokens:
-                first_top_logprobs = content_tokens[0].get("top_logprobs") or []
-                candidates = _distribution_from_logprobs(first_top_logprobs, labels)
+                top: dict[str, float] = {}
+                for entry in content_tokens[0].get("top_logprobs") or []:
+                    token, logprob = entry.get("token"), entry.get("logprob")
+                    if isinstance(token, str) and token not in top:
+                        top[token] = logprob
+                candidates = contract.distribution_from_logprobs(top, labels, tuple(labels))
 
-        return candidate_name, "", candidates, False, refused
+        return (answer or None), candidates, not answer, False
 
     # -- BaseProvider hooks -----------------------------------------------
 
@@ -522,9 +483,16 @@ class OpenAICompatProvider(BaseProvider):
                 interface=request.interface,
             )
 
-        answer, _, candidates, malformed, refused = self._classify_and_answer(request, response)
-        offered = request.offered_candidates or None
-        classification = classify_answer(answer, offered, malformed=malformed, refused=refused)
+        answer, candidates, malformed, refused = self._classify_and_answer(request, response)
+        labels = contract.canonical_content(request)[3]
+        classification = classify_result(
+            request.interface,
+            answer,
+            request.offered_candidates or None,
+            labels,
+            malformed=malformed,
+            refused=refused,
+        )
 
         usage_raw = response.get("usage") or {}
         usage: dict[str, int] = {}

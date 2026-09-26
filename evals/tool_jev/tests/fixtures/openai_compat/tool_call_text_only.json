@@ -1,0 +1,18 @@
+{
+  "id": "gen-synthetic-text-only",
+  "model": "qwen/qwen3.8-max-0902",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "synthetic plain-text reply with no tool call"
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 120,
+    "completion_tokens": 9
+  }
+}

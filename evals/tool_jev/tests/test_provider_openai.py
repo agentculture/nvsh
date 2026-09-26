@@ -26,6 +26,7 @@ import pytest
 
 from evals.tool_jev.providers import base, errors
 from evals.tool_jev.providers import openai as openai_provider
+from nvsh.tiers import lfm
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "openai"
 
@@ -90,6 +91,12 @@ def _api_key(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "k" * 8 + "-test")
 
 
+#: nvsh's real Track A tools (canonical Chat-Completions shape), as
+#: request.build_tool_call_request would put them in params["tools"].
+REAL_TOOLS = lfm.tools_for()
+OFFERED = ("service_status", "service_restart", "explain", "escalate")
+
+
 def _tool_call_request(case_id: str = "case-1", split: str = "test") -> base.CallRequest:
     return base.CallRequest(
         case_id=case_id,
@@ -97,35 +104,22 @@ def _tool_call_request(case_id: str = "case-1", split: str = "test") -> base.Cal
         case_text="synthetic case body",
         prompt="synthetic system instructions",
         interface="tool_call",
-        params={
-            "tools": [
-                {
-                    "type": "function",
-                    "name": "restart-service",
-                    "description": "restart a service",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {"target": {"type": "string"}},
-                        "required": ["target"],
-                    },
-                }
-            ],
-            "reasoning": "medium",
-            "max_output_tokens": 512,
-        },
+        offered_candidates=OFFERED,
+        params={"tools": REAL_TOOLS, "reasoning": "medium", "max_output_tokens": 512},
     )
 
 
 def _choice_request(case_id: str = "case-2") -> base.CallRequest:
+    # params["labels"] is candidate -> letter, as request.build_choice_request builds it.
     return base.CallRequest(
         case_id=case_id,
         split="test",
         case_text="synthetic case body",
         prompt="synthetic system instructions asking for one label",
         interface="choice",
-        offered_candidates=("restart-service", "escalate"),
+        offered_candidates=("service_restart", "escalate"),
         params={
-            "labels": {"A": "restart-service", "B": "escalate"},
+            "labels": {"service_restart": "A", "escalate": "B"},
             "reasoning": "medium",
         },
     )
@@ -164,7 +158,7 @@ def test_key_read_from_custom_env_var_name(monkeypatch):
         [
             (
                 _method_and_path_startswith("POST", "/v1/responses"),
-                _ok(_fixture_bytes("responses_tool_call.json")),
+                _ok(_fixture_bytes("responses_propose.json")),
             )
         ]
     )
@@ -181,7 +175,7 @@ def test_all_transport_calls_go_only_to_api_openai_com():
         [
             (
                 _method_and_path_startswith("POST", "/v1/responses"),
-                _ok(_fixture_bytes("responses_tool_call.json")),
+                _ok(_fixture_bytes("responses_propose.json")),
             )
         ]
     )
@@ -197,12 +191,12 @@ def test_all_transport_calls_go_only_to_api_openai_com():
 # ---------------------------------------------------------------------------
 
 
-def test_sync_tool_call_success_builds_operation_json():
+def test_sync_tool_call_success_passes_raw_tool_call_through():
     transport = ScriptedTransport(
         [
             (
                 _method_and_path_startswith("POST", "/v1/responses"),
-                _ok(_fixture_bytes("responses_tool_call.json")),
+                _ok(_fixture_bytes("responses_propose.json")),
             )
         ]
     )
@@ -211,11 +205,14 @@ def test_sync_tool_call_success_builds_operation_json():
 
     assert result.outcome is errors.Outcome.OK
     assert json.loads(result.answer) == {
-        "operation": "restart-service",
-        "arguments": {"target": "nginx"},
+        "name": "propose",
+        "arguments": {
+            "operation": "service_restart",
+            "arguments": {"service": "synthetic.service"},
+        },
     }
     assert result.candidates is None  # gpt-6-luna never returns logprobs
-    assert result.response_id == "resp_001"
+    assert result.response_id == "resp_propose"
     assert result.returned_model == "gpt-6-luna-2026-01-15"
     assert result.usage["reasoning_tokens"] == 20
     assert result.interface == "tool_call"
@@ -227,9 +224,48 @@ def test_sync_tool_call_success_builds_operation_json():
     assert sent["input"] == [{"role": "user", "content": "synthetic case body"}]
     assert sent["tool_choice"] == "required"
     assert sent["reasoning"] == {"effort": "medium"}
+    # Canonical tools are flattened into the Responses API's function shape.
+    assert [tool["name"] for tool in sent["tools"]] == [
+        tool["function"]["name"] for tool in REAL_TOOLS
+    ]
+    assert all(tool["type"] == "function" and "function" not in tool for tool in sent["tools"])
+    propose = next(tool for tool in sent["tools"] if tool["name"] == "propose")
+    assert propose["parameters"] == REAL_TOOLS[-3]["function"]["parameters"]
 
 
-def test_sync_choice_success_maps_label_to_candidate_name():
+def test_forced_tool_choice_false_sends_auto():
+    transport = ScriptedTransport(
+        [
+            (
+                _method_and_path_startswith("POST", "/v1/responses"),
+                _ok(_fixture_bytes("responses_propose.json")),
+            )
+        ]
+    )
+    provider = openai_provider.OpenAIProvider(
+        "gpt-6-luna", transport=transport, forced_tool_choice=False
+    )
+    provider.submit_sync(_tool_call_request())
+    assert json.loads(transport.calls[0]["data"])["tool_choice"] == "auto"
+
+
+def test_sync_text_only_tool_call_reply_is_malformed():
+    transport = ScriptedTransport(
+        [
+            (
+                _method_and_path_startswith("POST", "/v1/responses"),
+                _ok(_fixture_bytes("responses_text_only.json")),
+            )
+        ]
+    )
+    provider = openai_provider.OpenAIProvider("gpt-6-luna", transport=transport)
+    result = provider.submit_sync(_tool_call_request())
+    assert result.answer is None
+    assert result.outcome is errors.Outcome.INVALID
+    assert result.reason == "malformed"
+
+
+def test_sync_choice_success_answers_with_the_label_text():
     transport = ScriptedTransport(
         [
             (
@@ -242,7 +278,8 @@ def test_sync_choice_success_maps_label_to_candidate_name():
     result = provider.submit_sync(_choice_request())
 
     assert result.outcome is errors.Outcome.OK
-    assert result.answer == "escalate"  # label "B" -> labels["B"]
+    assert result.answer == "B"  # the text; request.parse_choice reads it
+    assert result.reason == "answer"  # parse_choice: "B" -> escalate, offered
     assert result.candidates is None
 
     sent = json.loads(transport.calls[0]["data"])
@@ -482,8 +519,11 @@ def test_fetch_batch_collects_output_and_error_files():
     by_case = {r.case_id: r for r in results}
     assert by_case["case-1"].outcome is errors.Outcome.OK
     assert json.loads(by_case["case-1"].answer) == {
-        "operation": "restart-service",
-        "arguments": {"target": "nginx"},
+        "name": "propose",
+        "arguments": {
+            "operation": "service_restart",
+            "arguments": {"service": "synthetic.service"},
+        },
     }
     assert by_case["case-1"].usage["reasoning_tokens"] == 10
 

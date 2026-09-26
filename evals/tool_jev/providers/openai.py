@@ -25,20 +25,32 @@ Batch API documents for ``reasoning.effort`` + tool calls together:
   (the same guide documents ``POST /v1/files`` with ``purpose=batch``)
 
 Request shape (both sync and each batch JSONL line's ``body``), built ONLY
-from the :class:`~evals.tool_jev.providers.base.CallRequest` fields (the
-request contract fixed by the main agent for all wave-2 tasks -- see
-COMMON2.md):
+from :func:`evals.tool_jev.request.canonical_content` (the one function the
+request contract says every adapter must call, so system/user text is
+byte-identical across provider kinds by construction):
 
     {
       "model": "gpt-6-luna",
-      "instructions": request.prompt,              # system message content
-      "input": [{"role": "user", "content": request.case_text}],
-      "tools": request.params["tools"],             # tool_call only
-      "tool_choice": "required",                    # tool_call only
+      "instructions": system_text,                        # canonical_content()[0]
+      "input": [{"role": "user", "content": user_text}],  # canonical_content()[1]
+      "tools": <canonical tools, flattened>,              # tool_call only
+      "tool_choice": "required" | "auto",                 # tool_call only
       "reasoning": {"effort": request.params.get("reasoning", "medium")},
       "max_output_tokens": request.params.get("max_output_tokens"),
       "metadata": {"nvsh_case_id": request.case_id, "nvsh_interface": request.interface},
     }
+
+The canonical tools are nvsh's own Chat-Completions-style function dicts
+(``{"type": "function", "function": {"name", "description",
+"parameters"}}`` from ``nvsh.tiers.lfm.tools_for``). The Responses API
+takes function tools *flat* (``{"type": "function", "name", "description",
+"parameters"}``, https://platform.openai.com/docs/guides/function-calling),
+so :func:`_responses_tools` flattens them; names, descriptions and schemas
+pass through unchanged.
+
+``tool_choice`` is ``"required"`` (forced tool use) unless the provider is
+built with ``forced_tool_choice=False``, which sends ``"auto"`` for a model
+that rejects forced tool use.
 
 ``metadata`` is not part of the request contract's ``params`` -- it is this
 adapter's own bookkeeping, added purely so batch results (which come back
@@ -48,20 +60,22 @@ interface after a crash/resume, per Responses objects supporting a
 ``metadata`` dict (echoed back verbatim in the response body OpenAI writes
 to the batch output file).
 
-For ``interface == "choice"`` no tools are sent (the system prompt already
-asks for a single label); the returned text is looked up in
-``request.params["labels"]`` (label -> candidate name) to produce
-``CallResult.answer`` as a candidate name, matching
-``request.offered_candidates``.
+Answer contract (the same in every adapter):
 
-REPORT (not yet true, sibling task t11): once
-``evals.tool_jev.request.canonical_content`` merges, the runner-level
-integration should switch to building ``(system, user, tools, labels)`` via
-that helper rather than reading ``request.prompt`` / ``request.case_text`` /
-``request.params`` directly, so every provider builds a payload from one
-shared, tested place instead of duplicating the same field reads. This
-adapter reads the fields directly today because t11 was not merged when
-this task started.
+- ``tool_call``: ``CallResult.answer`` is the RAW first tool call,
+  ``json.dumps({"name": <tool name>, "arguments": <parsed arguments dict>})``,
+  with no interpretation here; :func:`evals.tool_jev.request.parse_tool_call`
+  is the single parser. A text reply with no tool call is ``answer=None``,
+  classified ``malformed`` (Track A requires a tool call).
+- ``choice``: ``CallResult.answer`` is the model's text, stripped;
+  :func:`evals.tool_jev.request.parse_choice` reads the label.
+
+``CallResult.outcome``/``reason`` come from those same parsers whenever this
+adapter knows the request's offered set (a sync call, or a batch submitted
+by this process). For a batch collected after a restart the offered set is
+not recoverable from the response, so only structural checks apply (tool
+call present, text present, refusal); the runner re-parses the answer
+against the case's offered set anyway.
 """
 
 from __future__ import annotations
@@ -73,6 +87,7 @@ import urllib.request
 from dataclasses import dataclass
 from typing import Callable, Optional
 
+from .. import request as contract
 from .base import (
     BaseProvider,
     BatchHandle,
@@ -82,7 +97,7 @@ from .base import (
     ProviderCapabilities,
     read_api_key,
 )
-from .errors import classify_answer, classify_transport
+from .errors import Classification, classify_answer, classify_transport
 
 #: Requests never go anywhere but this host (acceptance criterion 2).
 API_BASE = "https://api.openai.com"
@@ -134,7 +149,7 @@ def _default_transport(
     """stdlib-urllib transport: real network I/O, used only outside tests."""
     request = urllib.request.Request(url, data=data, headers=headers, method=method)
     try:
-        with urllib.request.urlopen(request) as response:  # noqa: S310 (fixed https host)
+        with urllib.request.urlopen(request) as response:  # nosec B310 - fixed https host
             return TransportResponse(status=response.status, body=response.read())
     except urllib.error.HTTPError as exc:
         return TransportResponse(status=exc.code, body=exc.read())
@@ -196,12 +211,32 @@ def _classify_http(status: int, body: bytes):
     return classify_transport("openai", status_code=status, error_type=error_type)
 
 
-def _build_request_body(request: CallRequest, model: str) -> dict:
-    """Build the Responses API request body from the CallRequest contract fields only."""
+def _responses_tools(tools: list | None) -> list[dict]:
+    """Canonical (Chat-Completions-style) function tools -> the Responses API's flat shape."""
+    flat: list[dict] = []
+    for tool in tools or []:
+        function = tool.get("function") if isinstance(tool.get("function"), dict) else None
+        if function is None:
+            flat.append(dict(tool))  # already flat
+            continue
+        entry = {"type": "function", "name": function["name"]}
+        if "description" in function:
+            entry["description"] = function["description"]
+        if "parameters" in function:
+            entry["parameters"] = function["parameters"]
+        flat.append(entry)
+    return flat
+
+
+def _build_request_body(
+    request: CallRequest, model: str, *, forced_tool_choice: bool = True
+) -> dict:
+    """Build the Responses API request body from ``request.canonical_content`` only."""
+    system_text, user_text, tools, labels = contract.canonical_content(request)
     body: dict = {
         "model": model,
-        "instructions": request.prompt,
-        "input": [{"role": "user", "content": request.case_text}],
+        "instructions": system_text,
+        "input": [{"role": "user", "content": user_text}],
         "reasoning": {"effort": request.params.get("reasoning", "medium")},
         "metadata": {"nvsh_case_id": request.case_id, "nvsh_interface": request.interface},
     }
@@ -209,36 +244,67 @@ def _build_request_body(request: CallRequest, model: str) -> dict:
     if max_output_tokens is not None:
         body["max_output_tokens"] = max_output_tokens
     if request.interface == "tool_call":
-        body["tools"] = request.params.get("tools", [])
-        body["tool_choice"] = "required"
-    else:
-        # "choice": no tools; stash the label->candidate map in metadata too,
-        # so a batch collected after a crash (this process's own
-        # _local_custom_ids empty) can still translate the returned label
-        # into a candidate name -- see module docstring's metadata note.
-        labels = request.params.get("labels")
-        if labels:
-            body["metadata"]["nvsh_labels"] = json.dumps(labels, sort_keys=True)
+        body["tools"] = _responses_tools(tools)
+        body["tool_choice"] = "required" if forced_tool_choice else "auto"
+    elif labels:
+        # "choice": no tools; stash the label map in metadata too, so a batch
+        # collected after a crash (this process's own _local_requests empty)
+        # can still read the returned label -- see module docstring.
+        body["metadata"]["nvsh_labels"] = json.dumps(labels, sort_keys=True)
     return body
 
 
-def _extract_answer(
-    response_body: dict, request_interface: str, labels: dict[str, str] | None
-) -> tuple[str | None, bool, bool]:
+def tool_call_answer(name: object, raw_arguments: object) -> str | None:
+    """The raw tool call as the shared answer JSON, or ``None`` when it is malformed.
+
+    ``{"name": <tool name>, "arguments": <arguments dict>}``; *raw_arguments*
+    may be a JSON string (as the Responses API returns it) or a dict.
+    """
+    if not isinstance(name, str) or not name:
+        return None
+    arguments = raw_arguments
+    if arguments is None or arguments == "":
+        arguments = {}
+    elif isinstance(arguments, str):
+        try:
+            arguments = json.loads(arguments)
+        except json.JSONDecodeError:
+            return None
+    if not isinstance(arguments, dict):
+        return None
+    return json.dumps({"name": name, "arguments": arguments}, sort_keys=True)
+
+
+def classify_result(
+    interface: str,
+    answer: str | None,
+    offered: tuple[str, ...] | None,
+    labels: dict[str, str] | None,
+    *,
+    malformed: bool = False,
+    refused: bool = False,
+) -> Classification:
+    """Outcome for one answer, via the request contract's single parsers when possible."""
+    if malformed or refused or answer is None:
+        return classify_answer(answer, None, malformed=malformed, refused=refused)
+    if interface == "tool_call":
+        if offered:
+            return contract.parse_tool_call(answer, offered)[0]
+        return classify_answer(answer, None)
+    if labels:
+        return contract.parse_choice(answer, labels)[0]
+    return classify_answer(answer, offered or None)
+
+
+def _extract_answer(response_body: dict, request_interface: str) -> tuple[str | None, bool, bool]:
     """Return (answer, malformed, refused) from a Responses API response body.
 
-    ``tool_call``: looks for a ``function_call`` output item. Its arguments
-    become ``answer`` as ``json.dumps({"operation": name, "arguments": ...})``
-    (sorted keys, deterministic), except for the "explain"/"escalate"
-    operations, which answer with plain text -- REPORT: this text-vs-JSON
-    split for explain/escalate is this adapter's own reading of the shared
-    "answer = JSON of {operation, arguments} ... or the text answer for
-    explain/escalate" contract line in COMMON2.md; it is an assumption, not
-    a measurement against a merged runner, since no consuming module exists
-    yet to confirm the exact shape it expects.
+    ``tool_call``: the first ``function_call`` output item, passed through raw
+    as :func:`tool_call_answer`'s JSON (see the module docstring's answer
+    contract). No function call at all -- e.g. a plain text reply -- is
+    malformed with ``answer=None``.
 
-    ``choice``: looks for a plain message/output_text; the label text is
-    mapped through ``labels`` (label -> candidate name) if given.
+    ``choice``: the first ``output_text`` part, stripped.
 
     A structural refusal (an output item / content part of type
     ``"refusal"``) is detected here, never by scanning answer text.
@@ -260,35 +326,17 @@ def _extract_answer(
     if request_interface == "tool_call":
         for item in output:
             if isinstance(item, dict) and item.get("type") == "function_call":
-                name = item.get("name")
-                raw_args = item.get("arguments")
-                try:
-                    arguments = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
-                except json.JSONDecodeError:
-                    return None, True, False
-                if name in ("explain", "escalate"):
-                    text = None
-                    if isinstance(arguments, dict):
-                        text = arguments.get("text") or arguments.get("explanation")
-                    return (text if text else json.dumps(arguments, sort_keys=True)), False, False
-                return (
-                    json.dumps({"operation": name, "arguments": arguments}, sort_keys=True),
-                    (name is None),
-                    False,
-                )
+                answer = tool_call_answer(item.get("name"), item.get("arguments"))
+                return answer, answer is None, False
         return None, True, False
 
-    # interface == "choice": a plain text answer naming one label.
+    # interface == "choice": the model's text, stripped.
     for item in output:
         if isinstance(item, dict) and item.get("type") == "message":
             for part in item.get("content") or []:
                 if isinstance(part, dict) and part.get("type") == "output_text":
-                    label = (part.get("text") or "").strip()
-                    if not label:
-                        return None, True, False
-                    if labels:
-                        return labels.get(label, label), False, False
-                    return label, False, False
+                    text = (part.get("text") or "").strip()
+                    return (text or None), not text, False
     return None, True, False
 
 
@@ -323,6 +371,10 @@ class OpenAIProvider(BaseProvider):
     transport:
         Injected for tests; defaults to a real stdlib-urllib transport.
         Signature: ``(method, url, data, headers) -> TransportResponse``.
+    forced_tool_choice:
+        ``True`` (default) sends ``tool_choice="required"`` for a
+        ``tool_call`` request; ``False`` sends ``"auto"`` for a model that
+        rejects forced tool use (a text-only reply is then malformed).
     """
 
     def __init__(
@@ -331,6 +383,7 @@ class OpenAIProvider(BaseProvider):
         *,
         api_key_env: str = DEFAULT_API_KEY_ENV,
         transport: Transport | None = None,
+        forced_tool_choice: bool = True,
     ) -> None:
         if model not in MODELS:
             raise ValueError(f"unsupported model {model!r}, expected one of {sorted(MODELS)}")
@@ -338,6 +391,7 @@ class OpenAIProvider(BaseProvider):
         self.model = model
         self.api_key_env = api_key_env
         self._transport: Transport = transport or _default_transport
+        self.forced_tool_choice = forced_tool_choice
         # gpt-6-luna / gpt-6-sol are reasoning models; neither returns token
         # logprobs, so candidates are always None for this provider.
         self.capabilities = ProviderCapabilities(logprobs=False, batch=True, reasoning=True)
@@ -347,6 +401,9 @@ class OpenAIProvider(BaseProvider):
         #: docstring, needed for the crash/resume path where this dict is
         #: empty because the process restarted).
         self._local_custom_ids: dict[str, tuple[str, str]] = {}
+        #: custom_id -> the CallRequest submitted under it (same lifetime),
+        #: so a same-process fetch can classify against the offered set.
+        self._local_requests: dict[str, CallRequest] = {}
 
     # -- shared HTTP helpers -------------------------------------------------
 
@@ -364,7 +421,7 @@ class OpenAIProvider(BaseProvider):
     # -- sync ------------------------------------------------------------
 
     def _send_sync(self, request: CallRequest) -> CallResult:
-        body = _build_request_body(request, self.model)
+        body = _build_request_body(request, self.model, forced_tool_choice=self.forced_tool_choice)
         try:
             response_body = self._request_json("POST", RESPONSES_ENDPOINT, body)
         except _HttpError as exc:
@@ -380,11 +437,13 @@ class OpenAIProvider(BaseProvider):
         return self._result_from_response(request, response_body)
 
     def _result_from_response(self, request: CallRequest, response_body: dict) -> CallResult:
-        labels = request.params.get("labels") if request.interface == "choice" else None
-        answer, malformed, refused = _extract_answer(response_body, request.interface, labels)
-        classification = classify_answer(
+        _system, _user, _tools, labels = contract.canonical_content(request)
+        answer, malformed, refused = _extract_answer(response_body, request.interface)
+        classification = classify_result(
+            request.interface,
             answer,
             request.offered_candidates or None,
+            labels,
             malformed=malformed,
             refused=refused,
         )
@@ -411,13 +470,16 @@ class OpenAIProvider(BaseProvider):
         for request in requests:
             custom_id = _custom_id(request.case_id, request.interface)
             self._local_custom_ids[custom_id] = (request.case_id, request.interface)
+            self._local_requests[custom_id] = request
             lines.append(
                 json.dumps(
                     {
                         "custom_id": custom_id,
                         "method": "POST",
                         "url": RESPONSES_ENDPOINT,
-                        "body": _build_request_body(request, self.model),
+                        "body": _build_request_body(
+                            request, self.model, forced_tool_choice=self.forced_tool_choice
+                        ),
                     }
                 )
             )
@@ -550,6 +612,11 @@ class OpenAIProvider(BaseProvider):
                 params["labels"] = json.loads(raw_labels)
             except json.JSONDecodeError:
                 pass
+        submitted = self._local_requests.get(custom_id)
+        if submitted is not None and submitted.case_id == case_id:
+            # Same process that submitted it: the full request (offered set,
+            # labels) is known, so the answer is classified exactly as sync.
+            return self._result_from_response(submitted, response_body)
         request = CallRequest(
             case_id=case_id, split="test", case_text="", interface=interface, params=params
         )

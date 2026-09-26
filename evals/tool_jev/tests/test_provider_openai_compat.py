@@ -21,8 +21,13 @@ from pathlib import Path
 import pytest
 
 from evals.tool_jev.providers import base, errors, openai_compat
+from nvsh.tiers import lfm
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "openai_compat"
+
+#: nvsh's real Track A tools, as request.build_tool_call_request offers them.
+REAL_TOOLS = lfm.tools_for()
+TOOL_OFFERED = ("service_status", "service_restart", "explain", "escalate")
 
 
 def _load(name: str) -> bytes:
@@ -45,7 +50,8 @@ def _tool_call_request(**overrides) -> base.CallRequest:
         case_text="synthetic case body",
         prompt="synthetic system prompt",
         interface="tool_call",
-        params={"tools": [{"type": "function", "function": {"name": "propose_fix"}}]},
+        offered_candidates=TOOL_OFFERED,
+        params={"tools": REAL_TOOLS},
     )
     defaults.update(overrides)
     return base.CallRequest(**defaults)
@@ -58,8 +64,9 @@ def _choice_request(**overrides) -> base.CallRequest:
         case_text="synthetic case body",
         prompt="synthetic system prompt",
         interface="choice",
-        offered_candidates=("mv", "cp", "rm"),
-        params={"labels": {"A": "mv", "B": "cp", "C": "rm"}},
+        offered_candidates=("service_status", "service_logs", "service_restart"),
+        # candidate -> letter, as request.build_choice_request builds it.
+        params={"labels": {"service_status": "A", "service_logs": "B", "service_restart": "C"}},
     )
     defaults.update(overrides)
     return base.CallRequest(**defaults)
@@ -147,12 +154,13 @@ def test_choice_with_logprobs_yields_candidate_distribution():
     result = provider.submit_sync(_choice_request())
 
     assert result.outcome == errors.Outcome.OK
-    assert result.answer == "mv"  # label "A" mapped to its candidate name
+    assert result.answer == "A"  # the text; request.parse_choice reads the label
+    assert result.reason == "answer"
     assert result.candidates is not None
-    assert set(result.candidates) == {"mv", "cp", "rm"}
     assert pytest.approx(sum(result.candidates.values()), rel=1e-6) == 1.0
     # Offered order preserved (dict insertion order of params["labels"]).
-    assert list(result.candidates) == ["mv", "cp", "rm"]
+    assert list(result.candidates) == ["service_status", "service_logs", "service_restart"]
+    assert result.candidates["service_status"] == pytest.approx(0.9 / 1.01, rel=1e-6)
     assert result.returned_model == "qwen/qwen3.8-max-0902"
     assert result.response_id == "gen-synthetic-choice-1"
     assert result.usage == {"prompt_tokens": 200, "completion_tokens": 1, "reasoning_tokens": 40}
@@ -175,10 +183,11 @@ def test_logprobs_taken_from_first_content_token_not_reasoning():
         transport=_make_transport(200, _load("choice_reasoning_then_content.json")),
     )
     result = provider.submit_sync(_choice_request())
-    assert result.answer == "cp"  # label "B"
+    assert result.answer == "B"
     assert result.candidates is not None
-    assert set(result.candidates) == {"mv", "cp", "rm"}
-    assert result.candidates["cp"] > result.candidates["mv"] > result.candidates["rm"]
+    assert set(result.candidates) == {"service_status", "service_logs", "service_restart"}
+    candidates = result.candidates
+    assert candidates["service_logs"] > candidates["service_status"] > candidates["service_restart"]
     assert pytest.approx(sum(result.candidates.values()), rel=1e-6) == 1.0
     assert result.usage["reasoning_tokens"] == 512
 
@@ -199,13 +208,13 @@ def test_choice_without_logprobs_capability_yields_none_candidates():
     )
     result = provider.submit_sync(_choice_request())
     assert result.outcome == errors.Outcome.OK
-    assert result.answer == "cp"
+    assert result.answer == "B"
     assert result.candidates is None
 
 
 def test_choice_missing_one_offered_label_in_top_logprobs_yields_none_candidates():
     """Only two of the three offered labels appear in top_logprobs (A, X) --
-    the distribution must not be estimated for the missing label ("cp"/"rm"),
+    the distribution must not be estimated for the missing labels (B/C),
     so the whole distribution is None."""
     provider = openai_compat.OpenAICompatProvider(
         "openrouter",
@@ -215,7 +224,7 @@ def test_choice_missing_one_offered_label_in_top_logprobs_yields_none_candidates
     )
     result = provider.submit_sync(_choice_request())
     assert result.outcome == errors.Outcome.OK
-    assert result.answer == "mv"
+    assert result.answer == "A"
     assert result.candidates is None
 
 
@@ -271,19 +280,22 @@ def test_transport_error_network_loss_is_pending():
 # ---------------------------------------------------------------------------
 
 
-def test_tool_call_success_parses_operation_and_arguments():
+def test_tool_call_success_passes_raw_tool_call_through():
     calls: list = []
     provider = openai_compat.OpenAICompatProvider(
         "openrouter",
         "qwen/qwen3.8-max-0902",
-        transport=_make_transport(200, _load("tool_call_success.json"), calls=calls),
+        transport=_make_transport(200, _load("tool_call_propose.json"), calls=calls),
     )
     result = provider.submit_sync(_tool_call_request())
 
     assert result.outcome == errors.Outcome.OK
     assert json.loads(result.answer) == {
-        "operation": "heal",
-        "arguments": {"path": "synthetic"},
+        "name": "propose",
+        "arguments": {
+            "operation": "service_restart",
+            "arguments": {"service": "synthetic.service"},
+        },
     }
     assert result.interface == "tool_call"
     assert result.candidates is None
@@ -291,7 +303,34 @@ def test_tool_call_success_parses_operation_and_arguments():
 
     sent_body = json.loads(calls[0][2])
     assert sent_body["tool_choice"] == "required"
-    assert sent_body["tools"] == [{"type": "function", "function": {"name": "propose_fix"}}]
+    assert sent_body["tools"] == REAL_TOOLS
+
+
+def test_forced_tool_choice_false_sends_auto():
+    calls: list = []
+    provider = openai_compat.OpenAICompatProvider(
+        "openrouter",
+        "m",
+        transport=_make_transport(200, _load("tool_call_propose.json"), calls=calls),
+        forced_tool_choice=False,
+    )
+    provider.submit_sync(_tool_call_request())
+    assert json.loads(calls[0][2])["tool_choice"] == "auto"
+
+
+def test_text_only_tool_call_reply_is_malformed_with_no_answer():
+    provider = openai_compat.OpenAICompatProvider(
+        "openrouter", "m", transport=_make_transport(200, _load("tool_call_text_only.json"))
+    )
+    result = provider.submit_sync(_tool_call_request())
+    assert result.answer is None
+    assert result.outcome == errors.Outcome.INVALID
+    assert result.reason == "malformed"
+
+
+def test_private_logprob_helper_is_gone():
+    # The shared request.distribution_from_logprobs is the only readout.
+    assert not hasattr(openai_compat, "_distribution_from_logprobs")
 
 
 def test_tool_call_refusal_is_invalid():
@@ -313,14 +352,16 @@ def test_choice_answer_outside_offered_set_is_invalid():
         transport=_make_transport(200, _load("choice_no_logprobs.json"), calls=calls),
     )
     request = _choice_request(
-        offered_candidates=("mv", "rm"), params={"labels": {"A": "mv", "C": "rm"}}
+        offered_candidates=("service_status", "service_restart"),
+        params={"labels": {"service_status": "A", "service_restart": "C"}},
     )
     result = provider.submit_sync(request)
-    # The fixture answers label "B", which isn't in this request's labels map
-    # (only A/C are offered), so it maps to itself and falls outside the
-    # offered candidate set.
+    # The fixture answers label "B", which isn't one of this request's
+    # labels (only A/C are offered): request.parse_choice never guesses it
+    # into a pick -- an unrecognised letter is malformed.
+    assert result.answer == "B"
     assert result.outcome == errors.Outcome.INVALID
-    assert result.reason == "outside_offered_set"
+    assert result.reason == "malformed"
 
 
 # ---------------------------------------------------------------------------
@@ -333,11 +374,11 @@ def test_openrouter_reasoning_mapped_to_effort_object():
     provider = openai_compat.OpenAICompatProvider(
         "openrouter",
         "m",
-        transport=_make_transport(200, _load("tool_call_success.json"), calls=calls),
+        transport=_make_transport(200, _load("tool_call_propose.json"), calls=calls),
     )
     request = _tool_call_request(
         params={
-            "tools": [{"type": "function", "function": {"name": "propose_fix"}}],
+            "tools": REAL_TOOLS,
             "reasoning": "medium",
         }
     )
@@ -353,11 +394,11 @@ def test_nvidia_reasoning_passed_through_only_when_capability_says_so():
         "nvidia",
         "m",
         capabilities=base.ProviderCapabilities(logprobs=False, batch=False, reasoning=True),
-        transport=_make_transport(200, _load("tool_call_success.json"), calls=calls),
+        transport=_make_transport(200, _load("tool_call_propose.json"), calls=calls),
     )
     request = _tool_call_request(
         params={
-            "tools": [{"type": "function", "function": {"name": "propose_fix"}}],
+            "tools": REAL_TOOLS,
             "reasoning": "medium",
         }
     )
@@ -373,11 +414,11 @@ def test_nvidia_reasoning_omitted_when_capability_false():
         "nvidia",
         "m",
         capabilities=base.ProviderCapabilities(logprobs=False, batch=False, reasoning=False),
-        transport=_make_transport(200, _load("tool_call_success.json"), calls=calls),
+        transport=_make_transport(200, _load("tool_call_propose.json"), calls=calls),
     )
     request = _tool_call_request(
         params={
-            "tools": [{"type": "function", "function": {"name": "propose_fix"}}],
+            "tools": REAL_TOOLS,
             "reasoning": "medium",
         }
     )

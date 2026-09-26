@@ -1,0 +1,31 @@
+{
+  "id": "gen-synthetic-explain",
+  "model": "qwen/qwen3.8-max-0902",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": null,
+        "tool_calls": [
+          {
+            "id": "call_1",
+            "type": "function",
+            "function": {
+              "name": "explain",
+              "arguments": "{\"text\": \"synthetic explanation, no command needed\"}"
+            }
+          }
+        ]
+      },
+      "finish_reason": "tool_calls"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 120,
+    "completion_tokens": 18,
+    "completion_tokens_details": {
+      "reasoning_tokens": 0
+    }
+  }
+}

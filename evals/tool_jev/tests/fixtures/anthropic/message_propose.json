@@ -1,5 +1,5 @@
 {
-  "id": "msg_01ToolUseFixture",
+  "id": "msg_01ProposeFixture",
   "type": "message",
   "role": "assistant",
   "model": "claude-sonnet-5",
@@ -7,8 +7,13 @@
     {
       "type": "tool_use",
       "id": "toolu_01Fixture",
-      "name": "inspect-disk",
-      "input": {"path": "/"}
+      "name": "propose",
+      "input": {
+        "operation": "service_restart",
+        "arguments": {
+          "service": "synthetic.service"
+        }
+      }
     }
   ],
   "stop_reason": "tool_use",

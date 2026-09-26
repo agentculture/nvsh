@@ -59,21 +59,28 @@ Known limitations (report these, do not hide them):
    not recoverable from the Anthropic API and are inferred from the
    response shape instead (a ``tool_use`` content block present ->
    ``"tool_call"``, else ``"choice"`` with no offered-candidate check).
-3. **Forced tool use is rejected by ``claude-opus-5-5``.** Per
+3. **Forced tool use is rejected by some models.** Per
    https://platform.claude.com/docs/en/api/errors ("Forced tool use not
-   supported"), Claude Opus 5.5 (also Fable 5.1 / Mythos 5.1) 400s on
-   ``tool_choice: {"type": "any"}`` -- the exact value the task instructed
-   this adapter to send for the ``tool_call`` interface. This adapter still
-   sends it (the contract is fixed for all wave-2 providers), so any
-   ``tool_call`` request routed at ``claude-opus-5-5`` will be rejected as
-   ``request_rejected:unsupported_parameter`` today. Report this to the
-   operator before routing Track A (tool-call) cases at that model.
-4. Request-contract integration note (for the main agent): this module
-   reads ``request.prompt`` / ``request.case_text`` / ``request.params``
-   directly, as instructed, because task t11's
-   ``CallRequest.canonical_content()`` did not exist yet in this worktree.
-   When it lands, this adapter's payload building should switch to it so
-   redaction/canonicalization stays in one place.
+   supported"), Claude Opus 5.5, Claude Fable 5.1 and Claude Mythos 5.1
+   return HTTP 400 on ``tool_choice`` ``{"type": "any"}`` / ``{"type":
+   "tool"}``; only ``auto``/``none`` are accepted. The constructor's
+   ``forced_tool_choice`` flag picks ``{"type": "any"}`` (True) or
+   ``{"type": "auto"}`` (False). It defaults to False for the model ids in
+   :data:`NO_FORCED_TOOL_CHOICE_MODELS` (today only ``claude-opus-5-5``;
+   pass ``forced_tool_choice=False`` for any other model that rejects it)
+   and True otherwise. Under ``auto`` a model may answer in plain text,
+   which the answer contract below classifies ``malformed``.
+
+Request/answer contract: the payload is built only from
+:func:`evals.tool_jev.request.canonical_content` (system, user, tools,
+labels). For ``tool_call`` the answer is the RAW first ``tool_use`` block,
+``json.dumps({"name": <tool name>, "arguments": <input dict>})``, parsed
+downstream by :func:`evals.tool_jev.request.parse_tool_call`; a text-only
+reply is ``answer=None`` classified ``malformed``. For ``choice`` the answer
+is the model's text, stripped, read by
+:func:`evals.tool_jev.request.parse_choice`. The outcome is taken from those
+parsers when the request's offered set is known (sync, or a batch this
+process submitted); after a restart only structural checks apply.
 """
 
 from __future__ import annotations
@@ -86,6 +93,7 @@ import urllib.request
 from typing import Callable
 from urllib.parse import urlparse
 
+from .. import request as contract
 from .base import (
     BaseProvider,
     BatchHandle,
@@ -95,12 +103,14 @@ from .base import (
     ProviderCapabilities,
     read_api_key,
 )
-from .errors import Classification, classify_answer, classify_transport
+from .errors import Classification, classify_transport
+from .openai import classify_result, tool_call_answer
 
 __all__ = [
     "API_HOST",
     "API_BASE",
     "ANTHROPIC_VERSION",
+    "NO_FORCED_TOOL_CHOICE_MODELS",
     "Transport",
     "urllib_transport",
     "AnthropicProviderError",
@@ -116,6 +126,11 @@ API_BASE = f"https://{API_HOST}"
 #: Current documented stable version string.
 #: https://platform.claude.com/docs/en/api/messages ("Headers")
 ANTHROPIC_VERSION = "2023-06-01"
+
+#: Models that reject forced tool use (tool_choice "any"/"tool") with HTTP 400,
+#: per https://platform.claude.com/docs/en/api/errors ("Forced tool use not
+#: supported"). ``forced_tool_choice`` defaults to False for these.
+NO_FORCED_TOOL_CHOICE_MODELS = frozenset({"claude-opus-5-5"})
 
 #: A transport is a plain callable so tests can inject a fake one instead of
 #: touching the network: (method, url, headers, body_bytes) -> (status, body).
@@ -249,6 +264,11 @@ class AnthropicProvider(BaseProvider):
         ``"ANTHROPIC_API_KEY"``.
     transport:
         Injected for tests; defaults to :func:`urllib_transport`.
+    forced_tool_choice:
+        ``True`` sends ``tool_choice={"type": "any"}`` for a ``tool_call``
+        request, ``False`` sends ``{"type": "auto"}``. ``None`` (default)
+        means False for a model in :data:`NO_FORCED_TOOL_CHOICE_MODELS`
+        (which 400 on forced tool use) and True otherwise.
     """
 
     def __init__(
@@ -261,9 +281,13 @@ class AnthropicProvider(BaseProvider):
         transport: "Transport | None" = None,
         list_page_limit: int = 100,
         max_list_pages: int = 20,
+        forced_tool_choice: "bool | None" = None,
     ) -> None:
         self.name = name
         self.model_id = model_id
+        if forced_tool_choice is None:
+            forced_tool_choice = model_id not in NO_FORCED_TOOL_CHOICE_MODELS
+        self.forced_tool_choice = forced_tool_choice
         # No logprobs on this provider: candidates are always None, never
         # estimated (task instruction; issue #64 contract).
         self.capabilities = ProviderCapabilities(logprobs=False, batch=True, reasoning=True)
@@ -316,11 +340,12 @@ class AnthropicProvider(BaseProvider):
         return converted
 
     def _build_payload(self, request: CallRequest) -> dict:
+        system_text, user_text, tools, _labels = contract.canonical_content(request)
         payload: dict = {
             "model": self.model_id,
             "max_tokens": int(request.params.get("max_output_tokens", 1024)),
-            "system": request.prompt,
-            "messages": [{"role": "user", "content": request.case_text}],
+            "system": system_text,
+            "messages": [{"role": "user", "content": user_text}],
         }
         effort = request.params.get("reasoning")
         if effort:
@@ -329,11 +354,11 @@ class AnthropicProvider(BaseProvider):
             # on the ones that no longer support extended thinking. See
             # module docstring citation to docs/en/api/errors.
             payload["output_config"] = {"effort": effort}
-        if request.interface == "tool_call":
-            tools = request.params.get("tools") or []
-            if tools:
-                payload["tools"] = self._tools_payload(tools)
-                payload["tool_choice"] = {"type": "any"}
+        if request.interface == "tool_call" and tools:
+            payload["tools"] = self._tools_payload(tools)
+            # Forced ("any") unless this model rejects forced tool use --
+            # see module docstring limitation 3.
+            payload["tool_choice"] = {"type": "any" if self.forced_tool_choice else "auto"}
         return payload
 
     # -- response interpretation ------------------------------------------
@@ -362,46 +387,29 @@ class AnthropicProvider(BaseProvider):
     ) -> "tuple[str | None, Classification]":
         content = message.get("content") or []
         refused = message.get("stop_reason") == "refusal"
-        malformed = False
         answer = None
-        # `classification_key` is what gets checked against
-        # `offered_candidates` (a bare candidate/operation name); `answer`
-        # is what actually goes on the CallResult (the tool_call interface's
-        # contract says that is the {"operation", "arguments"} JSON blob,
-        # not the bare name, so the two must stay distinct).
-        classification_key = None
-        if interface == "tool_call":
+        if refused:
+            malformed = False
+        elif interface == "tool_call":
+            # The RAW first tool_use block (module docstring's answer
+            # contract); a text-only reply is not a tool call -> malformed.
             tool_use = next((block for block in content if block.get("type") == "tool_use"), None)
             if tool_use is not None:
-                classification_key = tool_use.get("name")
-                answer = json.dumps(
-                    {"operation": tool_use.get("name"), "arguments": tool_use.get("input", {})},
-                    sort_keys=True,
-                )
-            else:
-                # No tool call: the model answered in plain text, valid for
-                # the explain/escalate operations (task instruction).
-                text = "".join(
-                    block.get("text", "") for block in content if block.get("type") == "text"
-                ).strip()
-                answer = text or None
-                classification_key = answer
-                if answer is None and not refused:
-                    malformed = True
-        else:  # "choice"
+                answer = tool_call_answer(tool_use.get("name"), tool_use.get("input", {}))
+            malformed = answer is None
+        else:  # "choice": the model's text, stripped
             text = "".join(
                 block.get("text", "") for block in content if block.get("type") == "text"
             ).strip()
-            if not text:
-                answer = None
-                classification_key = None
-                if not refused:
-                    malformed = True
-            else:
-                answer = (labels or {}).get(text, text)
-                classification_key = answer
-        classification = classify_answer(
-            classification_key, offered_candidates or None, malformed=malformed, refused=refused
+            answer = text or None
+            malformed = answer is None
+        classification = classify_result(
+            interface,
+            answer,
+            offered_candidates or None,
+            labels,
+            malformed=malformed,
+            refused=refused,
         )
         return answer, classification
 
@@ -461,7 +469,7 @@ class AnthropicProvider(BaseProvider):
                 self._classify_error(status, data), self.name, request.case_id
             )
         message = json.loads(data)
-        labels = request.params.get("labels") if request.interface == "choice" else None
+        _system, _user, _tools, labels = contract.canonical_content(request)
         answer, classification = self._answer_from_message(
             message, request.interface, request.offered_candidates, labels
         )
@@ -593,7 +601,7 @@ class AnthropicProvider(BaseProvider):
             if request is not None:
                 interface = request.interface
                 offered = request.offered_candidates
-                labels = request.params.get("labels") if interface == "choice" else None
+                labels = contract.canonical_content(request)[3]
             else:
                 # Best-effort inference across a process restart -- see
                 # module docstring limitation 2.

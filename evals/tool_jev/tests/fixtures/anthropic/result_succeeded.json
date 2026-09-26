@@ -8,7 +8,7 @@
       "role": "assistant",
       "model": "claude-sonnet-5",
       "content": [
-        {"type": "tool_use", "id": "toolu_batch_1", "name": "inspect-disk", "input": {"path": "/"}}
+        {"type": "tool_use", "id": "toolu_batch_1", "name": "propose", "input": {"operation": "service_restart", "arguments": {"service": "synthetic.service"}}}
       ],
       "stop_reason": "tool_use",
       "stop_sequence": null,

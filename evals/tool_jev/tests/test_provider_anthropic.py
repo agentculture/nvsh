@@ -22,6 +22,7 @@ from pathlib import Path
 import pytest
 
 from evals.tool_jev.providers import anthropic, base, errors
+from nvsh.tiers import lfm
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "anthropic"
 
@@ -84,6 +85,14 @@ def _default_anthropic_key(request, monkeypatch):
     ):
         return
     _key_env(monkeypatch)
+
+
+#: nvsh's real Track A propose tool (canonical Chat-Completions shape).
+PROPOSE_TOOL = next(t for t in lfm.tools_for() if t["function"]["name"] == lfm.PROPOSE_TOOL)
+PROPOSE_ANSWER = {
+    "name": "propose",
+    "arguments": {"operation": "service_restart", "arguments": {"service": "synthetic.service"}},
+}
 
 
 def _request(case_id="case-1", split="test", interface="tool_call", **kw):
@@ -174,7 +183,7 @@ def test_submit_sync_tool_call_success():
         {
             ("POST", "https://api.anthropic.com/v1/messages"): (
                 200,
-                _fixture_json("message_tool_use.json"),
+                _fixture_json("message_propose.json"),
             )
         }
     )
@@ -184,31 +193,14 @@ def test_submit_sync_tool_call_success():
         interface="tool_call",
         case_text="disk is full, please help",
         prompt="you are the operator's assistant",
-        offered_candidates=("inspect-disk", "inspect-memory"),
-        params={
-            "reasoning": "medium",
-            "max_output_tokens": 512,
-            "tools": [
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "inspect-disk",
-                        "description": "Inspect disk usage",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {"path": {"type": "string"}},
-                            "required": ["path"],
-                        },
-                    },
-                }
-            ],
-        },
+        offered_candidates=("service_status", "service_restart", "explain", "escalate"),
+        params={"reasoning": "medium", "max_output_tokens": 512, "tools": [PROPOSE_TOOL]},
     )
     result = provider.submit_sync(request)
 
     assert result.outcome is errors.Outcome.OK
-    assert json.loads(result.answer) == {"operation": "inspect-disk", "arguments": {"path": "/"}}
-    assert result.response_id == "msg_01ToolUseFixture"
+    assert json.loads(result.answer) == PROPOSE_ANSWER
+    assert result.response_id == "msg_01ProposeFixture"
     assert result.returned_model == "claude-sonnet-5"
     assert result.candidates is None  # no logprobs, never estimated
     assert result.usage == {
@@ -217,7 +209,7 @@ def test_submit_sync_tool_call_success():
         "cache_creation_input_tokens": 0,
         "cache_read_input_tokens": 15,
     }
-    assert result.raw == _fixture_json("message_tool_use.json")
+    assert result.raw == _fixture_json("message_propose.json")
 
     _method, _url, _headers, body = transport.calls[0]
     sent = json.loads(body)
@@ -229,18 +221,62 @@ def test_submit_sync_tool_call_success():
     assert sent["tool_choice"] == {"type": "any"}
     assert sent["tools"] == [
         {
-            "name": "inspect-disk",
-            "description": "Inspect disk usage",
-            "input_schema": {
-                "type": "object",
-                "properties": {"path": {"type": "string"}},
-                "required": ["path"],
-            },
+            "name": "propose",
+            "description": PROPOSE_TOOL["function"]["description"],
+            "input_schema": PROPOSE_TOOL["function"]["parameters"],
         }
     ]
 
 
-def test_submit_sync_choice_interface_maps_label_to_candidate():
+@pytest.mark.parametrize(
+    "model_id, flag, expected",
+    [
+        ("claude-sonnet-5", None, {"type": "any"}),
+        ("claude-opus-5-5", None, {"type": "auto"}),
+        ("claude-opus-5-5", True, {"type": "any"}),
+        ("claude-sonnet-5", False, {"type": "auto"}),
+    ],
+)
+def test_tool_choice_follows_forced_tool_choice_capability(model_id, flag, expected):
+    transport = FakeTransport(
+        {
+            ("POST", "https://api.anthropic.com/v1/messages"): (
+                200,
+                _fixture_json("message_propose.json"),
+            )
+        }
+    )
+    kwargs = {} if flag is None else {"forced_tool_choice": flag}
+    provider = anthropic.AnthropicProvider(model_id, transport=transport, **kwargs)
+    provider.submit_sync(_request(case_text="x", prompt="sys", params={"tools": [PROPOSE_TOOL]}))
+    assert json.loads(transport.calls[0][3])["tool_choice"] == expected
+    assert "claude-opus-5-5" in anthropic.NO_FORCED_TOOL_CHOICE_MODELS
+
+
+def test_text_only_tool_call_reply_is_malformed():
+    transport = FakeTransport(
+        {
+            ("POST", "https://api.anthropic.com/v1/messages"): (
+                200,
+                _fixture_json("message_text_only.json"),
+            )
+        }
+    )
+    provider = anthropic.AnthropicProvider("claude-opus-5-5", transport=transport)
+    result = provider.submit_sync(
+        _request(
+            case_text="x",
+            prompt="sys",
+            offered_candidates=("service_restart", "explain", "escalate"),
+            params={"tools": [PROPOSE_TOOL]},
+        )
+    )
+    assert result.answer is None
+    assert result.outcome is errors.Outcome.INVALID
+    assert result.reason == "malformed"
+
+
+def test_submit_sync_choice_interface_answers_with_the_label_text():
     transport = FakeTransport(
         {
             ("POST", "https://api.anthropic.com/v1/messages"): (
@@ -254,12 +290,13 @@ def test_submit_sync_choice_interface_maps_label_to_candidate():
         interface="choice",
         case_text="which operation fits?",
         prompt="pick A or B",
-        offered_candidates=("inspect-disk", "inspect-memory"),
-        params={"labels": {"A": "inspect-disk", "B": "inspect-memory"}, "reasoning": "medium"},
+        offered_candidates=("service_status", "service_logs"),
+        # candidate -> letter, as request.build_choice_request builds it
+        params={"labels": {"service_status": "A", "service_logs": "B"}, "reasoning": "medium"},
     )
     result = provider.submit_sync(request)
     assert result.outcome is errors.Outcome.OK
-    assert result.answer == "inspect-memory"
+    assert result.answer == "B"  # the text; request.parse_choice reads it
     _method, _url, _headers, body = transport.calls[0]
     sent = json.loads(body)
     assert "tools" not in sent
@@ -283,7 +320,7 @@ def test_submit_sync_no_case_text_leaks_into_params_only_fields():
         interface="choice",
         case_text="SECRET-CASE-BODY",
         prompt="sys prompt",
-        params={"labels": {"B": "inspect-memory"}},
+        params={"labels": {"service_logs": "B"}},
     )
     provider.submit_sync(request)
     _method, _url, _headers, body = transport.calls[0]
@@ -341,7 +378,7 @@ def test_submit_sync_invalid_request_error_is_rejected_not_retryable():
                 interface="tool_call",
                 case_text="x",
                 prompt="sys",
-                params={"tools": [{"name": "inspect-disk", "parameters": {}}]},
+                params={"tools": [PROPOSE_TOOL]},
             )
         )
     classification = excinfo.value.classification
@@ -448,7 +485,7 @@ def test_fetch_batch_collects_succeeded_result_with_case_context():
             interface="tool_call",
             case_text="t",
             prompt="s",
-            offered_candidates=("inspect-disk",),
+            offered_candidates=("service_restart", "explain", "escalate"),
             params={},
         )
     }
@@ -481,7 +518,7 @@ def test_fetch_batch_collects_succeeded_result_with_case_context():
     (result,) = results
     assert result.case_id == "case-collect-1"
     assert result.outcome is errors.Outcome.OK
-    assert json.loads(result.answer) == {"operation": "inspect-disk", "arguments": {"path": "/"}}
+    assert json.loads(result.answer) == PROPOSE_ANSWER
     assert result.interface == "tool_call"
     assert result.response_id == "msg_batch_1"
 
