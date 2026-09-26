@@ -58,7 +58,7 @@
 - Every reference call records the provider, requested model id, provider-returned model id/version, request parameters and response id; raw responses are cached by (provider, model, case, prompt hash) so a rerun replays the cache byte-identically and a fresh call is always a new dated run; parameters a model rejects (temperature, logprobs on reasoning models) are recorded in a per-model capability entry
   - instruction: cache-hit rerun test with a fake provider; capability matrix in the manifest
   - honesty: A rerun with a warm cache makes zero network calls and produces identical JSON
-- Provider runs are bounded and resumable: a per-run call budget and concurrency cap, retries with backoff, and every timeout, refusal, malformed or empty answer is recorded per case as invalid and counted in the denominator, never dropped
+- Provider runs are bounded and resumable: a per-provider call budget and concurrency cap, retries with backoff; every model-answer failure (refusal, malformed or empty answer) is recorded per case as invalid and counted in the denominator, never dropped, while infrastructure stops stay pending per c45
   - instruction: fake-provider tests for timeout, 429, refusal and malformed JSON; the page shows invalid counts per model
   - honesty: Every model row's case count equals the case set size; invalid answers appear as their own count
 - A run keeps a durable call ledger in its private run directory: every planned call has a key (provider, model, case, interface or judge, prompt hash) and a state (pending, submitted with batch id, done, invalid); ledger writes are atomic; on continue, done calls come from the cache, submitted batches are re-attached by their batch id and polled rather than resubmitted, and only pending calls are sent
@@ -68,6 +68,10 @@
 - Judge calls are batched in two phases: phase 1 runs the DeepEval judge metrics against a recording model (a custom DeepEvalBaseLLM) that captures every judge prompt DeepEval would send, and those prompts go into the batch like subject calls; phase 2 re-runs the same DeepEval metrics against a replaying model that answers from the cache, so DeepEval computes the scores without making any live call
   - instruction: one metric version + one rubric version per run; the replaying model errors loudly on a prompt missing from the cache
   - honesty: Phase 2 makes zero network calls, and its judge prompts match the phase 1 recorded prompts byte for byte
+- Only a failure of the model's answer (refusal, malformed or empty output, an answer outside the offered set) is recorded invalid; an infrastructure stop (insufficient credit or quota such as HTTP 402, a provider or local budget cap reached, rate limiting, timeout, network loss, a machine reset, an expired batch) leaves the call pending, and when credit or budget runs out the run stops cleanly with a resumable message saying which provider and how many calls remain
+  - instruction: classify provider errors in one table per provider; fake-provider tests for 402, cap reached and a kill between ledger writes; continue after topping up finishes the run
+  - honesty: A run that runs out of credit on one provider, is continued after a top-up, ends with the same results as a run that never ran out, and no case is counted invalid because of the funding stop
+  - honesty: After a hard power-off at any point, continue loses at most the calls that were in flight and never corrupts the ledger or the cache
 
 ## Honesty conditions
 

@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-09-26T04:16:04Z",
-  "updated": "2026-09-26T04:57:19Z",
+  "updated": "2026-09-26T04:58:09Z",
   "claims": [
     {
       "id": "c1",
@@ -641,7 +641,7 @@
     {
       "id": "c35",
       "kind": "requirement",
-      "text": "Provider runs are bounded and resumable: a per-run call budget and concurrency cap, retries with backoff, and every timeout, refusal, malformed or empty answer is recorded per case as invalid and counted in the denominator, never dropped",
+      "text": "Provider runs are bounded and resumable: a per-provider call budget and concurrency cap, retries with backoff; every model-answer failure (refusal, malformed or empty answer) is recorded per case as invalid and counted in the denominator, never dropped, while infrastructure stops stay pending per c45",
       "origin": "llm",
       "status": "confirmed",
       "honesty_conditions": [
@@ -655,7 +655,13 @@
       "hard_questions": [],
       "links": [],
       "instruction": "fake-provider tests for timeout, 429, refusal and malformed JSON; the page shows invalid counts per model",
-      "revisions": []
+      "revisions": [
+        {
+          "text": "Provider runs are bounded and resumable: a per-run call budget and concurrency cap, retries with backoff, and every timeout, refusal, malformed or empty answer is recorded per case as invalid and counted in the denominator, never dropped",
+          "kind": "requirement",
+          "reason": "budget exhaustion and machine resets must resume, not count as invalid"
+        }
+      ]
     },
     {
       "id": "c36",
@@ -797,6 +803,31 @@
       "hard_questions": [],
       "links": [],
       "instruction": "reasoning setting recorded per call in the ledger; per-provider budget caps set from the smoke-run measurement",
+      "revisions": []
+    },
+    {
+      "id": "c45",
+      "kind": "requirement",
+      "text": "Only a failure of the model's answer (refusal, malformed or empty output, an answer outside the offered set) is recorded invalid; an infrastructure stop (insufficient credit or quota such as HTTP 402, a provider or local budget cap reached, rate limiting, timeout, network loss, a machine reset, an expired batch) leaves the call pending, and when credit or budget runs out the run stops cleanly with a resumable message saying which provider and how many calls remain",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h31",
+          "text": "A run that runs out of credit on one provider, is continued after a top-up, ends with the same results as a run that never ran out, and no case is counted invalid because of the funding stop",
+          "status": "confirmed",
+          "instruction": ""
+        },
+        {
+          "id": "h32",
+          "text": "After a hard power-off at any point, continue loses at most the calls that were in flight and never corrupts the ledger or the cache",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "classify provider errors in one table per provider; fake-provider tests for 402, cap reached and a kill between ledger writes; continue after topping up finishes the run",
       "revisions": []
     }
   ],
