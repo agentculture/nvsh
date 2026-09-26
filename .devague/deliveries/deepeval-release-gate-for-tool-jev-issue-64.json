@@ -2,7 +2,7 @@
   "plan_slug": "deepeval-release-gate-for-tool-jev-issue-64",
   "schema_version": 2,
   "created": "2026-09-26T06:47:33Z",
-  "updated": "2026-09-26T06:47:33Z",
+  "updated": "2026-09-26T06:53:45Z",
   "deviations": [
     {
       "id": "d1",
@@ -21,6 +21,24 @@
       "status": "approved",
       "classification": "acceptable",
       "seq": 1
+    },
+    {
+      "id": "d2",
+      "what": "Add an autonomous driver: a docker compose service (pinned python:3.12-slim + uv image, network_mode host for the localhost lobes gateway, private run dir mounted read-write and case data read-only, restart unless-stopped, logs via docker logs plus a log file in the run dir, deepeval telemetry off) that runs the gate's 'continue' loop until done, survives the session ending and reboots, and continues on its own. Keys by grant passthrough: 'grant run --inject ... -- docker compose up -d' with only variable names in the compose file, no key file on disk. On a money stop (402, quota, budget cap) it keeps other providers going and re-checks the stopped provider every 30 min with one probe call; a rejected request stops only that model's calls and is logged; batches keep being polled",
+      "task_ref": "t17",
+      "reason": "Operator request 2026-09-26: a full run spans hours to days (per-round batching, d1) and must not depend on this Claude session; operator chose docker compose, grant passthrough for keys, wait-and-recheck on stops",
+      "affects": [
+        "t19",
+        "t22",
+        "t24",
+        "c35",
+        "c41",
+        "c45"
+      ],
+      "origin": "user",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 2
     }
   ],
   "evidence": [],
