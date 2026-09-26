@@ -87,11 +87,12 @@ process submitted); after a restart only structural checks apply.
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import re
 import urllib.error
 import urllib.request
-from typing import Callable
+from typing import Callable, Iterable
 from urllib.parse import urlparse
 
 from .. import request as contract
@@ -217,11 +218,52 @@ def _sanitize_ref(ref: str) -> str:
     return safe[:_REF_LEN].ljust(_REF_LEN, "0")
 
 
+#: The case-id part of a custom_id: 64 - ref - index - interface letter.
+_CASE_TOKEN_MAX = _CUSTOM_ID_MAX - _REF_LEN - _IDX_LEN - 1
+
+#: A case id whose base64 does not fit is carried as "hh" + 43 base64 chars
+#: of its sha256: 45 characters, a length unpadded base64 never has (its
+#: length is never 1 mod 4), so the two forms cannot be confused.
+_HASH_TOKEN_PREFIX = "hh"
+_HASH_TOKEN_LEN = 45
+
+#: Hashed token -> case id, for every case id this process built a custom_id
+#: for or was told about (:func:`register_case_ids`). A restarted runner
+#: registers every case id of its plan before fetching a batch, so a hashed
+#: token always maps back without keeping anything on the provider's side.
+_CASE_IDS_BY_TOKEN: "dict[str, str]" = {}
+
+
+def _hash_token(case_id: str) -> str:
+    digest = hashlib.sha256(case_id.encode("utf-8")).digest()
+    hashed = _HASH_TOKEN_PREFIX + base64.urlsafe_b64encode(digest).decode("ascii")[:43]
+    assert len(hashed) == _HASH_TOKEN_LEN  # nosec B101 -- a constant-shape invariant
+    return hashed
+
+
+def register_case_ids(case_ids: "Iterable[str]") -> None:
+    """Make every case id in *case_ids* recoverable from its hashed custom_id token."""
+    for case_id in case_ids:
+        _CASE_IDS_BY_TOKEN[_hash_token(case_id)] = case_id
+
+
 def _b64_case_id(case_id: str) -> str:
-    return base64.urlsafe_b64encode(case_id.encode("utf-8")).decode("ascii").rstrip("=")
+    encoded = base64.urlsafe_b64encode(case_id.encode("utf-8")).decode("ascii").rstrip("=")
+    if len(encoded) <= _CASE_TOKEN_MAX:
+        return encoded
+    hashed = _hash_token(case_id)
+    _CASE_IDS_BY_TOKEN[hashed] = case_id
+    return hashed
 
 
 def _unb64_case_id(token: str) -> str:
+    if len(token) == _HASH_TOKEN_LEN and token.startswith(_HASH_TOKEN_PREFIX):
+        if token not in _CASE_IDS_BY_TOKEN:
+            raise ValueError(
+                f"custom_id case token {token!r} is a hash of a case id this process was "
+                "never told about: register the plan's case ids (register_case_ids) first"
+            )
+        return _CASE_IDS_BY_TOKEN[token]
     padded = token + ("=" * (-len(token) % 4))
     return base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8")
 

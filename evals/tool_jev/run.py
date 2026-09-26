@@ -104,6 +104,7 @@ from .ledger import (
     ledger_key,
 )
 from .manifest import CaseSet, Manifest, ManifestError, Reference, load_manifest
+from .providers import anthropic as anthropic_mod
 from .providers.base import BatchHandle, BatchLookupUnresolved, CallRequest, CallResult
 from .providers.errors import (  # noqa: F401  (classify_transport re-exported)
     Classification,
@@ -877,6 +878,11 @@ class Runner:
             if backoff and self.clock() < backoff["next_at"]:
                 continue
             handle = BatchHandle(batch_id=batch_id, provider=model.provider.name)
+            # Anthropic carries a long case id as a hash in custom_id; the
+            # ledger's own specs say which case ids this batch holds.
+            anthropic_mod.register_case_ids(
+                str(self.ledger.entry(key).spec.get("case_id", "")) for key in keys
+            )
             try:
                 batch_status = model.provider.poll_batch(handle)
                 if not batch_status.complete:

@@ -123,9 +123,10 @@ def test_custom_id_round_trips_the_interface():
         anthropic.build_custom_id("ref-1", 0, "case-1", "other")
 
 
-def test_build_custom_id_rejects_case_id_too_large_for_budget():
-    with pytest.raises(ValueError):
-        anthropic.build_custom_id("ref", 0, "x" * 100)
+def test_build_custom_id_hashes_a_case_id_too_large_for_the_base64_budget():
+    custom_id = anthropic.build_custom_id("ref", 0, "x" * 100)
+    assert len(custom_id) <= 64
+    assert anthropic.parse_custom_id(custom_id)[3] == "x" * 100
 
 
 # ---------------------------------------------------------------------------
@@ -1031,3 +1032,30 @@ def test_a_malformed_first_tool_use_is_skipped_for_the_next_well_formed_one():
     result = provider.result_from_raw(_request(case_text="t"), json.dumps(message).encode())
     assert result.outcome is errors.Outcome.OK
     assert json.loads(result.answer) == {"name": "escalate", "arguments": {"reason": "big"}}
+
+
+def test_long_case_ids_travel_as_a_hash_and_map_back_after_a_restart(monkeypatch):
+    """Smoke run 2026-09-26: real case ids (up to ~60 chars) overflowed the 64-char custom_id."""
+    long_id = "q53-test-" + "x" * 51  # 60 characters: base64 is 80, over the budget
+    custom_id = anthropic.build_custom_id("tj-ref-long", 3, long_id, "choice")
+    assert len(custom_id) <= 64
+    assert anthropic._CUSTOM_ID_RE.fullmatch(custom_id)
+    assert anthropic.parse_custom_id(custom_id)[1:] == (3, "choice", long_id)
+    # A fresh process knows nothing until the runner registers its case ids.
+    monkeypatch.setattr(anthropic, "_CASE_IDS_BY_TOKEN", {})
+    with pytest.raises(ValueError, match="register"):
+        anthropic.parse_custom_id(custom_id)
+    anthropic.register_case_ids(["other", long_id])
+    assert anthropic.parse_custom_id(custom_id)[3] == long_id
+    # Short ids keep the lossless base64 form (no registration needed).
+    short = anthropic.build_custom_id("tj-ref-long", 0, "c1", "tool_call")
+    monkeypatch.setattr(anthropic, "_CASE_IDS_BY_TOKEN", {})
+    assert anthropic.parse_custom_id(short)[3] == "c1"
+
+
+@pytest.mark.parametrize("length", range(1, 120))
+def test_every_case_id_length_fits_the_custom_id(length):
+    case_id = "c" * length
+    custom_id = anthropic.build_custom_id("tj-ref", 999999, case_id, "text")
+    assert len(custom_id) <= 64 and anthropic._CUSTOM_ID_RE.fullmatch(custom_id)
+    assert anthropic.parse_custom_id(custom_id)[3] == case_id
