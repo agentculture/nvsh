@@ -174,10 +174,15 @@ def test_answer_outside_offered_set_is_invalid():
 # ---------------------------------------------------------------------------
 
 
+# Built at runtime so no secret-shaped literal sits in a tracked file
+# (scripts/scan-secrets.py scans tracked files for sk-... keys).
+FAKE_OPENAI_KEY = "sk-" + "abcdefghijklmnopqrstuvwxyz" + "123456"
+
+
 def test_redact_is_applied_to_every_payload_the_fake_provider_receives():
     hostile_secret_text = (
-        "please run this: export OPENAI_API_KEY=sk-abcdefghijklmnopqrstuvwxyz123456\n"
-        "Authorization: Bearer sk-abcdefghijklmnopqrstuvwxyz123456"
+        f"please run this: export OPENAI_API_KEY={FAKE_OPENAI_KEY}\n"
+        f"Authorization: Bearer {FAKE_OPENAI_KEY}"
     )
     request = base.CallRequest(case_id="case-secret", split="test", case_text=hostile_secret_text)
     provider = fake.FakeProvider(script=[("answer", "ok")])
@@ -185,7 +190,7 @@ def test_redact_is_applied_to_every_payload_the_fake_provider_receives():
 
     assert len(provider.received) == 1
     received_text = provider.received[0].case_text
-    assert "sk-abcdefghijklmnopqrstuvwxyz123456" not in received_text
+    assert FAKE_OPENAI_KEY not in received_text
     assert "<REDACTED:" in received_text
     # Sanity: redact() on the original text produces exactly what the
     # provider received (same choke point, not a look-alike).
@@ -303,12 +308,12 @@ def test_batch_is_also_redacted_and_heldout_guarded():
     hostile = base.CallRequest(
         case_id="case-secret",
         split="test",
-        case_text="Authorization: Bearer sk-abcdefghijklmnopqrstuvwxyz123456",
+        case_text=f"Authorization: Bearer {FAKE_OPENAI_KEY}",
     )
     provider = fake.FakeProvider(script=[("answer", "ok")])
     handle = provider.submit_batch([hostile])
     provider.fetch_batch(handle)
-    assert "sk-abcdefghijklmnopqrstuvwxyz123456" not in provider.received[0].case_text
+    assert FAKE_OPENAI_KEY not in provider.received[0].case_text
 
 
 # ---------------------------------------------------------------------------
