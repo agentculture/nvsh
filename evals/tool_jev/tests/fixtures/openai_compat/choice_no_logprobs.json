@@ -1,0 +1,12 @@
+{
+  "id": "gen-synthetic-choice-2",
+  "model": "nvidia/nemotron-3-ultra-550b-a55b",
+  "choices": [
+    {
+      "index": 0,
+      "message": {"role": "assistant", "content": "B"},
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {"prompt_tokens": 150, "completion_tokens": 1}
+}

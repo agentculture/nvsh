@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "rate_limited",
+    "type": "rate_limited",
+    "message": "synthetic rate limit for tests"
+  }
+}

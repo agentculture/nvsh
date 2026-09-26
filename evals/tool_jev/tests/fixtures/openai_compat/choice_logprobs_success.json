@@ -1,0 +1,29 @@
+{
+  "id": "gen-synthetic-choice-1",
+  "model": "qwen/qwen3.8-max-0902",
+  "choices": [
+    {
+      "index": 0,
+      "message": {"role": "assistant", "content": "A"},
+      "logprobs": {
+        "content": [
+          {
+            "token": "A",
+            "logprob": -0.10536051565782628,
+            "top_logprobs": [
+              {"token": "A", "logprob": -0.10536051565782628},
+              {"token": "B", "logprob": -2.3025850929940455},
+              {"token": "C", "logprob": -4.605170185988091}
+            ]
+          }
+        ]
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 200,
+    "completion_tokens": 1,
+    "completion_tokens_details": {"reasoning_tokens": 40}
+  }
+}

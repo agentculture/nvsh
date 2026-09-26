@@ -1,0 +1,33 @@
+{
+  "id": "gen-synthetic-choice-reasoning-1",
+  "model": "nvidia/nemotron-3-super-120b-a12b",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "B",
+        "reasoning_content": "synthetic chain-of-thought text, not the answer token"
+      },
+      "logprobs": {
+        "content": [
+          {
+            "token": "B",
+            "logprob": -0.05,
+            "top_logprobs": [
+              {"token": "B", "logprob": -0.05},
+              {"token": "A", "logprob": -3.5},
+              {"token": "C", "logprob": -4.0}
+            ]
+          }
+        ]
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 300,
+    "completion_tokens": 1,
+    "completion_tokens_details": {"reasoning_tokens": 512}
+  }
+}

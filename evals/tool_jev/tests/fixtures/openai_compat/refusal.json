@@ -1,0 +1,12 @@
+{
+  "id": "gen-synthetic-refusal-1",
+  "model": "qwen/qwen3.8-max-0902",
+  "choices": [
+    {
+      "index": 0,
+      "message": {"role": "assistant", "content": null, "refusal": "synthetic refusal text"},
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {"prompt_tokens": 90, "completion_tokens": 5}
+}
