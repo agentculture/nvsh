@@ -1,0 +1,25 @@
+{
+  "data": [
+    {
+      "id": "{batch_id}",
+      "type": "message_batch",
+      "processing_status": "{processing_status}",
+      "created_at": "2026-09-26T00:00:00Z",
+      "expires_at": "2026-09-27T00:00:00Z",
+      "ended_at": "2026-09-26T00:05:00Z",
+      "archived_at": null,
+      "cancel_initiated_at": null,
+      "request_counts": {
+        "processing": 0,
+        "succeeded": 1,
+        "errored": 0,
+        "canceled": 0,
+        "expired": 0
+      },
+      "results_url": "{results_url}"
+    }
+  ],
+  "first_id": "{batch_id}",
+  "last_id": "{batch_id}",
+  "has_more": false
+}

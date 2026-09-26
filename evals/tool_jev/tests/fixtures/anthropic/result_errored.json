@@ -1,0 +1,10 @@
+{
+  "custom_id": "{custom_id}",
+  "result": {
+    "type": "errored",
+    "error": {
+      "type": "invalid_request_error",
+      "message": "some request-level validation error"
+    }
+  }
+}

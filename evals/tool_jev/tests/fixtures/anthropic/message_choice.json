@@ -1,0 +1,15 @@
+{
+  "id": "msg_01ChoiceFixture",
+  "type": "message",
+  "role": "assistant",
+  "model": "claude-opus-5-5",
+  "content": [
+    {"type": "text", "text": "B"}
+  ],
+  "stop_reason": "end_turn",
+  "stop_sequence": null,
+  "usage": {
+    "input_tokens": 80,
+    "output_tokens": 5
+  }
+}
