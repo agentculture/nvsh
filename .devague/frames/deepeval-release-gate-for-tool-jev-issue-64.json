@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-09-26T04:16:04Z",
-  "updated": "2026-09-26T04:49:04Z",
+  "updated": "2026-09-26T04:51:57Z",
   "claims": [
     {
       "id": "c1",
@@ -706,6 +706,18 @@
       "links": [],
       "instruction": "serialize with any local serving (issue 58); label the run so measure.py refuses a silent rerun",
       "revisions": []
+    },
+    {
+      "id": "c39",
+      "kind": "decision",
+      "text": "Explain text is judged by a blind panel, all-to-all: every subject (both candidates, the baselines and all 15 references) answers; the panel claude-opus-5-5 (Anthropic), gpt-6-sol (OpenAI), moonshotai/kimi-k3 (build.nvidia.com), nvidia/nemotron-3-ultra-550b-a55b (build.nvidia.com) and qwen/qwen3.8-max-0902 (OpenRouter) scores every answer with model identity removed and order shuffled; a judge's scores of its own answers are kept apart from the panel score, which is aggregated over the other judges; panel scores stay outside the release bars (c7)",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "judge prompt and rubric versioned in evals/; judge calls cached like subject calls (c34) and bounded by the same budget (c35); report per-judge scores and inter-judge agreement",
+      "revisions": []
     }
   ],
   "open_vagueness": [
@@ -750,9 +762,9 @@
       "text": "Judge model for explain text: using a model that is also a subject (same family) biases the judge; which judge and whether it is excluded from its own family's rows is undecided",
       "kind": "unknown_nonblocking",
       "claim_id": "c21",
-      "resolved": false,
-      "resolution": "",
-      "resolution_claim_id": null
+      "resolved": true,
+      "resolution": "Blind all-to-all judge panel of 5 expensive models; self-scores excluded from the panel aggregate",
+      "resolution_claim_id": "c39"
     }
   ],
   "scope_entries": [

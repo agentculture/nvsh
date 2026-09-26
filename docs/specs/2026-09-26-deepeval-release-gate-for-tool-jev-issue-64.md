@@ -177,6 +177,8 @@
   - instruction: roster lives in the eval manifest; ids checked against each provider's live /models list on 2026-09-26
 - a3-heal.`q4_k_m` gets exactly one new inference run on the issue-53 test (198) plus its missing-candidate slice, an approved exception to c17 recorded here; the issue-46 and issue-53 sealed held-outs stay untouched and a3-heal gets no held-out run
   - instruction: serialize with any local serving (issue 58); label the run so measure.py refuses a silent rerun
+- Explain text is judged by a blind panel, all-to-all: every subject (both candidates, the baselines and all 15 references) answers; the panel claude-opus-5-5 (Anthropic), gpt-6-sol (OpenAI), moonshotai/kimi-k3 (build.nvidia.com), nvidia/nemotron-3-ultra-550b-a55b (build.nvidia.com) and qwen/qwen3.8-max-0902 (OpenRouter) scores every answer with model identity removed and order shuffled; a judge's scores of its own answers are kept apart from the panel score, which is aggregated over the other judges; panel scores stay outside the release bars (c7)
+  - instruction: judge prompt and rubric versioned in evals/; judge calls cached like subject calls (c34) and bounded by the same budget (c35); report per-judge scores and inter-judge agreement
 
 ## Hard questions
 
@@ -193,9 +195,9 @@
 
 - [unknown_nonblocking] Calibration of quantized builds from served routes: issue 46 could not measure scorer-b1 Q4/AWQ distributions (d17/l6), while issue 53 measured r3b Q4 complete (198/198); whether every candidate's deployed artifact has complete distributions in the saved files is unverified per artifact
 - [unknown_nonblocking] Which interface each reference model answers through (generative tool call like Track A, or choosing among offered candidates like Track B, or both) and how its choice maps onto the 18-key candidate space
-- [unknown_nonblocking] Judge model for explain text: using a model that is also a subject (same family) biases the judge; which judge and whether it is excluded from its own family's rows is undecided
 
 ## Resolved vagueness
 
 - [unknown_nonblocking] Provider API keys for OpenAI, Anthropic and OpenRouter are not present on this machine (only `NGC_API_KEY`); live reference runs wait on the operator supplying them via grant — resolved: Operator added `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `OPEN_ROUTER_API_KEY` to grant (hidden) on 2026-09-26
 - [unknown_nonblocking] Local reference models Qwen3.8 27B and Gemma 4 need serving on spark/spark2 (weights, engine, memory next to the lobes); the catalogs list gemma-4-26b-a4b-it and gemma-4-31b-it but no 27B, so the exact Gemma weights are undecided — resolved: Gemma: google/gemma-4-31b-it on build.nvidia.com AND gemma-4-26b-a4b-it served locally; local Qwen3.8 27B also served locally (serving mechanics are a plan task)
+- [unknown_nonblocking] Judge model for explain text: using a model that is also a subject (same family) biases the judge; which judge and whether it is excluded from its own family's rows is undecided — resolved: Blind all-to-all judge panel of 5 expensive models; self-scores excluded from the panel aggregate
