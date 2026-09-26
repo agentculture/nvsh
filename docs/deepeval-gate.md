@@ -12,10 +12,13 @@ while the work is in progress; the live handoff is
   [`plans/2026-09-26-deepeval-release-gate-for-tool-jev-issue-64-split.md`](plans/2026-09-26-deepeval-release-gate-for-tool-jev-issue-64-split.md)
 - Issue: [#64](https://github.com/agentculture/nvsh/issues/64)
 
-**Status: in progress.** The library under `evals/tool_jev/` (including the
-multi-round Track A loop) is built and tested with fixtures only. The runner, the autonomous driver, the smoke run
-and the full gate run are not built or run yet, so no gate result exists.
-Do not describe the gate as producing results until the runner lands.
+**Status: first full run in progress.** The library, the runner
+(`python -m evals.tool_jev run|continue|status|smoke|drive`), the autonomous
+docker compose driver and the operator guide [`evals/README.md`](../evals/README.md)
+are built. The 10-case smoke run (plan task t22) passed on every reference;
+the first full gate run (t24) is running under the driver, so no gate result
+is published yet. Do not describe the gate as producing results until that
+run's report is committed.
 
 ## What the gate answers
 
@@ -102,6 +105,8 @@ and the wheel does not ship it.
 | `judge.py` + `rubric/explain-v1.md` | Blind all-to-all judge panel, G-Eval with fixed steps, two-pass record/replay |
 | `permutation.py` | Permutation-stability entries (r3b's saved probe; a3-heal not measurable by the probe) |
 | `report.py` | `result.json` and the markdown page with issue 64's table; no case text |
+| `run.py`, `runplan.py`, `runstate.py`, `runstatus.py`, `__main__.py` | The runner: plan, pass engine, durable run state and append-only billing, status, CLI |
+| `drive.py`, `alerts.py`, `evals/docker/` | The unattended driver loop, Discord alerts, and its compose packaging |
 
 Run the suite's own tests (CI runs them with no secrets):
 
@@ -145,20 +150,35 @@ uv run pytest -c evals/pytest.ini --rootdir=. -q   # --rootdir=. is required
   survives the session and reboots; keys by `grant run --inject` passthrough,
   no key file on disk; on a money stop it re-checks that provider every
   30 minutes while the others continue.
+- **d3 (approved):** OpenRouter runs cheaper open models to fit its budget:
+  `qwen/qwen3.8-max-0902` (a reference and a judge), `qwen/qwen3.8-27b`,
+  `deepseek/deepseek-v4-flash`, `deepseek/deepseek-v4-pro-0813` and
+  `deepseek/deepseek-v4.1-flash`; `moonshotai/kimi-k3` runs on build.nvidia.com
+  only. 16 references.
+- **d4 (approved):** the baselines (stock Qwen3.5-0.8B and
+  `scorer-b1.q4_k_m`) were measured once on the issue-53 test set and its
+  missing-candidate slice, since neither had predictions there.
+- **d5 and d6 (approved):** the driver posts Discord alerts: every 10% of each
+  provider's calls, every whole dollar of spend, each stop, the run's end, and
+  a status summary every 30 minutes. The webhook is a secret passed by name.
+- **Risk r10 (resolved):** the smoke run saw no truncated reply at medium
+  reasoning with a 2048-token output budget, so no model was replaced.
 
 ## Cost
 
-One fresh full run at medium reasoning was estimated at about \$44 without
-batching and about \$27 with OpenAI and Anthropic batching, before d1.
-d1's multi-round Track A raises that to roughly \$40-50 batched.
-build.nvidia.com's hosted catalog is free (rate-limited). Cached reruns cost
-nothing. The planned 10-case smoke run replaces these estimates with
-measured token counts before the budget caps are set.
+The 10-case smoke run (2026-09-26, medium reasoning, 2048-token output
+budget) measured the reference calls at about \$0.25 on Anthropic (batched)
+and \$0.22 on OpenRouter, which projects to about \$6.9 and \$6.0 for a full
+fresh run of the references, plus the judges. OpenAI is batched at half price;
+build.nvidia.com's hosted catalog and the local models cost nothing. The
+private manifest caps each provider at about 1.5 times its projection, and
+the runner reserves each call's worst-case cost before sending it, so a cap
+is never overshot. Cached reruns cost nothing.
 
 ## Reproducing and extending
 
 - A new checkpoint is one `[[candidate]]` table in the private manifest;
   the dataset does not change.
 - The saved candidate outputs are replayed; no GPU is needed for them.
-- The runner, the driver and the README with the full command sequence are
-  still to be written (plan tasks t17 and t19, deviation d2).
+- The command sequence, keys, stops and costs are in
+  [`evals/README.md`](../evals/README.md).
