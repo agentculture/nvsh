@@ -364,15 +364,52 @@ class OpenAICompatProvider(BaseProvider):
 
     # -- payload building ----------------------------------------------
 
+    @staticmethod
+    def _chat_messages(system_text: str, messages: list) -> list:
+        """``canonical_content``'s messages as chat-completions messages.
+
+        A history assistant turn becomes ``{"role": "assistant", "content",
+        "tool_calls": [{"id", "type": "function", "function": {"name",
+        "arguments"}}]}`` and a tool turn ``{"role": "tool", "tool_call_id",
+        "content"}`` -- the same shape ``nvsh.tiers.lfm`` sends the local
+        candidates.
+        """
+        out: list = [{"role": "system", "content": system_text}]
+        for message in messages:
+            role = message["role"]
+            if role == "assistant":
+                out.append(
+                    {
+                        "role": "assistant",
+                        "content": message.get("content", ""),
+                        "tool_calls": [
+                            {
+                                "id": call["id"],
+                                "type": "function",
+                                "function": {"name": call["name"], "arguments": call["arguments"]},
+                            }
+                            for call in message.get("tool_calls", [])
+                        ],
+                    }
+                )
+            elif role == "tool":
+                out.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": message["tool_call_id"],
+                        "content": message["content"],
+                    }
+                )
+            else:
+                out.append({"role": role, "content": message["content"]})
+        return out
+
     def _build_payload(self, request: CallRequest) -> dict:
         params = request.params or {}
-        system_text, user_text, tools, _labels = contract.canonical_content(request)
+        system_text, messages, tools, _labels = contract.canonical_content(request)
         payload: dict = {
             "model": self.model,
-            "messages": [
-                {"role": "system", "content": system_text},
-                {"role": "user", "content": user_text},
-            ],
+            "messages": self._chat_messages(system_text, messages),
         }
         max_output_tokens = params.get("max_output_tokens")
         if max_output_tokens is not None:
@@ -469,6 +506,10 @@ class OpenAICompatProvider(BaseProvider):
             )
             raise OpenAICompatInfraError(classification, self.name, request.case_id)
 
+        return self.result_from_raw(request, raw)
+
+    def result_from_raw(self, request: CallRequest, raw: bytes) -> CallResult:
+        """Parse one chat-completions response body (fresh, or cached by the ledger)."""
         try:
             response = json.loads(raw)
         except (json.JSONDecodeError, UnicodeDecodeError):

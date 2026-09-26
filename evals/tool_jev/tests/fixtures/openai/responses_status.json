@@ -1,0 +1,22 @@
+{
+  "id": "resp_status",
+  "model": "gpt-6-luna-2026-01-15",
+  "status": "completed",
+  "output": [
+    {
+      "type": "reasoning",
+      "id": "rs_0"
+    },
+    {
+      "type": "function_call",
+      "call_id": "call_0",
+      "name": "service_status",
+      "arguments": "{\"service\": \"synthetic.service\"}"
+    }
+  ],
+  "usage": {
+    "input_tokens": 100,
+    "output_tokens": 20,
+    "total_tokens": 120
+  }
+}

@@ -54,8 +54,9 @@ def _case(
 
 def _adapter_stub(provider_kind: str, request: CallRequest):
     """Stands in for an adapter: reads only canonical_content, never the case."""
-    system_text, user_text, tools, labels = req.canonical_content(request)
-    return provider_kind, system_text, user_text, tools, labels
+    system_text, messages, tools, labels = req.canonical_content(request)
+    assert messages[0]["role"] == "user"
+    return provider_kind, system_text, messages[0]["content"], tools, labels
 
 
 def test_tool_call_content_byte_identical_across_provider_kinds():

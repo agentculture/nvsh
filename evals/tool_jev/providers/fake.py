@@ -17,6 +17,7 @@ plain data and never executed.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 from collections import deque
 from dataclasses import dataclass, field
@@ -24,6 +25,7 @@ from dataclasses import dataclass, field
 from .base import (
     BaseProvider,
     BatchHandle,
+    BatchLookupUnresolved,
     BatchStatus,
     CallRequest,
     CallResult,
@@ -172,6 +174,14 @@ class FakeProvider(BaseProvider):
         self._batch_by_ref: dict[str, BatchHandle] = {}
         #: Every ref ``find_batch`` was asked about.
         self.finds: list[str] = []
+        #: Refs whose lookup is scripted to come back unresolved (see
+        #: :meth:`mark_unresolved`), like a real provider that cannot see
+        #: an in-progress batch's custom ids.
+        self.unresolved_refs: set[str] = set()
+
+    def mark_unresolved(self, submit_ref: str) -> None:
+        """Script ``find_batch(submit_ref)`` to raise :class:`BatchLookupUnresolved`."""
+        self.unresolved_refs.add(submit_ref)
 
     def queue(self, kind: str, answer: str | None = None, **extra) -> None:
         """Append one more scripted outcome (e.g. to simulate a top-up)."""
@@ -200,7 +210,13 @@ class FakeProvider(BaseProvider):
         raw = outcome.raw
         if raw is None:
             raw = json.dumps(
-                {"id": response_id, "model": self.model, "answer": outcome.answer},
+                {
+                    "id": response_id,
+                    "model": self.model,
+                    "answer": outcome.answer,
+                    "kind": outcome.kind,
+                    "candidates": outcome.candidates,
+                },
                 sort_keys=True,
             ).encode("utf-8")
         return CallResult(
@@ -265,7 +281,22 @@ class FakeProvider(BaseProvider):
 
     def _find_batch(self, submit_ref: str) -> BatchHandle | None:
         self.finds.append(submit_ref)
+        if submit_ref in self.unresolved_refs:
+            raise BatchLookupUnresolved(f"{self.name}: scripted unresolved lookup {submit_ref!r}")
         return self._batch_by_ref.get(submit_ref)
+
+    def result_from_raw(self, request: CallRequest, raw: bytes) -> CallResult:
+        """Re-read the fake's own synthetic raw answer (a scripted ``raw`` override cannot be)."""
+        doc = json.loads(raw)
+        if not isinstance(doc, dict) or doc.get("kind") not in ANSWER_KINDS | ANSWER_FAILURE_KINDS:
+            raise ValueError(f"{self.name}: not a raw answer this fake wrote")
+        outcome = ScriptedOutcome(
+            kind=doc["kind"], answer=doc.get("answer"), candidates=doc.get("candidates"), raw=raw
+        )
+        result = self._resolve(request, outcome)
+        return dataclasses.replace(
+            result, response_id=doc.get("id", ""), returned_model=doc.get("model")
+        )
 
     def _check_batch(self, handle: BatchHandle) -> BatchStatus:
         return BatchStatus(batch_id=handle.batch_id, complete=True)

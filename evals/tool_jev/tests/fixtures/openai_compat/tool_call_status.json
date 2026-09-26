@@ -1,0 +1,28 @@
+{
+  "id": "gen-synthetic-status",
+  "model": "qwen/qwen3.8-max-0902",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": null,
+        "tool_calls": [
+          {
+            "id": "call_0",
+            "type": "function",
+            "function": {
+              "name": "service_status",
+              "arguments": "{\"service\": \"synthetic.service\"}"
+            }
+          }
+        ]
+      },
+      "finish_reason": "tool_calls"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 100,
+    "completion_tokens": 12
+  }
+}

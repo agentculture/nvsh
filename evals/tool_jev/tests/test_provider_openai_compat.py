@@ -563,3 +563,52 @@ def test_tool_call_missing_tool_calls_is_malformed():
     result = provider.submit_sync(_tool_call_request())
     assert result.outcome == errors.Outcome.INVALID
     assert result.reason == "malformed"
+
+
+# ---------------------------------------------------------------------------
+# Deviation d1: history rendered natively; cached answers re-read.
+# ---------------------------------------------------------------------------
+
+HISTORY = (
+    {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+            {"id": "call_0", "name": "service_status", "arguments": '{"service": "x.service"}'}
+        ],
+    },
+    {"role": "tool", "tool_call_id": "call_0", "content": "exit 0\nactive"},
+)
+
+
+def test_history_renders_as_assistant_tool_calls_and_tool_messages():
+    calls: list = []
+    provider = openai_compat.OpenAICompatProvider(
+        "openrouter",
+        "m",
+        transport=_make_transport(200, _load("tool_call_propose.json"), calls=calls),
+    )
+    provider.submit_sync(_tool_call_request(history=HISTORY))
+    body = json.loads(calls[0][2])
+    assert body["messages"][2:] == [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_0",
+                    "type": "function",
+                    "function": {"name": "service_status", "arguments": '{"service": "x.service"}'},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_0", "content": "exit 0\nactive"},
+    ]
+
+
+def test_result_from_raw_rereads_the_cached_answer():
+    provider = openai_compat.OpenAICompatProvider(
+        "openrouter", "m", transport=_make_transport(200, _load("tool_call_propose.json"))
+    )
+    fresh = provider.submit_sync(_tool_call_request())
+    assert provider.result_from_raw(_tool_call_request(), fresh.raw) == fresh

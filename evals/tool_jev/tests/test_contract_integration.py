@@ -192,7 +192,9 @@ def test_system_and_user_sent_byte_identical_across_adapters():
     assert len(set(system_texts.values())) == 1, system_texts
     assert len(set(user_texts.values())) == 1, user_texts
     # And it is the contract's own content (redaction is a no-op on this text).
-    system_text, user_text, _tools, _labels = req.canonical_content(request)
+    system_text, messages, _tools, _labels = req.canonical_content(request)
+    assert messages == [{"role": "user", "content": messages[0]["content"]}]
+    user_text = messages[0]["content"]
     assert system_texts["openai"] == system_text.encode("utf-8")
     assert user_texts["openai"] == user_text.encode("utf-8")
 
@@ -220,3 +222,125 @@ def test_forced_tool_choice_defaults_per_adapter():
     assert _drive_anthropic(request, "propose")[2]["tool_choice"] == {"type": "any"}
     opus = _drive_anthropic(request, "propose", model="claude-opus-5-5")[2]
     assert opus["tool_choice"] == {"type": "auto"}
+
+
+# ---------------------------------------------------------------------------
+# Deviation d1: a 2-round loop through every adapter (track_a_loop).
+# ---------------------------------------------------------------------------
+
+SNAPSHOT = {
+    "services": ["synthetic.service"],
+    "containers": [],
+    "source": "synthetic test snapshot",
+    "created": "2026-09-26",
+}
+
+
+def _loop_openai(sent):
+    bodies = [FIXTURES / "openai" / f"responses_{k}.json" for k in ("status", "propose")]
+
+    def transport(method, url, data, headers):
+        sent.append(json.loads(data))
+        return openai.TransportResponse(status=200, body=bodies[len(sent) - 1].read_bytes())
+
+    return openai.OpenAIProvider("gpt-6-luna", transport=transport)
+
+
+def _loop_anthropic(sent):
+    bodies = [FIXTURES / "anthropic" / f"message_{k}.json" for k in ("status", "propose")]
+
+    def transport(method, url, headers, data):
+        sent.append(json.loads(data))
+        return 200, bodies[len(sent) - 1].read_bytes()
+
+    return anthropic.AnthropicProvider("claude-sonnet-5", transport=transport)
+
+
+def _loop_openai_compat(sent):
+    bodies = [FIXTURES / "openai_compat" / f"tool_call_{k}.json" for k in ("status", "propose")]
+
+    def transport(url, headers, data):
+        sent.append(json.loads(data))
+        return 200, bodies[len(sent) - 1].read_bytes()
+
+    return openai_compat.OpenAICompatProvider(
+        "openrouter", "qwen/qwen3.8-max-0902", transport=transport
+    )
+
+
+def _history_content(adapter, payload):
+    """(tool name, decoded arguments, tool result text) as the adapter put it on the wire."""
+    if adapter == "openai":
+        call = next(i for i in payload["input"] if i.get("type") == "function_call")
+        result = next(i for i in payload["input"] if i.get("type") == "function_call_output")
+        assert result["call_id"] == call["call_id"]
+        return call["name"], json.loads(call["arguments"]), result["output"]
+    if adapter == "anthropic":
+        assistant, results = payload["messages"][1:]
+        use = next(b for b in assistant["content"] if b["type"] == "tool_use")
+        (result,) = results["content"]
+        assert result["tool_use_id"] == use["id"]
+        return use["name"], use["input"], result["content"]
+    assistant, tool = payload["messages"][2:]
+    (call,) = assistant["tool_calls"]
+    assert tool["tool_call_id"] == call["id"]
+    return call["function"]["name"], json.loads(call["function"]["arguments"]), tool["content"]
+
+
+LOOP_DRIVERS = {
+    "openai": _loop_openai,
+    "anthropic": _loop_anthropic,
+    "openai_compat": _loop_openai_compat,
+}
+
+
+def _run_loop(adapter, tmp_path):
+    from evals.tool_jev import track_a_loop
+    from evals.tool_jev.ledger import Ledger
+
+    sent: list[dict] = []
+    provider = LOOP_DRIVERS[adapter](sent)
+    with Ledger(tmp_path / adapter) as ledger:
+        while True:
+            current = track_a_loop.run_round(
+                [_case()],
+                provider=provider,
+                model="reference-model",
+                ledger=ledger,
+                snapshot=SNAPSHOT,
+                platform=PLATFORM,
+            )
+            if not current.pending:
+                return current.finished["contract-c1"], sent
+            results = [provider.submit_sync(call.request) for call in current.pending]
+            assert track_a_loop.record_results(ledger, current.pending, results) == []
+
+
+def test_two_round_loop_decides_the_same_and_sends_the_same_history_everywhere(tmp_path):
+    histories = {}
+    for adapter in sorted(LOOP_DRIVERS):
+        record, sent = _run_loop(adapter, tmp_path)
+        assert (record.outcome, record.operation, record.arguments) == (
+            "propose",
+            "service_restart",
+            {"service": "synthetic.service"},
+        ), adapter
+        assert len(sent) == 2, adapter
+        histories[adapter] = _history_content(adapter, sent[1])
+    assert len(set(json.dumps(h, sort_keys=True) for h in histories.values())) == 1, histories
+    name, arguments, result = histories["openai"]
+    assert (name, arguments, result) == (
+        "service_status",
+        {"service": "synthetic.service"},
+        "exit 127\n",
+    )
+
+
+def test_anthropic_round_two_replays_round_one_thinking_block_unchanged(tmp_path):
+    _record, sent = _run_loop("anthropic", tmp_path)
+    assistant = sent[1]["messages"][1]
+    thinking = json.loads((FIXTURES / "anthropic" / "message_status.json").read_text())["content"][
+        0
+    ]
+    assert assistant["content"][0] == thinking
+    assert assistant["content"][1]["id"] == "toolu_01Status"

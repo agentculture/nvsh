@@ -110,9 +110,17 @@ def test_build_and_parse_custom_id_round_trips_case_id():
     import re
 
     assert re.fullmatch(r"[A-Za-z0-9_-]{1,64}", custom_id)
-    prefix, index, case_id = anthropic.parse_custom_id(custom_id)
+    prefix, index, interface, case_id = anthropic.parse_custom_id(custom_id)
     assert index == 3
+    assert interface == "tool_call"
     assert case_id == "case-weird/id:42"
+
+
+def test_custom_id_round_trips_the_interface():
+    custom_id = anthropic.build_custom_id("ref-1", 0, "case-1", "choice")
+    assert anthropic.parse_custom_id(custom_id)[2:] == ("choice", "case-1")
+    with pytest.raises(ValueError):
+        anthropic.build_custom_id("ref-1", 0, "case-1", "other")
 
 
 def test_build_custom_id_rejects_case_id_too_large_for_budget():
@@ -434,9 +442,10 @@ def test_send_batch_encodes_ref_and_case_ids_in_custom_id():
     sent = json.loads(body)
     custom_ids = [entry["custom_id"] for entry in sent["requests"]]
     for custom_id in custom_ids:
-        prefix, _index, decoded_case_id = anthropic.parse_custom_id(custom_id)
+        prefix, _index, interface, _case_id = anthropic.parse_custom_id(custom_id)
         assert prefix == anthropic._sanitize_ref("ref-1234567890")
-    decoded = {anthropic.parse_custom_id(c)[2] for c in custom_ids}
+        assert interface == "choice"
+    decoded = {anthropic.parse_custom_id(c)[3] for c in custom_ids}
     assert decoded == {"case-A", "case-B"}
 
 
@@ -643,14 +652,14 @@ def test_find_batch_matches_an_ended_batch_by_custom_id_prefix():
     assert handle.submit_ref == submit_ref
 
 
-def test_find_batch_returns_none_when_only_in_progress_batches_exist():
-    """Documented limitation: an in-progress batch can never be confirmed.
+def test_find_batch_is_unresolved_when_an_in_progress_batch_exists():
+    """Review fix P1: an in-progress batch can never be confirmed, nor ruled out.
 
     results_url is null while a batch is in_progress (no custom_id is
     visible anywhere for it), so find_batch cannot tell "this in-progress
-    batch is ours" apart from "some other batch is in progress". It must
-    return None rather than guess -- see the module docstring's limitation
-    1 and the residual double-charge risk that follows from it.
+    batch is ours" apart from "some other batch is in progress". ``None``
+    would authorize a resubmit (a double charge), so it raises
+    BatchLookupUnresolved instead -- see the module docstring's limitation 1.
     """
     submit_ref = "ref-find-2"
     provider = anthropic.AnthropicProvider("claude-sonnet-5", transport=FakeTransport({}))
@@ -667,8 +676,8 @@ def test_find_batch_returns_none_when_only_in_progress_batches_exist():
     provider._transport = FakeTransport(
         {("GET", "https://api.anthropic.com/v1/messages/batches?limit=100"): (200, list_page)}
     )
-    handle = provider.find_batch(submit_ref)
-    assert handle is None
+    with pytest.raises(base.BatchLookupUnresolved):
+        provider.find_batch(submit_ref)
 
 
 def test_find_batch_requires_nonempty_submit_ref():
@@ -695,3 +704,255 @@ def test_usage_only_carries_int_fields_present_in_response():
     assert usage == {"input_tokens": 10, "output_tokens": 5, "cache_read_input_tokens": 3}
     for value in usage.values():
         assert isinstance(value, int) and not isinstance(value, bool)
+
+
+# ---------------------------------------------------------------------------
+# Review fix P1: find_batch says "unresolved", never "not found", when unsure.
+# ---------------------------------------------------------------------------
+
+_LIST_URL = "https://api.anthropic.com/v1/messages/batches?limit=100"
+
+
+def _ended_page(batch_id: str, results_url: str) -> bytes:
+    return _fixture_json(
+        "batches_list_page.json",
+        batch_id=batch_id,
+        processing_status="ended",
+        results_url=results_url,
+    )
+
+
+def test_find_batch_is_unresolved_when_an_ended_batch_results_download_fails():
+    results_url = "https://api.anthropic.com/v1/messages/batches/msgbatch_x/results"
+    provider = anthropic.AnthropicProvider(
+        "claude-sonnet-5",
+        transport=FakeTransport(
+            {
+                ("GET", _LIST_URL): (200, _ended_page("msgbatch_x", results_url)),
+                ("GET", results_url): (500, b"{}"),
+            }
+        ),
+    )
+    with pytest.raises(base.BatchLookupUnresolved):
+        provider.find_batch("ref-unsure-1")
+
+
+def test_find_batch_is_none_only_when_every_batch_was_read_and_none_match():
+    results_url = "https://api.anthropic.com/v1/messages/batches/msgbatch_y/results"
+    other = anthropic.build_custom_id("ref-someone-else", 0, "case-z")
+    line = _fixture_json("result_succeeded.json", custom_id=other, message_id="m1")
+    provider = anthropic.AnthropicProvider(
+        "claude-sonnet-5",
+        transport=FakeTransport(
+            {
+                ("GET", _LIST_URL): (200, _ended_page("msgbatch_y", results_url)),
+                ("GET", results_url): (200, line + b"\n"),
+            }
+        ),
+    )
+    assert provider.find_batch("ref-mine-000") is None
+
+
+def test_find_batch_is_unresolved_when_the_page_bound_runs_out():
+    results_url = "https://api.anthropic.com/v1/messages/batches/msgbatch_p/results"
+    page = json.loads(_ended_page("msgbatch_p", results_url))
+    page["has_more"] = True
+    other = anthropic.build_custom_id("ref-someone-else", 0, "case-z")
+    line = _fixture_json("result_succeeded.json", custom_id=other, message_id="m1")
+    routes = {
+        ("GET", _LIST_URL): (200, json.dumps(page).encode()),
+        ("GET", _LIST_URL + "&after_id=msgbatch_p"): (200, json.dumps(page).encode()),
+        ("GET", results_url): (200, line + b"\n"),
+    }
+    provider = anthropic.AnthropicProvider(
+        "claude-sonnet-5", transport=FakeTransport(routes), max_list_pages=2
+    )
+    with pytest.raises(base.BatchLookupUnresolved):
+        provider.find_batch("ref-mine-000")
+
+
+# ---------------------------------------------------------------------------
+# Review fix P2: batch context keyed by custom_id; interface survives restart.
+# ---------------------------------------------------------------------------
+
+
+def test_one_case_through_both_interfaces_in_one_batch_keeps_both_contexts():
+    submit_ref = "ref-both-000"
+    offered = ("service_restart", "explain", "escalate")
+    tool_request = _request(
+        case_id="case-both",
+        case_text="t",
+        prompt="s",
+        offered_candidates=offered,
+        params={"tools": [PROPOSE_TOOL]},
+    )
+    choice_request = _request(
+        case_id="case-both",
+        interface="choice",
+        case_text="t",
+        prompt="s",
+        offered_candidates=("A", "B"),
+        params={"labels": {"service_restart": "A", "explain": "B"}},
+    )
+    transport = FakeTransport(
+        {
+            ("POST", "https://api.anthropic.com/v1/messages/batches"): (
+                200,
+                _fixture_json("batch_create.json", batch_id="msgbatch_both", request_count=2),
+            )
+        }
+    )
+    provider = anthropic.AnthropicProvider("claude-sonnet-5", transport=transport)
+    handle = provider.submit_batch([tool_request, choice_request], submit_ref=submit_ref)
+    sent = json.loads(transport.calls[0][3])
+    tool_id, choice_id = (entry["custom_id"] for entry in sent["requests"])
+    choice_message = json.loads(_fixture("message_choice.json"))
+    lines = b"\n".join(
+        [
+            _fixture_json("result_succeeded.json", custom_id=tool_id, message_id="m-tool"),
+            json.dumps(
+                {"custom_id": choice_id, "result": {"type": "succeeded", "message": choice_message}}
+            ).encode(),
+        ]
+    )
+    results_url = "https://api.anthropic.com/v1/messages/batches/msgbatch_both/results"
+    transport.routes[("GET", "https://api.anthropic.com/v1/messages/batches/msgbatch_both")] = (
+        200,
+        _fixture_json(
+            "batch_status_ended.json",
+            batch_id="msgbatch_both",
+            succeeded=2,
+            errored=0,
+            canceled=0,
+            expired=0,
+        ),
+    )
+    transport.routes[("GET", results_url)] = (200, lines)
+    results = {result.interface: result for result in provider.fetch_batch(handle)}
+    assert results["tool_call"].outcome is errors.Outcome.OK
+    assert json.loads(results["tool_call"].answer) == PROPOSE_ANSWER
+    assert results["choice"].outcome is errors.Outcome.OK
+    assert results["choice"].answer == "B"
+
+
+def test_restart_recovers_the_interface_from_custom_id_not_the_response_shape():
+    """A tool_call text-only reply stays a malformed tool_call, never a 'choice'."""
+    submit_ref = "ref-restart-2"
+    custom_id = anthropic.build_custom_id(submit_ref, 0, "case-r2", "tool_call")
+    message = json.loads(_fixture("message_text_only.json"))
+    line = json.dumps(
+        {"custom_id": custom_id, "result": {"type": "succeeded", "message": message}}
+    ).encode()
+    results_url = "https://api.anthropic.com/v1/messages/batches/msgbatch_r2/results"
+    provider = anthropic.AnthropicProvider(
+        "claude-sonnet-5",
+        transport=FakeTransport(
+            {
+                ("GET", "https://api.anthropic.com/v1/messages/batches/msgbatch_r2"): (
+                    200,
+                    _fixture_json(
+                        "batch_status_ended.json",
+                        batch_id="msgbatch_r2",
+                        succeeded=1,
+                        errored=0,
+                        canceled=0,
+                        expired=0,
+                    ),
+                ),
+                ("GET", results_url): (200, line),
+            }
+        ),
+    )
+    handle = base.BatchHandle(batch_id="msgbatch_r2", provider="anthropic", submit_ref=submit_ref)
+    (result,) = provider.fetch_batch(handle)
+    assert result.interface == "tool_call"
+    assert result.outcome is errors.Outcome.INVALID
+    assert result.reason == "malformed"
+
+
+# ---------------------------------------------------------------------------
+# Deviation d1: history rendered natively; cached answers re-read.
+# ---------------------------------------------------------------------------
+
+HISTORY = (
+    {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+            {"id": "call_0", "name": "service_status", "arguments": '{"service": "x.service"}'}
+        ],
+    },
+    {"role": "tool", "tool_call_id": "call_0", "content": "exit 0\nactive"},
+)
+
+
+def _sync_provider(sent: list, body: bytes):
+    def transport(method, url, headers, data):
+        sent.append(json.loads(data))
+        return 200, body
+
+    return anthropic.AnthropicProvider("claude-sonnet-5", transport=transport)
+
+
+def test_history_renders_as_tool_use_and_tool_result_blocks():
+    sent: list = []
+    provider = _sync_provider(sent, _fixture("message_propose.json"))
+    provider.submit_sync(_request(case_text="ask", prompt="sys", history=HISTORY))
+    assert sent[0]["messages"] == [
+        {"role": "user", "content": "ask"},
+        {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "tool_use",
+                    "id": "call_0",
+                    "name": "service_status",
+                    "input": {"service": "x.service"},
+                }
+            ],
+        },
+        {
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": "call_0", "content": "exit 0\nactive"}
+            ],
+        },
+    ]
+
+
+def test_native_thinking_blocks_are_replayed_and_tool_use_ids_kept():
+    thinking = {"type": "thinking", "thinking": "", "signature": "c2lnbmF0dXJl"}
+    native_history = (
+        {
+            **HISTORY[0],
+            "native": {
+                "anthropic": [
+                    thinking,
+                    {"type": "tool_use", "id": "toolu_A", "name": "service_status", "input": {}},
+                ]
+            },
+        },
+        HISTORY[1],
+    )
+    sent: list = []
+    provider = _sync_provider(sent, _fixture("message_propose.json"))
+    provider.submit_sync(_request(case_text="ask", prompt="sys", history=native_history))
+    assistant, results = sent[0]["messages"][1:]
+    assert assistant["content"][0] == thinking
+    assert assistant["content"][1]["id"] == "toolu_A"
+    assert assistant["content"][1]["input"] == {"service": "x.service"}  # neutral content
+    assert results["content"][0]["tool_use_id"] == "toolu_A"
+
+
+def test_result_from_raw_rereads_a_sync_body_and_a_batch_line_alike():
+    provider = anthropic.AnthropicProvider("claude-sonnet-5", transport=FakeTransport({}))
+    request = _request(case_text="t", offered_candidates=("service_restart", "explain", "escalate"))
+    sync_raw = _fixture("message_propose.json")
+    line_raw = _fixture_json("result_succeeded.json", custom_id="x", message_id="m1")
+    for raw in (sync_raw, line_raw):
+        result = provider.result_from_raw(request, raw)
+        assert result.outcome is errors.Outcome.OK
+        assert json.loads(result.answer) == PROPOSE_ANSWER
+        assert result.raw == raw
+    native = provider.native_turn(line_raw)
+    assert native["anthropic"][0]["type"] == "tool_use"
