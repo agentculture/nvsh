@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-09-26T04:16:04Z",
-  "updated": "2026-09-26T05:45:55Z",
+  "updated": "2026-09-26T06:59:56Z",
   "claims": [
     {
       "id": "c1",
@@ -1136,6 +1136,17 @@
       "skipped_check": "run scan-secrets after git add / after merge",
       "refs": [
         "task t10"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l4",
+      "code": "grader-unverified",
+      "what": "Main agent committed the deepeval-destination fix (368ce53) in a command chain where the commit did not depend on the evals run passing; the run had 1 failure (a stale directory left by the pre-fix red run), so the commit landed without a green gate. Re-run after removing the artifact: 408 passed; the committed code was correct",
+      "skipped_check": "gate the commit on the test exit code (pytest ... && git commit)",
+      "refs": [
+        "codex wave-2 finding 5"
       ],
       "origin": "llm",
       "status": "proposed"
