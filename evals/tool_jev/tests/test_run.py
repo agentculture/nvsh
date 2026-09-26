@@ -1548,6 +1548,34 @@ def test_item2_a_sync_timeout_bills_one_uncertain_charge_and_two_stop_the_model(
     assert spend == pytest.approx(sum(b["cost_usd"] for b in uncertain))
 
 
+def test_a_free_model_is_resent_after_uncertain_attempts_never_stopped(tmp_path):
+    """The uncertain-attempts stop guards money; a free (local) model just retries."""
+    world = World(tmp_path)
+    text = world.manifest.read_text()
+    world.manifest.write_text(
+        text.replace("usd_per_mtok_in = 1.0\nusd_per_mtok_out = 2.0", "usd_per_mtok_in = 0.0")
+    )
+    world.sync.fail_always = "timeout"
+    run_dir = tmp_path / "run"
+    world.run(run_dir)
+    for _ in range(3):
+        world.cont(run_dir)
+    record = json.loads((run_dir / "run.json").read_text())
+    assert "openrouter/vendor/fake-sync" not in record["stops"]["models"]
+    assert record["uncertain_attempts"] and max(record["uncertain_attempts"].values()) >= 3
+
+
+def test_budget_timeout_seconds_reaches_the_sync_adapter(tmp_path):
+    from evals.tool_jev import runplan
+    from evals.tool_jev.manifest import Budget, Reference
+
+    ref = Reference(provider="local", model="m", api_key_env="LOCAL_KEY_ENV")
+    budget = Budget(provider="local", usd_cap=0.0, concurrency_cap=1, timeout_seconds=300.0)
+    provider = runplan.default_factory(ref, budget, {})
+    assert provider.timeout_seconds == 300.0
+    assert runplan.default_factory(ref, None, {}).timeout_seconds == 60.0
+
+
 @pytest.mark.parametrize(
     "error",
     [ConnectionRefusedError("refused"), __import__("socket").gaierror("no such host")],

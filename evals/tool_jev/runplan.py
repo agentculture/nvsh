@@ -215,6 +215,8 @@ def default_factory(ref: Reference, budget: Any, env: Mapping[str, str]) -> Prov
     kwargs: dict[str, Any] = {}
     if ref.api_key_env:
         kwargs["api_key_env"] = ref.api_key_env
+    if budget is not None:
+        kwargs["timeout_seconds"] = budget.timeout_seconds
     return openai_compat.OpenAICompatProvider(
         ref.provider,
         ref.model,

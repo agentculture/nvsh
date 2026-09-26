@@ -188,6 +188,9 @@ class Budget:
     batch_discount: float = DEFAULT_BATCH_DISCOUNT
     #: Client-side request spacing for sync calls (e.g. a free tier's RPM).
     requests_per_minute: float | None = None
+    #: Seconds a sync call may take before it counts as a timeout (a large
+    #: local reasoning model on a shared GPU needs more than the default).
+    timeout_seconds: float = 60.0
 
 
 @dataclass(frozen=True)
@@ -480,6 +483,7 @@ def _parse_budgets(raw: Mapping, where: str) -> tuple[Budget, ...]:
                 concurrency_cap=concurrency_cap,
                 batch_discount=batch_discount,
                 requests_per_minute=None if rpm is None else float(rpm),
+                timeout_seconds=_number(table, "timeout_seconds", entry_where, 60.0),
             )
         )
     return tuple(budgets)

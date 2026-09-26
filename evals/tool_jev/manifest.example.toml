@@ -342,6 +342,9 @@ requests_per_minute = 40
 [budget.local]
 usd_cap = 0.0
 concurrency_cap = 2
+# A large local reasoning model on a shared GPU needs more than the 60 s
+# default per sync call.
+timeout_seconds = 300
 
 # ---------------------------------------------------------------------------
 # Track A grounding for the references' LfmTier loop (deviation d1): the

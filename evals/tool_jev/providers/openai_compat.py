@@ -65,6 +65,7 @@ token that actually answers.
 
 from __future__ import annotations
 
+import functools
 import json
 import threading
 import time
@@ -347,6 +348,7 @@ class OpenAICompatProvider(BaseProvider):
         api_key_env: str | None = ...,  # sentinel: distinguish "not given" from "explicitly None"
         capabilities: ProviderCapabilities | None = None,
         transport: Transport | None = None,
+        timeout_seconds: float = 60.0,
         rate_limiter: RateLimiter | None = None,
         reasoning_param_name: str = "reasoning_effort",
         forced_tool_choice: bool = True,
@@ -367,7 +369,10 @@ class OpenAICompatProvider(BaseProvider):
             raise ValueError(
                 f"{self.name}: openai_compat has no batch API; capabilities.batch must be False"
             )
-        self._transport = transport or _default_transport
+        self.timeout_seconds = float(timeout_seconds)
+        self._transport = transport or functools.partial(
+            _default_transport, timeout=self.timeout_seconds
+        )
         self._rate_limiter = rate_limiter
         self._reasoning_param_name = reasoning_param_name
         self.forced_tool_choice = forced_tool_choice

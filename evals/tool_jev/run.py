@@ -504,7 +504,12 @@ class Runner:
                 f"estimated ${held['usd']:.4f} counts as an uncertain charge and it is resent"
             )
             model = self.plan.models.get(held["label"]) or self.ghosts.get(held["label"])
-            if attempts[key] >= MAX_UNCERTAIN_ATTEMPTS and model is not None:
+            # The stop guards money: a free model (local, a free tier) is resent.
+            paid = bool(
+                model is not None
+                and (model.ref.usd_per_mtok_in > 0 or model.ref.usd_per_mtok_out > 0)
+            )
+            if attempts[key] >= MAX_UNCERTAIN_ATTEMPTS and paid:
                 message = (
                     f"{held['label']}: call {key[:12]} had {attempts[key]} uncertain attempts "
                     f"(sent, maybe billed, no answer); {self._model_remaining(model)} call(s) "
