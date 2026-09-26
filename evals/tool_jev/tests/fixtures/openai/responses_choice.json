@@ -1,0 +1,13 @@
+{
+  "id": "resp_002",
+  "model": "gpt-6-sol-2026-01-15",
+  "output": [
+    {"type": "reasoning", "id": "rs_2"},
+    {
+      "type": "message",
+      "role": "assistant",
+      "content": [{"type": "output_text", "text": "B"}]
+    }
+  ],
+  "usage": {"input_tokens": 80, "output_tokens": 5, "total_tokens": 85}
+}
