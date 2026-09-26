@@ -711,6 +711,13 @@ class Runner:
             lambda spec: (m := self._model_of_spec(spec)) is not None and m.kind == kind
         )
 
+    def _pause_for(self, model: Model, classification: Classification, message: str) -> None:
+        """Pause for a transient stop: a timeout pauses only the model that timed
+        out (one slow model must not idle its provider's others; build.nvidia.com
+        2026-09-26), anything else (a 429, a 5xx) pauses the whole provider."""
+        scope = model.label if classification.reason == "timeout" else model.kind
+        self._pause(scope, message)
+
     def _pause(self, kind: str, message: str) -> None:
         self.paused[kind] = message
         self.paused_until[kind] = self.clock() + PAUSE_SECONDS
@@ -727,7 +734,7 @@ class Runner:
             return False
 
     def blocked(self, model: Model) -> bool:
-        if self.is_paused(model.kind):
+        if self.is_paused(model.kind) or self.is_paused(model.label):
             return True
         with self._lock:
             if model.label in self.model_stops:
@@ -782,7 +789,7 @@ class Runner:
                 message = stop_message(
                     model.kind, classification, self._provider_remaining(model.kind)
                 )
-                self._pause(model.kind, message)
+                self._pause_for(model, classification, message)
             self._persist()
         self.say(message)
 
@@ -1440,7 +1447,7 @@ class Runner:
                 progress |= self.submit_batches(model, items)
             else:
                 sync.extend((model, item) for item in items)
-        progress |= self.run_sync(sync)
+        progress |= self.run_sync(interleave(sync))
         return progress
 
     def run_pass(self) -> StepOutcome:
@@ -1646,6 +1653,22 @@ class Runner:
                 f"{row['output_tokens']}/{row['reasoning_tokens']} cost=${row['cost_usd']:.4f} "
                 f"projected full run=${row['projected_full_run_usd']:.2f}"
             )
+
+
+def interleave(work: list[tuple[Model, WorkItem]]) -> list[tuple[Model, WorkItem]]:
+    """*work* reordered one call per model in turn (first-seen model order kept).
+
+    A provider's pool takes calls in list order; listed model by model, one
+    model's hundreds of calls held every slot of a round (build.nvidia.com
+    2026-09-26: gemma-4-31b first, kimi-k3, glm-5.3 and both nemotrons at 0).
+    """
+    queues: dict[str, list[tuple[Model, WorkItem]]] = {}
+    for pair in work:
+        queues.setdefault(pair[0].label, []).append(pair)
+    out: list[tuple[Model, WorkItem]] = []
+    for turn in range(max((len(q) for q in queues.values()), default=0)):
+        out.extend(q[turn] for q in queues.values() if turn < len(q))
+    return out
 
 
 def _cut(model: Model, raw: bytes) -> bool:
