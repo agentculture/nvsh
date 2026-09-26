@@ -1,5 +1,5 @@
 {
-  "id": "gen-synthetic-tool-1",
+  "id": "gen-synthetic-escalate",
   "model": "qwen/qwen3.8-max-0902",
   "choices": [
     {
@@ -12,8 +12,8 @@
             "id": "call_1",
             "type": "function",
             "function": {
-              "name": "propose_fix",
-              "arguments": "{\"operation\": \"heal\", \"arguments\": {\"path\": \"synthetic\"}}"
+              "name": "escalate",
+              "arguments": "{\"reason\": \"synthetic reason to hand off\"}"
             }
           }
         ]
@@ -24,6 +24,8 @@
   "usage": {
     "prompt_tokens": 120,
     "completion_tokens": 18,
-    "completion_tokens_details": {"reasoning_tokens": 0}
+    "completion_tokens_details": {
+      "reasoning_tokens": 0
+    }
   }
 }

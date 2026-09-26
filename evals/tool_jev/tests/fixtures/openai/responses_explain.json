@@ -1,0 +1,24 @@
+{
+  "id": "resp_explain",
+  "model": "gpt-6-luna-2026-01-15",
+  "output": [
+    {
+      "type": "reasoning",
+      "id": "rs_1"
+    },
+    {
+      "type": "function_call",
+      "call_id": "call_1",
+      "name": "explain",
+      "arguments": "{\"text\": \"synthetic explanation, no command needed\"}"
+    }
+  ],
+  "usage": {
+    "input_tokens": 120,
+    "output_tokens": 40,
+    "output_tokens_details": {
+      "reasoning_tokens": 20
+    },
+    "total_tokens": 160
+  }
+}
