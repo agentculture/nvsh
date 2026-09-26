@@ -240,6 +240,19 @@ def init_state(
 # ---------------------------------------------------------------------------
 
 
+#: A transient pause (rate limit, timeout, reserved budget still settling)
+#: lasts this long, not the rest of the pass: a pass can run for hours while
+#: a slow provider works through its round, and a brief 429 must not idle a
+#: fast provider for all of it (full run 2026-09-26).
+PAUSE_SECONDS = 60.0
+
+#: A round of sync calls stops claiming new calls after this many seconds;
+#: calls already in flight finish, the rest stay pending, and the pass loops
+#: (polling batches, re-planning, resuming expired pauses), so the slowest
+#: provider never holds the others behind one long round barrier.
+ROUND_SECONDS = 300.0
+
+
 @dataclass
 class StepOutcome:
     status: str
@@ -311,6 +324,8 @@ class Runner:
         self.model_stops: dict[str, dict] = {}
         self.provider_stops: dict[str, dict] = {}
         self.paused: dict[str, str] = {}
+        #: kind -> clock time a transient pause ends (PAUSE_SECONDS after it began).
+        self.paused_until: dict[str, float] = {}
         self._judge_cache: tuple | None = None
         self._track_a: dict[tuple[str, str], loop.RoundResult] = {}
         # Stops first: every later persist writes them back from memory.
@@ -576,7 +591,7 @@ class Runner:
             "usd_cap, or continue once the reserved calls settle"
         )
         if self.reserved_sum(kind) > 0:
-            self.paused[kind] = message
+            self._pause(kind, message)
         else:
             self.provider_stops[kind] = {
                 "kind": "budget_cap",
@@ -696,9 +711,26 @@ class Runner:
             lambda spec: (m := self._model_of_spec(spec)) is not None and m.kind == kind
         )
 
-    def blocked(self, model: Model) -> bool:
+    def _pause(self, kind: str, message: str) -> None:
+        self.paused[kind] = message
+        self.paused_until[kind] = self.clock() + PAUSE_SECONDS
+
+    def is_paused(self, kind: str) -> bool:
+        """Whether *kind* is in a transient pause that has not run out yet."""
         with self._lock:
-            if model.label in self.model_stops or model.kind in self.paused:
+            if kind not in self.paused:
+                return False
+            if self.clock() < self.paused_until.get(kind, float("inf")):
+                return True
+            self.paused.pop(kind, None)
+            self.paused_until.pop(kind, None)
+            return False
+
+    def blocked(self, model: Model) -> bool:
+        if self.is_paused(model.kind):
+            return True
+        with self._lock:
+            if model.label in self.model_stops:
                 return True
             stop = self.provider_stops.get(model.kind)
             return stop is not None and not stop.get("probe_open")
@@ -750,7 +782,7 @@ class Runner:
                 message = stop_message(
                     model.kind, classification, self._provider_remaining(model.kind)
                 )
-                self.paused[model.kind] = message
+                self._pause(model.kind, message)
             self._persist()
         self.say(message)
 
@@ -849,7 +881,7 @@ class Runner:
                     f"submit ref {submit_ref} ({len(keys)} key(s)) belongs to no model in the "
                     "manifest; restore that model or ask before resending: " + ", ".join(keys)
                 )
-            if model.kind in self.paused:
+            if self.is_paused(model.kind):
                 continue
             try:
                 handle = model.provider.find_batch(submit_ref)
@@ -877,7 +909,7 @@ class Runner:
         progress = False
         for batch_id, keys in sorted(self.live_batches().items()):
             model = self._model_of_spec(self.ledger.entry(keys[0]).spec)
-            if model.kind in self.paused:
+            if self.is_paused(model.kind):
                 continue
             backoff = self.state["fetch_backoff"].get(batch_id)
             if backoff and self.clock() < backoff["next_at"]:
@@ -1075,8 +1107,12 @@ class Runner:
                 semaphores[model.kind] = threading.Semaphore(cap)
                 workers += cap
 
+        deadline = time.monotonic() + ROUND_SECONDS
+
         def task(model: Model, item: WorkItem) -> bool:
             with semaphores[model.kind]:
+                if time.monotonic() > deadline or self.blocked(model):
+                    return False  # stays pending: the next round (or pass) sends it
                 if not self.claim(model, item.key, item.request):
                     return False
                 self._note_host(model)

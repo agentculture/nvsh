@@ -1572,6 +1572,51 @@ def test_item2_a_sync_timeout_bills_one_uncertain_charge_and_two_stop_the_model(
     assert spend == pytest.approx(sum(b["cost_usd"] for b in uncertain))
 
 
+def test_a_rate_limit_pause_expires_within_the_pass(tmp_path):
+    """Full run 2026-09-26: one 429 idled OpenRouter for an hours-long pass."""
+    world = World(tmp_path)
+    world.sync.fail = {1: "429"}
+    now = [1000.0]
+
+    def clock():
+        now[0] += 7.0  # every read moves time on: the pause runs out mid-pass
+        return now[0]
+
+    run_dir = tmp_path / "run"
+    code = world.main(
+        "run",
+        "--manifest",
+        str(world.manifest),
+        "--run-dir",
+        str(run_dir),
+        clock=clock,
+    )
+    assert code == runner.EXIT_OK, world.lines
+    assert any("rate_limited" in line for line in world.lines)
+    assert (run_dir / "result.json").exists()
+
+
+def test_a_paused_provider_stays_paused_until_the_pause_runs_out(tmp_path):
+    world = World(tmp_path)
+    world.sync.fail = {1: "429"}
+    run_dir = tmp_path / "run"
+    frozen = lambda: 1000.0  # noqa: E731 -- time never moves: the pause never ends
+    code = world.main(
+        "run", "--manifest", str(world.manifest), "--run-dir", str(run_dir), clock=frozen
+    )
+    assert code != runner.EXIT_OK
+    assert runner.status(run_dir)["providers"]["openrouter"]["pending"] > 0
+
+
+def test_a_sync_round_stops_claiming_after_its_time_budget(tmp_path, monkeypatch):
+    monkeypatch.setattr(runner, "ROUND_SECONDS", -1.0)  # every round is already over
+    world = World(tmp_path)
+    run_dir = tmp_path / "run"
+    assert world.run(run_dir) != runner.EXIT_OK
+    assert world.sync.sends == 0  # nothing was claimed past the deadline
+    assert runner.status(run_dir)["providers"]["openrouter"]["pending"] > 0
+
+
 def test_a_free_model_is_resent_after_uncertain_attempts_never_stopped(tmp_path):
     """The uncertain-attempts stop guards money; a free (local) model just retries."""
     world = World(tmp_path)
