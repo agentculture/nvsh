@@ -1,0 +1,29 @@
+{
+  "plan_slug": "deepeval-release-gate-for-tool-jev-issue-64",
+  "schema_version": 2,
+  "created": "2026-09-26T06:47:33Z",
+  "updated": "2026-09-26T06:47:33Z",
+  "deviations": [
+    {
+      "id": "d1",
+      "what": "Reference models' Track A runs through the candidates' own multi-round LfmTier loop (up to 4 rounds, read-only inspections executed against the recorded ground snapshot, then propose/explain/escalate) instead of t11's single-turn tool_call request: each case is replayed through the real LfmTier with a deferred chat client (cached replies replayed; the first uncached reply becomes a pending ledger call keyed by its exact prompt hash and round); OpenAI and Anthropic batch one loop round at a time. New module evals/tool_jev/track_a_loop.py built before the runner (t17)",
+      "task_ref": "t11",
+      "reason": "The candidates (a3-heal) were measured by measure.py through LfmTier's multi-round loop; single-turn reference requests score an inspect-first model as malformed, breaking c33/h23 (same request contract incl. ground snapshot). Operator approved 2026-09-26: batch per round; cost ~$40-50 per fresh run batched (was ~$27), wall clock hours to days",
+      "affects": [
+        "t17",
+        "t9",
+        "t22",
+        "t24",
+        "c33",
+        "h23"
+      ],
+      "origin": "user",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 1
+    }
+  ],
+  "evidence": [],
+  "deltas": [],
+  "supersessions": []
+}
