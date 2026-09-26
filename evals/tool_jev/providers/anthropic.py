@@ -103,7 +103,10 @@ from .base import (
     CallRequest,
     CallResult,
     ProviderCapabilities,
+    ReplyText,
     read_api_key,
+    tool_choice_forced,
+    visible_text,
 )
 from .errors import Classification, classify_transport
 from .openai import classify_result, tool_call_answer
@@ -445,9 +448,11 @@ class AnthropicProvider(BaseProvider):
             payload["output_config"] = {"effort": effort}
         if request.interface == "tool_call" and tools:
             payload["tools"] = self._tools_payload(tools)
-            # Forced ("any") unless this model rejects forced tool use --
-            # see module docstring limitation 3.
-            payload["tool_choice"] = {"type": "any" if self.forced_tool_choice else "auto"}
+            # Forced ("any") unless this model rejects forced tool use (see
+            # module docstring limitation 3) or the request asks for "auto"
+            # (the Track A loop always does).
+            forced = tool_choice_forced(request, self.forced_tool_choice)
+            payload["tool_choice"] = {"type": "any" if forced else "auto"}
         return payload
 
     # -- response interpretation ------------------------------------------
@@ -593,6 +598,19 @@ class AnthropicProvider(BaseProvider):
     def result_from_raw(self, request: CallRequest, raw: bytes) -> CallResult:
         """Re-read a cached answer: a sync message body or a succeeded batch line."""
         return self._result_from_message(request, self._message_of(raw), raw)
+
+    def reply_text(self, raw: bytes) -> ReplyText:
+        """The ``text`` blocks (thinking blocks never), and ``stop_reason == "max_tokens"``."""
+        message = self._message_of(raw)
+        content = message.get("content") or []
+        text = "".join(
+            block.get("text", "")
+            for block in content
+            if isinstance(block, dict) and block.get("type") == "text"
+        )
+        return ReplyText(
+            text=visible_text(text), truncated=message.get("stop_reason") == "max_tokens"
+        )
 
     def native_turn(self, raw: bytes) -> "dict | None":
         """This answer's content blocks, for replaying the turn natively (thinking included)."""

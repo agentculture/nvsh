@@ -30,6 +30,8 @@ from .base import (
     CallRequest,
     CallResult,
     ProviderCapabilities,
+    ReplyText,
+    visible_text,
 )
 from .errors import Classification, classify_answer, classify_transport
 
@@ -70,7 +72,10 @@ class ScriptedOutcome:
     fake's capabilities say ``logprobs=True`` — a provider without logprobs
     never yields one). ``usage`` scripts reported token counts. ``raw``
     overrides the synthetic response bytes (default: a small deterministic
-    JSON document built from the answer).
+    JSON document built from the answer). ``text`` scripts the reply's
+    visible words (a Track A reply with no tool call is ``kind="malformed"``
+    with ``text`` set) and ``truncated`` the provider's cut-at-budget signal;
+    :meth:`FakeProvider.reply_text` reads both back.
     """
 
     kind: str
@@ -78,6 +83,8 @@ class ScriptedOutcome:
     candidates: dict[str, float] | None = None
     usage: dict[str, int] = field(default_factory=dict)
     raw: bytes | None = None
+    text: str | None = None
+    truncated: bool = False
 
 
 class FakeProviderError(Exception):
@@ -216,6 +223,8 @@ class FakeProvider(BaseProvider):
                     "answer": outcome.answer,
                     "kind": outcome.kind,
                     "candidates": outcome.candidates,
+                    "text": outcome.text,
+                    "truncated": outcome.truncated,
                 },
                 sort_keys=True,
             ).encode("utf-8")
@@ -291,12 +300,24 @@ class FakeProvider(BaseProvider):
         if not isinstance(doc, dict) or doc.get("kind") not in ANSWER_KINDS | ANSWER_FAILURE_KINDS:
             raise ValueError(f"{self.name}: not a raw answer this fake wrote")
         outcome = ScriptedOutcome(
-            kind=doc["kind"], answer=doc.get("answer"), candidates=doc.get("candidates"), raw=raw
+            kind=doc["kind"],
+            answer=doc.get("answer"),
+            candidates=doc.get("candidates"),
+            raw=raw,
+            text=doc.get("text"),
+            truncated=bool(doc.get("truncated")),
         )
         result = self._resolve(request, outcome)
         return dataclasses.replace(
             result, response_id=doc.get("id", ""), returned_model=doc.get("model")
         )
+
+    def reply_text(self, raw: bytes) -> ReplyText:
+        """The scripted ``text``/``truncated`` of a raw answer this fake wrote."""
+        doc = json.loads(raw)
+        if not isinstance(doc, dict):
+            return ReplyText(text="")
+        return ReplyText(text=visible_text(doc.get("text")), truncated=bool(doc.get("truncated")))
 
     def _check_batch(self, handle: BatchHandle) -> BatchStatus:
         return BatchStatus(batch_id=handle.batch_id, complete=True)

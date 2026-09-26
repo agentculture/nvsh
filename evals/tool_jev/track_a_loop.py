@@ -24,6 +24,17 @@ builds a real :class:`nvsh.tiers.lfm.LfmTier` the way
   same mapping measure.py applies to a candidate), then a
   :class:`~evals.tool_jev.trace.RawRecord` via ``from_provider_answer``.
 
+The reply a reference gives is read the way the candidates' own chat client
+(``nvsh.tiers.toolchat``) reads a local model's: every call is sent with
+``tool_choice: "auto"`` (ToolChat sends none, so the server default ``auto``
+applied to the candidates); a tool call is a tool call; a reply with no
+tool call hands its visible text (never reasoning) to ``LfmTier``, with any
+tool call printed in that text parsed the same way ToolChat parses one --
+so plain words are an explanation for a reference exactly as for a
+candidate (plan risk r9). Two things never become an explanation: a
+structural refusal, and a reply the provider cut at the output budget
+(``invalid``, reason ``truncated``).
+
 What differs is only the chat client: :class:`DeferredChat`. LfmTier calls
 ``complete(messages, tools)`` once per round; ``DeferredChat`` turns that
 round into a :class:`~evals.tool_jev.providers.base.CallRequest` (system and
@@ -56,12 +67,12 @@ from typing import Any, Mapping, Sequence
 
 from nvsh.platform._model import Platform
 from nvsh.tiers import lfm
-from nvsh.tiers.toolchat import ChatReply, ToolCall
+from nvsh.tiers.toolchat import ChatReply, ToolCall, parse_raw_tool_calls
 
 from . import request as contract
 from .cases import Case
 from .ledger import DONE, INVALID, CachedResponse, CallSpec, Ledger, canonical_json, prompt_hash
-from .providers.base import CallRequest, CallResult, Provider
+from .providers.base import CallRequest, CallResult, Provider, ReplyText
 from .providers.errors import Outcome
 from .trace import RawRecord
 
@@ -83,6 +94,12 @@ TARGET_PREFIX = "tool_call:r"
 
 #: The subject role reference calls are keyed under in the ledger.
 DEFAULT_SUBJECT_ROLE = "reference"
+
+#: ``invalid_reason`` of a final reply the provider cut at the output budget.
+TRUNCATED = "truncated"
+
+#: The loop's ``tool_choice``, for every provider (see the module docstring).
+LOOP_TOOL_CHOICE = "auto"
 
 #: A base URL no one ever connects to: the loop's chat client is
 #: :class:`DeferredChat`, so LfmTier's runtime is only asked for a string.
@@ -169,19 +186,24 @@ def content_hash(request: CallRequest) -> str:
     return prompt_hash(canonical_json({"system": system, "messages": messages, "tools": tools}))
 
 
-def chat_reply(result: CallResult) -> ChatReply:
+def chat_reply(result: CallResult, spoken: ReplyText | None = None) -> ChatReply:
     """The ``ChatReply`` LfmTier reads for one adapter answer.
 
     Every adapter's Track A answer is the raw first tool call,
-    ``{"name", "arguments"}`` (the request contract); an answer that is
-    not one (malformed, refused, empty) is a reply with no tool call and no
-    text, which LfmTier reads as "no usable output".
+    ``{"name", "arguments"}`` (the request contract). A reply with no tool
+    call reads *spoken* -- the reply's visible text from the adapter's
+    ``reply_text`` -- the way ToolChat reads a local model's content: the
+    text, plus any tool call printed in it. No *spoken* text (a structural
+    refusal, a truncated reply, nothing said) is a reply with no tool call
+    and no text, which LfmTier reads as "no usable output".
     """
     call = contract._as_tool_call(result.answer) if result.answer is not None else None
-    if call is None:
+    if call is not None:
+        name, arguments = call
+        return ChatReply(text="", tool_calls=(ToolCall(name=name, arguments=dict(arguments)),))
+    if spoken is None or spoken.truncated or not spoken.text:
         return ChatReply(text="", tool_calls=())
-    name, arguments = call
-    return ChatReply(text="", tool_calls=(ToolCall(name=name, arguments=dict(arguments)),))
+    return ChatReply(text=spoken.text, tool_calls=parse_raw_tool_calls(spoken.text))
 
 
 def _tokens(usage: Mapping[str, int]) -> int | None:
@@ -217,7 +239,8 @@ class DeferredChat:
         self._provider = provider
         self._model = model
         self._ledger = ledger
-        self._params = dict(params)
+        # Keyed into every call's ledger spec too: "auto" is part of the call.
+        self._params = {**dict(params), "tool_choice": LOOP_TOOL_CHOICE}
         self._subject_role = subject_role
         self._offered = None if case.candidates is None else tuple(case.candidates)
         #: round -> provider-native blocks of that round's cached answer.
@@ -232,6 +255,8 @@ class DeferredChat:
         self.replies: list = []
         #: Every CallRequest built, in round order (the last one may be pending).
         self.requests: list[CallRequest] = []
+        #: Whether the last replayed reply was cut at the output budget.
+        self.last_truncated = False
 
     def build(self, messages: list[dict], tools: list[dict]) -> tuple[CallSpec, CallRequest, int]:
         """The ``(spec, request, round)`` LfmTier's *messages*/*tools* stand for."""
@@ -289,6 +314,7 @@ class DeferredChat:
             self.pending = PendingCall(key=key, spec=spec, request=request, round=round_no)
             raise NeedsReply(self.pending)
         cached = self._ledger.cached(key)
+        spoken = None
         if cached is None:
             # An invalid answer recorded without its bytes: nothing to replay.
             result = CallResult(
@@ -300,11 +326,14 @@ class DeferredChat:
             )
         else:
             result = self._provider.result_from_raw(request, cached.raw)
+            if result.reason != "refusal":
+                spoken = self._provider.reply_text(cached.raw)
             native = getattr(self._provider, "native_turn", None)
             turn = native(cached.raw) if native is not None else None
             if turn:
                 self._native[round_no] = turn
-        reply = chat_reply(result)
+        reply = chat_reply(result, spoken)
+        self.last_truncated = bool(spoken and spoken.truncated and not reply.tool_calls)
         self.results.append(result)
         self.replies.append(
             measure.ReplyRecord(
@@ -343,8 +372,14 @@ def _final_record(
     )
     outcome, operation, arguments, reason = measure._decided(None, select)
     last = chat.results[-1] if chat.results else None
-    if outcome == "invalid" and last is not None and last.outcome is Outcome.INVALID:
-        reason = last.reason  # the adapter's own reason (malformed, refusal, ...)
+    said_nothing = bool(chat.replies) and not (
+        chat.replies[-1].reply.tool_calls or chat.replies[-1].reply.text.strip()
+    )
+    if outcome == "invalid" and said_nothing:
+        if chat.last_truncated:
+            reason = TRUNCATED
+        elif last is not None and last.outcome is Outcome.INVALID:
+            reason = last.reason  # the adapter's own reason (malformed, refusal, ...)
     return RawRecord.from_provider_answer(
         provider=provider.name,
         model=model,

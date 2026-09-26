@@ -81,7 +81,10 @@ from .base import (
     CallRequest,
     CallResult,
     ProviderCapabilities,
+    ReplyText,
     read_api_key,
+    tool_choice_forced,
+    visible_text,
 )
 from .errors import Classification, classify_answer, classify_transport
 from .openai import classify_result, tool_call_answer
@@ -418,7 +421,8 @@ class OpenAICompatProvider(BaseProvider):
         if request.interface == "tool_call":
             if tools:
                 payload["tools"] = tools
-                payload["tool_choice"] = "required" if self.forced_tool_choice else "auto"
+                forced = tool_choice_forced(request, self.forced_tool_choice)
+                payload["tool_choice"] = "required" if forced else "auto"
         else:  # "choice"
             if self.capabilities.logprobs:
                 payload["logprobs"] = True
@@ -507,6 +511,21 @@ class OpenAICompatProvider(BaseProvider):
             raise OpenAICompatInfraError(classification, self.name, request.case_id)
 
         return self.result_from_raw(request, raw)
+
+    def reply_text(self, raw: bytes) -> ReplyText:
+        """``message.content`` (``reasoning_content`` never), and ``finish_reason == "length"``."""
+        try:
+            response = json.loads(raw)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            return ReplyText(text="")
+        choices = response.get("choices") if isinstance(response, dict) else None
+        if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+            return ReplyText(text="")
+        message = choices[0].get("message") or {}
+        return ReplyText(
+            text=visible_text(message.get("content")),
+            truncated=choices[0].get("finish_reason") == "length",
+        )
 
     def result_from_raw(self, request: CallRequest, raw: bytes) -> CallResult:
         """Parse one chat-completions response body (fresh, or cached by the ledger)."""

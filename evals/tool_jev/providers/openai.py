@@ -96,7 +96,10 @@ from .base import (
     CallRequest,
     CallResult,
     ProviderCapabilities,
+    ReplyText,
     read_api_key,
+    tool_choice_forced,
+    visible_text,
 )
 from .errors import Classification, classify_answer, classify_transport
 
@@ -408,6 +411,14 @@ def _response_infra_failure(response_body: dict) -> Classification | None:
     return classify_transport("openai", error_type=error_type or f"response_{status}")
 
 
+def _response_of(raw: bytes) -> dict:
+    """The Responses object in *raw*: a sync body, or a batch output line's body."""
+    body = json.loads(raw.decode("utf-8"))
+    if isinstance(body, dict) and "custom_id" in body and "response" in body:
+        body = (body.get("response") or {}).get("body") or {}
+    return body if isinstance(body, dict) else {}
+
+
 def _extract_usage(response_body: dict) -> dict[str, int]:
     usage = response_body.get("usage") or {}
     if not isinstance(usage, dict):
@@ -489,7 +500,11 @@ class OpenAIProvider(BaseProvider):
     # -- sync ------------------------------------------------------------
 
     def _send_sync(self, request: CallRequest) -> CallResult:
-        body = _build_request_body(request, self.model, forced_tool_choice=self.forced_tool_choice)
+        body = _build_request_body(
+            request,
+            self.model,
+            forced_tool_choice=tool_choice_forced(request, self.forced_tool_choice),
+        )
         try:
             response_body = self._request_json("POST", RESPONSES_ENDPOINT, body)
         except _HttpError as exc:
@@ -510,10 +525,20 @@ class OpenAIProvider(BaseProvider):
 
     def result_from_raw(self, request: CallRequest, raw: bytes) -> CallResult:
         """Re-read a cached answer: the Responses object this adapter stored as ``raw``."""
-        body = json.loads(raw.decode("utf-8"))
-        if isinstance(body, dict) and "custom_id" in body and "response" in body:
-            body = (body.get("response") or {}).get("body") or {}
-        return self._result_from_response(request, body)
+        return self._result_from_response(request, _response_of(raw))
+
+    def reply_text(self, raw: bytes) -> ReplyText:
+        """The ``output_text`` of every message item (reasoning items never), and ``incomplete``."""
+        body = _response_of(raw)
+        parts = []
+        for item in body.get("output") or []:
+            if isinstance(item, dict) and item.get("type") == "message":
+                for part in item.get("content") or []:
+                    if isinstance(part, dict) and part.get("type") == "output_text":
+                        parts.append(part.get("text") or "")
+        return ReplyText(
+            text=visible_text("".join(parts)), truncated=body.get("status") == "incomplete"
+        )
 
     def _result_from_response(self, request: CallRequest, response_body: dict) -> CallResult:
         raw = json.dumps(response_body, sort_keys=True).encode("utf-8")
@@ -572,7 +597,9 @@ class OpenAIProvider(BaseProvider):
                         "method": "POST",
                         "url": RESPONSES_ENDPOINT,
                         "body": _build_request_body(
-                            request, self.model, forced_tool_choice=self.forced_tool_choice
+                            request,
+                            self.model,
+                            forced_tool_choice=tool_choice_forced(request, self.forced_tool_choice),
                         ),
                     }
                 )

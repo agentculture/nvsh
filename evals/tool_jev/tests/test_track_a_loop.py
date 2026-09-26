@@ -143,7 +143,15 @@ def test_ledger_keys_carry_the_round_and_the_exact_content(tmp_path):
         a, b = first.pending[0].spec, second.pending[0].spec
         assert (a.case_id, b.case_id) == ("loop-1", "loop-1")
         assert a.prompt_hash != b.prompt_hash
-        assert a.params == b.params == {"reasoning": "medium", "max_output_tokens": 512}
+        assert (
+            a.params
+            == b.params
+            == {
+                "reasoning": "medium",
+                "max_output_tokens": 512,
+                "tool_choice": "auto",
+            }
+        )
         assert a.subject_role == "reference"
         # Replaying the same round rebuilds the same key.
         assert _round([_case()], provider, ledger).pending[0].key == second.pending[0].key
@@ -334,3 +342,63 @@ def test_record_results_refuses_a_result_for_an_unknown_case(tmp_path):
         )
         with pytest.raises(ValueError):
             loop.record_results(ledger, current.pending, [stray])
+
+
+# ---------------------------------------------------------------------------
+# plan risk r9: a reply with no tool call is read the way ToolChat reads one
+# ---------------------------------------------------------------------------
+
+
+def _spoken(text, *, truncated=False, kind="malformed"):
+    return fake.ScriptedOutcome(kind=kind, answer=None, text=text, truncated=truncated)
+
+
+def test_plain_words_are_an_explanation_as_for_a_candidate(tmp_path):
+    record, rounds, entries = _finish(tmp_path, [_spoken("The service is fine; nothing to do.")])
+    assert (record.outcome, record.invalid_reason, rounds) == ("explain", None, 1)
+    # The adapter's own ledger state is untouched: the bytes stay cached.
+    assert [entry.state for entry in entries] == [INVALID]
+
+
+def test_a_tool_call_printed_in_the_text_is_parsed_like_toolchat(tmp_path):
+    printed = '<tool_call>{"name": "escalate", "arguments": {"reason": "too big"}}</tool_call>'
+    record, _, _ = _finish(tmp_path, [_spoken(printed)])
+    assert (record.outcome, record.invalid_reason) == ("escalate", None)
+
+
+def test_unparsable_tool_markup_is_invalid_like_a_candidate(tmp_path):
+    record, _, _ = _finish(tmp_path, [_spoken("<tool_call>{not json</tool_call>")])
+    assert record.outcome == "invalid"
+    assert record.invalid_reason == loop.measure.UNPARSED_TOOL_CALL
+
+
+def test_a_truncated_reply_is_never_an_explanation(tmp_path):
+    record, _, _ = _finish(tmp_path, [_spoken("The service is", truncated=True)])
+    assert (record.outcome, record.invalid_reason) == ("invalid", loop.TRUNCATED)
+
+
+def test_a_structural_refusal_is_invalid_whatever_its_text(tmp_path):
+    record, _, _ = _finish(tmp_path, [_spoken("I can't help with that.", kind="refusal")])
+    assert (record.outcome, record.invalid_reason) == ("invalid", "refusal")
+
+
+def test_inline_reasoning_alone_is_no_usable_output(tmp_path):
+    record, _, _ = _finish(tmp_path, [_spoken("<think>maybe restart it</think>")])
+    assert (record.outcome, record.invalid_reason) == ("invalid", "malformed")
+
+
+def test_every_loop_call_asks_for_auto_tool_choice(tmp_path):
+    provider = fake.FakeProvider(script=[("answer", STATUS)])
+    with Ledger(tmp_path) as ledger:
+        (call,) = _round([_case()], provider, ledger).pending
+        assert call.request.params["tool_choice"] == "auto"
+        assert call.spec.params["tool_choice"] == "auto"
+        # A caller cannot switch the loop back to forced tool use.
+        chat = loop.DeferredChat(
+            case=_case(),
+            provider=provider,
+            model="m",
+            ledger=ledger,
+            params={"tool_choice": "required"},
+        )
+        assert chat._params["tool_choice"] == "auto"

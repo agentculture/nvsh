@@ -42,6 +42,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import os
+import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Protocol, runtime_checkable
@@ -258,6 +259,59 @@ class BatchStatus:
     expired: bool = False
 
 
+@dataclass(frozen=True)
+class ReplyText:
+    """The visible text of one cached answer, as :meth:`Provider.reply_text` reads it.
+
+    ``text`` is what the model said to the user: never thinking blocks,
+    reasoning items or ``reasoning_content``, and with any inline
+    ``<think>...</think>`` reasoning removed (:func:`visible_text`).
+    ``truncated`` is the provider's own signal that the answer was cut at the
+    output budget (OpenAI ``status: incomplete``, Anthropic ``stop_reason:
+    max_tokens``, chat-completions ``finish_reason: length``); a truncated
+    reply is never read as a finished explanation.
+    """
+
+    text: str
+    truncated: bool = False
+
+
+_THINK_BLOCK = re.compile(r"<think>.*?(?:</think>|\Z)", re.DOTALL | re.IGNORECASE)
+
+
+def visible_text(text: object) -> str:
+    """*text* without inline ``<think>...</think>`` reasoning, stripped.
+
+    A few open models served over chat completions print their reasoning
+    inline instead of in a separate field; that is reasoning, not the reply.
+    An unclosed ``<think>`` runs to the end of the text.
+    """
+    if not isinstance(text, str):
+        return ""
+    return _THINK_BLOCK.sub("", text).strip()
+
+
+#: ``CallRequest.params["tool_choice"]`` values an adapter honours over its
+#: own forced/auto default.
+TOOL_CHOICES = frozenset({"auto", "required"})
+
+
+def tool_choice_forced(request: "CallRequest", default: bool) -> bool:
+    """Whether *request* forces a tool call: its ``tool_choice`` param, else *default*.
+
+    The Track A loop sends ``"auto"`` for every provider, as the candidates'
+    own chat client did (it sends no ``tool_choice``, so the server default
+    ``auto`` applied): a reference may then answer in plain words, exactly
+    as a candidate could.
+    """
+    choice = (request.params or {}).get("tool_choice")
+    if choice is None:
+        return default
+    if choice not in TOOL_CHOICES:
+        raise ValueError(f"tool_choice must be one of {sorted(TOOL_CHOICES)}: {choice!r}")
+    return choice == "required"
+
+
 @runtime_checkable
 class Provider(Protocol):
     """The provider-agnostic surface every adapter (and the fake) presents.
@@ -287,6 +341,9 @@ class Provider(Protocol):
 
     def result_from_raw(self, request: CallRequest, raw: bytes) -> CallResult:
         """Re-read a cached ``CallResult.raw`` for *request* exactly as a fresh answer."""
+
+    def reply_text(self, raw: bytes) -> ReplyText:
+        """The visible text of a cached answer (never reasoning) and whether it was cut."""
 
 
 def _redact_text(text: str) -> str:
@@ -420,6 +477,15 @@ class BaseProvider(ABC):
         adapter's own code, never re-derived by the caller. Sends nothing.
         """
         raise NotImplementedError(f"{self.name}: this provider cannot re-read a cached answer")
+
+    def reply_text(self, raw: bytes) -> ReplyText:
+        """The visible text of a cached answer and whether the provider cut it short.
+
+        What the Track A loop hands ``LfmTier`` when a reply carries no tool
+        call (plain words are an explanation, as for a candidate), and what a
+        runner reads for a judge's free-text answer. Sends nothing.
+        """
+        raise NotImplementedError(f"{self.name}: this provider cannot read a reply's text")
 
     def native_turn(self, raw: bytes) -> dict | None:
         """Provider-native content of a cached answer, for :attr:`CallRequest.history`.
