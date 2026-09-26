@@ -18,6 +18,7 @@ All fixtures here are synthetic strings written inline — no real case text.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -678,3 +679,146 @@ def test_fake_transient_and_rejected_kinds_are_disjoint_and_classified_to_match(
         with pytest.raises(fake.FakeProviderError) as info:
             provider.submit_sync(base.CallRequest(case_id="c", split="test", case_text="x"))
         assert info.value.classification.retryable is (kind in fake.TRANSIENT_KINDS), kind
+
+
+# ---------------------------------------------------------------------------
+# Deviation d1: CallRequest.history, redacted at the same choke point.
+# ---------------------------------------------------------------------------
+
+
+_SECRET_HISTORY = (
+    {
+        "role": "assistant",
+        "content": f"note: Authorization: Bearer {FAKE_OPENAI_KEY}",
+        "tool_calls": [
+            {
+                "id": "call_0",
+                "name": "service_logs",
+                "arguments": json.dumps({"service": "x", "filter": f"key {FAKE_OPENAI_KEY}"}),
+            }
+        ],
+    },
+    {"role": "tool", "tool_call_id": "call_0", "content": f"export KEY={FAKE_OPENAI_KEY}"},
+)
+
+
+def test_history_defaults_empty_and_is_validated():
+    assert base.CallRequest(case_id="c", split="test", case_text="t").history == ()
+    with pytest.raises(ValueError):
+        base.CallRequest(case_id="c", split="test", case_text="t", history=({"role": "user"},))
+    with pytest.raises(ValueError):
+        base.CallRequest(
+            case_id="c",
+            split="test",
+            case_text="t",
+            history=({"role": "assistant", "tool_calls": [{"id": "x", "name": "y"}]},),
+        )
+    listed = base.CallRequest(
+        case_id="c", split="test", case_text="t", history=list(_SECRET_HISTORY)
+    )
+    assert isinstance(listed.history, tuple)
+
+
+@pytest.mark.parametrize("path", ["sync", "batch"])
+def test_every_history_text_field_is_redacted_before_the_adapter(path):
+    request = base.CallRequest(
+        case_id="case-h", split="test", case_text="clean", history=_SECRET_HISTORY
+    )
+    provider = fake.FakeProvider(script=[("answer", "ok")])
+    if path == "sync":
+        provider.submit_sync(request)
+    else:
+        provider.submit_batch([request], submit_ref="tj-h")
+    (received,) = provider.received
+    flat = json.dumps(received.history)
+    assert FAKE_OPENAI_KEY not in flat
+    assert "<REDACTED:" in received.history[0]["content"]
+    assert "<REDACTED:" in received.history[1]["content"]
+    arguments = received.history[0]["tool_calls"][0]["arguments"]
+    assert "<REDACTED:" in json.loads(arguments)["filter"]  # still valid JSON
+    # The request the caller holds is untouched.
+    assert FAKE_OPENAI_KEY in json.dumps(request.history)
+
+
+def test_clean_history_arguments_stay_byte_identical():
+    arguments = '{"service":"x.service"}'  # compact spacing a re-dump would change
+    history = (
+        {"role": "assistant", "tool_calls": [{"id": "c0", "name": "n", "arguments": arguments}]},
+    )
+    request = base.CallRequest(case_id="c", split="test", case_text="t", history=history)
+    provider = fake.FakeProvider(script=[("answer", "ok")])
+    provider.submit_sync(request)
+    assert provider.received[0].history[0]["tool_calls"][0]["arguments"] == arguments
+
+
+def test_native_thinking_blocks_pass_redaction_unchanged_but_text_blocks_do_not():
+    thinking = {"type": "thinking", "thinking": f"Bearer {FAKE_OPENAI_KEY}", "signature": "c2ln"}
+    history = (
+        {
+            "role": "assistant",
+            "tool_calls": [],
+            "native": {"anthropic": [thinking, {"type": "text", "text": FAKE_OPENAI_KEY}]},
+        },
+    )
+    request = base.CallRequest(case_id="c", split="test", case_text="t", history=history)
+    provider = fake.FakeProvider(script=[("answer", "ok")])
+    provider.submit_sync(request)
+    blocks = provider.received[0].history[0]["native"]["anthropic"]
+    assert blocks[0] == thinking  # the signature binds it: never rewritten
+    assert FAKE_OPENAI_KEY not in blocks[1]["text"]
+
+
+# ---------------------------------------------------------------------------
+# Review fix P1: find_batch can say "unresolved"; the fake scripts it.
+# ---------------------------------------------------------------------------
+
+
+def test_fake_find_batch_can_be_scripted_unresolved():
+    provider = fake.FakeProvider(script=[])
+    provider.submit_batch(_make_requests(1), submit_ref="tj-ref-u")
+    provider.mark_unresolved("tj-ref-u")
+    with pytest.raises(base.BatchLookupUnresolved):
+        provider.find_batch("tj-ref-u")
+    assert provider.find_batch("tj-other") is None  # "definitely not" is still None
+
+
+def test_ledger_orphan_with_unresolved_lookup_is_never_resubmitted(tmp_path):
+    """The runner's contract: on UNRESOLVED keep the orphan, stop, never resend."""
+    from evals.tool_jev.ledger import CallSpec, Ledger, prompt_hash
+
+    spec = CallSpec("fake", "fake-model", "subject", "case-u", "tool_call", prompt_hash("p"))
+    provider = fake.FakeProvider(script=[])
+    with Ledger(tmp_path) as led:
+        (key,) = led.register_many([spec])
+        ref = led.begin_submit([key])
+        provider.submit_batch(_make_requests(1), submit_ref=ref)
+    provider.mark_unresolved(ref)
+    with Ledger(tmp_path) as led:
+        plan = led.continue_plan()
+        stopped = False
+        for orphan_ref in plan.orphans:
+            try:
+                provider.find_batch(orphan_ref)
+            except base.BatchLookupUnresolved:
+                stopped = True
+                continue
+        assert stopped
+        assert led.continue_plan().orphans == {ref: [key]}  # still an orphan, not abandoned
+    assert provider.submitted_refs == [ref]
+
+
+def test_fake_result_from_raw_rereads_its_own_answer():
+    provider = fake.FakeProvider(script=[("answer", "disk_usage"), ("malformed", None)])
+    request = base.CallRequest(
+        case_id="c1", split="test", case_text="t", offered_candidates=("disk_usage",)
+    )
+    for _ in range(2):
+        fresh = provider.submit_sync(request)
+        again = provider.result_from_raw(request, fresh.raw)
+        assert (again.outcome, again.answer, again.reason, again.raw) == (
+            fresh.outcome,
+            fresh.answer,
+            fresh.reason,
+            fresh.raw,
+        )
+        assert again.response_id == fresh.response_id

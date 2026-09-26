@@ -608,3 +608,167 @@ def test_expired_batch_poll_and_fetch_yields_only_error_results():
     results = provider_for_fetch.fetch_batch(handle)
     assert len(results) == 1
     assert results[0].outcome is errors.Outcome.PENDING
+
+
+# ---------------------------------------------------------------------------
+# Review fix P2: batch HTTP rejections keep their classification.
+# ---------------------------------------------------------------------------
+
+
+def _fetch_lines(lines: list[dict], *, error_file: bool) -> list:
+    body = ("\n".join(json.dumps(line) for line in lines) + "\n").encode("utf-8")
+    file_key = "error_file_id" if error_file else "output_file_id"
+    batch_get = _ok(json.dumps({"id": "batch-9", "status": "completed", file_key: "f9"}).encode())
+    transport = ScriptedTransport(
+        [
+            (_method_and_path_startswith("GET", "/v1/batches/batch-9"), batch_get),
+            (_method_and_path_startswith("GET", "/v1/files/f9/content"), _ok(body)),
+        ]
+    )
+    provider = openai_provider.OpenAIProvider("gpt-6-luna", transport=transport)
+    handle = base.BatchHandle(batch_id="batch-9", provider=provider.name, submit_ref="ref-9")
+    return provider.fetch_batch(handle)
+
+
+@pytest.mark.parametrize("error_file", [True, False])
+def test_batch_line_with_http_400_and_null_error_is_request_rejected(error_file):
+    line = {
+        "id": "batch_req_9",
+        "custom_id": "case-9::tool_call",
+        "response": {
+            "status_code": 400,
+            "request_id": "req_9",
+            "body": {
+                "error": {
+                    "message": "Unsupported parameter.",
+                    "type": "invalid_request_error",
+                    "code": None,
+                }
+            },
+        },
+        "error": None,
+    }
+    (result,) = _fetch_lines([line], error_file=error_file)
+    assert result.case_id == "case-9"
+    assert result.outcome is errors.Outcome.PENDING
+    assert result.reason == errors.REQUEST_REJECTED_PREFIX + "bad_request"
+    assert result.answer is None
+
+
+def test_batch_line_with_http_429_stays_retryable_pending():
+    line = {
+        "custom_id": "case-9::tool_call",
+        "response": {"status_code": 429, "body": {"error": {"type": "rate_limit_error"}}},
+        "error": None,
+    }
+    (result,) = _fetch_lines([line], error_file=True)
+    assert result.outcome is errors.Outcome.PENDING
+    assert result.reason == "rate_limited"
+
+
+# ---------------------------------------------------------------------------
+# Review fix P2: a failed Responses object is infrastructure, not a bad answer.
+# ---------------------------------------------------------------------------
+
+FAILED_RESPONSE = {
+    "id": "resp_failed_1",
+    "model": "gpt-6-luna",
+    "status": "failed",
+    "error": {"code": "server_error", "message": "The server had an error."},
+    "output": [],
+    "metadata": {"nvsh_case_id": "case-9", "nvsh_interface": "tool_call"},
+}
+
+
+def test_sync_failed_response_is_a_pending_stop_not_an_invalid_answer():
+    transport = ScriptedTransport(
+        [(_path_is("/v1/responses"), _ok(json.dumps(FAILED_RESPONSE).encode()))]
+    )
+    provider = openai_provider.OpenAIProvider("gpt-6-luna", transport=transport)
+    with pytest.raises(openai_provider.OpenAIProviderError) as caught:
+        provider.submit_sync(_tool_call_request())
+    assert caught.value.classification.outcome is errors.Outcome.PENDING
+    assert caught.value.classification.retryable is True
+
+
+@pytest.mark.parametrize("status", ["failed", "cancelled"])
+def test_batch_failed_response_is_pending_not_invalid(status):
+    body = dict(FAILED_RESPONSE, status=status)
+    line = {
+        "custom_id": "case-9::tool_call",
+        "response": {"status_code": 200, "body": body},
+        "error": None,
+    }
+    (result,) = _fetch_lines([line], error_file=False)
+    assert result.outcome is errors.Outcome.PENDING
+    assert result.outcome is not errors.Outcome.INVALID
+
+
+def test_find_batch_is_unresolved_when_the_page_bound_runs_out(monkeypatch):
+    monkeypatch.setattr(openai_provider, "MAX_LIST_PAGES", 2)
+    page = _ok(
+        json.dumps({"data": [{"id": "batch-x", "metadata": {}}], "has_more": True}).encode("utf-8")
+    )
+    transport = ScriptedTransport(
+        [
+            (_method_and_path_startswith("GET", "/v1/batches"), page),
+            (_method_and_path_startswith("GET", "/v1/batches"), page),
+        ]
+    )
+    provider = openai_provider.OpenAIProvider("gpt-6-luna", transport=transport)
+    with pytest.raises(base.BatchLookupUnresolved):
+        provider.find_batch("ref-missing")
+
+
+# ---------------------------------------------------------------------------
+# Deviation d1: history rendered natively; cached answers re-read.
+# ---------------------------------------------------------------------------
+
+HISTORY = (
+    {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+            {"id": "call_0", "name": "service_status", "arguments": '{"service": "x.service"}'}
+        ],
+    },
+    {"role": "tool", "tool_call_id": "call_0", "content": "exit 0\nactive"},
+)
+
+
+def test_history_renders_as_function_call_items():
+    transport = ScriptedTransport(
+        [(_path_is("/v1/responses"), _ok(_fixture_bytes("responses_propose.json")))]
+    )
+    provider = openai_provider.OpenAIProvider("gpt-6-luna", transport=transport)
+    request = base.CallRequest(
+        case_id="case-h",
+        split="test",
+        case_text="ask",
+        prompt="sys",
+        offered_candidates=OFFERED,
+        params={"tools": REAL_TOOLS},
+        history=HISTORY,
+    )
+    provider.submit_sync(request)
+    sent = json.loads(transport.calls[0]["data"])
+    assert sent["input"] == [
+        {"role": "user", "content": "ask"},
+        {
+            "type": "function_call",
+            "call_id": "call_0",
+            "name": "service_status",
+            "arguments": '{"service": "x.service"}',
+        },
+        {"type": "function_call_output", "call_id": "call_0", "output": "exit 0\nactive"},
+    ]
+
+
+def test_result_from_raw_rereads_the_cached_answer():
+    transport = ScriptedTransport(
+        [(_path_is("/v1/responses"), _ok(_fixture_bytes("responses_propose.json")))]
+    )
+    provider = openai_provider.OpenAIProvider("gpt-6-luna", transport=transport)
+    fresh = provider.submit_sync(_tool_call_request())
+    again = provider.result_from_raw(_tool_call_request(), fresh.raw)
+    assert again == fresh

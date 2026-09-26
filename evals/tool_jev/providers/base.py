@@ -40,6 +40,7 @@ given by the manifest" (c13/h12/h15).
 from __future__ import annotations
 
 import dataclasses
+import json
 import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -62,6 +63,18 @@ class HeldoutSplitRefused(Exception):
 
     Raised before any network call — the caller never reaches the
     subclass's ``_send_sync``/``_send_batch``.
+    """
+
+
+class BatchLookupUnresolved(Exception):
+    """Raised by ``find_batch`` when the provider cannot say either way.
+
+    ``None`` from ``find_batch`` means "no batch was ever accepted under this
+    ref" and authorizes a resubmit. This exception means the opposite is
+    *possible* but cannot be confirmed right now (a batch that could be ours
+    is still processing and hides its custom ids, a results download failed,
+    or the listing ran past its page bound). A runner must never resubmit on
+    it: it stops and asks the operator (plan risk r6).
     """
 
 
@@ -104,15 +117,59 @@ class ProviderCapabilities:
     reasoning: bool
 
 
+#: The two roles a :attr:`CallRequest.history` turn may have.
+HISTORY_ROLES = frozenset({"assistant", "tool"})
+
+
+def _check_history(history: tuple) -> None:
+    """Refuse a history turn that is not in the neutral shape (see CallRequest)."""
+    for index, turn in enumerate(history):
+        where = f"history[{index}]"
+        if not isinstance(turn, dict) or turn.get("role") not in HISTORY_ROLES:
+            raise ValueError(f"{where} must be a dict with role in {sorted(HISTORY_ROLES)}")
+        if turn["role"] == "tool":
+            if not isinstance(turn.get("tool_call_id"), str) or not turn["tool_call_id"]:
+                raise ValueError(f"{where}: a tool turn needs a non-empty tool_call_id")
+            if not isinstance(turn.get("content"), str):
+                raise ValueError(f"{where}: a tool turn's content must be a string")
+            continue
+        if not isinstance(turn.get("content", ""), str):
+            raise ValueError(f"{where}: an assistant turn's content must be a string")
+        calls = turn.get("tool_calls", [])
+        if not isinstance(calls, list):
+            raise ValueError(f"{where}: tool_calls must be a list")
+        for call in calls:
+            if not isinstance(call, dict) or not all(
+                isinstance(call.get(key), str) for key in ("id", "name", "arguments")
+            ):
+                raise ValueError(f"{where}: each tool call needs string id, name and arguments")
+
+
 @dataclass(frozen=True)
 class CallRequest:
     """One planned call: a case routed at a specific provider/model.
 
     ``split`` is the case's split tag (e.g. ``"test"``, ``"test-mc"``,
     ``"heldout"``, ``"heldout-mc"``) and is checked by the held-out guard
-    before anything else happens. ``case_text`` and ``prompt`` are the two
-    fields that carry case content and are redacted before a subclass ever
-    sees them.
+    before anything else happens. ``case_text``, ``prompt`` and every text
+    field of ``history`` carry case content (or machine output) and are
+    redacted before a subclass ever sees them.
+
+    ``history`` (deviation d1) is the ordered conversation *after* the
+    system and user messages: the prior rounds of a multi-round tool-use
+    loop, in a provider-neutral shape every adapter renders natively::
+
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "call_0", "name": "service_status", "arguments": "<JSON text>"}]}
+        {"role": "tool", "tool_call_id": "call_0", "content": "<tool result text>"}
+
+    ``arguments`` is the exact JSON text the loop echoed (a string, as
+    ``nvsh.tiers.lfm`` sends it). An assistant turn may also carry
+    ``"native": {"<provider kind>": [...]}``: that provider's own content
+    blocks for the same turn, replayed verbatim by the matching adapter only
+    (e.g. Anthropic thinking blocks, which must come back unchanged); the
+    *content* every adapter sends is still the neutral fields. Empty for a
+    single-turn request.
     """
 
     case_id: str
@@ -122,10 +179,14 @@ class CallRequest:
     offered_candidates: tuple[str, ...] = ()
     params: dict = field(default_factory=dict)
     interface: str = "tool_call"
+    history: tuple[dict, ...] = ()
 
     def __post_init__(self) -> None:
         if self.interface not in INTERFACES:
             raise ValueError(f"interface must be one of {sorted(INTERFACES)}: {self.interface!r}")
+        if not isinstance(self.history, tuple):
+            object.__setattr__(self, "history", tuple(self.history))
+        _check_history(self.history)
 
 
 @dataclass(frozen=True)
@@ -213,11 +274,19 @@ class Provider(Protocol):
 
     def submit_batch(self, requests: list[CallRequest], submit_ref: str) -> BatchHandle: ...
 
-    def find_batch(self, submit_ref: str) -> BatchHandle | None: ...
+    def find_batch(self, submit_ref: str) -> BatchHandle | None:
+        """The batch accepted under *submit_ref*, ``None`` if none ever was.
+
+        Raises :class:`BatchLookupUnresolved` when the provider cannot tell
+        (never resubmit on it).
+        """
 
     def poll_batch(self, handle: BatchHandle) -> BatchStatus: ...
 
     def fetch_batch(self, handle: BatchHandle) -> list[CallResult]: ...
+
+    def result_from_raw(self, request: CallRequest, raw: bytes) -> CallResult:
+        """Re-read a cached ``CallResult.raw`` for *request* exactly as a fresh answer."""
 
 
 def _redact_text(text: str) -> str:
@@ -227,11 +296,72 @@ def _redact_text(text: str) -> str:
     )
 
 
+def _redact_value(value):
+    """Every string inside a decoded JSON value redacted; shape and keys kept."""
+    if isinstance(value, str):
+        return _redact_text(value)
+    if isinstance(value, list):
+        return [_redact_value(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _redact_value(item) for key, item in value.items()}
+    return value
+
+
+def _redact_arguments(arguments: str) -> str:
+    """Redact a tool call's JSON arguments text without breaking its JSON.
+
+    Redacting the raw text could let a rule swallow a closing quote, so the
+    JSON is decoded, every string value redacted, and re-encoded -- but only
+    when that changed something, so clean arguments stay byte-identical to
+    what the loop echoed. Text that is not JSON is redacted as text.
+    """
+    try:
+        decoded = json.loads(arguments)
+    except ValueError:
+        return _redact_text(arguments)
+    cleaned = _redact_value(decoded)
+    return arguments if cleaned == decoded else json.dumps(cleaned)
+
+
+#: Anthropic content-block keys that must come back byte-for-byte (the
+#: thinking signature binds them); they are never rewritten by redaction.
+_NATIVE_VERBATIM_BLOCKS = frozenset({"thinking", "redacted_thinking"})
+
+
+def _redact_native_block(block):
+    if not isinstance(block, dict) or block.get("type") in _NATIVE_VERBATIM_BLOCKS:
+        return block
+    return _redact_value(block)
+
+
+def _redacted_turn(turn: dict) -> dict:
+    out = dict(turn)
+    if isinstance(out.get("content"), str):
+        out["content"] = _redact_text(out["content"])
+    if out.get("role") == "assistant":
+        out["tool_calls"] = [
+            {
+                **call,
+                "name": _redact_text(call["name"]),
+                "arguments": _redact_arguments(call["arguments"]),
+            }
+            for call in out.get("tool_calls", [])
+        ]
+        native = out.get("native")
+        if isinstance(native, dict):
+            out["native"] = {
+                kind: [_redact_native_block(block) for block in blocks]
+                for kind, blocks in native.items()
+            }
+    return out
+
+
 def _redacted_request(request: CallRequest) -> CallRequest:
     return dataclasses.replace(
         request,
         case_text=_redact_text(request.case_text),
         prompt=_redact_text(request.prompt),
+        history=tuple(_redacted_turn(turn) for turn in request.history),
     )
 
 
@@ -280,6 +410,25 @@ class BaseProvider(ABC):
 
     def fetch_batch(self, handle: BatchHandle) -> list[CallResult]:
         return self._collect_batch(handle)
+
+    def result_from_raw(self, request: CallRequest, raw: bytes) -> CallResult:
+        """Re-read a cached answer (``CallResult.raw`` / ``CachedResponse.raw``).
+
+        What a warm rerun or the multi-round loop (``track_a_loop``) uses to
+        turn the ledger's cached bytes back into the same ``CallResult`` the
+        adapter returned when the answer first arrived -- parsed by the
+        adapter's own code, never re-derived by the caller. Sends nothing.
+        """
+        raise NotImplementedError(f"{self.name}: this provider cannot re-read a cached answer")
+
+    def native_turn(self, raw: bytes) -> dict | None:
+        """Provider-native content of a cached answer, for :attr:`CallRequest.history`.
+
+        ``{"<provider kind>": [blocks]}`` when the provider needs its own
+        blocks back on a later turn (Anthropic thinking blocks), else ``None``.
+        """
+        del raw
+        return None
 
     @abstractmethod
     def _send_sync(self, request: CallRequest) -> CallResult:

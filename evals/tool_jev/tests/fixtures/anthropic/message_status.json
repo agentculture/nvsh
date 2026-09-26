@@ -1,0 +1,27 @@
+{
+  "id": "msg_01StatusFixture",
+  "type": "message",
+  "role": "assistant",
+  "model": "claude-sonnet-5",
+  "content": [
+    {
+      "type": "thinking",
+      "thinking": "",
+      "signature": "c3ludGhldGljLXNpZ25hdHVyZQ"
+    },
+    {
+      "type": "tool_use",
+      "id": "toolu_01Status",
+      "name": "service_status",
+      "input": {
+        "service": "synthetic.service"
+      }
+    }
+  ],
+  "stop_reason": "tool_use",
+  "stop_sequence": null,
+  "usage": {
+    "input_tokens": 100,
+    "output_tokens": 20
+  }
+}

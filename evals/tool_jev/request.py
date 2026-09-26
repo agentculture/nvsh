@@ -363,22 +363,30 @@ def distribution_from_logprobs(
 
 def canonical_content(
     request: CallRequest,
-) -> tuple[str, str, list[dict] | None, dict[str, str] | None]:
-    """``(system_text, user_text, tools, labels)`` -- the only content an adapter may send.
+) -> tuple[str, list[dict], list[dict] | None, dict[str, str] | None]:
+    """``(system_text, messages, tools, labels)`` -- the only content an adapter may send.
 
     A pure read of *request*'s own fields: ``system_text`` is
-    ``request.prompt``, ``user_text`` is ``request.case_text``, ``tools``
-    is ``request.params["tools"]`` for a ``"tool_call"`` request (``None``
-    for ``"choice"``), and ``labels`` is ``request.params["labels"]`` for a
+    ``request.prompt``; ``messages`` is the ordered conversation after the
+    system message -- ``{"role": "user", "content": request.case_text}``
+    first, then every turn of ``request.history`` (deviation d1's prior
+    tool-use rounds, in the neutral shape documented on
+    :class:`~evals.tool_jev.providers.base.CallRequest`), each a fresh copy
+    so an adapter cannot mutate the request through it; ``tools`` is
+    ``request.params["tools"]`` for a ``"tool_call"`` request (``None`` for
+    ``"choice"``), and ``labels`` is ``request.params["labels"]`` for a
     ``"choice"`` request (``None`` for ``"tool_call"``).
 
     Every adapter (OpenAI, Anthropic, an OpenAI-compatible server, ...)
     builds its provider-specific payload from exactly this tuple, never by
-    re-deriving system/user text or tool/label shapes itself -- that is
-    what makes the system/user content byte-identical across provider
-    kinds by construction (acceptance criterion 1), independent of which
-    adapter calls it, transport framing, or call order.
+    re-deriving system/user text, history or tool/label shapes itself --
+    that is what makes the content byte-identical across provider kinds by
+    construction (acceptance criterion 1), independent of which adapter
+    calls it, transport framing, or call order. Adapters render each
+    history turn in their own wire shape but copy its text fields as given.
     """
     tools = request.params.get("tools") if request.interface == "tool_call" else None
     labels = request.params.get("labels") if request.interface == "choice" else None
-    return request.prompt, request.case_text, tools, labels
+    messages: list[dict] = [{"role": "user", "content": request.case_text}]
+    messages.extend(json.loads(json.dumps(turn)) for turn in request.history)
+    return request.prompt, messages, tools, labels

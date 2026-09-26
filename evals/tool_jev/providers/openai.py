@@ -91,6 +91,7 @@ from .. import request as contract
 from .base import (
     BaseProvider,
     BatchHandle,
+    BatchLookupUnresolved,
     BatchStatus,
     CallRequest,
     CallResult,
@@ -228,15 +229,56 @@ def _responses_tools(tools: list | None) -> list[dict]:
     return flat
 
 
+def _responses_input(messages: list[dict]) -> list[dict]:
+    """``canonical_content``'s messages as Responses API input items.
+
+    The user message stays a role message; a history assistant turn becomes
+    an optional assistant message (only when it has text) plus one
+    ``function_call`` item per tool call, and a tool turn becomes a
+    ``function_call_output`` item -- the stateless way to replay a tool-use
+    loop on ``/v1/responses`` (function calling guide,
+    https://platform.openai.com/docs/guides/function-calling). Reasoning
+    items from earlier rounds are not replayed: the history is the neutral
+    one every adapter sends, and a stateless request may omit them.
+    """
+    items: list[dict] = []
+    for message in messages:
+        role = message["role"]
+        if role == "tool":
+            items.append(
+                {
+                    "type": "function_call_output",
+                    "call_id": message["tool_call_id"],
+                    "output": message["content"],
+                }
+            )
+            continue
+        if role == "assistant":
+            if message.get("content"):
+                items.append({"role": "assistant", "content": message["content"]})
+            for call in message.get("tool_calls", []):
+                items.append(
+                    {
+                        "type": "function_call",
+                        "call_id": call["id"],
+                        "name": call["name"],
+                        "arguments": call["arguments"],
+                    }
+                )
+            continue
+        items.append({"role": role, "content": message["content"]})
+    return items
+
+
 def _build_request_body(
     request: CallRequest, model: str, *, forced_tool_choice: bool = True
 ) -> dict:
     """Build the Responses API request body from ``request.canonical_content`` only."""
-    system_text, user_text, tools, labels = contract.canonical_content(request)
+    system_text, messages, tools, labels = contract.canonical_content(request)
     body: dict = {
         "model": model,
         "instructions": system_text,
-        "input": [{"role": "user", "content": user_text}],
+        "input": _responses_input(messages),
         "reasoning": {"effort": request.params.get("reasoning", "medium")},
         "metadata": {"nvsh_case_id": request.case_id, "nvsh_interface": request.interface},
     }
@@ -340,6 +382,32 @@ def _extract_answer(response_body: dict, request_interface: str) -> tuple[str | 
     return None, True, False
 
 
+#: Responses API object statuses that mean the provider did not finish the
+#: response (https://platform.openai.com/docs/api-reference/responses/object).
+_FAILED_RESPONSE_STATUSES = frozenset({"failed", "cancelled"})
+
+
+def _response_infra_failure(response_body: dict) -> Classification | None:
+    """An infrastructure classification for a failed Responses object, else ``None``.
+
+    A response whose ``status`` is ``failed``/``cancelled`` or that carries
+    an ``error`` object (e.g. ``server_error`` with ``output: []``) is the
+    provider failing, not the model answering badly: it stays ``pending``
+    via :func:`classify_transport`, never ``invalid``. Only a response that
+    did not fail is parsed as an answer (an ``incomplete`` one with no error
+    -- e.g. cut at ``max_output_tokens`` -- is still read as the model's
+    answer, whatever it managed to produce).
+    """
+    error = response_body.get("error")
+    status = response_body.get("status")
+    if not error and status not in _FAILED_RESPONSE_STATUSES:
+        return None
+    error_type = None
+    if isinstance(error, dict):
+        error_type = error.get("code") or error.get("type")
+    return classify_transport("openai", error_type=error_type or f"response_{status}")
+
+
 def _extract_usage(response_body: dict) -> dict[str, int]:
     usage = response_body.get("usage") or {}
     if not isinstance(usage, dict):
@@ -434,10 +502,37 @@ class OpenAIProvider(BaseProvider):
                 self.name,
                 request.case_id,
             ) from exc
-        return self._result_from_response(request, response_body)
+        result = self._result_from_response(request, response_body)
+        failure = _response_infra_failure(response_body)
+        if failure is not None:
+            raise OpenAIProviderError(failure, self.name, request.case_id)
+        return result
+
+    def result_from_raw(self, request: CallRequest, raw: bytes) -> CallResult:
+        """Re-read a cached answer: the Responses object this adapter stored as ``raw``."""
+        body = json.loads(raw.decode("utf-8"))
+        if isinstance(body, dict) and "custom_id" in body and "response" in body:
+            body = (body.get("response") or {}).get("body") or {}
+        return self._result_from_response(request, body)
 
     def _result_from_response(self, request: CallRequest, response_body: dict) -> CallResult:
-        _system, _user, _tools, labels = contract.canonical_content(request)
+        raw = json.dumps(response_body, sort_keys=True).encode("utf-8")
+        failure = _response_infra_failure(response_body)
+        if failure is not None:
+            return CallResult(
+                case_id=request.case_id,
+                outcome=failure.outcome,
+                answer=None,
+                reason=failure.reason,
+                provider=self.name,
+                model_id=self.model,
+                raw=raw,
+                response_id=response_body.get("id", ""),
+                returned_model=response_body.get("model"),
+                usage=_extract_usage(response_body),
+                interface=request.interface,
+            )
+        labels = contract.canonical_content(request)[3]
         answer, malformed, refused = _extract_answer(response_body, request.interface)
         classification = classify_result(
             request.interface,
@@ -447,7 +542,6 @@ class OpenAIProvider(BaseProvider):
             malformed=malformed,
             refused=refused,
         )
-        raw = json.dumps(response_body, sort_keys=True).encode("utf-8")
         return CallResult(
             case_id=request.case_id,
             outcome=classification.outcome,
@@ -540,6 +634,13 @@ class OpenAIProvider(BaseProvider):
             if not data:
                 break
             after = data[-1]["id"]
+        else:
+            # The page bound ran out with more batches unread: one of them
+            # could be ours, so "not found" would authorize a double charge.
+            raise BatchLookupUnresolved(
+                f"{self.name}: listed {MAX_LIST_PAGES} pages of batches without "
+                f"reaching the end; cannot tell whether {submit_ref!r} was accepted"
+            )
         return None
 
     def _check_batch(self, handle: BatchHandle) -> BatchStatus:
@@ -581,11 +682,8 @@ class OpenAIProvider(BaseProvider):
     def _result_from_batch_line(self, line: dict, *, failed: bool) -> CallResult:
         custom_id = line.get("custom_id", "")
         case_id, interface = self._local_custom_ids.get(custom_id) or _decode_custom_id(custom_id)
-        if failed:
-            error = line.get("error") or {}
-            classification = classify_transport(
-                "openai", error_type=error.get("code") or error.get("type")
-            )
+        classification = _batch_line_failure(line, failed=failed)
+        if classification is not None:
             return CallResult(
                 case_id=case_id,
                 outcome=classification.outcome,
@@ -621,6 +719,31 @@ class OpenAIProvider(BaseProvider):
             case_id=case_id, split="test", case_text="", interface=interface, params=params
         )
         return self._result_from_response(request, response_body)
+
+
+def _batch_line_failure(line: dict, *, failed: bool) -> Classification | None:
+    """The infrastructure classification of a batch line that carries no answer.
+
+    A line fails when it has an envelope ``error``, when its
+    ``response.status_code`` is an HTTP error (the error file's usual shape:
+    ``error`` null, ``response.body.error`` set), or when it came from the
+    error file at all. The status code and the body's own error code are
+    both handed to :func:`classify_transport`, so a 400 stays a
+    non-retryable ``request_rejected`` instead of an unrecognised retry.
+    """
+    envelope = line.get("error") if isinstance(line.get("error"), dict) else None
+    response = line.get("response") if isinstance(line.get("response"), dict) else {}
+    status = response.get("status_code")
+    status = status if isinstance(status, int) and not isinstance(status, bool) else None
+    http_failed = status is not None and status >= 400
+    if envelope is None and not http_failed and not failed:
+        return None
+    body = response.get("body") if isinstance(response.get("body"), dict) else {}
+    body_error = body.get("error") if isinstance(body.get("error"), dict) else {}
+    error_type = None
+    for source in (envelope or {}, body_error):
+        error_type = error_type or source.get("code") or source.get("type")
+    return classify_transport("openai", status_code=status, error_type=error_type)
 
 
 class _HttpError(Exception):

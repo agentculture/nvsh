@@ -39,26 +39,27 @@ Known limitations (report these, do not hide them):
    ``custom_id`` whose ref-prefix matches). If the process crashes between
    a batch being accepted and the ledger recording it as submitted, and
    the batch is still ``in_progress`` at resume time, ``find_batch``
-   returns ``None`` even though the batch may in fact exist and be running
-   under this ref -- there is no documented Anthropic API that can tell the
-   two cases apart. The caller (the ledger/runner) will then treat the
-   batch as never-submitted and may resubmit, double-charging for those
-   requests. This is a genuine residual risk, not a bug in this module.
+   therefore raises :class:`~evals.tool_jev.providers.base.BatchLookupUnresolved`
+   -- never ``None``, which would authorize a resubmit and a double charge.
+   The same holds when an ended batch's results cannot be downloaded or the
+   listing runs past its page bound. The runner stops and asks the operator
+   on it (plan risk r6). The ref carries no submission time, so every
+   unconfirmable batch in the account counts: an unrelated batch still in
+   flight also keeps the answer unresolved until it ends.
 2. **Per-request interface context is best-effort across a process
    restart.** ``CallResult`` requires ``case_id`` (and, to classify a
    ``choice`` answer, the case's offered candidates / label map). This
    module keeps that context in an in-memory dict populated by
    ``_send_batch`` (``self._batch_requests``), exactly like
    ``FakeProvider._batches``. Within the *same* process that submitted the
-   batch, results are given back their full request context. Recovered
-   after a crash (a *different* process that only called ``find_batch``),
-   that cache is empty: ``case_id`` is still recovered exactly (it is
-   base64-encoded directly into ``custom_id``, see
-   :func:`build_custom_id`/:func:`parse_custom_id`, not merely guessed),
-   but the request's ``interface``/``offered_candidates``/``labels`` are
-   not recoverable from the Anthropic API and are inferred from the
-   response shape instead (a ``tool_use`` content block present ->
-   ``"tool_call"``, else ``"choice"`` with no offered-candidate check).
+   batch, results are given back their full request context (keyed by
+   ``custom_id``, so one case sent through both interfaces in one batch
+   keeps both contexts apart). Recovered after a crash (a *different*
+   process that only called ``find_batch``), that cache is empty: ``case_id``
+   and ``interface`` are still recovered exactly (both are encoded in
+   ``custom_id``, see :func:`build_custom_id`/:func:`parse_custom_id`), but
+   the request's ``offered_candidates``/``labels`` are not recoverable from
+   the Anthropic API, so only structural checks apply to the answer.
 3. **Forced tool use is rejected by some models.** Per
    https://platform.claude.com/docs/en/api/errors ("Forced tool use not
    supported"), Claude Opus 5.5, Claude Fable 5.1 and Claude Mythos 5.1
@@ -97,6 +98,7 @@ from .. import request as contract
 from .base import (
     BaseProvider,
     BatchHandle,
+    BatchLookupUnresolved,
     BatchStatus,
     CallRequest,
     CallResult,
@@ -187,7 +189,8 @@ _ANTHROPIC_ERROR_TYPE_MAP = {
 
 # ---------------------------------------------------------------------------
 # custom_id encoding: submit_ref prefix (fixed width) + index (fixed width,
-# zero-padded) + case_id losslessly base64-encoded (padding stripped, since
+# zero-padded) + one interface letter (``t`` tool_call, ``c`` choice) +
+# case_id losslessly base64-encoded (padding stripped, since
 # '=' is outside Anthropic's custom_id charset ^[a-zA-Z0-9_-]{1,64}$). Fixed
 # widths mean the fields can be sliced apart without a separator, so a
 # submit_ref or case_id that itself contains '-' can never make the split
@@ -198,6 +201,10 @@ _ANTHROPIC_ERROR_TYPE_MAP = {
 
 _REF_LEN = 10
 _IDX_LEN = 6
+#: One letter per interface, so a result's interface is recoverable after a
+#: restart without guessing it from the response shape.
+_INTERFACE_CODES = {"tool_call": "t", "choice": "c"}
+_INTERFACE_BY_CODE = {code: name for name, code in _INTERFACE_CODES.items()}
 _CUSTOM_ID_MAX = 64
 _CUSTOM_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")
 
@@ -216,8 +223,8 @@ def _unb64_case_id(token: str) -> str:
     return base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8")
 
 
-def build_custom_id(submit_ref: str, index: int, case_id: str) -> str:
-    """Build one batch request's ``custom_id``: ref prefix + index + case_id.
+def build_custom_id(submit_ref: str, index: int, case_id: str, interface: str = "tool_call") -> str:
+    """Build one batch request's ``custom_id``: ref prefix + index + interface + case_id.
 
     Encodes ``submit_ref`` (sanitized/truncated to :data:`_REF_LEN` chars)
     so :meth:`AnthropicProvider._find_batch` can recognise this batch's
@@ -229,12 +236,14 @@ def build_custom_id(submit_ref: str, index: int, case_id: str) -> str:
     """
     if index < 0 or index >= 10**_IDX_LEN:
         raise ValueError(f"index {index} does not fit a {_IDX_LEN}-digit custom_id field")
+    if interface not in _INTERFACE_CODES:
+        raise ValueError(f"unknown interface {interface!r}")
     prefix = _sanitize_ref(submit_ref)
     idx = f"{index:0{_IDX_LEN}d}"
     case_token = _b64_case_id(case_id)
-    custom_id = f"{prefix}{idx}{case_token}"
+    custom_id = f"{prefix}{idx}{_INTERFACE_CODES[interface]}{case_token}"
     if len(custom_id) > _CUSTOM_ID_MAX or not _CUSTOM_ID_RE.fullmatch(custom_id):
-        budget = _CUSTOM_ID_MAX - _REF_LEN - _IDX_LEN
+        budget = _CUSTOM_ID_MAX - _REF_LEN - _IDX_LEN - 1
         raise ValueError(
             f"case_id {case_id!r} does not fit Anthropic's 64-character custom_id "
             f"budget once base64-encoded (budget is {budget} base64 chars, "
@@ -243,12 +252,15 @@ def build_custom_id(submit_ref: str, index: int, case_id: str) -> str:
     return custom_id
 
 
-def parse_custom_id(custom_id: str) -> "tuple[str, int, str]":
-    """Reverse :func:`build_custom_id`: -> ``(ref_prefix, index, case_id)``."""
+def parse_custom_id(custom_id: str) -> "tuple[str, int, str, str]":
+    """Reverse :func:`build_custom_id`: -> ``(ref_prefix, index, interface, case_id)``."""
     prefix = custom_id[:_REF_LEN]
     idx = int(custom_id[_REF_LEN : _REF_LEN + _IDX_LEN])
-    case_token = custom_id[_REF_LEN + _IDX_LEN :]
-    return prefix, idx, _unb64_case_id(case_token)
+    code = custom_id[_REF_LEN + _IDX_LEN : _REF_LEN + _IDX_LEN + 1]
+    if code not in _INTERFACE_BY_CODE:
+        raise ValueError(f"custom_id {custom_id!r} carries no interface letter")
+    case_token = custom_id[_REF_LEN + _IDX_LEN + 1 :]
+    return prefix, idx, _INTERFACE_BY_CODE[code], _unb64_case_id(case_token)
 
 
 class AnthropicProvider(BaseProvider):
@@ -296,7 +308,7 @@ class AnthropicProvider(BaseProvider):
         self._transport = transport or urllib_transport
         self._list_page_limit = list_page_limit
         self._max_list_pages = max_list_pages
-        #: batch_id -> {case_id: CallRequest}, populated by _send_batch.
+        #: batch_id -> {custom_id: CallRequest}, populated by _send_batch.
         #: Empty after a process restart -- see module docstring limitation 2.
         self._batch_requests: "dict[str, dict[str, CallRequest]]" = {}
 
@@ -339,13 +351,90 @@ class AnthropicProvider(BaseProvider):
             )
         return converted
 
+    @staticmethod
+    def _tool_input(arguments: str) -> dict:
+        """A neutral tool call's JSON arguments text as a ``tool_use`` input object."""
+        try:
+            decoded = json.loads(arguments)
+        except ValueError:
+            return {"_arguments": arguments}
+        return decoded if isinstance(decoded, dict) else {"_arguments": decoded}
+
+    @classmethod
+    def _messages_payload(cls, messages: list) -> list:
+        """``canonical_content``'s messages as Messages API turns.
+
+        A history assistant turn becomes an ``assistant`` message: the
+        turn's own Anthropic thinking blocks first when it carries them
+        (``native["anthropic"]``, replayed unchanged -- the API needs them
+        back on the same model), then its text, then one ``tool_use`` block
+        per neutral tool call (``input`` decoded from the neutral
+        ``arguments`` text). A tool turn becomes a ``tool_result`` block in a
+        ``user`` message; consecutive results share one message. When the
+        native blocks carry the model's own ``tool_use`` ids, those ids are
+        kept and the matching results point at them.
+        """
+        out: list = []
+        wire_ids: dict = {}
+        for message in messages:
+            role = message["role"]
+            if role == "tool":
+                block = {
+                    "type": "tool_result",
+                    "tool_use_id": wire_ids.get(message["tool_call_id"], message["tool_call_id"]),
+                    "content": message["content"],
+                }
+                last = out[-1] if out else None
+                if (
+                    last is not None
+                    and last["role"] == "user"
+                    and isinstance(last["content"], list)
+                    and all(item.get("type") == "tool_result" for item in last["content"])
+                ):
+                    last["content"].append(block)
+                else:
+                    out.append({"role": "user", "content": [block]})
+                continue
+            if role == "assistant":
+                native = (message.get("native") or {}).get("anthropic") or []
+                blocks = [
+                    dict(item)
+                    for item in native
+                    if isinstance(item, dict)
+                    and item.get("type") in ("thinking", "redacted_thinking")
+                ]
+                native_ids = [
+                    item.get("id")
+                    for item in native
+                    if isinstance(item, dict) and item.get("type") == "tool_use"
+                ]
+                if message.get("content"):
+                    blocks.append({"type": "text", "text": message["content"]})
+                for position, call in enumerate(message.get("tool_calls", [])):
+                    wire_id = call["id"]
+                    if position < len(native_ids) and isinstance(native_ids[position], str):
+                        wire_id = native_ids[position]
+                    wire_ids[call["id"]] = wire_id
+                    blocks.append(
+                        {
+                            "type": "tool_use",
+                            "id": wire_id,
+                            "name": call["name"],
+                            "input": cls._tool_input(call["arguments"]),
+                        }
+                    )
+                out.append({"role": "assistant", "content": blocks})
+                continue
+            out.append({"role": role, "content": message["content"]})
+        return out
+
     def _build_payload(self, request: CallRequest) -> dict:
-        system_text, user_text, tools, _labels = contract.canonical_content(request)
+        system_text, messages, tools, _labels = contract.canonical_content(request)
         payload: dict = {
             "model": self.model_id,
             "max_tokens": int(request.params.get("max_output_tokens", 1024)),
             "system": system_text,
-            "messages": [{"role": "user", "content": user_text}],
+            "messages": self._messages_payload(messages),
         }
         effort = request.params.get("reasoning")
         if effort:
@@ -468,8 +557,10 @@ class AnthropicProvider(BaseProvider):
             raise AnthropicProviderError(
                 self._classify_error(status, data), self.name, request.case_id
             )
-        message = json.loads(data)
-        _system, _user, _tools, labels = contract.canonical_content(request)
+        return self._result_from_message(request, json.loads(data), data)
+
+    def _result_from_message(self, request: CallRequest, message: dict, raw: bytes) -> CallResult:
+        labels = contract.canonical_content(request)[3]
         answer, classification = self._answer_from_message(
             message, request.interface, request.offered_candidates, labels
         )
@@ -481,12 +572,32 @@ class AnthropicProvider(BaseProvider):
             provider=self.name,
             model_id=self.model_id,
             candidates=None,
-            raw=data,
+            raw=raw,
             response_id=message.get("id", ""),
             returned_model=message.get("model"),
             usage=self._usage_from(message.get("usage") or {}),
             interface=request.interface,
         )
+
+    @staticmethod
+    def _message_of(raw: bytes) -> dict:
+        """The Messages API message inside a cached raw answer (sync body or batch line)."""
+        obj = json.loads(raw)
+        result = obj.get("result") if isinstance(obj, dict) else None
+        if isinstance(result, dict) and "custom_id" in obj:
+            if result.get("type") != "succeeded":
+                raise ValueError("a cached batch line that did not succeed holds no answer")
+            return result.get("message") or {}
+        return obj
+
+    def result_from_raw(self, request: CallRequest, raw: bytes) -> CallResult:
+        """Re-read a cached answer: a sync message body or a succeeded batch line."""
+        return self._result_from_message(request, self._message_of(raw), raw)
+
+    def native_turn(self, raw: bytes) -> "dict | None":
+        """This answer's content blocks, for replaying the turn natively (thinking included)."""
+        content = self._message_of(raw).get("content")
+        return {"anthropic": list(content)} if isinstance(content, list) else None
 
     # -- BaseProvider hooks: batch ------------------------------------------
 
@@ -494,9 +605,11 @@ class AnthropicProvider(BaseProvider):
         batch_requests = []
         by_case: "dict[str, CallRequest]" = {}
         for index, request in enumerate(requests):
-            custom_id = build_custom_id(submit_ref, index, request.case_id)
+            custom_id = build_custom_id(submit_ref, index, request.case_id, request.interface)
             batch_requests.append({"custom_id": custom_id, "params": self._build_payload(request)})
-            by_case[request.case_id] = request
+            # Keyed by custom_id, never case_id: one case may ride the same
+            # batch through both interfaces.
+            by_case[custom_id] = request
         status, data = self._call("POST", "/v1/messages/batches", {"requests": batch_requests})
         if status not in (200, 201):
             raise AnthropicProviderError(self._classify_error(status, data), self.name)
@@ -507,7 +620,20 @@ class AnthropicProvider(BaseProvider):
         return BatchHandle(batch_id=batch_id, provider=self.name, submit_ref=submit_ref)
 
     def _find_batch(self, submit_ref: str) -> "BatchHandle | None":
+        """The ended batch holding *submit_ref*'s custom ids; ``None`` only when certain.
+
+        Anthropic shows a batch's custom ids only once it has ended (see
+        limitation 1). So a batch still in progress, an ended batch whose
+        results cannot be read, or a listing cut off by the page bound could
+        each be the one accepted under *submit_ref*: any of them makes the
+        answer :class:`BatchLookupUnresolved` rather than ``None`` -- ``None``
+        would authorize a resubmit, i.e. a possible double charge. Without a
+        submission time on the ref, every unconfirmable batch in the listing
+        counts, so an account with other batches in flight stays unresolved
+        until they end.
+        """
         prefix = _sanitize_ref(submit_ref)
+        unconfirmed: list = []
         after_id = None
         for _ in range(self._max_list_pages):
             path = f"/v1/messages/batches?limit={self._list_page_limit}"
@@ -518,30 +644,38 @@ class AnthropicProvider(BaseProvider):
                 raise AnthropicProviderError(self._classify_error(status, data), self.name)
             body = json.loads(data)
             for batch in body.get("data", []):
-                # Only an ENDED batch's results are inspectable for
-                # custom_id -- see module docstring limitation 1: an
-                # in-progress batch cannot be matched to a ref by any
-                # documented API, so it is skipped here, not guessed at.
                 if batch.get("processing_status") != "ended":
+                    unconfirmed.append(batch.get("id"))
                     continue
-                if self._ended_batch_matches_ref(batch, prefix):
+                matched = self._ended_batch_matches_ref(batch, prefix)
+                if matched is True:
                     return BatchHandle(
                         batch_id=batch["id"], provider=self.name, submit_ref=submit_ref
                     )
+                if matched is None:
+                    unconfirmed.append(batch.get("id"))
             if not body.get("has_more"):
                 break
             after_id = body.get("last_id")
             if not after_id:
                 break
+        else:
+            unconfirmed.append(f"(more than {self._max_list_pages} pages)")
+        if unconfirmed:
+            raise BatchLookupUnresolved(
+                f"{self.name}: cannot confirm whether a batch was accepted under "
+                f"{submit_ref!r}; unconfirmable: {', '.join(str(i) for i in unconfirmed)}"
+            )
         return None
 
-    def _ended_batch_matches_ref(self, batch: dict, prefix: str) -> bool:
+    def _ended_batch_matches_ref(self, batch: dict, prefix: str) -> "bool | None":
+        """True/False once the batch's results were read; ``None`` when they could not be."""
         results_url = batch.get("results_url")
         if not results_url:
-            return False
+            return None
         status, data = self._call("GET", results_url)
         if status != 200:
-            return False
+            return None
         for line in data.splitlines():
             line = line.strip()
             if not line:
@@ -590,8 +724,8 @@ class AnthropicProvider(BaseProvider):
         self, raw_line: bytes, obj: dict, by_case: "dict[str, CallRequest]"
     ) -> CallResult:
         custom_id = obj.get("custom_id", "")
-        _, _, decoded_case_id = parse_custom_id(custom_id)
-        request = by_case.get(decoded_case_id)
+        _, _, decoded_interface, decoded_case_id = parse_custom_id(custom_id)
+        request = by_case.get(custom_id)
         case_id = request.case_id if request is not None else decoded_case_id
         result = obj.get("result", {})
         kind = result.get("type")
@@ -603,12 +737,10 @@ class AnthropicProvider(BaseProvider):
                 offered = request.offered_candidates
                 labels = contract.canonical_content(request)[3]
             else:
-                # Best-effort inference across a process restart -- see
-                # module docstring limitation 2.
-                has_tool_use = any(
-                    block.get("type") == "tool_use" for block in message.get("content", [])
-                )
-                interface = "tool_call" if has_tool_use else "choice"
+                # Across a process restart the interface still comes back
+                # exactly (it is encoded in custom_id); the offered set and
+                # labels do not -- see module docstring limitation 2.
+                interface = decoded_interface
                 offered = None
                 labels = None
             answer, classification = self._answer_from_message(message, interface, offered, labels)
@@ -627,7 +759,7 @@ class AnthropicProvider(BaseProvider):
                 interface=interface,
             )
 
-        interface = request.interface if request is not None else "tool_call"
+        interface = request.interface if request is not None else decoded_interface
         if kind == "errored":
             classification = self._classify_batch_result_error(result.get("error", {}))
         elif kind == "expired":
