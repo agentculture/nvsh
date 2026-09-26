@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "unsupported_parameter",
+    "type": "invalid_request_error",
+    "message": "synthetic: this model does not support the reasoning_effort parameter"
+  }
+}
