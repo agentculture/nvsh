@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-09-26T04:16:04Z",
-  "updated": "2026-09-26T11:57:14Z",
+  "updated": "2026-09-26T15:10:55Z",
   "claims": [
     {
       "id": "c1",
@@ -1163,5 +1163,60 @@
       "status": "approved"
     }
   ],
-  "obligations": []
+  "obligations": [
+    {
+      "id": "o1",
+      "claim_id": "c10",
+      "seam": "wheel build + nvsh package source",
+      "behavior": "the nvsh wheel contains no evals files, declares no deepeval dependency, and nvsh/ never names deepeval or evals",
+      "source_text": "Nothing under nvsh/ imports deepeval, the eval suite or scripts/lfm-finetune; the runtime keeps dependencies = [] and deepeval never ships in the wheel or as a PyPI extra",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o2",
+      "claim_id": "c11",
+      "seam": "root vs evals pytest collection",
+      "behavior": "the root suite collects zero evals tests and never loads the deepeval plugin; the evals suite runs green on its own",
+      "source_text": "The suite lives in a top-level evals/ tree outside pytest testpaths, with deepeval in its own dependency group or requirements file; the main uv run pytest suite is unaffected (deepeval's auto-loaded pytest11 plugin is disabled wherever deepeval is installed alongside it); DEEPEVAL_TELEMETRY_OPT_OUT=1 is set before import and CONFIDENT_API_KEY is never used, so results stay local",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o3",
+      "claim_id": "c41",
+      "seam": "runner interrupt/continue",
+      "behavior": "an interrupted run continued later sends nothing twice, bills nothing twice and yields identical outputs",
+      "source_text": "Every run is continuous and resumable for all providers: the operator can stop a run at any point and continue it later from where it stopped, never paying twice for a call that already completed",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o4",
+      "claim_id": "c14",
+      "seam": "one command -> result.json + markdown page",
+      "behavior": "the documented fixture run produces result.json and the comparison page from committed fixtures",
+      "source_text": "One command produces a machine-readable result and a markdown comparison page with issue 64's table (variant, harness policy, top-1, ECE, Brier, coverage, abstain P/R, missing-candidate, wrong mutations) plus slice reports and per-case traces; the next fine-tune is evaluated by adding one manifest entry, without changing the dataset",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o5",
+      "claim_id": "c29",
+      "seam": "saved-output replay through the gate scoring",
+      "behavior": "replaying the candidates' saved outputs through the gate reproduces the recorded figures exactly (r3b test 79/83 right, 0 wrong mutating; a3-heal 77/83, 4 wrong mutating)",
+      "source_text": "On the release candidates the gate reproduces the recorded final figures from the saved outputs exactly (scorer-r3b.q4_k_m test 79/83 right, 0 wrong mutating, held-out missing-candidate escalation 76.7%; a3-heal.q4_k_m test 32/32 right, 2 wrong mutating), compares at least 2 harness policies and at least 4 reference models on the same test cases, and a rerun with the same inputs produces byte-identical deterministic results",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o6",
+      "claim_id": "c26",
+      "seam": "the live full gate run (run 8b59d0afa150)",
+      "behavior": "one documented command writes the JSON result, per-case traces and the comparison page for candidates, baselines and all references",
+      "source_text": "One documented command replays the saved outputs of a3-heal, scorer-r3b and baselines plus fresh reference-model runs, and writes a JSON result, per-case traces with raw and final side by side, and a markdown comparison page; adding a new checkpoint is one manifest entry",
+      "origin": "llm",
+      "status": "proposed"
+    }
+  ]
 }

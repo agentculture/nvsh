@@ -55,9 +55,12 @@ local provider starve OpenRouter and build.nvidia.com.
 1. Wait for the full run's `COMPLETE` (Discord, or `result.json` in the run
    dir). If it stops to ask (an unresolvable batch lookup, a torn billing
    line), read `drive.log` and ask the operator before anything is resent.
-2. `/validate-delivery` against the plan, with the full run's result.
-3. `/summarize-delivery`, which writes `docs/deliveries/<date>-<slug>.md` and
-   quotes deviations d1-d6 and lapses l1-l5.
+2. `/validate-delivery` was run on 2026-09-26 as an interim pass
+   (obligations o1-o6, evidence e1-e5, all proposed); after the run
+   completes, file evidence for o6 (the full run's result and page).
+3. `/summarize-delivery` wrote the interim
+   `docs/deliveries/2026-09-26-deepeval-release-gate-for-tool-jev-issue-64.md`;
+   update it in place with the full result (t24 row, claims, remaining work).
 4. Copy the aggregate report page (no case text) into `docs/benchmarks/`.
 5. The rest of t25: follow-up issues (wiring the gate into the tier stack in
    the issue-54 style; an execution eval), then the PR "part of #64" through
@@ -66,6 +69,14 @@ local provider starve OpenRouter and build.nvidia.com.
    result is committed.
 
 ## Open items
+
+- Interim read (raw policy, before judging): on Track B the frontier
+  references score 78-82/83 right, but through the Track A loop (d1) they
+  mostly answer `explain` and score 5-13/83 right. Check whether that is model
+  behaviour or a Track A contract effect before reading Track A rows as a
+  verdict.
+- The private manifest's `[budget.nvidia]` gained `timeout_seconds = 180`
+  mid-run (60 s timeouts idled four NVIDIA models).
 
 - Plan risks open: r5 (build.nvidia.com free-tier rate limit, about 36
   requests a minute, about 2800 calls to send) and r6 (an in-progress

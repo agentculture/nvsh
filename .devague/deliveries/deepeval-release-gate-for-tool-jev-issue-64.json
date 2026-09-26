@@ -2,7 +2,7 @@
   "plan_slug": "deepeval-release-gate-for-tool-jev-issue-64",
   "schema_version": 2,
   "created": "2026-09-26T06:47:33Z",
-  "updated": "2026-09-26T12:53:32Z",
+  "updated": "2026-09-26T15:11:06Z",
   "deviations": [
     {
       "id": "d1",
@@ -97,7 +97,103 @@
       "seq": 6
     }
   ],
-  "evidence": [],
+  "evidence": [
+    {
+      "id": "e1",
+      "obligation_ref": "o1",
+      "test_ref": "evals/tool_jev/tests/test_scaffold.py::test_wheel_contains_no_evals_files + test_wheel_metadata_has_no_deepeval_requires_dist + test_nvsh_package_never_mentions_deepeval_or_evals",
+      "behavior_text": "builds the wheel and asserts no evals files and no deepeval Requires-Dist; greps nvsh/ for deepeval/evals",
+      "contract_text": "Nothing under nvsh/ imports deepeval, the eval suite or scripts/lfm-finetune; dependencies = [] and deepeval never ships",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "evals suite 784 passed at f71c765 (rc 0)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-26T18:09:18+03:00",
+        "commit": "f71c765"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 7
+    },
+    {
+      "id": "e2",
+      "obligation_ref": "o2",
+      "test_ref": "evals/tool_jev/tests/test_scaffold.py::test_root_suite_collects_zero_evals_tests + test_root_suite_never_loads_the_deepeval_plugin; full root suite",
+      "behavior_text": "root collection has zero evals tests, no deepeval plugin; root suite 4710 passed / 55 skipped, evals 784 passed, both rc 0",
+      "contract_text": "The suite lives in a top-level evals/ tree outside pytest testpaths, deepeval in its own dependency group; the main suite is unaffected",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "both suites ran green at f71c765, rc taken from pytest itself",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-26T18:09:18+03:00",
+        "commit": "f71c765"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 8
+    },
+    {
+      "id": "e3",
+      "obligation_ref": "o3",
+      "test_ref": "evals/tool_jev/tests/test_run.py::test_interrupt_then_continue_gives_identical_outputs_and_sends_nothing_twice + test_item14_a_kill_after_billing_before_the_cache_never_bills_twice",
+      "behavior_text": "interrupt then continue yields identical outputs with no call sent twice; a kill between billing and cache never bills twice",
+      "contract_text": "Every run is continuous and resumable; never paying twice for a call",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "evals suite green at f71c765; also observed live: several driver redeploys of run 8b59d0afa150 resumed from the ledger",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-26T18:09:18+03:00",
+        "commit": "f71c765"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 9
+    },
+    {
+      "id": "e4",
+      "obligation_ref": "o4",
+      "test_ref": "evals/tool_jev/tests/test_readme.py::test_fixture_run_commands_reach_a_real_run_outside_the_repo",
+      "behavior_text": "runs the README's fixture-run commands in tmp and asserts a complete run with result.json and report page",
+      "contract_text": "One command produces a machine-readable result and a markdown comparison page with issue 64's table",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "evals suite green at f71c765; fixture only, the live full run has not completed yet",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-26T18:09:18+03:00",
+        "commit": "f71c765"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 10
+    },
+    {
+      "id": "e5",
+      "obligation_ref": "o5",
+      "test_ref": "scratch replay: Runner.subject_answers-equivalent + deepeval_layer.evaluate_traces(raw) on a copy of run 8b59d0afa150",
+      "behavior_text": "computed right/escalated/wrong-mutating from the saved candidate and baseline outputs via the gate's own scoring",
+      "contract_text": "the gate reproduces the recorded final figures from the saved outputs exactly",
+      "evidence_type": "observation",
+      "strength": "execution",
+      "strength_basis": "a3-heal test 77/83, 71/79, 4 wm, 0 invalid; mc 10/83 esc, 11 wm; r3b 79/83, 75/79, 0 wm; mc 68/83, 0 wm; stock 6/83, 86 invalid; b1 68/83, 1 wm -- all equal to metrics.json",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-26T18:09:18+03:00",
+        "commit": "f71c765"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 11
+    }
+  ],
   "deltas": [],
   "supersessions": []
 }
