@@ -92,6 +92,10 @@ from evals.tool_jev import metrics_bridge
 from evals.tool_jev import policies as policy_module
 from evals.tool_jev.trace import Trace, _is_inside_git_worktree
 
+#: ``invalid_reason`` of a reply the provider cut at the output budget
+#: (``track_a_loop.TRUNCATED``; repeated here so this module stays import-light).
+TRUNCATED = "truncated"
+
 
 class DeepevalLayerError(ValueError):
     """A trace this module cannot build a scorable test case from."""
@@ -214,6 +218,13 @@ def apply_policy_to_prediction(
     every policy agrees with the raw record on such a row.
     """
     validated = _resolve_policy(policy)
+    if prediction.outcome == "invalid" and prediction.invalid_reason == TRUNCATED:
+        # A reply cut at the output budget is never an answer, under any
+        # policy: its distribution is not rebuilt into a decision (issue 64,
+        # codex review of t17 item 13). Other invalid reasons keep the
+        # designed behaviour below (a harness policy may use a saved
+        # distribution).
+        return prediction
     candidates = prediction.candidates
     if not candidates:
         return prediction

@@ -206,7 +206,7 @@ _REF_LEN = 10
 _IDX_LEN = 6
 #: One letter per interface, so a result's interface is recoverable after a
 #: restart without guessing it from the response shape.
-_INTERFACE_CODES = {"tool_call": "t", "choice": "c"}
+_INTERFACE_CODES = {"tool_call": "t", "choice": "c", "text": "x"}
 _INTERFACE_BY_CODE = {code: name for name, code in _INTERFACE_CODES.items()}
 _CUSTOM_ID_MAX = 64
 _CUSTOM_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")
@@ -468,9 +468,11 @@ class AnthropicProvider(BaseProvider):
         payload: dict = {
             "model": self.model_id,
             "max_tokens": int(request.params.get("max_output_tokens", 1024)),
-            "system": system_text,
             "messages": self._messages_payload(messages),
         }
+        if system_text:
+            # A judge call ("text") has no system text; an empty one is omitted.
+            payload["system"] = system_text
         effort = request.params.get("reasoning")
         if effort:
             # `thinking` is deliberately left unset: on these models it

@@ -101,6 +101,9 @@ class SubjectSpec:
     name: str
     kind: str
     policies: tuple[str, ...]
+    #: The exact artifact this subject's answers came from (h1), when the
+    #: runner recorded one: ``{"predictions_sha256", "repo_id", "revision"}``.
+    artifact: Mapping[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -134,8 +137,16 @@ def load_manifest(run_dir: str | Path) -> RunManifest:
         policies_raw = raw.get("policies")
         if not isinstance(policies_raw, list) or not policies_raw:
             raise ReportError(f"{where}: 'policies' must be a non-empty list of policy names")
+        artifact = raw.get("artifact")
+        if artifact is not None and not isinstance(artifact, Mapping):
+            raise ReportError(f"{where}: 'artifact' must be an object")
         subjects.append(
-            SubjectSpec(name=name, kind=kind, policies=tuple(str(p) for p in policies_raw))
+            SubjectSpec(
+                name=name,
+                kind=kind,
+                policies=tuple(str(p) for p in policies_raw),
+                artifact=None if artifact is None else dict(artifact),
+            )
         )
     return RunManifest(run_id=run_id, date=date, subjects=tuple(subjects))
 
@@ -442,7 +453,7 @@ def build_row(
     bridge = load_bridge_output(run_dir, subject.name, policy)
     traces = load_traces(run_dir, subject.name)
     figures = row_figures(bridge)
-    return {
+    row = {
         "subject": subject.name,
         "kind": subject.kind,
         "policy": policy,
@@ -451,6 +462,9 @@ def build_row(
         **figures,
         "slices": row_slices(bridge, traces, permutation, subject.name, policy),
     }
+    if subject.artifact is not None:
+        row["artifact"] = dict(subject.artifact)
+    return row
 
 
 def build_result(run_dir: str | Path) -> dict:
@@ -613,6 +627,29 @@ def _render_slices(rows: Sequence[Mapping[str, Any]]) -> list[str]:
     return lines
 
 
+def _render_artifacts(rows: Sequence[Mapping[str, Any]]) -> list[str]:
+    """One line per subject that carries an artifact label (h1); nothing when none do."""
+    seen: dict[str, Mapping[str, Any]] = {}
+    for row in rows:
+        if row.get("artifact") is not None:
+            seen.setdefault(row["subject"], row["artifact"])
+    if not seen:
+        return []
+    lines = [
+        "## Artifacts",
+        "",
+        "| subject | predictions sha256 | repo id | revision |",
+        "| --- | --- | --- | --- |",
+    ]
+    for subject, artifact in seen.items():
+        lines.append(
+            f"| {subject} | {artifact.get('predictions_sha256') or '-'} | "
+            f"{artifact.get('repo_id') or '-'} | {artifact.get('revision') or '-'} |"
+        )
+    lines.append("")
+    return lines
+
+
 def _render_judge_panel(judge_panel: Any) -> list[str]:
     lines = ["## Judge panel (explain text, not a release bar)", ""]
     if judge_panel == "not_run":
@@ -664,6 +701,7 @@ def render_markdown(result: Mapping[str, Any]) -> str:
     lines.append("")
     lines.extend(_render_main_table(result["rows"]))
     lines.append("")
+    lines.extend(_render_artifacts(result["rows"]))
 
     lines.append("## Reference models")
     lines.append("")

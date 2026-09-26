@@ -66,6 +66,7 @@ token that actually answers.
 from __future__ import annotations
 
 import json
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -228,14 +229,21 @@ class RateLimiter:
         self._clock = clock
         self._sleep = sleep
         self._next_allowed: float | None = None
+        self._lock = threading.Lock()
 
     def acquire(self) -> None:
-        """Block (via the injected ``sleep``) until the next call is allowed."""
-        now = self._clock()
-        if self._next_allowed is not None and now < self._next_allowed:
-            self._sleep(self._next_allowed - now)
-            now = self._next_allowed
-        self._next_allowed = now + self._interval
+        """Block (via the injected ``sleep``) until the next call is allowed.
+
+        Thread-safe: each caller claims its own slot under a lock, then
+        sleeps outside it, so concurrent callers never share a slot. One
+        limiter may be shared by every model of one provider account.
+        """
+        with self._lock:
+            now = self._clock()
+            slot = now if self._next_allowed is None else max(now, self._next_allowed)
+            self._next_allowed = slot + self._interval
+        if slot > now:
+            self._sleep(slot - now)
 
 
 # ---------------------------------------------------------------------------
@@ -377,7 +385,8 @@ class OpenAICompatProvider(BaseProvider):
         "content"}`` -- the same shape ``nvsh.tiers.lfm`` sends the local
         candidates.
         """
-        out: list = [{"role": "system", "content": system_text}]
+        # A judge call ("text") has no system text; an empty one is omitted.
+        out: list = [{"role": "system", "content": system_text}] if system_text else []
         for message in messages:
             role = message["role"]
             if role == "assistant":
@@ -423,7 +432,7 @@ class OpenAICompatProvider(BaseProvider):
                 payload["tools"] = tools
                 forced = tool_choice_forced(request, self.forced_tool_choice)
                 payload["tool_choice"] = "required" if forced else "auto"
-        else:  # "choice"
+        elif request.interface == "choice":
             if self.capabilities.logprobs:
                 payload["logprobs"] = True
                 payload["top_logprobs"] = 20
@@ -467,7 +476,7 @@ class OpenAICompatProvider(BaseProvider):
                     return answer, None, False, False
             return None, None, True, False
 
-        # interface == "choice": the model's text, stripped.
+        # interface == "choice" or "text": the model's text, stripped.
         content = message.get("content")
         answer = content.strip() if isinstance(content, str) else ""
         _system, _user, _tools, labels = contract.canonical_content(request)
