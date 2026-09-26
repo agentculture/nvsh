@@ -13,8 +13,12 @@ to be set before that first import happens anywhere in the process:
   ``nvsh/config.py`` and ``$XDG_CONFIG_HOME/nvsh/``; deepeval's ``.env``
   auto-loading is unrelated and unwanted here).
 
-Both are set as soon as this module is imported, and only if the caller has
-not already set them (an operator's own explicit value always wins).
+Both are forced to ``1`` as soon as this module is imported. Any other value
+already in the environment is refused, not deferred to: ``0`` would re-enable
+telemetry, or let a later ``.env`` load smuggle ``CONFIDENT_API_KEY`` in after
+this guard checked it. ``evals/pytest.ini`` also disables deepeval's pytest
+plugin (``-p no:deepeval``) so pytest never imports deepeval before this
+guard runs.
 
 This package also refuses to run at all if ``CONFIDENT_API_KEY`` is set in
 the environment: that variable opts deepeval's Confident AI integration into
@@ -26,8 +30,14 @@ from __future__ import annotations
 
 import os
 
-os.environ.setdefault("DEEPEVAL_TELEMETRY_OPT_OUT", "1")
-os.environ.setdefault("DEEPEVAL_DISABLE_DOTENV", "1")
+for _name in ("DEEPEVAL_TELEMETRY_OPT_OUT", "DEEPEVAL_DISABLE_DOTENV"):
+    if os.environ.get(_name, "1") != "1":
+        raise RuntimeError(
+            f"evals.tool_jev refuses to run with {_name}={os.environ[_name]!r}: "
+            f"this suite requires {_name}=1 (no telemetry, no .env loading). "
+            f"Unset it or set it to 1."
+        )
+    os.environ[_name] = "1"
 
 if os.environ.get("CONFIDENT_API_KEY"):
     raise RuntimeError(

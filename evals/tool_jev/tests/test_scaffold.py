@@ -175,19 +175,43 @@ def test_importing_tool_jev_sets_telemetry_opt_out_before_any_deepeval_import():
     assert "OK" in result.stdout
 
 
-def test_importing_tool_jev_does_not_clobber_an_operators_explicit_opt_out_value():
-    code = (
-        "import os\n"
-        "import evals.tool_jev\n"
-        "assert os.environ['DEEPEVAL_TELEMETRY_OPT_OUT'] == '0'\n"
-        "print('OK')\n"
+@pytest.mark.parametrize("name", ["DEEPEVAL_TELEMETRY_OPT_OUT", "DEEPEVAL_DISABLE_DOTENV"])
+def test_importing_tool_jev_refuses_a_conflicting_protective_value(name):
+    # An explicit "0" would re-enable telemetry or .env loading (which can
+    # smuggle CONFIDENT_API_KEY in after the guard checked it): refuse it.
+    result = _run_probe("import evals.tool_jev\n", {name: "0"})
+    assert result.returncode != 0, f"import must fail when {name}=0"
+    assert name in result.stderr
+
+
+def test_evals_pytest_run_never_loads_the_deepeval_plugin():
+    # The real startup path: pytest itself would import deepeval's pytest11
+    # plugin before collection reaches evals.tool_jev's guard.
+    env = dict(os.environ)
+    env.pop("CONFIDENT_API_KEY", None)
+    result = subprocess.run(  # nosec B603
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-c",
+            "evals/pytest.ini",
+            "--rootdir=.",
+            "--trace-config",
+            "--collect-only",
+            "-q",
+            "-p",
+            "no:cacheprovider",
+            "evals/tool_jev/tests/test_scaffold.py",
+        ],
+        cwd=str(REPO_ROOT),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
     )
-    result = _run_probe(code, {"DEEPEVAL_TELEMETRY_OPT_OUT": "0"})
-    assert result.returncode == 0, (
-        f"probe failed (rc={result.returncode}):\n"
-        f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
-    )
-    assert "OK" in result.stdout
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "deepeval.plugins" not in result.stdout + result.stderr
 
 
 def test_importing_tool_jev_raises_if_confident_api_key_is_set():
