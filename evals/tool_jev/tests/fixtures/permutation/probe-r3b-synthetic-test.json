@@ -1,0 +1,105 @@
+{
+  "canonicalised_order": false,
+  "entries": 6,
+  "kinds": [
+    {
+      "bootstrap_note": "95% CI is a bootstrap over entries, not trials (trials of one entry are correlated)",
+      "changes": 3,
+      "ci_high": 0.14,
+      "ci_low": 0.01,
+      "entries": 6,
+      "incomplete": {"of": 60, "rate": 0.0, "trials": 0},
+      "kind": "order",
+      "label_case": {
+        "lowercase_changes": 0,
+        "lowercase_rate": null,
+        "lowercase_trials": 0,
+        "uppercase_changes": 3,
+        "uppercase_rate": 0.05,
+        "uppercase_trials": 60
+      },
+      "rate": 0.05,
+      "trials": 60
+    },
+    {
+      "bootstrap_note": "95% CI is a bootstrap over entries, not trials (trials of one entry are correlated)",
+      "changes": 2,
+      "ci_high": 0.11,
+      "ci_low": 0.0,
+      "entries": 6,
+      "incomplete": {"of": 60, "rate": 0.0, "trials": 0},
+      "kind": "letters",
+      "label_case": {
+        "lowercase_changes": 1,
+        "lowercase_rate": 0.033,
+        "lowercase_trials": 30,
+        "uppercase_changes": 1,
+        "uppercase_rate": 0.033,
+        "uppercase_trials": 30
+      },
+      "rate": 0.033,
+      "trials": 60
+    },
+    {
+      "baseline_choice_removed": {"rate": 0.1667, "removed": 1, "trials": 6},
+      "bootstrap_note": "95% CI is a bootstrap over entries, not trials (trials of one entry are correlated)",
+      "changes": 1,
+      "ci_high": 0.09,
+      "ci_low": 0.0,
+      "entries": 6,
+      "incomplete": {"of": 60, "rate": 0.0, "trials": 0},
+      "kind": "subset",
+      "label_case": {
+        "lowercase_changes": 0,
+        "lowercase_rate": null,
+        "lowercase_trials": 0,
+        "uppercase_changes": 1,
+        "uppercase_rate": 0.0167,
+        "uppercase_trials": 60
+      },
+      "rate": 0.0167,
+      "trials": 60
+    },
+    {
+      "bootstrap_note": "95% CI is a bootstrap over entries, not trials (trials of one entry are correlated)",
+      "changes": 0,
+      "ci_high": 0.05,
+      "ci_low": 0.0,
+      "entries": 6,
+      "incomplete": {"of": 20, "rate": 0.0, "trials": 0},
+      "kind": "paraphrase",
+      "label_case": {
+        "lowercase_changes": 0,
+        "lowercase_rate": null,
+        "lowercase_trials": 0,
+        "uppercase_changes": 0,
+        "uppercase_rate": 0.0,
+        "uppercase_trials": 20
+      },
+      "rate": 0.0,
+      "trials": 20
+    },
+    {
+      "bootstrap_note": "95% CI is a bootstrap over entries, not trials (trials of one entry are correlated)",
+      "changes": 5,
+      "ci_high": 0.19,
+      "ci_low": 0.03,
+      "entries": 6,
+      "incomplete": {"of": 60, "rate": 0.0, "trials": 0},
+      "kind": "all",
+      "label_case": {
+        "lowercase_changes": 2,
+        "lowercase_rate": 0.067,
+        "lowercase_trials": 30,
+        "uppercase_changes": 3,
+        "uppercase_rate": 0.1,
+        "uppercase_trials": 30
+      },
+      "rate": 0.0833,
+      "trials": 60
+    }
+  ],
+  "per_entry": 10,
+  "reasons": false,
+  "seed": "53"
+}

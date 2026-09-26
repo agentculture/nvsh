@@ -1,0 +1,29 @@
+{
+  "canonicalised_order": false,
+  "entries": 2,
+  "kinds": [
+    {
+      "bootstrap_note": "95% CI is a bootstrap over entries, not trials (trials of one entry are correlated)",
+      "changes": 0,
+      "ci_high": 0.05,
+      "ci_low": 0.0,
+      "entries": 2,
+      "incomplete": {"of": 20, "rate": 0.0, "trials": 0},
+      "kind": "order",
+      "label_case": {
+        "lowercase_changes": 0,
+        "lowercase_rate": null,
+        "lowercase_trials": 0,
+        "uppercase_changes": 0,
+        "uppercase_rate": 0.0,
+        "uppercase_trials": 20
+      },
+      "rate": 0.0,
+      "trials": 20
+    }
+  ],
+  "per_entry": 10,
+  "reasons": false,
+  "seed": "1",
+  "split": "test"
+}
