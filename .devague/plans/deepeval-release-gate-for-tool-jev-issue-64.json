@@ -5,7 +5,7 @@
   "schema_version": 5,
   "status": "exported",
   "created": "2026-09-26T04:58:49Z",
-  "updated": "2026-09-26T05:03:02Z",
+  "updated": "2026-09-26T06:22:56Z",
   "targets": [
     {
       "id": "c1",
@@ -965,6 +965,30 @@
       "text": "build.nvidia.com free tier (~40 RPM, unpublished per-model limits) may throttle ~5 hosted models x 562 calls; a full NVIDIA pass may take hours and hit daily caps",
       "kind": "unknown_nonblocking",
       "task_id": "t14",
+      "resolved": false,
+      "resolution": ""
+    },
+    {
+      "id": "r6",
+      "text": "Anthropic Message Batches cannot match an IN-PROGRESS batch to our submit ref (no batch metadata; custom_ids only visible after the batch ends): a crash between Anthropic accepting a batch and the ledger's mark_submitted could lead to a resubmit and double charge. Mitigation for the runner (t17): mark_submitted immediately after the create call returns; on continue, an unresolvable Anthropic orphan stops the run and asks the operator instead of resubmitting",
+      "kind": "unknown_nonblocking",
+      "task_id": "t17",
+      "resolved": false,
+      "resolution": ""
+    },
+    {
+      "id": "r7",
+      "text": "claude-opus-5-5 rejects forced tool use (tool_choice any/tool -> HTTP 400, per Anthropic errors doc): the tool_call interface must send tool_choice auto for that model (a per-model capability), and an answer without a tool call counts as a malformed answer",
+      "kind": "unknown_nonblocking",
+      "task_id": "t13",
+      "resolved": false,
+      "resolution": ""
+    },
+    {
+      "id": "r8",
+      "text": "The three adapters emit different answer shapes for a tool call (t12: operation=tool name; t14: operation read from the arguments blob; t11 parse_tool_call expects the raw {name, arguments} call) and their fixtures use invented tool names instead of nvsh's real propose/explain/escalate tools, so no test crosses adapter -> parser",
+      "kind": "unknown_nonblocking",
+      "task_id": "t11",
       "resolved": false,
       "resolution": ""
     }

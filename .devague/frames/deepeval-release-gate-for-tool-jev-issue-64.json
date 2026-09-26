@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-09-26T04:16:04Z",
-  "updated": "2026-09-26T05:32:36Z",
+  "updated": "2026-09-26T05:45:55Z",
   "claims": [
     {
       "id": "c1",
@@ -1125,6 +1125,17 @@
       "refs": [
         "scope entry on .github/workflows/tests.yml + pyproject pytest config",
         "task t1"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l3",
+      "code": "grader-unverified",
+      "what": "t10 task agent reported scan-secrets clean, but it ran the scan before committing; scan-secrets only scans git-tracked files, so its own new test file with five sk-... literals was never scanned; my t10 merge gate also skipped scan-secrets after merge (the root suite caught it)",
+      "skipped_check": "run scan-secrets after git add / after merge",
+      "refs": [
+        "task t10"
       ],
       "origin": "llm",
       "status": "proposed"
