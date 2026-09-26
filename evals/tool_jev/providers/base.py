@@ -21,6 +21,14 @@ non-overridable entry points that call a private ``_send_*`` method the
 subclass implements; the public methods do the guard + redaction, then
 hand a *redacted* request to the subclass.
 
+Batch crash recovery: the ledger issues a submit ref
+(``Ledger.begin_submit``) *before* the provider call. ``submit_batch``
+takes that ref and the adapter stores it with the batch on the provider's
+side (batch metadata, or a custom-id prefix), so after a crash between
+provider acceptance and ``Ledger.mark_submitted`` the runner calls
+``find_batch(ref)``: a found handle is re-attached, ``None`` means the
+batch never reached the provider and the keys can be abandoned and resent.
+
 Reading provider API keys is deliberately *not* this module's job for
 literal values: :func:`read_api_key` only ever accepts an **environment
 variable name** (never a literal key) and reads it from ``os.environ`` at
@@ -40,6 +48,9 @@ from typing import Protocol, runtime_checkable
 from nvsh.redact import redact
 
 from .errors import Outcome
+
+#: The two answer interfaces a request can use (tool call vs. constrained choice).
+INTERFACES = frozenset({"tool_call", "choice"})
 
 #: Split tags that must never reach a network call. Both spellings from the
 #: issue-64 spec: the plain held-out set and its missing-candidate slice.
@@ -110,11 +121,32 @@ class CallRequest:
     prompt: str = ""
     offered_candidates: tuple[str, ...] = ()
     params: dict = field(default_factory=dict)
+    interface: str = "tool_call"
+
+    def __post_init__(self) -> None:
+        if self.interface not in INTERFACES:
+            raise ValueError(f"interface must be one of {sorted(INTERFACES)}: {self.interface!r}")
 
 
 @dataclass(frozen=True)
 class CallResult:
-    """The outcome of one call, whether synchronous or fetched from a batch."""
+    """The outcome of one call, whether synchronous or fetched from a batch.
+
+    Beyond the classified answer it carries everything downstream needs
+    without adapter-specific access:
+
+    - ``candidates``: the full candidate -> probability distribution, in the
+      order the provider/offered set gave it, **only** when the provider
+      actually returned logprobs; ``None`` otherwise. Never estimated.
+    - ``raw``: the exact provider response bytes (what the ledger cache
+      stores as ``CachedResponse.raw``).
+    - ``response_id``: the provider's own id for this response.
+    - ``returned_model``: the model id the provider *reported* (may differ
+      from the requested ``model_id``, e.g. a dated snapshot).
+    - ``usage``: token counts where reported (``input_tokens``,
+      ``output_tokens``, ``reasoning_tokens``, ...), ints only.
+    - ``interface``: ``"tool_call"`` or ``"choice"``.
+    """
 
     case_id: str
     outcome: Outcome
@@ -122,14 +154,38 @@ class CallResult:
     reason: str = ""
     provider: str = ""
     model_id: str | None = None
+    candidates: dict[str, float] | None = None
+    raw: bytes = b""
+    response_id: str = ""
+    returned_model: str | None = None
+    usage: dict[str, int] = field(default_factory=dict)
+    interface: str = "tool_call"
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.raw, bytes):
+            raise TypeError("CallResult.raw must be bytes (the exact provider response)")
+        for name, value in self.usage.items():
+            if not isinstance(value, int) or isinstance(value, bool):
+                raise TypeError(f"usage[{name!r}] must be an int, got {value!r}")
+        if self.interface not in INTERFACES:
+            raise ValueError(f"interface must be one of {sorted(INTERFACES)}: {self.interface!r}")
+        if self.candidates is not None:
+            for name, value in self.candidates.items():
+                if not isinstance(value, (int, float)) or isinstance(value, bool):
+                    raise TypeError(f"candidates[{name!r}] must be a probability, got {value!r}")
 
 
 @dataclass(frozen=True)
 class BatchHandle:
-    """Opaque handle returned by ``submit_batch``, re-attachable across a resume."""
+    """Opaque handle returned by ``submit_batch``, re-attachable across a resume.
+
+    ``submit_ref`` is the ledger's submit ref the batch was submitted under
+    (empty only for a handle built by hand).
+    """
 
     batch_id: str
     provider: str
+    submit_ref: str = ""
 
 
 @dataclass(frozen=True)
@@ -146,7 +202,7 @@ class Provider(Protocol):
     """The provider-agnostic surface every adapter (and the fake) presents.
 
     The runner (a later task) and the ledger (t9) only ever call these
-    four methods plus read ``name``/``capabilities`` — never anything
+    five methods plus read ``name``/``capabilities`` — never anything
     provider-specific.
     """
 
@@ -155,7 +211,9 @@ class Provider(Protocol):
 
     def submit_sync(self, request: CallRequest) -> CallResult: ...
 
-    def submit_batch(self, requests: list[CallRequest]) -> BatchHandle: ...
+    def submit_batch(self, requests: list[CallRequest], submit_ref: str) -> BatchHandle: ...
+
+    def find_batch(self, submit_ref: str) -> BatchHandle | None: ...
 
     def poll_batch(self, handle: BatchHandle) -> BatchStatus: ...
 
@@ -177,14 +235,20 @@ def _redacted_request(request: CallRequest) -> CallRequest:
     )
 
 
+def _require_submit_ref(submit_ref: str) -> None:
+    if not isinstance(submit_ref, str) or not submit_ref.strip():
+        raise ValueError("submit_ref must be the non-empty ref from Ledger.begin_submit")
+
+
 class BaseProvider(ABC):
     """Common enforcement every concrete provider adapter inherits.
 
-    Subclasses implement ``_send_sync``, ``_send_batch``, ``_check_batch``
-    and ``_collect_batch`` — the real transport code. They never override
-    ``submit_sync`` / ``submit_batch`` / ``poll_batch`` / ``fetch_batch``
-    themselves, which keeps the held-out guard and the redaction choke
-    point in one place, unskippable by any one adapter.
+    Subclasses implement ``_send_sync``, ``_send_batch``, ``_find_batch``,
+    ``_check_batch`` and ``_collect_batch`` — the real transport code. They
+    never override ``submit_sync`` / ``submit_batch`` / ``find_batch`` /
+    ``poll_batch`` / ``fetch_batch`` themselves, which keeps the held-out
+    guard and the redaction choke point in one place, unskippable by any one
+    adapter.
     """
 
     name: str
@@ -201,10 +265,15 @@ class BaseProvider(ABC):
         self._refuse_heldout(request)
         return self._send_sync(_redacted_request(request))
 
-    def submit_batch(self, requests: list[CallRequest]) -> BatchHandle:
+    def submit_batch(self, requests: list[CallRequest], submit_ref: str) -> BatchHandle:
+        _require_submit_ref(submit_ref)
         for one in requests:
             self._refuse_heldout(one)
-        return self._send_batch([_redacted_request(one) for one in requests])
+        return self._send_batch([_redacted_request(one) for one in requests], submit_ref)
+
+    def find_batch(self, submit_ref: str) -> BatchHandle | None:
+        _require_submit_ref(submit_ref)
+        return self._find_batch(submit_ref)
 
     def poll_batch(self, handle: BatchHandle) -> BatchStatus:
         return self._check_batch(handle)
@@ -217,8 +286,17 @@ class BaseProvider(ABC):
         """Send one already-guarded, already-redacted request."""
 
     @abstractmethod
-    def _send_batch(self, requests: list[CallRequest]) -> BatchHandle:
-        """Submit already-guarded, already-redacted requests as a batch."""
+    def _send_batch(self, requests: list[CallRequest], submit_ref: str) -> BatchHandle:
+        """Submit already-guarded, already-redacted requests as a batch.
+
+        Must store ``submit_ref`` with the batch on the provider's side
+        (batch metadata or a custom-id prefix) so ``_find_batch`` can find
+        it after a crash, and return a handle whose ``submit_ref`` is set.
+        """
+
+    @abstractmethod
+    def _find_batch(self, submit_ref: str) -> BatchHandle | None:
+        """Look up a batch the provider accepted under ``submit_ref``; None if none."""
 
     @abstractmethod
     def _check_batch(self, handle: BatchHandle) -> BatchStatus:

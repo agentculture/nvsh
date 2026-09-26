@@ -17,8 +17,9 @@ plain data and never executed.
 
 from __future__ import annotations
 
+import json
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from .base import (
     BaseProvider,
@@ -33,23 +34,48 @@ from .errors import Classification, classify_answer, classify_transport
 #: Scripted outcome kinds FakeProvider understands.
 ANSWER_KINDS = frozenset({"answer"})
 ANSWER_FAILURE_KINDS = frozenset({"refusal", "malformed"})
-INFRA_KINDS = frozenset({"402", "429", "timeout", "network", "reset", "batch_expired"})
-ALL_KINDS = ANSWER_KINDS | ANSWER_FAILURE_KINDS | INFRA_KINDS
-
-_STATUS_BY_KIND = {"402": 402, "429": 429, "timeout": 408}
+_STATUS_BY_KIND = {
+    "402": 402,
+    "429": 429,
+    "timeout": 408,
+    "400": 400,
+    "401": 401,
+    "403": 403,
+    "404": 404,
+    "422": 422,
+}
 _ERROR_TYPE_BY_KIND = {
     "network": "network_error",
     "reset": "connection_reset",
     "batch_expired": "batch_expired",
+    "invalid_request": "invalid_request",
+    "auth_failed": "auth_failed",
+    "model_not_found": "model_not_found",
+    "unsupported_parameter": "unsupported_parameter",
 }
+#: Transient stops (retryable) and permanent request rejections (not retryable).
+TRANSIENT_KINDS = frozenset({"402", "429", "timeout", "network", "reset", "batch_expired"})
+REJECTED_KINDS = (frozenset(_STATUS_BY_KIND) | frozenset(_ERROR_TYPE_BY_KIND)) - TRANSIENT_KINDS
+INFRA_KINDS = TRANSIENT_KINDS | REJECTED_KINDS
+ALL_KINDS = ANSWER_KINDS | ANSWER_FAILURE_KINDS | INFRA_KINDS
 
 
 @dataclass(frozen=True)
 class ScriptedOutcome:
-    """One scripted outcome. ``kind`` is one of :data:`ALL_KINDS`."""
+    """One scripted outcome. ``kind`` is one of :data:`ALL_KINDS`.
+
+    ``candidates`` scripts a logprob distribution (only allowed when the
+    fake's capabilities say ``logprobs=True`` — a provider without logprobs
+    never yields one). ``usage`` scripts reported token counts. ``raw``
+    overrides the synthetic response bytes (default: a small deterministic
+    JSON document built from the answer).
+    """
 
     kind: str
     answer: str | None = None
+    candidates: dict[str, float] | None = None
+    usage: dict[str, int] = field(default_factory=dict)
+    raw: bytes | None = None
 
 
 class FakeProviderError(Exception):
@@ -66,6 +92,15 @@ class FakeProviderError(Exception):
         self.provider = provider
         self.case_id = case_id
         super().__init__(f"{provider}: {classification.reason} on case {case_id!r}")
+
+
+class DuplicateSubmitRef(ValueError):
+    """Raised when a batch is submitted under a submit ref already accepted.
+
+    A real provider would silently accept (and charge for) the second batch;
+    the fake refuses so a test catches a runner that resubmits instead of
+    calling ``find_batch`` first.
+    """
 
 
 class ScriptExhausted(AssertionError):
@@ -106,6 +141,9 @@ class FakeProvider(BaseProvider):
         outcomes against (``"openai"``, ``"anthropic"`` or
         ``"openai_compat"``, all identical today). Defaults to
         ``"openai_compat"``.
+    model:
+        The model id the fake *reports* on every result
+        (``CallResult.returned_model``).
     """
 
     def __init__(
@@ -115,8 +153,10 @@ class FakeProvider(BaseProvider):
         capabilities: ProviderCapabilities | None = None,
         script: list | None = None,
         provider_kind: str = "openai_compat",
+        model: str = "fake-model",
     ) -> None:
         self.name = name
+        self.model = model
         self.capabilities = capabilities or ProviderCapabilities(
             logprobs=True, batch=True, reasoning=False
         )
@@ -126,10 +166,16 @@ class FakeProvider(BaseProvider):
         self.received: list[CallRequest] = []
         self._batches: dict[str, list[CallRequest]] = {}
         self._batch_counter = 0
+        self._response_counter = 0
+        #: Every submit ref a batch was accepted under, in order ("server side").
+        self.submitted_refs: list[str] = []
+        self._batch_by_ref: dict[str, BatchHandle] = {}
+        #: Every ref ``find_batch`` was asked about.
+        self.finds: list[str] = []
 
-    def queue(self, kind: str, answer: str | None = None) -> None:
+    def queue(self, kind: str, answer: str | None = None, **extra) -> None:
         """Append one more scripted outcome (e.g. to simulate a top-up)."""
-        self._script.append(ScriptedOutcome(kind=kind, answer=answer))
+        self._script.append(ScriptedOutcome(kind=kind, answer=answer, **extra))
 
     def remaining_script(self) -> int:
         return len(self._script)
@@ -141,34 +187,48 @@ class FakeProvider(BaseProvider):
             )
         return self._script.popleft()
 
+    def _result(
+        self, request: CallRequest, outcome: ScriptedOutcome, classification: Classification
+    ) -> CallResult:
+        if outcome.candidates is not None and not self.capabilities.logprobs:
+            raise ValueError(
+                f"{self.name}: scripted a candidate distribution but capabilities say "
+                "logprobs=False; a provider without logprobs never returns one"
+            )
+        self._response_counter += 1
+        response_id = f"{self.name}-resp-{self._response_counter}"
+        raw = outcome.raw
+        if raw is None:
+            raw = json.dumps(
+                {"id": response_id, "model": self.model, "answer": outcome.answer},
+                sort_keys=True,
+            ).encode("utf-8")
+        return CallResult(
+            case_id=request.case_id,
+            outcome=classification.outcome,
+            answer=outcome.answer,
+            reason=classification.reason,
+            provider=self.name,
+            candidates=dict(outcome.candidates) if outcome.candidates is not None else None,
+            raw=raw,
+            response_id=response_id,
+            returned_model=self.model,
+            usage=dict(outcome.usage),
+            interface=request.interface,
+        )
+
     def _resolve(self, request: CallRequest, outcome: ScriptedOutcome) -> CallResult:
         if outcome.kind in ANSWER_KINDS:
             classification = classify_answer(outcome.answer, request.offered_candidates or None)
-            return CallResult(
-                case_id=request.case_id,
-                outcome=classification.outcome,
-                answer=outcome.answer,
-                reason=classification.reason,
-                provider=self.name,
-            )
+            return self._result(request, outcome, classification)
         if outcome.kind == "refusal":
-            classification = classify_answer(outcome.answer or "I cannot help with that request.")
-            return CallResult(
-                case_id=request.case_id,
-                outcome=classification.outcome,
-                answer=outcome.answer,
-                reason=classification.reason,
-                provider=self.name,
-            )
+            # Structural refusal (the provider's own refusal signal), whatever
+            # the text says.
+            classification = classify_answer(outcome.answer, refused=True)
+            return self._result(request, outcome, classification)
         if outcome.kind == "malformed":
             classification = classify_answer(outcome.answer, malformed=True)
-            return CallResult(
-                case_id=request.case_id,
-                outcome=classification.outcome,
-                answer=outcome.answer,
-                reason=classification.reason,
-                provider=self.name,
-            )
+            return self._result(request, outcome, classification)
         if outcome.kind in _STATUS_BY_KIND:
             classification = classify_transport(
                 self.provider_kind, status_code=_STATUS_BY_KIND[outcome.kind]
@@ -188,12 +248,24 @@ class FakeProvider(BaseProvider):
         outcome = self._next_outcome(request.case_id)
         return self._resolve(request, outcome)
 
-    def _send_batch(self, requests: list[CallRequest]) -> BatchHandle:
+    def _send_batch(self, requests: list[CallRequest], submit_ref: str) -> BatchHandle:
+        if submit_ref in self._batch_by_ref:
+            raise DuplicateSubmitRef(
+                f"{self.name}: submit ref {submit_ref!r} was already accepted as "
+                f"{self._batch_by_ref[submit_ref].batch_id!r}; call find_batch first"
+            )
         self._batch_counter += 1
         batch_id = f"{self.name}-batch-{self._batch_counter}"
+        handle = BatchHandle(batch_id=batch_id, provider=self.name, submit_ref=submit_ref)
         self._batches[batch_id] = list(requests)
+        self._batch_by_ref[submit_ref] = handle
+        self.submitted_refs.append(submit_ref)
         self.received.extend(requests)
-        return BatchHandle(batch_id=batch_id, provider=self.name)
+        return handle
+
+    def _find_batch(self, submit_ref: str) -> BatchHandle | None:
+        self.finds.append(submit_ref)
+        return self._batch_by_ref.get(submit_ref)
 
     def _check_batch(self, handle: BatchHandle) -> BatchStatus:
         return BatchStatus(batch_id=handle.batch_id, complete=True)

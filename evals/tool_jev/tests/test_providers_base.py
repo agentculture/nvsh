@@ -256,7 +256,7 @@ def test_heldout_guard_also_covers_submit_batch():
     ]
     provider = fake.FakeProvider(script=[])
     with pytest.raises(base.HeldoutSplitRefused):
-        provider.submit_batch(requests)
+        provider.submit_batch(requests, submit_ref="tj-ref-g")
     assert provider.received == []
 
 
@@ -294,7 +294,7 @@ def test_batch_round_trip():
     requests = _make_requests(2)
     provider = fake.FakeProvider(script=[("answer", "A0"), ("answer", "A1")])
 
-    handle = provider.submit_batch(requests)
+    handle = provider.submit_batch(requests, submit_ref="tj-ref-rt")
     status = provider.poll_batch(handle)
     assert status.complete is True
     assert status.expired is False
@@ -311,7 +311,7 @@ def test_batch_is_also_redacted_and_heldout_guarded():
         case_text=f"Authorization: Bearer {FAKE_OPENAI_KEY}",
     )
     provider = fake.FakeProvider(script=[("answer", "ok")])
-    handle = provider.submit_batch([hostile])
+    handle = provider.submit_batch([hostile], submit_ref="tj-ref-h")
     provider.fetch_batch(handle)
     assert FAKE_OPENAI_KEY not in provider.received[0].case_text
 
@@ -346,3 +346,335 @@ def test_read_api_key_reads_only_the_named_env_var(monkeypatch):
 
     monkeypatch.setenv("SOME_PROVIDER_API_KEY", "synthetic-test-value")
     assert base.read_api_key("SOME_PROVIDER_API_KEY") == "synthetic-test-value"
+
+
+# ---------------------------------------------------------------------------
+# Review fix P1: batch crash recovery through the Provider API itself.
+#
+# The ledger hands the runner a submit ref (``Ledger.begin_submit``) BEFORE
+# the provider call. The provider must carry that ref with the batch and be
+# able to find the batch by it, so a batch accepted just before a crash is
+# re-attached, never paid for twice.
+# ---------------------------------------------------------------------------
+
+
+def test_submit_batch_carries_the_submit_ref_on_the_handle():
+    provider = fake.FakeProvider(script=[("answer", "A0")])
+    handle = provider.submit_batch(_make_requests(1), submit_ref="tj-ref-1")
+    assert handle.submit_ref == "tj-ref-1"
+    assert provider.submitted_refs == ["tj-ref-1"]
+
+
+def test_find_batch_returns_the_accepted_batch_and_none_for_an_unknown_ref():
+    provider = fake.FakeProvider(script=[("answer", "A0"), ("answer", "A1")])
+    handle = provider.submit_batch(_make_requests(2), submit_ref="tj-ref-1")
+
+    found = provider.find_batch("tj-ref-1")
+    assert found == handle
+    assert provider.find_batch("tj-never-submitted") is None
+    # Re-attaching through the found handle fetches the original batch.
+    assert [r.answer for r in provider.fetch_batch(found)] == ["A0", "A1"]
+
+
+@pytest.mark.parametrize("bad_ref", ["", "   "])
+def test_submit_batch_and_find_batch_refuse_an_empty_submit_ref(bad_ref):
+    provider = fake.FakeProvider(script=[])
+    with pytest.raises(ValueError):
+        provider.submit_batch(_make_requests(1), submit_ref=bad_ref)
+    with pytest.raises(ValueError):
+        provider.find_batch(bad_ref)
+    assert provider.received == []
+
+
+def test_fake_refuses_to_accept_the_same_submit_ref_twice():
+    """A resubmission under the same ref is exactly the double charge P1 is about."""
+    provider = fake.FakeProvider(script=[])
+    provider.submit_batch(_make_requests(1), submit_ref="tj-ref-1")
+    with pytest.raises(fake.DuplicateSubmitRef):
+        provider.submit_batch(_make_requests(1), submit_ref="tj-ref-1")
+
+
+def test_heldout_guard_runs_before_submit_ref_is_recorded():
+    provider = fake.FakeProvider(script=[])
+    with pytest.raises(base.HeldoutSplitRefused):
+        provider.submit_batch(_make_requests(1, split="heldout-mc"), submit_ref="tj-ref-1")
+    assert provider.submitted_refs == []
+    assert provider.find_batch("tj-ref-1") is None
+
+
+def test_ledger_orphan_is_recovered_via_find_batch_not_resubmitted(tmp_path):
+    """End to end with the real ledger: crash after acceptance, before mark_submitted."""
+    from evals.tool_jev.ledger import DONE, CachedResponse, CallSpec, Ledger, prompt_hash
+
+    specs = [
+        CallSpec(
+            provider="fake",
+            model="fake-model",
+            subject_role="subject",
+            case_id=f"case-{i}",
+            target="interface:tool",
+            prompt_hash=prompt_hash(f"synthetic prompt {i}"),
+        )
+        for i in range(2)
+    ]
+    provider = fake.FakeProvider(script=[("answer", "A0"), ("answer", "A1")])
+
+    with Ledger(tmp_path) as led:
+        keys = led.register_many(specs)
+        submit_ref = led.begin_submit(keys)
+        requests = [base.CallRequest(case_id=k, split="test", case_text="synthetic") for k in keys]
+        provider.submit_batch(requests, submit_ref=submit_ref)
+        # power-off here: mark_submitted never ran
+
+    with Ledger(tmp_path) as led:
+        plan = led.continue_plan()
+        assert plan.orphans == {submit_ref: sorted(keys)}
+        for ref, orphan_keys in plan.orphans.items():
+            handle = provider.find_batch(ref)
+            assert handle is not None
+            led.mark_submitted(orphan_keys, handle.batch_id)
+        for batch_id in led.submitted_batches():
+            handle = provider.find_batch(submit_ref)
+            assert handle.batch_id == batch_id
+            assert provider.poll_batch(handle).complete
+            for result in provider.fetch_batch(handle):
+                led.record_done(
+                    result.case_id,
+                    CachedResponse(
+                        raw=result.raw,
+                        model_id=result.returned_model,
+                        response_id=result.response_id,
+                        usage=result.usage,
+                    ),
+                )
+        assert led.keys(DONE) == sorted(keys)
+
+    assert provider.submitted_refs == [submit_ref]  # accepted once, never resubmitted
+    assert len(provider.received) == 2
+
+
+# ---------------------------------------------------------------------------
+# Review fix P2: CallResult carries what the runner and cache need.
+# ---------------------------------------------------------------------------
+
+
+def test_call_result_defaults_keep_the_fake_easy_to_script():
+    result = base.CallResult(case_id="c", outcome=errors.Outcome.OK)
+    assert result.candidates is None
+    assert result.raw == b""
+    assert result.response_id == ""
+    assert result.returned_model is None
+    assert result.usage == {}
+    assert result.interface == "tool_call"
+
+
+def test_call_result_validates_its_new_fields():
+    with pytest.raises(TypeError):
+        base.CallResult(case_id="c", outcome=errors.Outcome.OK, raw="not bytes")
+    with pytest.raises(TypeError):
+        base.CallResult(case_id="c", outcome=errors.Outcome.OK, usage={"input": 1.5})
+    with pytest.raises(ValueError):
+        base.CallResult(case_id="c", outcome=errors.Outcome.OK, interface="freeform")
+    with pytest.raises(TypeError):
+        base.CallResult(case_id="c", outcome=errors.Outcome.OK, candidates={"a": "high"})
+
+
+def test_fake_result_carries_raw_response_id_model_usage_and_interface():
+    provider = fake.FakeProvider(
+        name="acme",
+        model="acme-model-2",
+        script=[
+            fake.ScriptedOutcome(
+                "answer", "disk_usage", usage={"input_tokens": 12, "output_tokens": 3}
+            )
+        ],
+    )
+    request = base.CallRequest(
+        case_id="c1",
+        split="test",
+        case_text="synthetic",
+        offered_candidates=("disk_usage", "(explain)"),
+        interface="choice",
+    )
+    result = provider.submit_sync(request)
+    assert isinstance(result.raw, bytes) and result.raw
+    assert b"disk_usage" in result.raw
+    assert result.response_id
+    assert result.returned_model == "acme-model-2"
+    assert result.usage == {"input_tokens": 12, "output_tokens": 3}
+    assert result.interface == "choice"
+    # No logprobs scripted -> no distribution, never an estimated one.
+    assert result.candidates is None
+
+
+def test_fake_result_carries_a_scripted_distribution_in_offered_order():
+    distribution = {"disk_usage": 0.5, "(explain)": 0.5}
+    provider = fake.FakeProvider(
+        script=[fake.ScriptedOutcome("answer", "disk_usage", candidates=distribution)]
+    )
+    request = base.CallRequest(
+        case_id="c1",
+        split="test",
+        case_text="synthetic",
+        offered_candidates=("disk_usage", "(explain)"),
+    )
+    result = provider.submit_sync(request)
+    assert result.candidates == distribution
+    assert list(result.candidates) == ["disk_usage", "(explain)"]
+
+
+def test_fake_without_logprobs_refuses_a_scripted_distribution():
+    provider = fake.FakeProvider(
+        capabilities=base.ProviderCapabilities(logprobs=False, batch=True, reasoning=False),
+        script=[fake.ScriptedOutcome("answer", "a", candidates={"a": 1.0})],
+    )
+    with pytest.raises(ValueError):
+        provider.submit_sync(base.CallRequest(case_id="c", split="test", case_text="x"))
+
+
+def test_call_request_rejects_an_unknown_interface():
+    with pytest.raises(ValueError):
+        base.CallRequest(case_id="c", split="test", case_text="x", interface="freeform")
+
+
+# ---------------------------------------------------------------------------
+# Review fix P2: refusal is structural only, never a substring guess.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "I cannot determine disk usage from this output; run df -h.",
+        "I can't see a mount point here, so check lsblk first.",
+        "As an AI reading this log, the failing step is the nvcc call.",
+    ],
+)
+def test_explanation_that_mentions_inability_is_ok_not_refusal(text):
+    classification = errors.classify_answer(text)
+    assert classification.outcome == errors.Outcome.OK
+
+
+def test_structural_refusal_is_invalid_even_with_empty_text():
+    classification = errors.classify_answer(None, refused=True)
+    assert classification.outcome == errors.Outcome.INVALID
+    assert classification.reason == "refusal"
+    assert errors.classify_answer("some text", refused=True).reason == "refusal"
+
+
+def test_no_refusal_phrase_table_remains():
+    assert not hasattr(errors, "_REFUSAL_MARKERS")
+    assert not hasattr(errors, "_looks_like_refusal")
+
+
+def test_fake_refusal_kind_is_a_structural_refusal():
+    provider = fake.FakeProvider(script=[("refusal", "Here is a normal-looking sentence.")])
+    result = provider.submit_sync(base.CallRequest(case_id="c", split="test", case_text="x"))
+    assert result.outcome == errors.Outcome.INVALID
+    assert result.reason == "refusal"
+
+
+def test_empty_malformed_and_outside_set_stay_invalid():
+    assert errors.classify_answer("").reason == "empty_answer"
+    assert errors.classify_answer("x", malformed=True).reason == "malformed"
+    assert errors.classify_answer("z", ("a", "b")).reason == "outside_offered_set"
+
+
+# ---------------------------------------------------------------------------
+# Review fix P2: permanent request errors stop, non-retryable, distinct reason.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("provider_kind", ["openai", "anthropic", "openai_compat"])
+@pytest.mark.parametrize("status_code", [400, 401, 403, 404, 422])
+def test_permanent_http_errors_are_request_rejected_not_retryable(provider_kind, status_code):
+    c = errors.classify_transport(provider_kind, status_code=status_code)
+    assert c.outcome == errors.Outcome.PENDING  # never INVALID, never in the denominator
+    assert c.stop is True
+    assert c.retryable is False
+    assert c.reason.startswith(errors.REQUEST_REJECTED_PREFIX)
+    assert c.rejected is True
+
+
+@pytest.mark.parametrize(
+    "error_type", ["invalid_request", "auth_failed", "model_not_found", "unsupported_parameter"]
+)
+def test_named_permanent_errors_are_request_rejected_with_detail(error_type):
+    c = errors.classify_transport("openai", error_type=error_type)
+    assert c.outcome == errors.Outcome.PENDING
+    assert c.stop is True
+    assert c.retryable is False
+    assert c.reason == f"request_rejected:{error_type}"
+
+
+def test_named_error_type_is_more_specific_than_a_generic_400():
+    c = errors.classify_transport("openai", status_code=400, error_type="unsupported_parameter")
+    assert c.reason == "request_rejected:unsupported_parameter"
+
+
+@pytest.mark.parametrize("status_code", [402, 408, 429, 500, 502, 503, 504])
+def test_transient_http_errors_stay_retryable(status_code):
+    c = errors.classify_transport("anthropic", status_code=status_code)
+    assert c.outcome == errors.Outcome.PENDING
+    assert c.stop is True
+    assert c.retryable is True
+    assert c.rejected is False
+
+
+@pytest.mark.parametrize(
+    "error_type",
+    [
+        "insufficient_quota",
+        "budget_cap_reached",
+        "rate_limited",
+        "timeout",
+        "network_error",
+        "connection_reset",
+        "batch_expired",
+    ],
+)
+def test_transient_named_errors_stay_retryable(error_type):
+    c = errors.classify_transport("openai_compat", error_type=error_type)
+    assert c.retryable is True
+    assert not c.reason.startswith(errors.REQUEST_REJECTED_PREFIX)
+
+
+def test_answer_classifications_are_not_retryable():
+    assert errors.classify_answer("ok").retryable is False
+    assert errors.classify_answer("").retryable is False
+
+
+def test_stop_message_says_which_case_it_is():
+    rejected = errors.classify_transport("openai", status_code=401)
+    transient = errors.classify_transport("openai", status_code=429)
+
+    rejected_msg = errors.stop_message("acme", rejected, 5)
+    transient_msg = errors.stop_message("acme", transient, 5)
+
+    assert "acme" in rejected_msg and "5" in rejected_msg
+    assert "request_rejected:auth_failed" in rejected_msg
+    assert "not retryable" in rejected_msg
+    assert "fix the manifest/params, then continue" in rejected_msg
+
+    assert "acme" in transient_msg and "5" in transient_msg
+    assert "rate_limited" in transient_msg
+    assert "transient" in transient_msg
+    assert "fix the manifest" not in transient_msg
+
+
+@pytest.mark.parametrize("kind", ["400", "401", "403", "404", "422", "model_not_found"])
+def test_fake_request_rejected_kinds_raise_a_non_retryable_stop(kind):
+    provider = fake.FakeProvider(name="acme", script=[kind])
+    with pytest.raises(fake.FakeProviderError) as info:
+        provider.submit_sync(base.CallRequest(case_id="c", split="test", case_text="x"))
+    assert info.value.classification.retryable is False
+    assert info.value.classification.rejected is True
+
+
+def test_fake_transient_and_rejected_kinds_are_disjoint_and_classified_to_match():
+    assert not (fake.TRANSIENT_KINDS & fake.REJECTED_KINDS)
+    for kind in sorted(fake.INFRA_KINDS):
+        provider = fake.FakeProvider(script=[kind])
+        with pytest.raises(fake.FakeProviderError) as info:
+            provider.submit_sync(base.CallRequest(case_id="c", split="test", case_text="x"))
+        assert info.value.classification.retryable is (kind in fake.TRANSIENT_KINDS), kind
