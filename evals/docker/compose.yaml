@@ -1,0 +1,54 @@
+# Autonomous DeepEval gate driver (issue 64, deviation d2).
+#
+# Start it with keys passed through from grant (no key file on disk):
+#
+#   grant run --inject OPENAI_API_KEY=OPENAI_API_KEY \
+#             --inject ANTHROPIC_API_KEY=ANTHROPIC_API_KEY \
+#             --inject OPEN_ROUTER_API_KEY=OPEN_ROUTER_API_KEY \
+#             --inject LOBES_GATEWAY_API_KEY=LOBES_GATEWAY_API_KEY \
+#             -- docker compose -f evals/docker/compose.yaml up -d --build
+#
+# NVSH_EVALS_PRIVATE_ROOT (case sets, saved predictions, snapshot, private
+# manifest) and NVSH_EVALS_RUN_DIR (ledger, cache, traces, results, logs) are
+# host paths set in the shell; both stay outside the repository. Only
+# variable NAMES appear below: compose copies each value from the calling
+# environment, and a name that is unset simply stays unset in the container.
+name: nvsh-evals-gate
+
+services:
+  drive:
+    build:
+      context: ../..
+      dockerfile: evals/docker/Dockerfile
+    image: nvsh-evals-gate:local
+    command: ["drive", "--manifest", "/private/${NVSH_EVALS_MANIFEST_NAME:-manifest.toml}"]
+    # The local lobes gateway listens on the host's localhost.
+    network_mode: host
+    restart: unless-stopped
+    # Files in the run dir stay owned by the operator, not root.
+    user: "${NVSH_EVALS_UID:-1000}:${NVSH_EVALS_GID:-1000}"
+    init: true
+    stop_grace_period: 60s
+    environment:
+      NVSH_EVALS_PRIVATE_ROOT: /private
+      NVSH_EVALS_RUN_DIR: /run-dir
+      HOME: /run-dir
+      UV_CACHE_DIR: /tmp/uv-cache
+      OPENAI_API_KEY:
+      ANTHROPIC_API_KEY:
+      OPEN_ROUTER_API_KEY:
+      NGC_API_KEY:
+      LOBES_GATEWAY_API_KEY:
+    volumes:
+      - type: bind
+        source: ${NVSH_EVALS_PRIVATE_ROOT:?set NVSH_EVALS_PRIVATE_ROOT to the private data root}
+        target: /private
+        read_only: true
+      - type: bind
+        source: ${NVSH_EVALS_RUN_DIR:?set NVSH_EVALS_RUN_DIR to the private run directory}
+        target: /run-dir
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
