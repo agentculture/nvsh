@@ -349,7 +349,7 @@ def test_rejects_absolute_path_in_case_set():
 name = "bad-path-case-set"
 count = 1
 split = "test"
-path = "/home/operator/private/splits/x.json"
+path = "/srv/private/splits/x.json"
 include_heldout = false
 """
     with pytest.raises(ManifestError, match="relative"):

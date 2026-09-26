@@ -387,7 +387,7 @@
     },
     {
       "id": "d26",
-      "what": "operator: for a multi-stage command ('ls $HOME/git | grep -i orin') the scope line says '[s] each stage exactly' without showing the stages, and there is no way to approve only the first or only the second stage. Fix: list numbered stages with the pattern each scope would store, and after s/S/u/U on a multi-stage command ask 'stages [all,1,2]:' (Enter = all); store only the chosen stages' patterns, still run the line once for this turn, and name the stored patterns in the ack",
+      "what": "operator: for a multi-stage command ('ls /home/spark/git | grep -i orin') the scope line says '[s] each stage exactly' without showing the stages, and there is no way to approve only the first or only the second stage. Fix: list numbered stages with the pattern each scope would store, and after s/S/u/U on a multi-stage command ask 'stages [all,1,2]:' (Enter = all); store only the chosen stages' patterns, still run the line once for this turn, and name the stored patterns in the ack",
       "task_ref": "t19",
       "reason": "operator on 2026-09-13 testing d24: 'It says [s] each stage exactly but it is not clear... When I want just the first, or just the second?'",
       "affects": [
