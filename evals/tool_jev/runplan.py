@@ -84,6 +84,12 @@ MAX_BATCH_FAILURES = 3
 #: Longest wait between batch resubmissions after a failed batch.
 MAX_BACKOFF_SECONDS = 1800.0
 
+#: Uncertain sync attempts (sent, maybe billed, no answer) per key before
+#: the model stops for an operator decision (codex review item 2).
+MAX_UNCERTAIN_ATTEMPTS = 2
+#: Classification reasons that mean a sync request may have been accepted.
+UNCERTAIN_REASONS = frozenset({"timeout", "network_loss", "machine_reset"})
+
 #: The truncation stop's operator question (plan risk r10).
 TRUNCATION_DECISION = (
     "needs operator decision: raise max_output_tokens, lower reasoning, or replace the model"
@@ -597,6 +603,42 @@ def policy_module_path(name: str) -> Path:
 # ---------------------------------------------------------------------------
 # Requests
 # ---------------------------------------------------------------------------
+
+
+def backoff_delay(base: float, attempts: int, cap: float = MAX_BACKOFF_SECONDS) -> float:
+    """``base x 2^attempts``, capped; the exponent is clamped so it never overflows (item 18)."""
+    return min(base * 2 ** max(0, min(int(attempts), 30)), cap)
+
+
+def refused_before_send(exc: BaseException) -> bool:
+    """True when the request certainly never reached the provider (refused, unknown host)."""
+    import socket
+    import urllib.error
+
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, (ConnectionRefusedError, socket.gaierror)):
+            return True
+        reason = getattr(current, "reason", None)
+        if isinstance(current, urllib.error.URLError) and isinstance(
+            reason, (ConnectionRefusedError, socket.gaierror)
+        ):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
+def request_kind(role: str, interface: str) -> tuple[str, str]:
+    return ("judge" if role == "judge" or interface == "text" else "reference", interface)
+
+
+def spec_interface(spec: Mapping[str, Any]) -> str:
+    target = str(spec.get("target", ""))
+    if spec.get("subject_role") == "judge":
+        return "text"
+    return "choice" if target == CHOICE_TARGET else "tool_call"
 
 
 def request_fingerprint(params: Mapping[str, Any]) -> str:

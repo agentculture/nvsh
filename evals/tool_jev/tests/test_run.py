@@ -202,6 +202,8 @@ class CaseFake(fake.FakeProvider):
         self.find_error: BaseException | None = None
         self.expired_ids: set[str] = set()
         self.batch_sizes: list[int] = []
+        self.refuse_before_send: BaseException | None = None
+        self.fetch_error_once: BaseException | None = None
 
     def outcome(self, request) -> fake.ScriptedOutcome:
         if request.interface == "text":
@@ -242,6 +244,8 @@ class CaseFake(fake.FakeProvider):
         self.sends += 1
         if self.interrupt_at == self.sends:
             raise KeyboardInterrupt
+        if self.refuse_before_send is not None:
+            raise self.refuse_before_send  # never reached the provider
         kind = self.fail.get(self.sends) or self.fail_always
         self.sent.append(self._identity(request))
         if self.crash_after_send_at == self.sends:
@@ -285,6 +289,9 @@ class CaseFake(fake.FakeProvider):
         return BatchStatus(batch_id=handle.batch_id, complete=done, expired=expired)
 
     def _collect_batch(self, handle):
+        if self.fetch_error_once is not None:
+            error, self.fetch_error_once = self.fetch_error_once, None
+            raise error
         out = []
         requests = self._batches.get(handle.batch_id, [])
         if handle.batch_id in self.expired_ids:
@@ -1393,3 +1400,321 @@ def test_p2_13_a_truncated_choice_reply_is_invalid_even_with_a_valid_letter(tmp_
     lines = (run_dir / "traces" / "openrouter.vendor-fake-sync.B.syn-test.jsonl").read_text()
     raws = [json.loads(line)["raw"] for line in lines.splitlines()]
     assert {(r["outcome"], r["invalid_reason"]) for r in raws} == {("invalid", "truncated")}
+
+
+# ---------------------------------------------------------------------------
+# codex verification of 3ff2085: the items left open
+# ---------------------------------------------------------------------------
+
+
+def _billing(run_dir):
+    path = run_dir / "billing.jsonl"
+    return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+
+
+def test_item1_an_unreadable_failed_batch_stays_submitted_and_is_fetched_again(tmp_path):
+    from evals.tool_jev.ledger import Ledger
+
+    world = World(tmp_path)
+    world.batch.expire = 1
+    world.batch.fetch_error_once = OSError("download failed")
+    run_dir = tmp_path / "run"
+    runner.init_state(run_dir, world.manifest, run_id="r", date="d")
+    clock = FakeClock()
+    _step(world, run_dir, clock=clock, poll_seconds=60)
+    with Ledger(run_dir) as ledger:
+        assert ledger.submitted_batches()  # not requeued on an unreadable result
+    assert len(world.batch.batch_sizes) == 2  # A and B: nothing resubmitted
+    outcome = None
+    for _ in range(8):
+        clock.now += 600
+        outcome = _step(world, run_dir, clock=clock, poll_seconds=60)
+        if outcome.status == runner.STATUS_COMPLETE:
+            break
+    assert outcome.status == runner.STATUS_COMPLETE, world.lines
+    assert len(world.batch.sent) == len(set(world.batch.sent))
+
+
+def test_item2_a_sync_timeout_bills_one_uncertain_charge_and_two_stop_the_model(tmp_path):
+    world = World(tmp_path)
+    world.sync.fail_always = "timeout"
+    run_dir = tmp_path / "run"
+    assert world.run(run_dir) == runner.EXIT_STOPPED
+    uncertain = [b for b in _billing(run_dir) if b["kind"] == "uncertain"]
+    assert len(uncertain) == 1 and uncertain[0]["attempt_id"]
+    assert world.cont(run_dir) == runner.EXIT_STOPPED  # the key is resent once more
+    uncertain = [b for b in _billing(run_dir) if b["kind"] == "uncertain"]
+    assert len(uncertain) == 2 and len({b["attempt_id"] for b in uncertain}) == 2
+    record = json.loads((run_dir / "run.json").read_text())
+    stop = record["stops"]["models"]["openrouter/vendor/fake-sync"]
+    assert stop["kind"] == "uncertain_attempts" and "operator decision" in stop["message"]
+    sent = len(world.sync.sent)
+    assert world.cont(run_dir) == runner.EXIT_STOPPED
+    assert len(world.sync.sent) == sent  # stopped: never a third uncertain attempt
+    spend = runner.status(run_dir)["providers"]["openrouter"]["spend_usd"]
+    assert spend == pytest.approx(sum(b["cost_usd"] for b in uncertain))
+
+
+@pytest.mark.parametrize(
+    "error",
+    [ConnectionRefusedError("refused"), __import__("socket").gaierror("no such host")],
+)
+def test_item2_a_clean_refusal_before_sending_is_not_uncertain(tmp_path, error):
+    world = World(tmp_path)
+    world.sync.refuse_before_send = error
+    run_dir = tmp_path / "run"
+    assert world.run(run_dir) == runner.EXIT_STOPPED
+    assert [b for b in _billing(run_dir) if b["kind"] == "uncertain"] == []
+    record = json.loads((run_dir / "run.json").read_text())
+    assert all(v["route"] != "sync" for v in record["reserved"].values())
+
+
+def test_item14_billing_sums_each_attempt_once(tmp_path):
+    from evals.tool_jev import runstate
+
+    billing = runstate.Billing(tmp_path)
+    line = {"kind": "answer", "key": "k", "attempt_id": "k:r1", "provider": "p", "cost_usd": 1.0}
+    billing.append(line)
+    billing.append(line)  # a replayed append
+    billing.append({**line, "attempt_id": "k:r2"})
+    billing.append(
+        {"kind": "uncertain", "key": "k", "attempt_id": "res-1", "provider": "p", "cost_usd": 0.5}
+    )
+    assert runstate.sums(billing.entries(), "provider") == {"p": 2.5}
+
+
+@pytest.mark.parametrize("which", ["batch", "sync"])
+def test_item14_a_kill_after_billing_before_the_cache_never_bills_twice(
+    tmp_path, monkeypatch, which
+):
+    from evals.tool_jev.ledger import Ledger
+
+    clean = World(tmp_path / "a")
+    assert clean.run(tmp_path / "a" / "run") == runner.EXIT_OK
+    world = World(tmp_path / "b")
+    run_dir = tmp_path / "b" / "run"
+    real = Ledger.record_done
+    target = {"batch": "anthropic:fake-batch", "sync": "openrouter:vendor/fake-sync"}[which]
+    killed = []
+
+    def record_done(self, key, response):
+        if not killed and self.entry(key).spec["provider"] == target:
+            killed.append(key)
+            raise KeyboardInterrupt  # billed, not yet cached
+        return real(self, key, response)
+
+    monkeypatch.setattr(Ledger, "record_done", record_done)
+    assert world.run(run_dir) == runner.EXIT_INTERRUPTED
+    monkeypatch.setattr(Ledger, "record_done", real)
+    assert world.cont(run_dir) == runner.EXIT_OK, world.lines
+    answers = [b for b in _billing(run_dir) if b["kind"] == "answer"]
+    assert len(answers) == len({b["key"] for b in answers})
+    assert [b["key"] for b in answers].count(killed[0]) == 1
+    assert _outputs(run_dir) == _outputs(tmp_path / "a" / "run")
+
+
+def test_item15_uncertain_recovery_survives_a_kill_before_the_state_save(tmp_path, monkeypatch):
+    from evals.tool_jev import runstate
+
+    world = World(tmp_path)
+    world.sync.crash_after_send_at = 2
+    run_dir = tmp_path / "run"
+    assert world.run(run_dir) == runner.EXIT_INTERRUPTED
+    real = runstate.save_state
+    killed = []
+
+    def save_state(directory, state):
+        uncertain = [b for b in _billing(Path(directory)) if b["kind"] == "uncertain"]
+        if uncertain and not killed:
+            killed.append(True)
+            raise KeyboardInterrupt  # the charge is appended, run.json is not
+        return real(directory, state)
+
+    monkeypatch.setattr(runstate, "save_state", save_state)
+    assert world.cont(run_dir) == runner.EXIT_INTERRUPTED
+    monkeypatch.setattr(runstate, "save_state", real)
+    assert world.cont(run_dir) == runner.EXIT_OK, world.lines
+    uncertain = [b for b in _billing(run_dir) if b["kind"] == "uncertain"]
+    assert len(uncertain) == 1
+    record = json.loads((run_dir / "run.json").read_text())
+    assert len(record["uncertain_charges"]) == 1
+
+
+EXTRA_BATCH = """
+[[reference]]
+provider = "anthropic"
+model = "fake-batch2"
+batch = true
+api_key_env = "UNUSED_KEY_ENV"
+usd_per_mtok_in = 3.0
+usd_per_mtok_out = 15.0
+"""
+
+
+def test_item16_a_removed_models_outstanding_batches_are_settled(tmp_path):
+    world = World(tmp_path, extra_refs=EXTRA_BATCH)
+    world.batch2 = CaseFake("anthropic:fake-batch2", batch=True, host="batch-host.test")
+    world.batch.slow = world.batch2.slow = True
+    factory = world.factory
+    built = []
+
+    def by_model(ref, budget, env):
+        if ref.model == "fake-batch2":
+            built.append(ref)
+            return world.batch2
+        return factory(ref, budget, env)
+
+    world.factory = by_model
+    run_dir = tmp_path / "run"
+    assert world.run(run_dir) == runner.EXIT_WAITING
+    assert world.batch2.batch_sizes
+    world.manifest.write_text(world.manifest.read_text().replace(EXTRA_BATCH, ""))
+    code = runner.EXIT_WAITING
+    for _ in range(10):
+        code = world.cont(run_dir)
+        if code == runner.EXIT_OK:
+            break
+    assert code == runner.EXIT_OK, world.lines
+    # Its batch was fetched through an adapter rebuilt from submission metadata...
+    ghost = built[-1]
+    assert ghost.batch and ghost.api_key_env == "UNUSED_KEY_ENV"
+    assert ghost.usd_per_mtok_out == 15.0
+    # ...billed and released, and it scores nothing.
+    assert any(b["label"] == "anthropic/fake-batch2" for b in _billing(run_dir))
+    assert json.loads((run_dir / "run.json").read_text())["reserved"] == {}
+    result = json.loads((run_dir / "result.json").read_text())
+    assert not any("fake-batch2" in row["subject"] for row in result["reference_rows"])
+
+
+def test_item16_an_orphaned_reservation_with_no_submitted_work_is_released(tmp_path):
+    from evals.tool_jev import runstate
+    from evals.tool_jev.ledger import Ledger
+
+    world = World(tmp_path)
+    run_dir = tmp_path / "run"
+    assert world.run(run_dir) == runner.EXIT_OK
+    with Ledger(run_dir):
+        state = runstate.load_state(run_dir)
+        state["reserved"]["no-such-key"] = {
+            "id": "x",
+            "provider": "anthropic",
+            "label": "anthropic/fake-batch",
+            "usd": 9.0,
+            "route": "batch",
+            "since": 0.0,
+        }
+        runstate.save_state(run_dir, state)
+    assert world.cont(run_dir) == runner.EXIT_OK
+    assert json.loads((run_dir / "run.json").read_text())["reserved"] == {}
+
+
+def test_item11_a_rejected_judge_is_compared_only_with_judge_params(tmp_path):
+    world = World(tmp_path)
+    world.manifest.write_text(
+        world.manifest.read_text().replace("max_output_tokens = 300", "max_output_tokens = 512")
+    )
+    original = world.sync.outcome
+
+    def reject_judging(request):
+        if request.interface == "text" and request.params.get("max_output_tokens") == 512:
+            return fake.ScriptedOutcome("unsupported_parameter")
+        return original(request)
+
+    world.sync.outcome = reject_judging
+    run_dir = tmp_path / "run"
+    assert world.run(run_dir) == runner.EXIT_STOPPED
+    stop = json.loads((run_dir / "run.json").read_text())["stops"]["models"]
+    rejected = stop["openrouter/vendor/fake-sync"]
+    assert rejected["request"]["role"] == "judge" and rejected["request"]["interface"] == "text"
+    # Only the judging budget changes; the reference calls still use 512 tokens.
+    world.manifest.write_text(
+        world.manifest.read_text().replace(
+            "[judging]\nseed = 5\nmax_output_tokens = 512",
+            "[judging]\nseed = 5\nmax_output_tokens = 1024",
+        )
+    )
+    assert world.cont(run_dir) == runner.EXIT_OK, world.lines
+
+
+def test_item13_a_truncated_invalid_record_stays_invalid_under_every_policy():
+    from evals.tool_jev import deepeval_layer, metrics_bridge
+
+    metrics_mod = metrics_bridge.load_metrics_module()
+    row = {
+        "id": "t-1",
+        "expected": {"operation": "service_restart", "args": SERVICE},
+        "outcome": "invalid",
+        "operation": None,
+        "arguments": None,
+        "candidates": {"service_restart": 0.9, "service_status": 0.05, "escalate": 0.05},
+        "tokens": 0,
+        "ttfd_ms": 0.0,
+        "latency_ms": 0.0,
+        "invalid_reason": "truncated",
+    }
+    prediction = metrics_mod.Prediction.from_dict(row)
+    for policy in ("raw", "scorer-r3b-shipped", "mutating-strict-example"):
+        applied = deepeval_layer.apply_policy_to_prediction(
+            policy, prediction, metrics_mod=metrics_mod
+        )
+        assert (applied.outcome, applied.invalid_reason) == ("invalid", "truncated")
+    # Another invalid reason keeps the designed behaviour: the saved distribution decides.
+    other = metrics_mod.Prediction.from_dict({**row, "invalid_reason": "no_label_mass"})
+    assert (
+        deepeval_layer.apply_policy_to_prediction("raw", other, metrics_mod=metrics_mod).outcome
+        == "propose"
+    )
+    metrics = metrics_bridge.compute([prediction], metrics_mod=metrics_mod)
+    assert metrics["metrics_compute"]["outcome_counts"].get("propose", 0) == 0
+
+
+def test_item13_truncated_choices_score_no_proposal_end_to_end(tmp_path):
+    world = World(tmp_path)
+    world.sync.cut_choice = True  # the sync fake returns logprobs
+    world.manifest.write_text(
+        world.manifest.read_text().replace("min_answers = 3", "min_answers = 50")
+    )
+    run_dir = tmp_path / "run"
+    assert world.run(run_dir) == runner.EXIT_OK, world.lines
+    metrics = json.loads(
+        (run_dir / "metrics" / "openrouter.vendor-fake-sync.B.syn-test__raw.json").read_text()
+    )
+    assert metrics["metrics_compute"]["outcome_counts"].get("propose", 0) == 0
+    traces = (run_dir / "traces" / "openrouter.vendor-fake-sync.B.syn-test.jsonl").read_text()
+    assert {json.loads(t)["final"]["raw"]["decision"] for t in traces.splitlines()} == {"invalid"}
+
+
+def test_item17_a_torn_billing_tail_is_moved_aside(tmp_path):
+    world = World(tmp_path)
+    run_dir = tmp_path / "run"
+    world.sync.fail = {3: "402"}
+    assert world.run(run_dir) == runner.EXIT_STOPPED
+    path = run_dir / "billing.jsonl"
+    whole = path.read_bytes()
+    path.write_bytes(whole + b'{"kind": "answer", "key": "half')  # a crash mid-append
+    doc = runner.status(run_dir)  # status tolerates the torn tail
+    assert doc["providers"]["openrouter"]["done"] == 2
+    world.cont(run_dir)
+    assert path.read_bytes().startswith(whole)
+    assert b"half" not in path.read_bytes()
+    torn = list(run_dir.glob("billing.torn.*"))
+    assert len(torn) == 1 and torn[0].read_bytes() == b'{"kind": "answer", "key": "half'
+    assert "billing_torn_tail" in (run_dir / "events.jsonl").read_text()
+
+
+def test_item17_a_torn_line_in_the_middle_stops_and_asks(tmp_path):
+    world = World(tmp_path)
+    run_dir = tmp_path / "run"
+    world.sync.fail = {3: "402"}
+    assert world.run(run_dir) == runner.EXIT_STOPPED
+    path = run_dir / "billing.jsonl"
+    lines = path.read_bytes().splitlines(keepends=True)
+    path.write_bytes(lines[0] + b"{broken\n" + b"".join(lines[1:]))
+    assert world.cont(run_dir) == runner.EXIT_ASK
+    assert "billing.jsonl" in world.lines[-1]
+
+
+def test_item18_the_backoff_exponent_is_clamped():
+    assert drive_mod.backoff_delay(60.0, 1) == 120.0
+    assert drive_mod.backoff_delay(60.0, 5000) == 1800.0
+    assert runner.backoff_delay(60.0, 10**6) == runner.MAX_BACKOFF_SECONDS

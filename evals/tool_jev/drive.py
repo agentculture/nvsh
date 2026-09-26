@@ -35,6 +35,7 @@ from typing import Callable, Mapping
 
 from . import run as runner
 
+backoff_delay = runner.backoff_delay
 DEFAULT_POLL_SECONDS = runner.DEFAULT_POLL_SECONDS
 DEFAULT_RECHECK_SECONDS = runner.DEFAULT_RECHECK_SECONDS
 LOG_FILE = "drive.log"
@@ -94,7 +95,7 @@ def drive(
             return runner.EXIT_ASK
         except Exception as exc:  # noqa: BLE001 -- logged; the loop backs off, never crash-loops
             errors += 1
-            delay = min(poll_seconds * 2**errors, runner.MAX_BACKOFF_SECONDS)
+            delay = backoff_delay(poll_seconds, errors)
             text = f"step {steps}: error {type(exc).__name__}: {exc}; retrying in {delay:.0f} s"
             _log(run_dir, clock, text)
             out(text)

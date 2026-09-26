@@ -76,11 +76,23 @@ def save_state(run_dir: Path, state: Mapping[str, Any]) -> None:
     write_json_durable(Path(run_dir) / RUN_FILE, state)
 
 
+class BillingTorn(Exception):
+    """A line in the middle of ``billing.jsonl`` does not parse: stop and ask."""
+
+
 class Billing:
-    """``billing.jsonl``: append-only, one fsync'd line per charge."""
+    """``billing.jsonl``: append-only, one fsync'd line per charge.
+
+    Every line carries an ``attempt_id`` (an answer: ledger key + response
+    id; an uncertain charge: the reservation id persisted when the call was
+    claimed). Reading counts each ``(kind, attempt_id)`` once, so a line
+    appended again by a replayed pass never charges twice (codex review
+    items 14, 15).
+    """
 
     def __init__(self, run_dir: Path) -> None:
-        self.path = Path(run_dir) / BILLING_FILE
+        self.run_dir = Path(run_dir)
+        self.path = self.run_dir / BILLING_FILE
 
     def append(self, entry: Mapping[str, Any]) -> None:
         line = json.dumps(dict(entry), sort_keys=True)
@@ -89,17 +101,94 @@ class Billing:
             handle.flush()
             os.fsync(handle.fileno())
 
-    def entries(self) -> list[dict]:
+    def repair(self, now: float, log=None) -> Path | None:
+        """Move a torn last line aside; a torn line anywhere else is :class:`BillingTorn`.
+
+        Why moving the tail aside is correct: a charge is appended *before*
+        the ledger caches the answer and before ``run.json`` is saved. A line
+        that never finished (no newline, or not parseable) therefore belongs
+        to an answer that was never recorded; that call is fetched (or sent)
+        again and billed again by a whole line. The torn bytes are kept in
+        ``billing.torn.<timestamp>`` for the operator, never deleted.
+        Called only under the run lock.
+        """
+        if not self.path.exists():
+            return None
+        data = self.path.read_bytes()
+        if not data:
+            return None
+        body, _, tail = data.rpartition(b"\n")
+        lines = body.split(b"\n") if body else []
+        bad = [i for i, line in enumerate(lines) if line.strip() and not _parses(line)]
+        if tail:  # an unterminated last line
+            torn, keep = tail, data[: len(data) - len(tail)]
+            if bad:
+                raise BillingTorn(self._middle_message(bad[0]))
+        elif bad:
+            if bad != [len(lines) - 1]:
+                raise BillingTorn(self._middle_message(bad[0]))
+            torn = lines[-1]
+            keep = data[: len(data) - len(torn) - 1]
+        else:
+            return None
+        aside = self.run_dir / f"billing.torn.{int(now)}"
+        n = 0
+        while aside.exists():
+            n += 1
+            aside = self.run_dir / f"billing.torn.{int(now)}.{n}"
+        aside.write_bytes(torn)
+        with open(self.path, "r+b") as handle:
+            handle.truncate(len(keep))
+            handle.flush()
+            os.fsync(handle.fileno())
+        _fsync_dir(self.run_dir)
+        if log is not None:
+            log("billing_torn_tail", [], moved_to=aside.name, size=len(torn))
+        return aside
+
+    def _middle_message(self, index: int) -> str:
+        return (
+            f"{self.path}: line {index + 1} does not parse and is not the last line; a charge "
+            "may be lost or garbled -- repair billing.jsonl by hand, then continue"
+        )
+
+    def entries(self, *, tolerant: bool = False) -> list[dict]:
+        """Every charge, each ``(kind, attempt_id)`` once.
+
+        *tolerant* skips an unparseable last line (``status`` reads without
+        the lock); otherwise the journal must already be repaired.
+        """
         if not self.path.exists():
             return []
-        out = []
-        for line in self.path.read_text(encoding="utf-8").splitlines():
-            if line.strip():
-                out.append(json.loads(line))
+        raw = self.path.read_text(encoding="utf-8").splitlines()
+        out, seen = [], set()
+        for index, line in enumerate(raw):
+            if not line.strip():
+                continue
+            try:
+                entry = json.loads(line)
+            except ValueError:
+                if tolerant and index == len(raw) - 1:
+                    continue
+                raise BillingTorn(self._middle_message(index)) from None
+            attempt = entry.get("attempt_id")
+            if attempt is not None:
+                if (entry.get("kind"), attempt) in seen:
+                    continue
+                seen.add((entry.get("kind"), attempt))
+            out.append(entry)
         return out
 
     def billed_keys(self) -> set[str]:
         return {e["key"] for e in self.entries() if e.get("kind") == BILL_ANSWER}
+
+
+def _parses(line: bytes) -> bool:
+    try:
+        json.loads(line)
+    except ValueError:
+        return False
+    return True
 
 
 def sums(entries: list[Mapping[str, Any]], field: str) -> dict[str, float]:

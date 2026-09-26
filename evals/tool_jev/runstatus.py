@@ -29,7 +29,7 @@ def status(run_dir: Path) -> dict:
     for label, info in models.items():
         for provider_name, model_id in info.get("spec_keys", []):
             by_spec[(provider_name, model_id)] = label
-    billing = runstate.Billing(run_dir).entries()
+    billing = runstate.Billing(run_dir).entries(tolerant=True)
     label_spend = runstate.sums(billing, "label")
     provider_spend = runstate.sums(billing, "provider")
     label_provider = {e["label"]: e["provider"] for e in billing}

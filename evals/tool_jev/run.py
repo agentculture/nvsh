@@ -79,6 +79,7 @@ import datetime
 import os
 import threading
 import time
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Mapping
@@ -102,7 +103,7 @@ from .ledger import (
     LedgerLocked,
     ledger_key,
 )
-from .manifest import CaseSet, Manifest, ManifestError, load_manifest
+from .manifest import CaseSet, Manifest, ManifestError, Reference, load_manifest
 from .providers.base import BatchHandle, BatchLookupUnresolved, CallRequest, CallResult
 from .providers.errors import (  # noqa: F401  (classify_transport re-exported)
     Classification,
@@ -125,6 +126,7 @@ from .runplan import (  # noqa: F401  (re-exported: evals.tool_jev.run is the pu
     EXIT_WAITING,
     MAX_BACKOFF_SECONDS,
     MAX_BATCH_FAILURES,
+    MAX_UNCERTAIN_ATTEMPTS,
     MONEY_REASONS,
     NONE_REASONING,
     PAGE_FILE,
@@ -134,6 +136,7 @@ from .runplan import (  # noqa: F401  (re-exported: evals.tool_jev.run is the pu
     STATUS_WAITING,
     TRACK_A_PERMUTATION_REASON,
     TRUNCATION_DECISION,
+    UNCERTAIN_REASONS,
     EnvError,
     Model,
     Plan,
@@ -144,6 +147,7 @@ from .runplan import (  # noqa: F401  (re-exported: evals.tool_jev.run is the pu
     WorkItem,
     _classification_of,
     _sha256_file,
+    backoff_delay,
     build_plan,
     choice_call,
     classify_exception,
@@ -152,10 +156,13 @@ from .runplan import (  # noqa: F401  (re-exported: evals.tool_jev.run is the pu
     private_root,
     provider_host,
     provider_reasoning,
+    refused_before_send,
     request_fingerprint,
+    request_kind,
     resolve_private,
     shared_limiter,
     smoke_scope,
+    spec_interface,
     subject_name,
     tokens_in,
     tokens_out,
@@ -257,8 +264,10 @@ class Runner:
         clock: Callable[[], float] = time.time,
         poll_seconds: float = DEFAULT_POLL_SECONDS,
         recheck_seconds: float = DEFAULT_RECHECK_SECONDS,
+        factory: ProviderFactory | None = None,
     ) -> None:
         self.run_dir = Path(run_dir)
+        self.factory = factory or default_factory
         self.plan = plan
         self.ledger = ledger
         self.state = state
@@ -270,16 +279,31 @@ class Runner:
         self.messages: list[str] = []
         self._lock = threading.RLock()
         self.billing = runstate.Billing(self.run_dir)
-        for name in ("reserved", "batch_failures", "capabilities", "hosts"):
+        for name in (
+            "reserved",
+            "batch_failures",
+            "capabilities",
+            "hosts",
+            "uncertain_attempts",
+            "fetch_backoff",
+        ):
             self.state.setdefault(name, {})
         self.state.setdefault("uncertain_charges", [])
         self._spec_model: dict[tuple[str, str], Model] = {}
         for model in plan.models.values():
             self._spec_model[(model.provider.name, model.ref.model)] = model
             self._spec_model[(model.ref.provider, model.ref.model)] = model
-        entries = self.billing.entries()
+        try:
+            self.billing.repair(self.clock(), log=self.ledger._log)
+            entries = self.billing.entries()
+        except runstate.BillingTorn as exc:
+            raise StopAndAsk(str(exc)) from exc
         self.billed: dict[str, float] = runstate.sums(entries, "provider")
         self._billed_keys = {e["key"] for e in entries if e.get("kind") == runstate.BILL_ANSWER}
+        self._billed_attempts = {
+            (e.get("kind"), e["attempt_id"]) for e in entries if e.get("attempt_id") is not None
+        }
+        self.ghosts: dict[str, Model] = {}
         self.answers: dict[str, int] = {}
         self.truncated: dict[str, int] = {}
         self.invalid: dict[str, int] = {}
@@ -290,6 +314,7 @@ class Runner:
         self._track_a: dict[tuple[str, str], loop.RoundResult] = {}
         # Stops first: every later persist writes them back from memory.
         self._restore_stops(retry_money, retry_rejected)
+        self._build_ghosts()
         self._reconcile_reservations()
         self._scan_ledger()
         for kind in sorted({m.kind for m in plan.models.values()}):
@@ -320,13 +345,15 @@ class Runner:
             params["reasoning"] = effort
         return params
 
-    def _current_fingerprints(self, model: Model) -> set[str]:
-        """Fingerprints of every request parameter set this model is sent now."""
-        return {
-            request_fingerprint({**model.knobs, "tool_choice": loop.LOOP_TOOL_CHOICE}),
-            request_fingerprint(model.knobs),
-            request_fingerprint(self._judge_params(model)),
-        }
+    def _current_fingerprint(self, model: Model, role: str, interface: str) -> str | None:
+        """The parameters this model is sent now for one (role, interface) (codex item 11)."""
+        if role == "judge":
+            return request_fingerprint(self._judge_params(model))
+        if interface == "tool_call":
+            return request_fingerprint({**model.knobs, "tool_choice": loop.LOOP_TOOL_CHOICE})
+        if interface == "choice":
+            return request_fingerprint(model.knobs)
+        return None
 
     def _current(self, model: Model, spec: Mapping[str, Any]) -> bool:
         """Whether *spec* was made with the model's current settings (stale ones never stop it)."""
@@ -377,11 +404,17 @@ class Runner:
     def spent(self, kind: str) -> float:
         return self.billed.get(kind, 0.0)
 
-    def _bill(self, entry: dict) -> None:
+    def _bill(self, entry: dict) -> bool:
+        """Append one charge unless this attempt is already billed; True when appended."""
+        attempt = (entry["kind"], entry["attempt_id"])
+        if attempt in self._billed_attempts:
+            return False
         self.billing.append(entry)
+        self._billed_attempts.add(attempt)
         self.billed[entry["provider"]] = self.billed.get(entry["provider"], 0.0) + entry["cost_usd"]
         if entry["kind"] == runstate.BILL_ANSWER:
             self._billed_keys.add(entry["key"])
+        return True
 
     def _bill_answer(self, model: Model, key: str, result: CallResult) -> None:
         discount = self._discount(model.kind)
@@ -389,6 +422,7 @@ class Runner:
             {
                 "kind": runstate.BILL_ANSWER,
                 "key": key,
+                "attempt_id": f"{key}:{result.response_id}",
                 "provider": model.kind,
                 "label": model.label,
                 "route": model.route,
@@ -409,7 +443,7 @@ class Runner:
                 self._persist()
 
     def _reconcile_reservations(self) -> None:
-        """Settle reservations a crash left behind (codex review P1-2, P1-4)."""
+        """Settle reservations a crash left behind (codex review P1-2, P1-4, items 15, 16)."""
         reserved = self.state["reserved"]
         for key in sorted(reserved):
             held = reserved[key]
@@ -424,30 +458,66 @@ class Runner:
             if held.get("route") == "batch":
                 if entry.state == SUBMITTED or entry.submit_token:
                     continue  # still possibly running and billing
-                reserved.pop(key)
+                reserved.pop(key)  # an orphaned reservation with no submitted work
                 continue
             # A sync call in flight at a crash: it may have been billed. It is
             # resent (h32) and its estimate counts as an uncertain charge.
-            reserved.pop(key)
             if key in self._billed_keys:
+                reserved.pop(key)
                 continue
+            self._uncertain(key, "in flight at a crash")
+        self._persist()
+
+    def _uncertain(self, key: str, why: str) -> None:
+        """One uncertain sync attempt: bill it once (by its reservation id), count it, resend.
+
+        The charge, the attempt count and the reservation's removal reach
+        ``run.json`` in one save; the billing line is idempotent by attempt
+        id, so a crash between the two never charges twice (codex item 15).
+        """
+        with self._lock:
+            held = self.state["reserved"].pop(key)
+            attempt_id = held.get("id") or f"legacy:{key}:{held.get('since')}"
             charge = {
                 "kind": runstate.BILL_UNCERTAIN,
                 "key": key,
+                "attempt_id": attempt_id,
                 "provider": held["provider"],
                 "label": held["label"],
                 "route": "sync",
                 "cost_usd": held["usd"],
                 "since": held.get("since"),
+                "why": why,
             }
             self._bill(charge)
-            self.state["uncertain_charges"].append(charge)
-            self.ledger._log("uncertain_resend", [key], provider=held["provider"], usd=held["usd"])
-            self.say(
-                f"{held['label']}: call {key[:12]} was in flight at a crash; it is resent, and "
-                f"its estimated ${held['usd']:.4f} counts as an uncertain charge"
+            charges = self.state["uncertain_charges"]
+            if all(c.get("attempt_id") != attempt_id for c in charges):
+                charges.append(charge)
+                self.ledger._log(
+                    "uncertain_resend", [key], provider=held["provider"], usd=held["usd"]
+                )
+            attempts = self.state["uncertain_attempts"]
+            attempts[key] = attempts.get(key, 0) + 1
+            message = (
+                f"{held['label']}: call {key[:12]} was {why}; it may have been billed, so its "
+                f"estimated ${held['usd']:.4f} counts as an uncertain charge and it is resent"
             )
-        self._persist()
+            model = self.plan.models.get(held["label"]) or self.ghosts.get(held["label"])
+            if attempts[key] >= MAX_UNCERTAIN_ATTEMPTS and model is not None:
+                message = (
+                    f"{held['label']}: call {key[:12]} had {attempts[key]} uncertain attempts "
+                    f"(sent, maybe billed, no answer); {self._model_remaining(model)} call(s) "
+                    "left pending; needs operator decision: check the provider's usage, then "
+                    "continue with --retry-rejected"
+                )
+                self.model_stops[held["label"]] = {
+                    "kind": "uncertain_attempts",
+                    "reason": "uncertain_attempts",
+                    "message": message,
+                    "key": key,
+                }
+            self._persist()
+        self.say(message)
 
     def claim(self, model: Model, key: str, request: CallRequest) -> bool:
         """Claim *key* for sending: fresh, unblocked, within budget; reserve its cost.
@@ -470,12 +540,23 @@ class Runner:
             if stop is not None and stop.get("probe_open"):
                 stop["probe_open"] = False
                 stop["probe"] = key
+            # Submission-time metadata: enough to rebuild the adapter and bill
+            # the answer if the model leaves the manifest meanwhile (item 16).
             self.state["reserved"][key] = {
+                "id": uuid.uuid4().hex,
                 "provider": model.kind,
                 "label": model.label,
                 "usd": round(estimate, 8),
                 "route": model.route,
                 "since": self.clock(),
+                "spec_provider": model.provider.name,
+                "model": model.ref.model,
+                "adapter": model.ref.provider,
+                "api_key_env": model.ref.api_key_env,
+                "capabilities": list(model.ref.capabilities),
+                "reasoning": model.ref.reasoning,
+                "usd_per_mtok_in": model.ref.usd_per_mtok_in,
+                "usd_per_mtok_out": model.ref.usd_per_mtok_out,
             }
             self._persist()
             return True
@@ -515,14 +596,18 @@ class Runner:
             model = self.plan.models.get(label)
             if model is None or retry_rejected:
                 continue
-            if stop.get("kind") == "batch_failures":
+            if stop.get("kind") in ("batch_failures", "uncertain_attempts"):
                 self.model_stops[label] = stop
-            elif stop.get("kind") == "rejected" and stop.get("params") in (
-                self._current_fingerprints(model)
-            ):
-                self.model_stops[label] = stop
+            elif stop.get("kind") == "rejected":
+                sent = stop.get("request") or {}
+                now_sent = self._current_fingerprint(
+                    model, sent.get("role", ""), sent.get("interface", "")
+                )
+                if now_sent is not None and now_sent == sent.get("params"):
+                    self.model_stops[label] = stop
         if retry_rejected:
             self.state["batch_failures"] = {}
+            self.state["uncertain_attempts"] = {}
         now = self.clock()
         for kind, stop in stops.get("providers", {}).items():
             if stop.get("kind") != "money" or retry_money:
@@ -573,7 +658,7 @@ class Runner:
                 "truncated": self.truncated.get(label, 0),
                 "invalid": self.invalid.get(label, 0),
             }
-            for label, model in sorted(self.plan.models.items())
+            for label, model in sorted({**self.ghosts, **self.plan.models}.items())
         }
         self.state["budgets"] = {
             b.provider: {"usd_cap": b.usd_cap, "batch_discount": b.batch_discount}
@@ -617,19 +702,32 @@ class Runner:
         model: Model,
         classification: Classification,
         params: Mapping[str, Any] | None = None,
+        kind: tuple[str, str] = ("lookup", "none"),
     ) -> None:
+        """Stop or pause for *classification*.
+
+        A rejection is fingerprinted by the request that was rejected: its
+        role, interface and parameters (codex item 11). A rejection with no
+        request behind it (a batch lookup) matches nothing, so it is retried
+        on the next pass.
+        """
         with self._lock:
             if classification.rejected or not classification.retryable:
-                fingerprint = request_fingerprint(params if params is not None else model.knobs)
+                role, interface = kind
+                sent = {
+                    "role": role,
+                    "interface": interface,
+                    "params": request_fingerprint(params or {}),
+                }
                 message = stop_message(model.label, classification, self._model_remaining(model))
                 self.model_stops[model.label] = {
                     "kind": "rejected",
                     "reason": classification.reason,
                     "message": message,
-                    "params": fingerprint,
+                    "request": sent,
                 }
                 capabilities = self.state["capabilities"].setdefault(model.label, [])
-                entry = {"request_rejected": classification.reason, "params": fingerprint}
+                entry = {"request_rejected": classification.reason, "request": sent}
                 if entry not in capabilities:
                     capabilities.append(entry)
             elif classification.reason in MONEY_REASONS:
@@ -705,9 +803,17 @@ class Runner:
                 return
             if result.outcome is Outcome.PENDING:
                 self._release(key)
-                self.apply_stop(model, _classification_of(result), entry.spec.get("params"))
+                self.apply_stop(
+                    model,
+                    _classification_of(result),
+                    entry.spec.get("params"),
+                    request_kind(entry.spec.get("subject_role", ""), spec_interface(entry.spec)),
+                )
                 return
-            self._bill_answer(model, key, result)
+            if key not in self._billed_keys:
+                # Billed before the cache: a kill in between replays the fetch,
+                # and this check keeps the replay from billing again (item 14).
+                self._bill_answer(model, key, result)
             cached = loop.cached_response(result)
             if result.outcome is Outcome.OK:
                 if entry.spec.get("subject_role") == "judge" and _cut(model, result.raw):
@@ -767,27 +873,26 @@ class Runner:
             model = self._model_of_spec(self.ledger.entry(keys[0]).spec)
             if model.kind in self.paused:
                 continue
+            backoff = self.state["fetch_backoff"].get(batch_id)
+            if backoff and self.clock() < backoff["next_at"]:
+                continue
             handle = BatchHandle(batch_id=batch_id, provider=model.provider.name)
             try:
                 batch_status = model.provider.poll_batch(handle)
                 if not batch_status.complete:
                     continue
-                try:
-                    results = model.provider.fetch_batch(handle)
-                except (KeyboardInterrupt, BatchLookupUnresolved):
-                    raise
-                except Exception:  # noqa: BLE001 -- an ended batch with no readable results
-                    if not batch_status.expired:
-                        raise
-                    results = []
+                results = model.provider.fetch_batch(handle)
             except (KeyboardInterrupt, BatchLookupUnresolved):
                 raise
             except Exception as exc:  # noqa: BLE001 -- classified or re-raised
                 classification = classify_exception(exc, model.kind)
                 if classification is None:
                     raise
-                self.apply_stop(model, classification)
+                # An unreadable result never proves a request went unanswered:
+                # the batch stays submitted and is fetched again (codex item 1).
+                self._fetch_failed(model, batch_id, classification)
                 continue
+            self.state["fetch_backoff"].pop(batch_id, None)
             by_request = {self._request_id(key): key for key in keys}
             answered = 0
             for result in results:
@@ -804,12 +909,26 @@ class Runner:
             progress = True
         return progress
 
+    def _fetch_failed(self, model: Model, batch_id: str, classification: Classification) -> None:
+        with self._lock:
+            backoff = self.state["fetch_backoff"].setdefault(batch_id, {"count": 0})
+            backoff["count"] += 1
+            delay = backoff_delay(self.poll_seconds, backoff["count"])
+            backoff["next_at"] = self.clock() + delay
+            self._persist()
+        self.say(
+            f"{model.label}: batch {batch_id} ended but its results could not be read "
+            f"({classification.reason}); it stays submitted and is fetched again in {delay:.0f} s"
+        )
+        if classification.reason in MONEY_REASONS or classification.rejected:
+            self.apply_stop(model, classification)
+
     def _batch_failed(self, model: Model, batch_id: str, answered: int, requeued: int) -> None:
         """Count a failed batch; back off exponentially; stop after three in a row (P1-1)."""
         with self._lock:
             failures = self.state["batch_failures"].setdefault(model.label, {"count": 0})
             failures["count"] += 1
-            delay = min(2 ** failures["count"] * self.poll_seconds, MAX_BACKOFF_SECONDS)
+            delay = backoff_delay(self.poll_seconds, failures["count"])
             failures["next_submit_at"] = self.clock() + delay
             message = (
                 f"{model.label}: batch {batch_id} expired, failed or was cancelled; "
@@ -830,6 +949,41 @@ class Runner:
                 }
             self._persist()
         self.say(message)
+
+    def _build_ghosts(self) -> None:
+        """Adapters for models that left the manifest while their work was outstanding.
+
+        Rebuilt from each reservation's submission-time metadata so their
+        batches are still polled, fetched, billed and released (codex items
+        5, 16). A ghost never gets new work and scores nothing.
+        """
+        for key, held in sorted(self.state["reserved"].items()):
+            if "model" not in held or (held.get("spec_provider"), held["model"]) in (
+                self._spec_model
+            ):
+                continue
+            ref = Reference(
+                provider=held["adapter"],
+                model=held["model"],
+                reasoning=held.get("reasoning", "medium"),
+                batch=held.get("route") == "batch",
+                capabilities=tuple(held.get("capabilities", ())),
+                api_key_env=held.get("api_key_env"),
+                usd_per_mtok_in=held.get("usd_per_mtok_in", 0.0),
+                usd_per_mtok_out=held.get("usd_per_mtok_out", 0.0),
+            )
+            try:
+                provider = self.factory(ref, self.plan.manifest.budget_for(ref.provider), self.env)
+            except Exception as exc:  # noqa: BLE001 -- reported; its reservation keeps counting
+                self.say(f"{held['label']}: cannot rebuild its adapter to settle key {key}: {exc}")
+                continue
+            ghost = Model(
+                ref=ref, provider=provider, host=provider_host(provider), route=held["route"]
+            )
+            self.ghosts[ghost.label] = ghost
+            self._spec_model[(held["spec_provider"], held["model"])] = ghost
+            self._spec_model[(ref.provider, ref.model)] = ghost
+            self.say(f"{ghost.label}: no longer in the manifest; settling its outstanding calls")
 
     def live_batches(self) -> dict[str, list[str]]:
         """Submitted batches of models in this manifest (a removed model's are reported)."""
@@ -878,7 +1032,12 @@ class Runner:
                 classification = classify_exception(exc, model.kind)
                 if classification is None:
                     raise
-                self.apply_stop(model, classification, chunk[0].request.params)
+                self.apply_stop(
+                    model,
+                    classification,
+                    chunk[0].request.params,
+                    request_kind("", chunk[0].request.interface),
+                )
                 continue
             with self._lock:
                 self.ledger.mark_submitted(keys, handle.batch_id)
@@ -918,8 +1077,19 @@ class Runner:
                     classification = classify_exception(exc, model.kind)
                     if classification is None:
                         raise
-                    self._release(item.key)
-                    self.apply_stop(model, classification, item.request.params)
+                    if classification.reason in UNCERTAIN_REASONS and not refused_before_send(exc):
+                        # Sent and maybe accepted, no answer: one uncertain charge (item 2).
+                        self._uncertain(
+                            item.key, f"sent but not answered ({classification.reason})"
+                        )
+                    else:
+                        self._release(item.key)
+                    self.apply_stop(
+                        model,
+                        classification,
+                        item.request.params,
+                        request_kind("", item.request.interface),
+                    )
                     return False
                 self.record(model, item.key, result)
                 return True
@@ -1274,7 +1444,14 @@ class Runner:
             final_traces = []
             for trace in traces:
                 offered = list(trace.raw.candidates or [])
+                truncated = (
+                    trace.raw.outcome == "invalid" and trace.raw.invalid_reason == loop.TRUNCATED
+                )
                 for policy in subject.policies:
+                    if truncated:
+                        # A cut reply stays invalid under every policy (codex item 13).
+                        trace = trace.with_policy(policy, "invalid", loop.TRUNCATED)
+                        continue
                     decision, reason, _n, _v = policies.apply(
                         loaded_policies[policy], trace.raw.to_dict(), offered
                     )
@@ -1489,6 +1666,7 @@ def step(
             clock=clock,
             poll_seconds=poll_seconds,
             recheck_seconds=recheck_seconds,
+            factory=factory or default_factory,
         )
         try:
             outcome = runner.run_pass()
