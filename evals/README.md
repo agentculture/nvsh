@@ -156,6 +156,14 @@ uv run --group evals python -m evals.tool_jev status --run-dir "$NVSH_EVALS_RUN_
 
 A run stops for one of several reasons, each affecting only what it must:
 
+- **Pause** — a rate limit (429), a timeout or a network error pauses that
+  provider for about a minute, then it resumes in the same pass; each
+  provider sends from its own thread pool, and a round of direct calls stops
+  taking new calls after five minutes, so a slow provider (a large local
+  model) never holds the others back. A slow provider may need a longer
+  per-call timeout: `[budget.<provider>] timeout_seconds` (default 60; the
+  example manifest gives `local` 300).
+
 - **Money stop** — a provider returns insufficient credit/quota (402) or its
   `[budget.<provider>] usd_cap` is reached. Only that provider stops; every
   other provider keeps going. Top up or raise the cap, then

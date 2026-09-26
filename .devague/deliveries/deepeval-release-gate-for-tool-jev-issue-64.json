@@ -2,7 +2,7 @@
   "plan_slug": "deepeval-release-gate-for-tool-jev-issue-64",
   "schema_version": 2,
   "created": "2026-09-26T06:47:33Z",
-  "updated": "2026-09-26T11:57:56Z",
+  "updated": "2026-09-26T12:53:32Z",
   "deviations": [
     {
       "id": "d1",
@@ -82,6 +82,19 @@
       "status": "approved",
       "classification": "acceptable",
       "seq": 5
+    },
+    {
+      "id": "d6",
+      "what": "Extend deviation d5's alerts with a status summary every 30 minutes (per provider: percent answered, calls to go, invalid, spend of cap; plus active stops), posted by a heartbeat thread in the driver so it keeps flowing during long steps",
+      "task_ref": "t17",
+      "reason": "Operator request 2026-09-26: a 30-minute cadence status update",
+      "affects": [
+        "t24"
+      ],
+      "origin": "user",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 6
     }
   ],
   "evidence": [],
