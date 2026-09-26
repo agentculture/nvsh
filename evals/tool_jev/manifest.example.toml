@@ -15,6 +15,13 @@
 # predictions live on their machine. This module (evals/tool_jev/manifest.py)
 # does not expand it — it is only ever a plain string field.
 #
+# Each [[case_set]]'s `path` is different: it is a plain path RELATIVE to a
+# private data root the caller supplies out of band (the
+# NVSH_EVALS_PRIVATE_ROOT environment variable), resolved by
+# evals/tool_jev/cases.py's case_sets_from_manifest — never absolute, never
+# home-shaped (`~`), and never a `${...}`-style placeholder. manifest.py
+# rejects any [[case_set]] whose path breaks that rule.
+#
 # Every list below is an array-of-tables ([[...]]). Adding a checkpoint, a
 # reference model, a judge or a case set is a data change here — no code
 # change to manifest.py or any runner that consumes it.
@@ -27,6 +34,11 @@
 name = "a3-heal.q4_k_m"
 track = "A"
 predictions_path = "${NVSH_EVALS_PRIVATE}/predictions/a3-heal.q4_k_m.jsonl"
+# train_split names this checkpoint's own training-side split file, so a
+# runner can refuse (cases.training_overlap) to score it on an id it was
+# trained on. Optional -- a reference model with no local training split
+# simply omits it, as the entries below do.
+train_split = "${NVSH_EVALS_PRIVATE}/splits/a3-heal.q4_k_m.train.json"
 
 [[baseline]]
 name = "stock"
@@ -211,21 +223,29 @@ model = "qwen/qwen3.8-max-0902"
 [[case_set]]
 name = "issue-53-test"
 count = 198
+split = "test"
+path = "splits/issue-53-test.json"
 include_heldout = false
 
 [[case_set]]
 name = "issue-53-missing-candidate"
 count = 83
+split = "test-mc"
+path = "splits/issue-53-missing-candidate.json"
 include_heldout = false
 
 [[case_set]]
 name = "heldout-track-a"
 count = 40
+split = "heldout"
+path = "splits/heldout-track-a.json"
 include_heldout = true
 
 [[case_set]]
 name = "heldout-track-b"
 count = 40
+split = "heldout-mc"
+path = "splits/heldout-track-b.json"
 include_heldout = true
 
 # ---------------------------------------------------------------------------

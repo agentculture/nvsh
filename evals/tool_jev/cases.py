@@ -154,6 +154,31 @@ def load_manifest(manifest: Mapping[str, Any] | str | Path) -> dict[str, str]:
     return {str(tag): str(path) for tag, path in splits.items()}
 
 
+def case_sets_from_manifest(manifest: Any, private_root: str | Path) -> dict[str, str]:
+    """Resolve a run manifest's ``[[case_set]]`` entries into ``{split: path}``.
+
+    *manifest* is a :class:`evals.tool_jev.manifest.Manifest` (or anything
+    duck-typed the same way: a ``case_sets`` iterable of objects carrying
+    ``split``/``path`` attributes -- accepted by structure rather than by
+    importing that module here, since ``manifest.py`` imports
+    :data:`SPLIT_TAGS` from this module and importing back would cycle).
+    Each case set's ``path`` (relative, ``manifest.py``-validated to never
+    be absolute or home-shaped) is joined onto *private_root* --
+    typically the operator's ``NVSH_EVALS_PRIVATE_ROOT`` environment
+    variable, resolved by the caller, never by this function.
+
+    The result is exactly the ``{split_tag: path}`` shape :func:`load_manifest`
+    / :func:`load_case_set` already accept, so a caller feeds it straight
+    through: ``load_case_set(case_sets_from_manifest(m, root), "test")``.
+    When two case sets in *manifest* share the same ``split`` tag, the
+    later one in iteration order wins (the same one-path-per-split-tag
+    contract :func:`load_case_set` already enforces) -- a manifest that
+    wants both loadable should give them distinct split tags.
+    """
+    root = Path(private_root)
+    return {cs.split: str(root / cs.path) for cs in manifest.case_sets}
+
+
 def _read_only_for(expect: dict) -> bool | None:
     """``nvsh.ops.table``-derived read-only flag for an expectation.
 

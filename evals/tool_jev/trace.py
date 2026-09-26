@@ -316,6 +316,26 @@ def _is_inside_git_worktree(path: Path) -> bool:
     return False
 
 
+def _dump_trace(trace: Trace) -> str:
+    """Serialize *trace* to one JSON line, never reordering its keys.
+
+    ``json.dumps(..., sort_keys=True)`` looked deterministic but is not
+    order-preserving: it recursively sorts every nested mapping, including
+    ``raw.candidates``. ``candidates`` order is semantic --
+    ``metrics_bridge._rolled_and_offered`` derives the ``offered`` sequence
+    ``gate.decide`` uses for tie-breaking straight from
+    ``list(candidates.keys())`` -- so alphabetically resorting it (e.g.
+    ``"(explain)"`` sorting before ``"disk_usage"`` on ASCII ``(`` < ``d``)
+    can silently flip a policy's decision between the pre- and
+    post-serialization record. A plain ``dict`` already serializes in
+    insertion order (Python 3.7+ / JSON), which is exactly the order the
+    caller built ``candidates`` in, so omitting ``sort_keys`` alone keeps
+    output fully deterministic (the same ``Trace`` always serializes
+    identically) while preserving offered order.
+    """
+    return json.dumps(trace.to_dict())
+
+
 def append_trace(path: str | Path, trace: Trace) -> None:
     """Append one ``Trace`` as a JSONL line to ``path``.
 
@@ -327,7 +347,7 @@ def append_trace(path: str | Path, trace: Trace) -> None:
         raise TraceWriteError(f"refusing to write a trace file inside a git worktree: {target}")
     target.parent.mkdir(parents=True, exist_ok=True)
     with open(target, "a", encoding="utf-8") as handle:
-        handle.write(json.dumps(trace.to_dict(), sort_keys=True))
+        handle.write(_dump_trace(trace))
         handle.write("\n")
 
 
@@ -342,7 +362,7 @@ def write_traces(path: str | Path, traces: Iterable[Trace]) -> None:
     target.parent.mkdir(parents=True, exist_ok=True)
     with open(target, "w", encoding="utf-8") as handle:
         for trace in traces:
-            handle.write(json.dumps(trace.to_dict(), sort_keys=True))
+            handle.write(_dump_trace(trace))
             handle.write("\n")
 
 

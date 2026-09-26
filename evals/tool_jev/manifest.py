@@ -34,10 +34,18 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping
 
+from evals.tool_jev.cases import SPLIT_TAGS
+
 #: Name of the environment variable that points at the operator's private,
 #: real manifest file. The file itself is never committed and never lives
 #: at a hard-coded path.
 ENV_MANIFEST_PATH = "NVSH_EVALS_MANIFEST"
+
+#: Split tags whose case sets must never be sent to a provider (``cases.py``
+#: enforces the same tags -- ``load_case_set`` refuses to load either
+#: without ``include_heldout=True``). Every ``[[case_set]]`` here must set
+#: ``include_heldout`` to exactly this membership test.
+_HELDOUT_SPLITS = frozenset({"heldout", "heldout-mc"})
 
 #: Providers this manifest schema knows about. Anything else is rejected at
 #: parse time so a typo'd provider name fails loudly instead of silently
@@ -60,11 +68,21 @@ class ManifestError(ValueError):
 
 @dataclass(frozen=True)
 class RunEntry:
-    """One candidate or baseline checkpoint: a name plus its saved predictions."""
+    """One candidate or baseline checkpoint: a name plus its saved predictions.
+
+    ``train_split`` is the checkpoint's own training-side split file path
+    (same private-path convention as ``predictions_path``: an operator
+    string, possibly carrying a ``${...}`` placeholder this module never
+    expands), passed to :func:`evals.tool_jev.cases.training_overlap` so a
+    runner can refuse to score a checkpoint on any case id present in its
+    own training data. ``None`` when no such check applies (e.g. a hosted
+    reference model with no local training split).
+    """
 
     name: str
     track: str
     predictions_path: str
+    train_split: str | None = None
 
 
 @dataclass(frozen=True)
@@ -106,14 +124,28 @@ class Judge:
 class CaseSet:
     """One named slice of cases to run.
 
+    ``split`` is one of :data:`evals.tool_jev.cases.SPLIT_TAGS` (``"test"``,
+    ``"test-mc"``, ``"heldout"``, ``"heldout-mc"``) -- the split-file tag
+    :func:`evals.tool_jev.cases.load_case_set` loads this case set under.
+    ``path`` is that split file's location, RELATIVE to a private data root
+    the caller supplies out of band (the ``NVSH_EVALS_PRIVATE_ROOT``
+    environment variable; see
+    :func:`evals.tool_jev.cases.case_sets_from_manifest`) -- never an
+    absolute or home-shorthand path, so the committed example manifest
+    stays free of private paths.
+
     ``include_heldout`` marks a saved-only, held-out set: a runner must
     never send these cases to any provider (they are scored against saved
-    predictions only). This module only carries the flag; enforcing it is a
-    runner's job.
+    predictions only). It is required to be ``True`` for ``split in
+    {"heldout", "heldout-mc"}`` and ``False`` otherwise -- parsing rejects
+    any other combination -- so the flag can never silently drift from the
+    split tag it must agree with.
     """
 
     name: str
     count: int
+    split: str
+    path: str
     include_heldout: bool = False
 
 
@@ -134,6 +166,7 @@ class RunTarget:
     track: str
     predictions_path: str
     kind: str  # "candidate" | "baseline"
+    train_split: str | None = None
 
 
 @dataclass(frozen=True)
@@ -153,10 +186,12 @@ class Manifest:
         here with no code change anywhere.
         """
         targets = [
-            RunTarget(c.name, c.track, c.predictions_path, "candidate") for c in self.candidates
+            RunTarget(c.name, c.track, c.predictions_path, "candidate", c.train_split)
+            for c in self.candidates
         ]
         targets.extend(
-            RunTarget(b.name, b.track, b.predictions_path, "baseline") for b in self.baselines
+            RunTarget(b.name, b.track, b.predictions_path, "baseline", b.train_split)
+            for b in self.baselines
         )
         return tuple(targets)
 
@@ -199,7 +234,12 @@ def _parse_run_entry(table: Mapping, where: str) -> RunEntry:
             f"(must be one of {sorted(ALLOWED_TRACKS)})"
         )
     predictions_path = _require_str(table, "predictions_path", where)
-    return RunEntry(name=name, track=track, predictions_path=predictions_path)
+    train_split = table.get("train_split")
+    if train_split is not None and not isinstance(train_split, str):
+        raise ManifestError(f"{where} (name={name!r}): train_split must be a string")
+    return RunEntry(
+        name=name, track=track, predictions_path=predictions_path, train_split=train_split
+    )
 
 
 def _parse_reference(table: Mapping, where: str) -> Reference:
@@ -250,10 +290,27 @@ def _parse_case_set(table: Mapping, where: str) -> CaseSet:
     count = table.get("count")
     if not isinstance(count, int) or isinstance(count, bool) or count < 0:
         raise ManifestError(f"{where} (name={name!r}): count must be a non-negative integer")
+    split = _require_str(table, "split", where)
+    if split not in SPLIT_TAGS:
+        raise ManifestError(
+            f"{where} (name={name!r}): unknown split {split!r} " f"(must be one of {SPLIT_TAGS})"
+        )
+    path = _require_str(table, "path", where)
+    if path.startswith("/") or "~" in path:
+        raise ManifestError(
+            f"{where} (name={name!r}): path must be relative to the private data root "
+            f"(NVSH_EVALS_PRIVATE_ROOT), never absolute or home-shaped, got {path!r}"
+        )
     include_heldout = table.get("include_heldout", False)
     if not isinstance(include_heldout, bool):
         raise ManifestError(f"{where} (name={name!r}): include_heldout must be a boolean")
-    return CaseSet(name=name, count=count, include_heldout=include_heldout)
+    expected_heldout = split in _HELDOUT_SPLITS
+    if include_heldout != expected_heldout:
+        raise ManifestError(
+            f"{where} (name={name!r}): include_heldout must be {expected_heldout} "
+            f"for split {split!r}"
+        )
+    return CaseSet(name=name, count=count, split=split, path=path, include_heldout=include_heldout)
 
 
 def _parse_budgets(raw: Mapping, where: str) -> tuple[Budget, ...]:

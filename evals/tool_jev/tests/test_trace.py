@@ -242,6 +242,60 @@ def test_write_traces_truncates_and_read_traces_round_trips(tmp_path):
     assert read_traces(out_path) == [trace1]
 
 
+# ---------------------------------------------------------------------------
+# Reviewer finding (codex wave 1): serialization must not reorder
+# ``raw.candidates`` -- gate.decide's tie-break depends on offered order,
+# and metrics_bridge derives ``offered`` from ``list(candidates.keys())``.
+# ---------------------------------------------------------------------------
+
+
+def test_serialization_preserves_candidate_order_for_policy_decisions(tmp_path):
+    from evals.tool_jev import policies
+
+    raw = RawRecord(
+        outcome="propose",
+        operation="disk_usage",
+        arguments={},
+        candidates={"disk_usage": 0.5, "(explain)": 0.5},
+    )
+    trace0 = Trace(case_id="c1", split="test", raw=raw)
+    policy = policies.load_policy(policies.builtin_policy_path("raw"))
+
+    offered_before = list(trace0.raw.candidates.keys())
+    decision_before = policies.apply(policy, trace0.raw.to_dict(), offered_before)
+
+    out_path = tmp_path / "run-outside-repo" / "traces.jsonl"
+    write_traces(out_path, [trace0])
+    (reloaded,) = read_traces(out_path)
+
+    offered_after = list(reloaded.raw.candidates.keys())
+    decision_after = policies.apply(policy, reloaded.raw.to_dict(), offered_after)
+
+    # The bug this guards against: json.dumps(..., sort_keys=True) sorted
+    # "(explain)" ahead of "disk_usage" (ASCII "(" < "d"), flipping the
+    # decision from "propose" to "explain" purely from a round trip.
+    assert offered_after == offered_before
+    assert decision_before[0] == "propose"
+    assert decision_after[0] == "propose"
+    assert decision_before == decision_after
+
+
+def test_append_trace_also_preserves_candidate_order(tmp_path):
+    raw = RawRecord(
+        outcome="propose",
+        operation="disk_usage",
+        arguments={},
+        candidates={"disk_usage": 0.5, "(explain)": 0.5},
+    )
+    trace0 = Trace(case_id="c1", split="test", raw=raw)
+
+    out_path = tmp_path / "run-outside-repo" / "traces.jsonl"
+    append_trace(out_path, trace0)
+    (reloaded,) = read_traces(out_path)
+
+    assert list(reloaded.raw.candidates.keys()) == ["disk_usage", "(explain)"]
+
+
 def test_is_inside_git_worktree_true_for_repo_paths_false_for_tmp_path(tmp_path):
     assert trace_mod._is_inside_git_worktree(REPO_ROOT / "evals" / "tool_jev" / "trace.py")
     assert trace_mod._is_inside_git_worktree(REPO_ROOT)
