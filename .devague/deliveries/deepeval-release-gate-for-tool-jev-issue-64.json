@@ -2,7 +2,7 @@
   "plan_slug": "deepeval-release-gate-for-tool-jev-issue-64",
   "schema_version": 2,
   "created": "2026-09-26T06:47:33Z",
-  "updated": "2026-09-28T22:26:30Z",
+  "updated": "2026-09-28T23:20:25Z",
   "deviations": [
     {
       "id": "d1",
@@ -233,8 +233,70 @@
       "status": "proposed",
       "superseded": false,
       "seq": 11
+    },
+    {
+      "id": "e6",
+      "obligation_ref": "o6",
+      "test_ref": "live full gate run 8b59d0afa150 (docker compose driver, evals.tool_jev drive)",
+      "behavior_text": "the run completed (status complete) and wrote result.json, report.md and judge_results.json with candidate, baseline and 15 reference rows, raw and shipped-policy rows side by side, and a 3-judge panel over 1,581 explanations",
+      "contract_text": "One documented command replays the saved outputs of a3-heal, scorer-r3b and baselines plus fresh reference-model runs, and writes a JSON result, per-case traces with raw and final side by side, and a markdown comparison page",
+      "evidence_type": "integration",
+      "strength": "execution",
+      "strength_basis": "observed the completed live run; report copied to docs/benchmarks/2026-09-29-deepeval-gate-run-8b59d0afa150.md; total spend $35.78 (anthropic 17.41, openai 3.36, openrouter 15.01); glm-5.3 dropped per d7",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-29T12:00:00+03:00",
+        "commit": "458d911"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 15
     }
   ],
-  "deltas": [],
+  "deltas": [
+    {
+      "id": "b1",
+      "kind": "added",
+      "behavior_text": "the gate reports a Track A 'task done' column beside strict 'right proposal': running the expected read-only operation with the expected arguments as an inspection, then explaining, counts as done",
+      "caused_by": [
+        "d9"
+      ],
+      "evidence_refs": [
+        "e6"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    },
+    {
+      "id": "b2",
+      "kind": "amended",
+      "behavior_text": "the reference roster is 15 models (glm-5.3 dropped) and the judge panel is 3 judges (claude-opus-5-5, gpt-6-sol, qwen3.8-max at low reasoning), not 16 and 5",
+      "caused_by": [
+        "d7"
+      ],
+      "evidence_refs": [
+        "e6"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    },
+    {
+      "id": "b3",
+      "kind": "removed",
+      "behavior_text": "candidate and baseline explanations are not judged: their saved predictions carry no explanation text (judge rows not_applicable)",
+      "caused_by": [
+        "c39"
+      ],
+      "evidence_refs": [
+        "e6"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    }
+  ],
   "supersessions": []
 }
