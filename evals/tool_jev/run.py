@@ -356,7 +356,15 @@ class Runner:
 
     def _judge_params(self, model: Model) -> dict[str, Any]:
         params: dict[str, Any] = {"max_output_tokens": self.plan.manifest.judging.max_output_tokens}
-        effort = provider_reasoning(model.ref.provider, model.ref.reasoning)
+        own = next(
+            (
+                j.reasoning
+                for j in self.plan.manifest.judges
+                if (j.provider, j.model) == (model.ref.provider, model.ref.model)
+            ),
+            None,
+        )
+        effort = provider_reasoning(model.ref.provider, own or model.ref.reasoning)
         if effort:
             params["reasoning"] = effort
         return params

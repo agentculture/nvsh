@@ -259,7 +259,9 @@ usd_per_mtok_out = 0.0
 # ---------------------------------------------------------------------------
 # Judge panel: every entry must also be a [[reference]] above (same
 # (provider, model) pair) — manifest.py rejects a judge that is not a
-# roster member.
+# roster member. A judge may add `reasoning = "low"` (none/low/medium/high)
+# to judge at a different effort than it answers with; without it the judge
+# uses its [[reference]] reasoning.
 # ---------------------------------------------------------------------------
 
 [[judge]]
