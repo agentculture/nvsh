@@ -108,7 +108,7 @@ Approved deviation records:
 - tests: `evals/tool_jev/tests/test_task_done.py`, `test_judge_reasoning.py`, `test_run_fairness.py` — pass
 - live run: `8b59d0afa150` status complete; `result.json`, `report.md`, `judge_results.json` written; report copied to `docs/benchmarks/2026-09-29-deepeval-gate-run-8b59d0afa150.md`
 - replay: the candidates' and baselines' saved outputs reproduce their recorded figures through the gate (a3-heal 77/83, 4 wrong mutating; scorer-r3b 79/83, 0; scorer-b1 68/83, 1; stock 6/83)
-- validate-delivery records: obligations `o1`-`o6`, evidence `e1`-`e6`, deltas `b1`-`b3` (all proposed)
+- validate-delivery records: obligations `o1`-`o6`, evidence `e1`-`e6`, deltas `b1`-`b3` (all approved by the operator, 2026-09-29)
 - commits: `d8416bc..458d911` on `spec/deepeval-release-gate-issue-64`
 - PRs / issues: #64, PR #68 (merged), the 0.22.0 follow-up PR, follow-ups #69 #70 #71; #66 separate
 
@@ -141,6 +141,6 @@ Lapse ledger evidence:
 - wire `scorer-r3b.q4_k_m` into the tier stack (issue-54 style) — issue #69
 - execution-based evaluation layer (non-goal c15) — issue #70
 - record candidates' Track A inspections and explanations; fix the worktree guard's empty-`.git` false positive; NVIDIA hosting; Track A contract wording — issue #71
-- lapses `l1`-`l5` approved by the operator (2026-09-29); adjudicate proposed records `o1`-`o6`, `e1`-`e6`, `b1`-`b3` — operator
-- rotate the OpenAI and build.nvidia.com keys pasted during the run — operator
+- lapses `l1`-`l5`, obligations `o1`-`o6`, evidence `e1`-`e6` and deltas `b1`-`b3` approved by the operator (2026-09-29) — done
+- the OpenAI and build.nvidia.com keys pasted during the run were rotated by the operator (2026-09-29) — done
 - stop the compose projects `nvsh-evals-gate` and `nvsh-evals-rehearsal` — main agent, after this summary is committed

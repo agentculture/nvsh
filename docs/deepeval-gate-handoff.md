@@ -13,7 +13,7 @@ and the headline is in [`deepeval-gate.md`](deepeval-gate.md#first-result).
 `/validate-delivery` (o1-o6, e1-e6, b1-b3) and `/summarize-delivery`
 ([`deliveries/2026-09-26-deepeval-release-gate-for-tool-jev-issue-64.md`](deliveries/2026-09-26-deepeval-release-gate-for-tool-jev-issue-64.md))
 are done; PR #68 carries the work, and follow-ups are #69, #70 and #71.
-Deviations d1-d9 are approved. The rest of this file is the history of how
+Deviations d1-d9, lapses l1-l5 and the validation records (o1-o6, e1-e6, b1-b3) are approved; the OpenAI and build.nvidia.com keys used in the run have been rotated. The rest of this file is the history of how
 the run got there.
 
 ## Where the work is
