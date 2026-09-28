@@ -65,7 +65,7 @@ Quoted verbatim from the `devague summary` skeleton:
 | `t22` | delivered | 10-case smoke: 0 truncated, 0 invalid at medium reasoning / 2048 tokens; budget caps set |
 | `t23` | delivered | permutation stability entries for the release candidates (test side only; Track A not measurable, stated) |
 | `t24` | delivered | full run `8b59d0afa150` complete: 15 references, 3-judge panel over 1,581 explanations, report `docs/benchmarks/2026-09-29-deepeval-gate-run-8b59d0afa150.md`; \$35.78 spent |
-| `t25` | delivered | version 0.21.0, CHANGELOG, harness prompt files, guide; follow-up issues #69 #70 #71; PR #68 |
+| `t25` | delivered | version 0.21.0, CHANGELOG, harness prompt files, guide; follow-up issues #69 #70 #71; PR #68 (merged at the gate's build) and the follow-up PR with the first result (0.22.0) |
 
 ## Mid-work Decisions
 
@@ -110,7 +110,7 @@ Approved deviation records:
 - replay: the candidates' and baselines' saved outputs reproduce their recorded figures through the gate (a3-heal 77/83, 4 wrong mutating; scorer-r3b 79/83, 0; scorer-b1 68/83, 1; stock 6/83)
 - validate-delivery records: obligations `o1`-`o6`, evidence `e1`-`e6`, deltas `b1`-`b3` (all proposed)
 - commits: `d8416bc..458d911` on `spec/deepeval-release-gate-issue-64`
-- PRs / issues: #64, PR #68, follow-ups #69 #70 #71; #66 separate
+- PRs / issues: #64, PR #68 (merged), the 0.22.0 follow-up PR, follow-ups #69 #70 #71; #66 separate
 
 ## Delivery Claims
 
@@ -131,15 +131,16 @@ Lapse ledger evidence:
 | Lapse | Code | What |
 |-------|------|------|
 | `l1` | `provenance-missing` | Scope claim c4 said a3-heal has saved held-out and missing-candidate predictions, relying on an explorer's inventory; the challenge probe found only final (test) predictions for a3-heal and a3-heal.`q4_k_m` |
+| `l2` | `provenance-missing` | Scope finding and t1 brief named deepeval's pytest plugin 'plugins' (from an explorer's research report); its registered pytest11 name is 'deepeval' (t1 verified with --trace-config); I never checked the entry point myself |
+| `l3` | `grader-unverified` | t10 task agent reported scan-secrets clean, but it ran the scan before committing; scan-secrets only scans git-tracked files, so its own new test file with five sk-... literals was never scanned; my t10 merge gate also skipped scan-secrets after merge (the root suite caught it) |
+| `l4` | `grader-unverified` | Main agent committed the deepeval-destination fix (368ce53) in a command chain where the commit did not depend on the evals run passing; the run had 1 failure (a stale directory left by the pre-fix red run), so the commit landed without a green gate. Re-run after removing the artifact: 408 passed; the committed code was correct |
 | `l5` | `control-absent` | commit 4a55743 landed with one evals test red: the gate command piped pytest into tail, so the commit ran on tail's exit status, not pytest's; fixed in a146ab6, and the gate now checks pytest's own exit code |
-
-pending approval (not yet evidence): `l2`, `l3`, `l4`
 
 ## Remaining Work / Follow-up
 
 - wire `scorer-r3b.q4_k_m` into the tier stack (issue-54 style) — issue #69
 - execution-based evaluation layer (non-goal c15) — issue #70
 - record candidates' Track A inspections and explanations; fix the worktree guard's empty-`.git` false positive; NVIDIA hosting; Track A contract wording — issue #71
-- adjudicate proposed lapses `l2`-`l4` and proposed records `o1`-`o6`, `e1`-`e6`, `b1`-`b3` — operator
+- lapses `l1`-`l5` approved by the operator (2026-09-29); adjudicate proposed records `o1`-`o6`, `e1`-`e6`, `b1`-`b3` — operator
 - rotate the OpenAI and build.nvidia.com keys pasted during the run — operator
 - stop the compose projects `nvsh-evals-gate` and `nvsh-evals-rehearsal` — main agent, after this summary is committed

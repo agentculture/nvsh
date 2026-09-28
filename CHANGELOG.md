@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/). This project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.22.0] - 2026-09-29
+
+### Added
+
+- A `[[judge]]` entry may set its own `reasoning` effort (deviation d8): qwen3.8-max judges at low reasoning after truncating 19% of its judge replies at medium.
+- The report main table gains **Right** and **Task done** columns (deviation d9): Track A records carry the read-only inspections the loop ran, and running the expected read-only operation with the expected arguments, then explaining, counts as done.
+- The first full gate run report, `docs/benchmarks/2026-09-29-deepeval-gate-run-8b59d0afa150.md` (15 references, a three-judge panel; deviation d7 dropped glm-5.3 and the two build.nvidia.com judges), and a First result section in `docs/deepeval-gate.md`.
+
+### Changed
+
+- Harness prompt files, the gate guide, its handoff and the delivery summary describe the gate first result; `/validate-delivery` evidence e6 and deltas b1-b3 filed; lapses l2-l4 approved. Follow-ups: #69, #70, #71.
+
+### Fixed
+
+- A provider's sync calls go out one per model in turn and a timeout pauses only the model that timed out, so one slow model no longer idles its provider's others (shipped in 0.21.0's code, missing from its entry).
+
 ## [0.21.0] - 2026-09-26
 
 ### Added
@@ -15,14 +31,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - The runner `python -m evals.tool_jev run|continue|status|smoke|drive`: resumable passes, budget caps with per-call cost reservations and an append-only billing record, money/rejected/truncation/uncertain stops, and the run-dir layout the report reads.
 - An autonomous docker compose driver (`evals/docker/`, deviation d2) with Discord progress, spend, stop and 30-minute status alerts (deviations d5, d6), and the operator guide `evals/README.md` with a no-network fixture run.
 - Baseline measurements of stock Qwen3.5-0.8B and `scorer-b1.q4_k_m` on the issue-53 test set and missing-candidate slice (deviation d4), and the a3-heal run on the same set (decision c38).
-- A `[[judge]]` entry may set its own `reasoning` effort (deviation d8), and the report's main table gains **Right** and **Task done** columns: Track A records carry the read-only inspections the loop ran, and running the expected read-only operation then explaining counts as done (deviation d9).
-- The first full gate run's report, `docs/benchmarks/2026-09-29-deepeval-gate-run-8b59d0afa150.md` (15 references, a three-judge panel; deviation d7 dropped glm-5.3 and the two build.nvidia.com judges).
 
 ### Changed
 
 - CI runs the `evals` suite in its own job with DeepEval telemetry and dotenv loading off; lint covers `evals/`.
-- Harness prompt files and `docs/deepeval-gate.md` describe the gate and its first result.
-- A provider's sync calls go out one per model in turn, and a timeout pauses only the model that timed out, so one slow model no longer idles its provider's others.
+- Harness prompt files and `docs/deepeval-gate.md` describe the gate and its current state.
 
 ## [0.20.0] - 2026-09-25
 
