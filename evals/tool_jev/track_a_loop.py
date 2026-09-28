@@ -65,6 +65,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from nvsh.ops import table as ops_table
 from nvsh.platform._model import Platform
 from nvsh.tiers import lfm
 from nvsh.tiers.base import Explanation
@@ -402,7 +403,24 @@ def _final_record(
         arguments=arguments,
         candidates=None,
         invalid_reason=reason,
+        inspections=_inspections(chat),
     )
+
+
+def _inspections(chat: DeferredChat) -> tuple:
+    """The read-only table operations the model called directly, in order.
+
+    LfmTier runs a direct call to a read-only operation as an inspection
+    (a proposal goes through the ``propose`` tool), so these are the
+    commands the loop executed for the model (deviation d9).
+    """
+    found = []
+    for entry in chat.replies:
+        for call in entry.reply.tool_calls:
+            operation = ops_table.get(call.name)
+            if operation is not None and operation.read_only:
+                found.append({"operation": call.name, "arguments": dict(call.arguments)})
+    return tuple(found)
 
 
 def run_case(

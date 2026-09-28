@@ -659,5 +659,10 @@ def evaluate_traces(
             display_config=display_config,
             cache_config=cache_config,
         )
-    corpus_metrics = metrics_bridge.compute(predictions, metrics_mod=metrics_mod, gate_mod=gate_mod)
+    corpus_metrics = metrics_bridge.compute(
+        predictions,
+        inspections={trace.case_id: trace.raw.inspections for trace in traces},
+        metrics_mod=metrics_mod,
+        gate_mod=gate_mod,
+    )
     return EvaluationOutcome(deepeval_result=deepeval_result, corpus_metrics=corpus_metrics)
