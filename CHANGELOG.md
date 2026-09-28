@@ -15,11 +15,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - The runner `python -m evals.tool_jev run|continue|status|smoke|drive`: resumable passes, budget caps with per-call cost reservations and an append-only billing record, money/rejected/truncation/uncertain stops, and the run-dir layout the report reads.
 - An autonomous docker compose driver (`evals/docker/`, deviation d2) with Discord progress, spend, stop and 30-minute status alerts (deviations d5, d6), and the operator guide `evals/README.md` with a no-network fixture run.
 - Baseline measurements of stock Qwen3.5-0.8B and `scorer-b1.q4_k_m` on the issue-53 test set and missing-candidate slice (deviation d4), and the a3-heal run on the same set (decision c38).
+- A `[[judge]]` entry may set its own `reasoning` effort (deviation d8), and the report's main table gains **Right** and **Task done** columns: Track A records carry the read-only inspections the loop ran, and running the expected read-only operation then explaining counts as done (deviation d9).
+- The first full gate run's report, `docs/benchmarks/2026-09-29-deepeval-gate-run-8b59d0afa150.md` (15 references, a three-judge panel; deviation d7 dropped glm-5.3 and the two build.nvidia.com judges).
 
 ### Changed
 
 - CI runs the `evals` suite in its own job with DeepEval telemetry and dotenv loading off; lint covers `evals/`.
-- Harness prompt files and `docs/deepeval-gate.md` describe the gate and its current state.
+- Harness prompt files and `docs/deepeval-gate.md` describe the gate and its first result.
+- A provider's sync calls go out one per model in turn, and a timeout pauses only the model that timed out, so one slow model no longer idles its provider's others.
 
 ## [0.20.0] - 2026-09-25
 
