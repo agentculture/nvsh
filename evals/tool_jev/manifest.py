@@ -142,6 +142,9 @@ class Judge:
 
     provider: str
     model: str
+    #: This judge's own reasoning effort; ``None`` keeps its reference's
+    #: (deviation d8: qwen3.8-max truncated at medium as a judge).
+    reasoning: str | None = None
 
     @property
     def key(self) -> tuple[str, str]:
@@ -418,7 +421,10 @@ def _parse_judge(table: Mapping, where: str, roster: frozenset[tuple[str, str]])
             f"{where}: judge {provider}/{model} is not a member of the reference roster "
             "(every judge must also be a [[reference]])"
         )
-    return Judge(provider=provider, model=model)
+    reasoning = table.get("reasoning")
+    if reasoning is not None and reasoning not in REASONING_LEVELS:
+        raise ManifestError(f"{where}: reasoning must be one of {list(REASONING_LEVELS)}")
+    return Judge(provider=provider, model=model, reasoning=reasoning)
 
 
 def _parse_case_set(table: Mapping, where: str) -> CaseSet:
