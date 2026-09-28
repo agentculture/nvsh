@@ -2,7 +2,7 @@
   "plan_slug": "deepeval-release-gate-for-tool-jev-issue-64",
   "schema_version": 2,
   "created": "2026-09-26T06:47:33Z",
-  "updated": "2026-09-28T21:07:04Z",
+  "updated": "2026-09-28T22:26:30Z",
   "deviations": [
     {
       "id": "d1",
@@ -122,6 +122,20 @@
       "status": "approved",
       "classification": "acceptable",
       "seq": 13
+    },
+    {
+      "id": "d9",
+      "what": "Track A reports a second column, 'task done', beside the strict 'right proposal': a read-only-expected case also counts as done when the subject ran the expected read-only operation with the expected arguments as a loop inspection and then ended in explain. The strict metric is unchanged; Track A records carry the inspections they ran",
+      "task_ref": "t18",
+      "reason": "Operator decision 2026-09-29: in the LfmTier loop read-only operations execute as inspections, and frontier references answered by running the expected read-only command and explaining its result (gpt-6-sol 53/53, claude-opus-5-5 61/61, qwen3.8-max 17/17 such cases), which the strict proposal metric scores as misses (opus 5/83 strict vs about 66/83 task done); a3-heal was trained to propose instead",
+      "affects": [
+        "t15",
+        "t24"
+      ],
+      "origin": "user",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 14
     }
   ],
   "evidence": [

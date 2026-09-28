@@ -255,8 +255,8 @@ def test_main_table_column_headers(basic_run_dir):
     result = report.build_result(basic_run_dir)
     markdown = report.render_markdown(result)
     assert (
-        "| Variant | Harness policy | Top-1 | ECE | Brier | Coverage | Abstain P/R "
-        "| Missing-candidate | Wrong mutations |" in markdown
+        "| Variant | Harness policy | Right | Task done | Top-1 | ECE | Brier | Coverage "
+        "| Abstain P/R | Missing-candidate | Wrong mutations |" in markdown
     )
 
 
