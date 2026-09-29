@@ -8,12 +8,12 @@ fallback), asserting the exact argv list render() returns.
 from __future__ import annotations
 
 import ast
+import importlib
 import re
 from pathlib import Path
 
 import pytest
 
-from nvsh.ops import render as render_mod
 from nvsh.ops.render import (
     DEVICE_CLI_MIN_VERSIONS,
     DEVICE_CLI_VERBS,
@@ -27,6 +27,9 @@ from nvsh.platform import ON_PATH, Platform, Value
 from nvsh.platform._model import FILE, PATH, SUBPROCESS, device_cli_source
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+
+# The module, not the re-exported function nvsh.ops.render also names.
+render_mod = importlib.import_module("nvsh.ops.render")
 
 #: Marks a CLI as present on disk but with no parseable ``--version``.
 NO_VERSION = "no-version"
@@ -538,7 +541,7 @@ def test_power_set(platform, mode, expected):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("platform", [SPARK_ABSENT, JETSON_ABSENT, RTX, GENERIC, ORIN_PRESENT])
+@pytest.mark.parametrize("platform", [SPARK_ABSENT, JETSON_ABSENT, RTX, GENERIC, ORIN_BELOW_FLOOR])
 def test_thermal_stats_is_none_without_a_device_cli_that_has_the_verb(platform):
     assert render("thermal_stats", {}, platform) is None
 
@@ -548,7 +551,7 @@ def test_thermal_stats_is_none_without_a_device_cli_that_has_the_verb(platform):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("platform", [SPARK_ABSENT, JETSON_ABSENT, RTX, GENERIC, ORIN_PRESENT])
+@pytest.mark.parametrize("platform", [SPARK_ABSENT, JETSON_ABSENT, RTX, GENERIC, ORIN_BELOW_FLOOR])
 def test_machine_status_is_none_without_a_device_cli_that_has_the_verb(platform):
     assert render("machine_status", {}, platform) is None
 
