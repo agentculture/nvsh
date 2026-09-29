@@ -24,6 +24,8 @@ from nvsh.cli import main
 from nvsh.explain.catalog import ENTRIES
 from nvsh.ops import ground as ops_ground
 from nvsh.ops import table as ops_table
+from nvsh.ops.render import cli_meets_floor
+from nvsh.ops.render import render as render_argv
 from nvsh.platform._model import Platform
 from nvsh.tiers import bench as bench_mod
 from nvsh.tiers.base import Decline, DeclineReason
@@ -757,6 +759,21 @@ def test_the_fixture_platform_carries_the_corpus_device_cli():
     platform = bench_mod.world_platform({"platform": "jetson", "device_cli": "thor"})
     assert platform.kind == "jetson"
     assert platform.get("thor_cli").text == "thor"
+
+
+def test_the_fixture_device_cli_is_usable_at_its_floor():
+    """The corpus world means "this CLI is installed and has its verbs": the
+    fixture platform carries a version at the CLI's floor, so render() uses
+    the device CLI rather than treating it as below floor (t8)."""
+    platform = bench_mod.world_platform({"platform": "jetson", "device_cli": "thor"})
+    assert cli_meets_floor(platform, "thor")
+    assert render_argv("gpu_stats", {}, platform) == ["thor", "gpu", "--json"]
+
+
+def test_a_fixture_cli_without_a_floor_carries_no_version():
+    platform = bench_mod.world_platform({"platform": "jetson", "device_cli": "jetson-cli"})
+    assert platform.get("jetson-cli_cli").present
+    assert platform.get("jetson-cli_cli_version") is None
 
 
 def test_a_corpus_without_a_world_is_an_empty_world(tmp_path):
