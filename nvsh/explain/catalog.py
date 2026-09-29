@@ -117,6 +117,12 @@ These run unconditionally, including from a wheel install with no
 not):
 
 - `platform_detected` — `nvsh.platform.detect()` found a non-generic kind.
+- `device_cli` — the platform's device CLI (`spark` on DGX Spark, `thor` or
+  `orin` on the matching Jetson board): name, version, path and whether it
+  came from nvsh's own env or `PATH`. Absent is `info` (nvsh falls back to
+  system commands); below its version floor, unreadable, or the wrong
+  board's CLI is a `warning` whose hint names the extra to install
+  (`nvsh[spark]`, `nvsh[thor]`, `nvsh[orin]`).
 - `agent_configured` — `config.toml` loaded and `[agent] provider` names a
   known adapter.
 - `agent_reachable` — probes the configured backend's `/models` endpoint
