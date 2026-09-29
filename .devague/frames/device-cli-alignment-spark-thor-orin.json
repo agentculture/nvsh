@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-09-29T05:33:34Z",
-  "updated": "2026-09-29T06:01:12Z",
+  "updated": "2026-09-29T06:12:25Z",
   "claims": [
     {
       "id": "c1",
@@ -701,6 +701,17 @@
       "skipped_check": "",
       "refs": [
         "t2 jetson_orin/probe/gpu.py wording"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l2",
+      "code": "assumption-for-measurement",
+      "what": "t3: orin swap grow dry-run plan never observed live (Orin has only zram swap; grow errors before planning); dry-run/root-refusal evidence is unit tests only",
+      "skipped_check": "live swap grow dry-run on a swapfile host",
+      "refs": [
+        "t3 acceptance 1"
       ],
       "origin": "llm",
       "status": "proposed"
