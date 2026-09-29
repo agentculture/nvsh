@@ -33,6 +33,12 @@
   - honesty: The Thor/Orin split reads a source recorded in docs/platforms.md (e.g. /proc/device-tree/model or `nv_tegra_release`) and falls back to PATH order when the model is unreadable
 - dgx-spark-cli (/home/spark/git/dgx-spark-cli, 0.7.1) gains a power verb using the probe envelope; nvsh adds `power_get` -> power to `_SPARK_VERBS` in render.py
   - honesty: spark power reports only values the GB10 actually exposes (nvidia-smi power/clock fields, measured on spark) and says available:false for fields it cannot read, never guessed
+- nvsh finds a device CLI installed through its own extra even when nvsh is a uv tool: detection also checks the bin directory of sys.executable (the tool env) before PATH, because 'uv tool install nvsh\[orin\]' does not expose orin on PATH without --with-executables-from (measured: nvsh is a uv tool on spark, thor and orin; each device CLI is a separate uv tool today)
+  - honesty: On a box with no standalone device-CLI tool, after `uv tool install nvsh[<platform>]` nvsh renders `machine_status` to the device CLI
+- render.py gates each device CLI on a minimum version (a per-CLI floor in the verb tables, read once from `<cli> --version` at detection); below the floor nvsh uses the system fallback instead of rendering a verb the installed CLI lacks (today orin 0.5.0 is installed on orin and would answer 'orin status --json' with exit 1 invalid choice)
+  - honesty: With jetson-orin-cli 0.5.0 installed, no operation renders to an orin verb; with the aligned release installed, all 10 do
+- nvsh doctor gains a `device_cli` check (severity warning) reporting the detected CLI, its version and path, and whether it matches the board model; absent CLI is info, not failure
+  - honesty: nvsh doctor --json on each of the 3 boxes shows the `device_cli` check with the right CLI name and version
 
 ## Honesty conditions
 
@@ -46,6 +52,7 @@
 - The key check runs over ssh on thor and orin and locally on spark, with its output kept in the PR descriptions
 - The table test fails if a verb is added to or removed from any `_`\*`_VERBS` table without updating its expected rows
 - The detection test covers a fixture with both binaries on PATH for each board model
+- git diff of this work touches nothing under evals/ or nvsh/tiers/corpus/
 
 ## Success signals
 
@@ -60,6 +67,7 @@
 
 - thor's in-flight uncommitted work on ssh thor (.devague frame 'thor usb: port power visibility + keep-powered-through-sleep', vendored skills, docs/skill-sources.md diff) is left untouched; alignment branches off main f2248e7
 - Work happens in the remote checkouts (ssh thor ~/git/jetson-thor-cli, ssh orin ~/git/jetson-orin-cli); the local /home/spark/git copies are stale (thor local 9b53573 predates 0.5.0; orin local is on an old rename branch f965cd7) and are not the source of truth
+- The Tool-Jev/DeepEval gate artifacts (evals/, run 8b59d0afa150, manifest platform dgx-spark with no spark power) and nvsh/tiers/corpus/dev.json (world `device_cli` thor) are not rescored or rewritten; the new spark `power_get` render and orin renders are recorded as a known delta for the eval follow-ups (#69-#71)
 
 ## Non-goals
 
@@ -71,6 +79,7 @@
 ## Assumptions
 
 - All three CLIs answer the same verb set including power: thor's power (nvpmodel, `jetson_clocks`, hwmon rails) is ported to orin, and dgx-spark-cli gains power for GB10 power/clock state; shared verbs' data keys stay identical, platform-specific fields live inside data
+- Thor vs Orin is readable from /proc/device-tree/model ('NVIDIA Jetson AGX Thor Developer Kit' / 'NVIDIA Jetson AGX Orin Developer Kit', measured 2026-09-29); both boxes expose hwmon in\*`_label` rails, nvpmodel and `jetson_clocks`; orin runs L4T R39.2.0, thor R38.2.2; jtop is on thor only
 
 ## Scope exploration
 
@@ -92,6 +101,23 @@
   - seeds: `q3` (question, resolved)
 - `s9` — `GitHub issue 48 + issue 43`: 48 already plans: align orin to thor's --json verbs, fill `_ORIN_VERBS`, say Spark has no power form, rtx row, docs/ops.md generated from render.py; 43 is sibling-repo verb issues (t25)
   - seeds: `q4` (question, resolved)
+- `s10` — `challenge pass / adjacent-systems lens: install mode on spark, thor, orin (~/.local/share/uv/tools)`: nvsh and each device CLI are separate uv tools on all 3 boxes; uv tool extras do not put the extra's scripts on PATH (uv tool install --help: --with-executables-from); `_detect.py` is PATH-only
+  - seeds: `c22`, `q5` (question, resolved)
+- `s11` — `challenge pass / unstated-assumptions lens: nvsh/ops/render.py`: render() assumes any CLI on PATH has every verb in its table; no version or capability check exists (grep version/capab in render.py: none)
+  - seeds: `c23`
+- `s12` — `challenge pass / observability lens: nvsh/doctor_checks.py`: no device-CLI check exists today; a wrong or stale CLI would be invisible to the operator
+  - seeds: `c24`
+- `s13` — `challenge pass / hardware lens: ssh thor + ssh orin /proc/device-tree/model, /etc/nv_tegra_release, /sys/class/hwmon`: model string splits the boards; power sources present on both; Orin is on a newer L4T than Thor
+  - seeds: `c25`, `c6`
+- `s14` — `challenge pass / adjacent-systems lens: evals/tool_jev/manifest.example.toml:359-360, nvsh/tiers/corpus/dev.json:6, tests/test_ops_render.py:122,175`: eval + bench worlds were measured against today's render table (spark `power_get` -> None, orin verbs {}); tests pin those renders and must change with this work
+  - seeds: `c26`
+- `s15` — `challenge pass / security lens: nvsh/redact.py vs device-CLI --json payloads`: token redaction applies; hostnames/IPs are not redacted (pre-existing); parked, not a new exposure class
+- `s16` — `challenge pass / concurrency lens: device CLIs + render.py`: clean: all rendered verbs are read-only one-shots; monitor's systemd unit is never started by nvsh; residual only if an operator runs monitor on orin alongside nvsh (no shared state)
+- `s17` — `challenge pass / reversibility lens: PyPI publishing (publish.yml in all 3 CLIs + nvsh)`: releases are irreversible; nvsh extras must not pin versions that are not yet on PyPI (h1); release order is a plan-side risk for /spec-to-plan
+
+## Decisions
+
+- Device-CLI precedence: nvsh's own env (the extra) first, PATH second (resolves q5)
 
 ## Hard questions
 
@@ -99,8 +125,11 @@
 - Is this a slice of open issue 48 (align Spark/Thor/Orin, docs/ops.md, gui/jtop/disk-hogs ops, retrain Tier 2) to be tracked there, or a new issue scoped to UI alignment only? (resolved: Build as a slice of issue 48: UI alignment, orin verbs, spark power, extras, thor/orin detection; gui/jtop/disk-hogs/Tier-2 retrain stay in 48 (operator decision 2026-09-29 (AskUserQuestion)))
 - What does nvsh\[spark\]/nvsh\[thor\]/nvsh\[orin\] mean: (a) pip extras that install the matching device CLI from PyPI, (b) the per-platform verbs allowed to differ (e.g. power on Jetson only), or both? (resolved: Both: pip extras nvsh\[spark|thor|orin\] install the matching PyPI device CLI, and platform-only verbs are the only UI difference (operator decision 2026-09-29 (AskUserQuestion)))
 - Should Spark gain a power verb (GB10 power/clock state) so `power_get` is uniform, or stay Jetson-only as issue 48 suggests? (resolved: Spark gains a power verb (GB10 power/clock state) so `power_get` renders uniformly on all three (operator decision 2026-09-29 (AskUserQuestion)))
+- When both a standalone device-CLI uv tool and nvsh's extra copy exist at different versions, which wins: nvsh's own env first, PATH first, or the newer version? (resolved: nvsh's own environment first, PATH as fallback (operator decision 2026-09-29))
 
 ## Open parks
 
 - [unknown_nonblocking] Orin power rails and nvpmodel modes differ from Thor (and between AGX/NX/Nano); orin power data keys can only be measured on the orin box
 - [unknown_nonblocking] thor/orin CLIs live in ~/.local/bin, not on PATH for non-interactive ssh (issue 48); PATH-only detection (`_detect.py`:191-203) may miss them outside an interactive shell
+- [unknown_nonblocking] GB10 has no nvpmodel; nvidia-smi on spark reports power.draw 12.15 W, clocks.sm 2411/3003 MHz, pstate P0 but power.limit \[N/A\]; spark power's data keys will differ from Jetson's (no mode/rails)
+- [unknown_nonblocking] Device-CLI JSON (network `reachable_ipv4`, hostnames, container names) flows to hosted agents; nvsh/redact.py covers tokens, not IPs/hostnames. Pre-existing for spark/thor, extended to orin by this work
