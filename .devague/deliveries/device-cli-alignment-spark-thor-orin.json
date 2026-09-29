@@ -1,0 +1,24 @@
+{
+  "plan_slug": "device-cli-alignment-spark-thor-orin",
+  "schema_version": 2,
+  "created": "2026-09-29T06:45:11Z",
+  "updated": "2026-09-29T06:45:11Z",
+  "deviations": [
+    {
+      "id": "d1",
+      "what": "Before releasing (t10), fix all 9 /code-review findings on jetson-orin-cli#4 in all three CLIs (spark #25, thor #7, orin #4) on the existing PR branches: gpu sysfs temperature key, swap grow recovery after failed apply, swap grow target from detected swapfile, monitor config --init overwrite guard, 0600 config/dir, subsystem_down vs unavailable docker, fstab whitespace-insensitive match, disk non-ASCII mount decoding, Jetson USB-gadget bridge not reachable; supersedes follow-up risk r4",
+      "task_ref": "t10",
+      "reason": "Operator decision 2026-09-29 after /code-review medium on each PR: all findings inherited across CLIs; fix all now in all three to keep alignment",
+      "affects": [
+        "t10"
+      ],
+      "origin": "user",
+      "status": "approved",
+      "classification": "risky",
+      "seq": 1
+    }
+  ],
+  "evidence": [],
+  "deltas": [],
+  "supersessions": []
+}
