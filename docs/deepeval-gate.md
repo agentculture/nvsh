@@ -52,7 +52,12 @@ build.nvidia.com and local free; $35.78 in all.
   no explanation text, so their explanations are not judged. Judge scores
   never feed a release bar.
 
-Nothing is wired into the tiers or published by this result. Follow-ups:
+On this result the operator published `scorer-r3b.q4_k_m` and its bf16
+checkpoint on the Hub (2026-09-29,
+[`...-scorer-v2-gguf`](https://huggingface.co/jetson-ai-lab/qwen3.5-0.8b-nvsh-tool-jev-scorer-v2-gguf),
+[`...-scorer-v2`](https://huggingface.co/jetson-ai-lab/qwen3.5-0.8b-nvsh-tool-jev-scorer-v2);
+recorded on #60); `a3-heal.q4_k_m` stays private. Nothing is wired into the
+tiers yet. Follow-ups:
 [#69](https://github.com/agentculture/nvsh/issues/69) (wire
 `scorer-r3b.q4_k_m` into the tier stack),
 [#70](https://github.com/agentculture/nvsh/issues/70) (an execution-based

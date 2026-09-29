@@ -15,6 +15,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- `scorer-r3b.q4_k_m` and its bf16 checkpoint are public on the Hub, with model cards stating what passed and what missed (operator decision, recorded on #60); `a3-heal.q4_k_m` stays private.
 - Harness prompt files, the gate guide, its handoff and the delivery summary describe the gate first result; `/validate-delivery` evidence e6 and deltas b1-b3 filed; lapses l2-l4 approved. Follow-ups: #69, #70, #71.
 
 ### Fixed
