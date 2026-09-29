@@ -1,4 +1,5 @@
-"""Dataclasses shared by platform detection: ``Value`` and ``Platform``."""
+"""Dataclasses shared by platform detection: ``Value``, ``Platform`` and
+``DeviceCli``."""
 
 from __future__ import annotations
 
@@ -10,6 +11,23 @@ SUBPROCESS = "subprocess"
 PATH = "path"
 
 _METHODS = frozenset({FILE, SUBPROCESS, PATH})
+
+#: Where a device CLI (``spark``/``thor``/``orin``) was found: nvsh's own env
+#: bin directory (``Path(sys.executable).parent``, where an extra such as
+#: ``nvsh[orin]`` installs it) or ``PATH``. Own env is checked first.
+NVSH_ENV = "nvsh-env"
+ON_PATH = "path"
+
+#: The ``<cli>_cli`` value's ``source`` for each origin, and when absent.
+_DEVICE_CLI_SOURCES = {NVSH_ENV: "{cli} (nvsh env)", ON_PATH: "{cli} (PATH)"}
+_DEVICE_CLI_ABSENT_SOURCE = "{cli} (nvsh env, PATH)"
+
+
+def device_cli_source(cli: str, origin: str | None) -> str:
+    """The ``source`` string of a ``<cli>_cli`` value found at *origin*
+    (``None`` = found nowhere)."""
+    template = _DEVICE_CLI_SOURCES[origin] if origin else _DEVICE_CLI_ABSENT_SOURCE
+    return template.format(cli=cli)
 
 
 @dataclass(frozen=True)
@@ -49,6 +67,21 @@ class Value:
 
 
 @dataclass(frozen=True)
+class DeviceCli:
+    """A device CLI detection found: its name, resolved path, origin and version.
+
+    ``origin`` is :data:`NVSH_ENV` or :data:`ON_PATH`; ``version`` is the
+    last token of ``<cli> --version`` (e.g. ``"0.5.0"``) or ``None`` when that
+    call failed or printed nothing parseable.
+    """
+
+    name: str
+    path: str
+    origin: str
+    version: str | None
+
+
+@dataclass(frozen=True)
 class Platform:
     """The detected machine: a ``kind`` plus every value checked for it."""
 
@@ -60,6 +93,27 @@ class Platform:
             if value.name == name:
                 return value
         return None
+
+    def board(self) -> str | None:
+        """``"thor"`` or ``"orin"`` from ``/proc/device-tree/model``; ``None``
+        when the model is unreadable or names neither (callers then fall back
+        to PATH order)."""
+        value = self.get("jetson_board")
+        return value.text if value is not None and value.present else None
+
+    def device_cli(self, cli: str) -> DeviceCli | None:
+        """The device CLI *cli* (``spark``/``thor``/``orin``) if detected."""
+        value = self.get(f"{cli}_cli")
+        if value is None or not value.present or value.text is None:
+            return None
+        origin = NVSH_ENV if value.source == device_cli_source(cli, NVSH_ENV) else ON_PATH
+        version = self.get(f"{cli}_cli_version")
+        return DeviceCli(
+            name=cli,
+            path=value.text,
+            origin=origin,
+            version=version.text if version is not None and version.present else None,
+        )
 
     def to_dict(self) -> dict:
         return {

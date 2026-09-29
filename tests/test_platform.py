@@ -637,7 +637,10 @@ def test_unusable_version_output_is_absent_not_raised(result):
         return 1, "", ""
 
     platform = detect(
-        root=os.path.join(FIXTURES, "thor"), run=run, which=make_which(which_map), own_bin=NO_OWN_BIN
+        root=os.path.join(FIXTURES, "thor"),
+        run=run,
+        which=make_which(which_map),
+        own_bin=NO_OWN_BIN,
     )
     assert platform.get("thor_cli").present is True
     version = platform.get("thor_cli_version")
@@ -676,7 +679,9 @@ def test_device_cli_accessor(tmp_path):
         name="orin", path=str(own_bin / "orin"), origin="nvsh-env", version="0.5.0"
     )
     thor = platform.device_cli("thor")
-    assert thor == DeviceCli(name="thor", path="/usr/local/bin/thor", origin="path", version="0.5.0")
+    assert thor == DeviceCli(
+        name="thor", path="/usr/local/bin/thor", origin="path", version="0.5.0"
+    )
     assert platform.device_cli("spark") is None
     assert platform.board() == "orin"
     assert Platform(kind="jetson").device_cli("thor") is None
