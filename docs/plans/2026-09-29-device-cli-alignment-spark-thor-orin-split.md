@@ -154,7 +154,7 @@ Edit the Owner/Model columns before approving gate 2 — the default Model is a 
 
 ### After state
 
-- pip install 'nvsh[orin]' (or [thor], [spark]) on each box installs nvsh plus its device CLI; every read-only op in nvsh/ops/table.py that has a device-CLI form renders to '<cli> <verb> --json' on all three boxes, with the same envelope keys
+- pip install 'nvsh[orin]' (or [thor], [spark]) on each box installs nvsh plus its device CLI; every read-only op in nvsh/ops/table.py that has a device-CLI form renders to `<cli> <verb> --json` on all three boxes, with the same envelope keys
 
 ### Success signals
 
