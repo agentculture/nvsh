@@ -209,7 +209,7 @@ the verifying command below produced.
 | `nvpmodel_power_mode` | `MAXN` | `nvpmodel -q` |
 | `unified_memory` | `true` (`memory.total`/`memory.used` = `[N/A]`) | `nvidia-smi --query-gpu=name,memory.total,memory.used,driver_version --format=csv` |
 | `tmux`, `pi`, `spark_cli` | absent (none installed) | `which tmux`; `which pi`; `which spark` |
-| `orin_cli` | present (`orin 0.5.0`; `{whoami,learn,explain,overview,doctor,cli}` only — no machine verbs yet, confirming `nvsh/ops/render.py`'s empty `DEVICE_CLI_VERBS["orin"]`) | `which orin && orin --version && orin --help` |
+| `orin_cli` | present (measured 2026-09-29 at `orin 0.5.0`, which had only `{whoami,learn,explain,overview,doctor,cli}`; nvsh's `DEVICE_CLI_VERBS["orin"]` now maps the same ten read-only verbs as spark/thor, gated by the `DEVICE_CLI_MIN_VERSIONS` floors spark 0.8.0, thor 0.5.0, orin 0.6.0, so a 0.5.0 orin CLI is treated as absent) | `which orin && orin --version && orin --help` |
 | `orin_cli_version` | `0.5.0` (`orin 0.5.0`, 2026-09-29) | `orin --version` |
 | `thor_cli` | absent | `which thor` |
 
