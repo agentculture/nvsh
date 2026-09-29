@@ -1,6 +1,7 @@
 """Subprocess runner + parsers for the small set of commands platform
 detection is allowed to shell out to: ``nvidia-smi``, ``nvpmodel -q``,
-``dpkg-query -W``, and ``spark status --json``.
+``dpkg-query -W``, ``spark status --json``, and ``<device-cli> --version``
+(once per device CLI found).
 
 File reads are always preferred (see ``_files.py``); these are used only for
 facts no file exposes. Every call goes through the injectable ``run``
@@ -107,3 +108,20 @@ def parse_spark_status(stdout: str) -> bool | None:
         return None
     available = data.get("available")
     return available if isinstance(available, bool) else None
+
+
+# --- <device-cli> --version ------------------------------------------------------
+
+# A version is the last whitespace token of the banner (`dgx-spark-cli 0.7.1`,
+# `thor 0.5.0`, `orin 0.5.0`), optionally prefixed with `v`, starting with
+# N.N and carrying any PEP 440-ish suffix (`rc1`, `.dev4`, `+local`).
+_CLI_VERSION_RE = re.compile(r"v?(\d+(?:\.\d+)+[0-9A-Za-z.+-]*)")
+
+
+def parse_cli_version(stdout: str) -> str | None:
+    """The version in a device CLI's ``--version`` banner, or None."""
+    tokens = stdout.split()
+    if not tokens:
+        return None
+    match = _CLI_VERSION_RE.fullmatch(tokens[-1])
+    return match.group(1) if match else None
