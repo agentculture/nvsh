@@ -2,7 +2,7 @@
   "plan_slug": "deepeval-release-gate-for-tool-jev-issue-64",
   "schema_version": 2,
   "created": "2026-09-26T06:47:33Z",
-  "updated": "2026-09-26T15:11:06Z",
+  "updated": "2026-09-28T23:44:35Z",
   "deviations": [
     {
       "id": "d1",
@@ -95,6 +95,47 @@
       "status": "approved",
       "classification": "acceptable",
       "seq": 6
+    },
+    {
+      "id": "d7",
+      "what": "Close the full run without build.nvidia.com's slow tail: drop z-ai/glm-5.3 from the references (its unfinished missing-candidate slice, 240 calls, and its finished test-set rows leave the report) and drop moonshotai/kimi-k3 and nvidia/nemotron-3-ultra-550b-a55b from the judge panel (both stay references), leaving a three-judge panel (claude-opus-5-5, gpt-6-sol, qwen/qwen3.8-max-0902). Budget caps unchanged: judges run until a cap stops them; the operator adds funds, the cap is raised and the run continues from the ledger",
+      "task_ref": "t24",
+      "reason": "Operator decision 2026-09-28: the free build.nvidia.com tier answered about 110 calls an hour; glm-5.3's 240 calls plus 1,581 judge calls each for kimi-k3 and nemotron-ultra meant about 30 more hours; kimi-k3 answered malformed 257 of 784 times as a subject, a weak judge; paid judges estimated Anthropic $11-19 (cap left $8.25), OpenAI $5-9 ($11.10 left), OpenRouter $7.6-12.5 ($8.70 left)",
+      "affects": [
+        "t6",
+        "t16"
+      ],
+      "origin": "user",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 12
+    },
+    {
+      "id": "d8",
+      "what": "Judge panel parameters per judge: a [[judge]] entry may set its own reasoning effort; qwen/qwen3.8-max-0902 judges at reasoning low (its subject calls stay medium), claude-opus-5-5 and gpt-6-sol judges stay medium; only qwen's judge calls are re-keyed (its 63 judge calls so far, about $0.30, are superseded)",
+      "task_ref": "t16",
+      "reason": "Operator decision 2026-09-29: at medium reasoning qwen3.8-max as a judge truncated 12 of 63 replies (19%) at the 1024-token judge output cap; the cap and effort are shared by all judges and changing them globally would re-key the already-paid OpenAI and Anthropic judge batches (1578 + 684 calls); per the no-spend-on-capped-output rule try lower reasoning first",
+      "affects": [
+        "t24"
+      ],
+      "origin": "user",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 13
+    },
+    {
+      "id": "d9",
+      "what": "Track A reports a second column, 'task done', beside the strict 'right proposal': a read-only-expected case also counts as done when the subject ran the expected read-only operation with the expected arguments as a loop inspection and then ended in explain. The strict metric is unchanged; Track A records carry the inspections they ran",
+      "task_ref": "t18",
+      "reason": "Operator decision 2026-09-29: in the LfmTier loop read-only operations execute as inspections, and frontier references answered by running the expected read-only command and explaining its result (gpt-6-sol 53/53, claude-opus-5-5 61/61, qwen3.8-max 17/17 such cases), which the strict proposal metric scores as misses (opus 5/83 strict vs about 66/83 task done); a3-heal was trained to propose instead",
+      "affects": [
+        "t15",
+        "t24"
+      ],
+      "origin": "user",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 14
     }
   ],
   "evidence": [
@@ -113,7 +154,7 @@
         "commit": "f71c765"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 7
     },
@@ -132,7 +173,7 @@
         "commit": "f71c765"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 8
     },
@@ -151,7 +192,7 @@
         "commit": "f71c765"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 9
     },
@@ -170,7 +211,7 @@
         "commit": "f71c765"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 10
     },
@@ -189,11 +230,73 @@
         "commit": "f71c765"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 11
+    },
+    {
+      "id": "e6",
+      "obligation_ref": "o6",
+      "test_ref": "live full gate run 8b59d0afa150 (docker compose driver, evals.tool_jev drive)",
+      "behavior_text": "the run completed (status complete) and wrote result.json, report.md and judge_results.json with candidate, baseline and 15 reference rows, raw and shipped-policy rows side by side, and a 3-judge panel over 1,581 explanations",
+      "contract_text": "One documented command replays the saved outputs of a3-heal, scorer-r3b and baselines plus fresh reference-model runs, and writes a JSON result, per-case traces with raw and final side by side, and a markdown comparison page",
+      "evidence_type": "integration",
+      "strength": "execution",
+      "strength_basis": "observed the completed live run; report copied to docs/benchmarks/2026-09-29-deepeval-gate-run-8b59d0afa150.md; total spend $35.78 (anthropic 17.41, openai 3.36, openrouter 15.01); glm-5.3 dropped per d7",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-29T12:00:00+03:00",
+        "commit": "458d911"
+      },
+      "origin": "llm",
+      "status": "approved",
+      "superseded": false,
+      "seq": 15
     }
   ],
-  "deltas": [],
+  "deltas": [
+    {
+      "id": "b1",
+      "kind": "added",
+      "behavior_text": "the gate reports a Track A 'task done' column beside strict 'right proposal': running the expected read-only operation with the expected arguments as an inspection, then explaining, counts as done",
+      "caused_by": [
+        "d9"
+      ],
+      "evidence_refs": [
+        "e6"
+      ],
+      "origin": "llm",
+      "status": "approved",
+      "superseded": false
+    },
+    {
+      "id": "b2",
+      "kind": "amended",
+      "behavior_text": "the reference roster is 15 models (glm-5.3 dropped) and the judge panel is 3 judges (claude-opus-5-5, gpt-6-sol, qwen3.8-max at low reasoning), not 16 and 5",
+      "caused_by": [
+        "d7"
+      ],
+      "evidence_refs": [
+        "e6"
+      ],
+      "origin": "llm",
+      "status": "approved",
+      "superseded": false
+    },
+    {
+      "id": "b3",
+      "kind": "removed",
+      "behavior_text": "candidate and baseline explanations are not judged: their saved predictions carry no explanation text (judge rows not_applicable)",
+      "caused_by": [
+        "c39"
+      ],
+      "evidence_refs": [
+        "e6"
+      ],
+      "origin": "llm",
+      "status": "approved",
+      "superseded": false
+    }
+  ],
   "supersessions": []
 }

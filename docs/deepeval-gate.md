@@ -2,8 +2,7 @@
 
 This guide describes the DeepEval evaluation layer that decides whether a
 Tool-Jev checkpoint is released. It covers what is built, how the parts fit,
-the decisions behind them, and what is still missing. It is kept current
-while the work is in progress; the live handoff is
+the decisions behind them, and what is still missing. The handoff for the next session is
 [`deepeval-gate-handoff.md`](deepeval-gate-handoff.md).
 
 - Spec: [`specs/2026-09-26-deepeval-release-gate-for-tool-jev-issue-64.md`](specs/2026-09-26-deepeval-release-gate-for-tool-jev-issue-64.md)
@@ -12,13 +11,53 @@ while the work is in progress; the live handoff is
   [`plans/2026-09-26-deepeval-release-gate-for-tool-jev-issue-64-split.md`](plans/2026-09-26-deepeval-release-gate-for-tool-jev-issue-64-split.md)
 - Issue: [#64](https://github.com/agentculture/nvsh/issues/64)
 
-**Status: first full run in progress.** The library, the runner
+**Status: first full run complete.** The library, the runner
 (`python -m evals.tool_jev run|continue|status|smoke|drive`), the autonomous
 docker compose driver and the operator guide [`evals/README.md`](../evals/README.md)
-are built. The 10-case smoke run (plan task t22) passed on every reference;
-the first full gate run (t24) is running under the driver, so no gate result
-is published yet. Do not describe the gate as producing results until that
-run's report is committed.
+are built. The first full gate run (t24, run `8b59d0afa150`) finished on
+2026-09-29; its report is
+[`benchmarks/2026-09-29-deepeval-gate-run-8b59d0afa150.md`](benchmarks/2026-09-29-deepeval-gate-run-8b59d0afa150.md)
+and the headline is in [First result](#first-result) below.
+
+## First result
+
+Run `8b59d0afa150`, issue-53 test set (198 cases, 83 expect an operation, 79
+expect an escalation) and its missing-candidate slice (83 cases, escalation
+expected). 15 references (glm-5.3 dropped, deviation d7), judge panel
+claude-opus-5-5, gpt-6-sol and qwen3.8-max (low reasoning as a judge,
+deviation d8). Spend: Anthropic $17.41, OpenAI $3.36, OpenRouter $15.01,
+build.nvidia.com and local free; $35.78 in all.
+
+| Subject | Right | Escalation recall | Wrong mutating | Slice: escalation recall | Slice: wrong mutating |
+| --- | --- | --- | --- | --- | --- |
+| `scorer-r3b.q4_k_m` (shipped policy) | 79/83 | 94.9% | 0 | 85.5% | 0 |
+| `a3-heal.q4_k_m` | 77/83 | 89.9% | 4 | 12.0% | 11 |
+| `scorer-b1.q4_k_m` (baseline) | 68/83 | 79.7% | 1 | 27.7% | 0 |
+| stock Qwen3.5-0.8B (baseline) | 6/83 | 3.8% | 5 | 3.6% | 4 |
+| best references, choice interface | 81-82/83 | 72.2% at most | 0-3 | 65.1% at most | 0-1 |
+
+- `scorer-r3b.q4_k_m` is the only subject with no wrong mutating proposal on
+  both sets, and it escalates best of every subject; its calibration is the
+  best measured (ECE 0.028 raw, 0.016 with the shipped policy).
+- `a3-heal.q4_k_m` matches it on the test set but proposes instead of
+  escalating when the right operation is not offered.
+- References score 78-82/83 through the choice interface. Through the Track
+  A loop they mostly run the expected read-only command as an inspection and
+  explain its result, which the strict metric scores as a miss; the **Task
+  done** column (deviation d9) credits that (claude-opus-5-5 5/83 strict,
+  66/83 task done; gpt-6-luna 13 and 74). The candidates' saved predictions
+  record no inspections, so their task done equals their strict score.
+- The judge panel scored 1,581 reference explanations (mean pairwise
+  disagreement 0.17 on a 0-1 scale); the candidates' saved predictions carry
+  no explanation text, so their explanations are not judged. Judge scores
+  never feed a release bar.
+
+Nothing is wired into the tiers or published by this result. Follow-ups:
+[#69](https://github.com/agentculture/nvsh/issues/69) (wire
+`scorer-r3b.q4_k_m` into the tier stack),
+[#70](https://github.com/agentculture/nvsh/issues/70) (an execution-based
+layer) and [#71](https://github.com/agentculture/nvsh/issues/71) (gaps this
+run found).
 
 ## What the gate answers
 
@@ -161,6 +200,16 @@ uv run pytest -c evals/pytest.ini --rootdir=. -q   # --rootdir=. is required
 - **d5 and d6 (approved):** the driver posts Discord alerts: every 10% of each
   provider's calls, every whole dollar of spend, each stop, the run's end, and
   a status summary every 30 minutes. The webhook is a secret passed by name.
+- **d7 (approved):** to close the run without build.nvidia.com's slow free
+  tier (about 110 calls an hour), `z-ai/glm-5.3` left the references and
+  kimi-k3 and nemotron-ultra left the judge panel (both stay references).
+- **d8 (approved):** a `[[judge]]` entry may set its own reasoning effort;
+  qwen3.8-max judges at low, because at medium it truncated 19% of its judge
+  replies at the 1024-token cap (2% at low). Only its judge calls re-keyed.
+- **d9 (approved):** the main table has **Right** (strict proposal) and
+  **Task done**: a read-only-expected case also counts when the subject ran
+  the expected operation with the expected arguments as a loop inspection
+  and then explained. Track A records carry the inspections they ran.
 - **Risk r10 (resolved):** the smoke run saw no truncated reply at medium
   reasoning with a 2048-token output budget, so no model was replaced.
 
@@ -174,6 +223,12 @@ build.nvidia.com's hosted catalog and the local models cost nothing. The
 private manifest caps each provider at about 1.5 times its projection, and
 the runner reserves each call's worst-case cost before sending it, so a cap
 is never overshot. Cached reruns cost nothing.
+
+The first full run cost \$35.78: Anthropic \$17.41 (references \$6.75, the
+opus judge the rest), OpenAI \$3.36 (gpt-6-sol judged all 1,581 explanations
+for about \$2.46), OpenRouter \$15.01 (qwen3.8-max as a judge about \$9.5).
+The judge phase was the larger part; raising the Anthropic and OpenRouter caps
+to \$20 and \$16 finished it.
 
 ## Reproducing and extending
 

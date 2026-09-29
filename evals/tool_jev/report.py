@@ -284,6 +284,11 @@ def row_figures(bridge: Mapping[str, Any]) -> dict:
         "abstain_recall": bridge.get("abstain", {}).get("recall"),
         "missing_candidate": bridge.get("missing_candidate", {"n": 0, "N": 0, "rate": None}),
         "wrong_mutations": bridge.get("wrong_mutating", {}).get("total", 0),
+        "right": {
+            "n": metrics_compute.get("right_proposals", {}).get("n", 0),
+            "N": metrics_compute.get("right_proposals", {}).get("N", 0),
+        },
+        "task_done": bridge.get("task_done", {"n": 0, "N": 0, "inspections_recorded": False}),
     }
 
 
@@ -517,6 +522,13 @@ def _fmt_measurable(value: float | None, measurable: bool, *, digits: int = 3) -
     return f"{value:.{digits}f}"
 
 
+def _fmt_count(value: Mapping[str, Any] | None) -> str:
+    """``n/N`` for a count row; ``-`` when absent or empty."""
+    if not value or not value.get("N"):
+        return "-"
+    return f"{value['n']}/{value['N']}"
+
+
 def _render_harness_policy(harness_policy: str | None, kind: str) -> str:
     if harness_policy is not None:
         return harness_policy
@@ -525,9 +537,9 @@ def _render_harness_policy(harness_policy: str | None, kind: str) -> str:
 
 def _render_main_table(rows: Sequence[Mapping[str, Any]]) -> list[str]:
     lines = [
-        "| Variant | Harness policy | Top-1 | ECE | Brier | Coverage | Abstain P/R "
-        "| Missing-candidate | Wrong mutations |",
-        "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+        "| Variant | Harness policy | Right | Task done | Top-1 | ECE | Brier | Coverage "
+        "| Abstain P/R | Missing-candidate | Wrong mutations |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for row in rows:
         variant = f"{row['subject']} ({row['variant']})"
@@ -539,9 +551,11 @@ def _render_main_table(rows: Sequence[Mapping[str, Any]]) -> list[str]:
         abstain_pr = f"{_fmt_rate(row['abstain_precision'])} / {_fmt_rate(row['abstain_recall'])}"
         missing = _fmt_rate(row["missing_candidate"].get("rate"))
         wrong = str(row["wrong_mutations"])
+        right = _fmt_count(row.get("right"))
+        done = _fmt_count(row.get("task_done"))
         lines.append(
-            f"| {variant} | {harness_policy} | {top1} | {ece} | {brier} | {coverage} | "
-            f"{abstain_pr} | {missing} | {wrong} |"
+            f"| {variant} | {harness_policy} | {right} | {done} | {top1} | {ece} | {brier} | "
+            f"{coverage} | {abstain_pr} | {missing} | {wrong} |"
         )
     return lines
 

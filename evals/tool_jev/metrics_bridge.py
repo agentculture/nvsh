@@ -34,7 +34,7 @@ import importlib.util
 import math
 import sys
 from pathlib import Path
-from typing import Sequence
+from typing import Mapping, Sequence
 
 #: The two source-of-truth modules this bridge reads, never copies.
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -272,9 +272,42 @@ def missing_candidate_summary(metrics_mod, predictions: Sequence) -> dict:
     return {"n": n, "N": len(predictions), "rate": metrics_mod._ratio(n, len(predictions))}
 
 
+def task_done(metrics_mod, predictions: Sequence, inspections: Mapping | None) -> dict:
+    """Operation-expected rows whose task was done (deviation d9).
+
+    A row counts when it is a right proposal (``metrics.py``'s own test),
+    or when a read-only operation was expected, the row ended in explain,
+    and one of its recorded inspections ran that operation with the
+    expected arguments. Without recorded inspections this equals the
+    strict right-proposal count, flagged ``inspections_recorded: False``.
+    """
+    from nvsh.ops import table as ops_table
+
+    inspections = inspections or {}
+    rows = [p for p in predictions if metrics_mod.expect_kind(p.expected) == "operation"]
+    done = 0
+    for p in rows:
+        if metrics_mod._right_proposal(p):
+            done += 1
+            continue
+        expected_op = p.expected.get("operation")
+        operation = ops_table.get(expected_op) if expected_op else None
+        if p.outcome != "explain" or operation is None or not operation.read_only:
+            continue
+        if any(
+            item.get("operation") == expected_op
+            and metrics_mod._same_arguments(item.get("arguments"), p.expected.get("args", {}))
+            for item in inspections.get(p.id) or ()
+        ):
+            done += 1
+    recorded = any(value is not None for value in inspections.values())
+    return {"n": done, "N": len(rows), "inspections_recorded": recorded}
+
+
 def compute(
     predictions: Sequence,
     *,
+    inspections: Mapping | None = None,
     metrics_mod=None,
     gate_mod=None,
     top_k: Sequence[int] = TOP_K_VALUES,
@@ -307,6 +340,7 @@ def compute(
         "top_k_accuracy": top_k_accuracy(metrics_mod, predictions, top_k=top_k),
         "log_loss": mean_log_loss(metrics_mod, predictions),
         "missing_candidate": missing_candidate_summary(metrics_mod, predictions),
+        "task_done": task_done(metrics_mod, predictions, inspections),
         # Convenience aliases onto metrics_compute's own shape, named the way
         # this bridge's task instruction names them (abstain P/R, wrong-mutating,
         # per-slice) -- not a recomputation, the same dict objects.

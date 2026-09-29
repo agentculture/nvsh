@@ -99,6 +99,10 @@ class RawRecord:
     model: str | None = None
     returned_model: str | None = None
     interface: str | None = None
+    #: Track A only: the read-only operations the loop ran as inspections,
+    #: ``({"operation": name, "arguments": {...}}, ...)``; ``None`` when not
+    #: recorded (saved predictions, the choice interface). Deviation d9.
+    inspections: tuple | None = None
 
     @classmethod
     def from_prediction(cls, prediction: "Prediction") -> "RawRecord":
@@ -132,6 +136,7 @@ class RawRecord:
         arguments: dict | None = None,
         candidates: dict | None = None,
         invalid_reason: str | None = None,
+        inspections: tuple | None = None,
     ) -> "RawRecord":
         """Build a ``RawRecord`` from a provider's parsed tool-call/choice answer.
 
@@ -150,11 +155,16 @@ class RawRecord:
             model=model,
             returned_model=returned_model,
             interface=interface,
+            inspections=None if inspections is None else tuple(inspections),
         )
 
     def to_dict(self) -> dict:
-        """The full record, every field, for JSONL serialisation."""
-        return {
+        """The full record, every field, for JSONL serialisation.
+
+        ``inspections`` is written only when recorded, so traces written
+        before deviation d9 keep their exact shape.
+        """
+        out = {
             "outcome": self.outcome,
             "operation": self.operation,
             "arguments": None if self.arguments is None else dict(self.arguments),
@@ -168,11 +178,17 @@ class RawRecord:
             "returned_model": self.returned_model,
             "interface": self.interface,
         }
+        if self.inspections is not None:
+            out["inspections"] = [dict(item) for item in self.inspections]
+        return out
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> "RawRecord":
         """Inverse of :meth:`to_dict`, for reading a written trace back."""
-        return cls(**dict(data))
+        fields = dict(data)
+        if fields.get("inspections") is not None:
+            fields["inspections"] = tuple(dict(item) for item in fields["inspections"])
+        return cls(**fields)
 
     def to_prediction_dict(self, case_id: str, expected: Mapping[str, Any]) -> dict:
         """Reconstruct a metrics.py-schema predictions line from this record.

@@ -1,6 +1,6 @@
 # Delivery Summary — DeepEval release gate for Tool-Jev (issue 64)
 
-plan: `deepeval-release-gate-for-tool-jev-issue-64` · run: `partial (interim; the full gate run t24 is still in flight)` · date: `2026-09-26`
+plan: `deepeval-release-gate-for-tool-jev-issue-64` · run: `complete` · date: `2026-09-26`
 baseline: `devague summary skeleton`
 
 ## Intent
@@ -8,13 +8,6 @@ baseline: `devague summary skeleton`
 > nvsh has a repeatable DeepEval release gate for its Tool-Jev models: one command scores any fine-tuned checkpoint and reference models (frontier models via the OpenAI and Anthropic platform APIs, open models via OpenRouter and build.nvidia.com, and local models) on the same fixed cases, model-only and through explicit nvsh harness policies, so a3-heal and scorer-r3b can be judged for release and wiring into the tier stack, and the next fine-tune is judged the same way
 
 After: One documented command replays the saved outputs of a3-heal, scorer-r3b and baselines plus fresh reference-model runs, and writes a JSON result, per-case traces with raw and final side by side, and a markdown comparison page; adding a new checkpoint is one manifest entry
-
-## Intent note
-
-This is an **interim** summary written while the full gate run (t24, run
-`8b59d0afa150`) is still running unattended under the docker compose driver.
-No gate verdict exists yet; it is listed under Remaining Work. This file is
-updated in place when the run completes.
 
 ## Planned Work
 
@@ -50,31 +43,39 @@ Quoted verbatim from the `devague summary` skeleton:
 
 | Plan task | Status | What actually landed |
 |-----------|--------|----------------------|
-| `t1` | delivered | `evals/` tree, `evals` uv dependency group, `evals/pytest.ini`, env guard (telemetry/dotenv forced off, Confident key refused), CI lint + evals job |
+| `t1` | delivered | `evals/` tree, `evals` uv dependency group, `evals/pytest.ini`, env guard (telemetry/dotenv off, Confident key refused), CI lint + evals job |
 | `t2` | delivered | case model + case-set loader with split guards (held-out refused) |
-| `t5` | delivered | run manifest (candidates, baselines, 16 references, policies, case sets, budgets, `[track_a]`, `[stops]`, `[judging]`) |
-| `t6` | delivered | trace schema with raw and per-policy final side by side; private run dir (reference lineup changed by `d3`) |
-| `t7` | delivered | metrics bridge onto `scripts/lfm-finetune` (top-k, Brier, ECE, abstain P/R, wrong mutating) |
+| `t5` | delivered | run manifest: candidates, baselines, references, judges (with optional per-judge reasoning, `d8`), policies, case sets, budgets, `[track_a]`, `[stops]`, `[judging]` |
+| `t6` | delivered | trace schema with raw and per-policy final side by side, Track A inspections (`d9`); reference lineup changed by `d3`, `d7` |
+| `t7` | delivered | metrics bridge onto `scripts/lfm-finetune` (top-k, Brier, ECE, abstain P/R, wrong mutating) plus Track A task done (`d9`) |
 | `t8` | delivered | versioned JSON harness policies applied offline |
-| `t9` | delivered | durable call ledger + response cache, resume across stops |
+| `t9` | delivered | durable call ledger + response cache, resume across stops and restarts |
 | `t10` | delivered | provider base, error taxonomy, fake provider, key-aware redaction, no-exec guard |
-| `t11` | delivered | request contract for both interfaces; Track A replaced by the candidates' LfmTier loop (`d1`, `track_a_loop.py`) |
+| `t11` | delivered | request contract for both interfaces; Track A through the candidates' LfmTier loop (`d1`) |
 | `t12` | delivered | OpenAI adapter, sync + Batch API (missing-scope 401 classified) |
 | `t13` | delivered | Anthropic adapter, sync + Message Batches (hashed `custom_id` for long case ids) |
 | `t14` | delivered | OpenAI-compatible adapter for OpenRouter, build.nvidia.com, local (per-provider timeout) |
 | `t15` | delivered | DeepEval layer: per-case test cases, exact metrics, local export |
-| `t16` | delivered | blind all-to-all judge panel, two-pass record/replay (not yet exercised on the full run) |
-| `t17` | delivered | runner `run`/`continue`/`status`/`smoke`/`drive` with budgets, reservations, clean stops; docker driver + Discord alerts (`d2`, `d5`, `d6`); two codex review rounds fixed |
-| `t18` | delivered | JSON result + markdown comparison page (fixture-verified; not yet produced for the full run) |
+| `t16` | delivered | blind all-to-all judge panel, two-pass record/replay; ran with three judges (`d7`), qwen at low reasoning (`d8`) |
+| `t17` | delivered | runner `run`/`continue`/`status`/`smoke`/`drive` with budgets, reservations, clean stops, per-provider pools, per-model interleave and timeout pause; docker driver + Discord alerts (`d2`, `d5`, `d6`) |
+| `t18` | delivered | JSON result + markdown comparison page with Right and Task done columns (`d9`) |
 | `t19` | delivered | `evals/README.md` operator guide with a tested no-network fixture run |
 | `t20` | delivered | one a3-heal.`q4_k_m` run on the issue-53 test + missing-candidate slice; baselines measured too (`d4`) |
 | `t21` | delivered | local references served via the lobes gateway (Qwen3.8-27B, Gemma-4-26B-A4B) |
 | `t22` | delivered | 10-case smoke: 0 truncated, 0 invalid at medium reasoning / 2048 tokens; budget caps set |
-| `t23` | delivered | permutation stability entries for the release candidates (test side only) |
-| `t24` | partial | full run in flight: Anthropic and OpenAI answered in full; OpenRouter (qwen3.8-max), local (Qwen3.8-27B) and build.nvidia.com still sending; no result.json, no benchmark page yet |
-| `t25` | partial | version 0.21.0, CHANGELOG, harness prompt files, guides done; follow-up issues and the PR not yet opened |
+| `t23` | delivered | permutation stability entries for the release candidates (test side only; Track A not measurable, stated) |
+| `t24` | delivered | full run `8b59d0afa150` complete: 15 references, 3-judge panel over 1,581 explanations, report `docs/benchmarks/2026-09-29-deepeval-gate-run-8b59d0afa150.md`; \$35.78 spent |
+| `t25` | delivered | version 0.21.0, CHANGELOG, harness prompt files, guide; follow-up issues #69 #70 #71; PR #68 (merged at the gate's build) and the follow-up PR with the first result (0.22.0) |
 
 ## Mid-work Decisions
+
+Decisions no deviation record covers, captured directly:
+
+- The run's live fixes, each with a regression test: Anthropic `custom_id` hash token; `missing_scope` for a restricted OpenAI key; per-provider `timeout_seconds`; 60 s transient pauses and a 300 s round deadline; one sync pool per provider; per-model interleave with a model-scoped timeout pause.
+- The private manifest gained `[budget.nvidia] timeout_seconds = 180`, and the Anthropic and OpenRouter caps were raised to \$20 and \$16 after the operator added funds (\$5 on Anthropic); config only, recorded in the run's manifest history.
+- The worktree guard refuses an empty `/tmp/.git` left by another session's codex sandbox; the evals suite was run with its temporary files outside `/tmp` (issue #71 item 2).
+
+Approved deviation records:
 
 - `d1` — Reference models' Track A runs through the candidates' own multi-round LfmTier loop (up to 4 rounds, read-only inspections executed against the recorded ground snapshot, then propose/explain/escalate) instead of t11's single-turn `tool_call` request: each case is replayed through the real LfmTier with a deferred chat client (cached replies replayed; the first uncached reply becomes a pending ledger call keyed by its exact prompt hash and round); OpenAI and Anthropic batch one loop round at a time. New module evals/`tool_jev`/`track_a_loop.py` built before the runner (t17) — The candidates (a3-heal) were measured by measure.py through LfmTier's multi-round loop; single-turn reference requests score an inspect-first model as malformed, breaking c33/h23 (same request contract incl. ground snapshot). Operator approved 2026-09-26: batch per round; cost ~$40-50 per fresh run batched (was ~$27), wall clock hours to days
 - `d2` — Add an autonomous driver: a docker compose service (pinned python:3.12-slim + uv image, `network_mode` host for the localhost lobes gateway, private run dir mounted read-write and case data read-only, restart unless-stopped, logs via docker logs plus a log file in the run dir, deepeval telemetry off) that runs the gate's 'continue' loop until done, survives the session ending and reboots, and continues on its own. Keys by grant passthrough: 'grant run --inject ... -- docker compose up -d' with only variable names in the compose file, no key file on disk. On a money stop (402, quota, budget cap) it keeps other providers going and re-checks the stopped provider every 30 min with one probe call; a rejected request stops only that model's calls and is logged; batches keep being polled — Operator request 2026-09-26: a full run spans hours to days (per-round batching, d1) and must not depend on this Claude session; operator chose docker compose, grant passthrough for keys, wait-and-recheck on stops
@@ -82,6 +83,9 @@ Quoted verbatim from the `devague summary` skeleton:
 - `d4` — Run the two baselines locally once on the issue-53 test set (198) and its missing-candidate slice (83) with the same measure.py command shape as the approved a3-heal run: stock Qwen3.5-0.8B (Track A) and scorer-b1 (Track B); no held-out runs; no API cost — Operator decision 2026-09-26: neither baseline had saved issue-53 test predictions (scorer-b1's are on the issue-46 test, whose ids are in issue-53's training split), so the gate would have no baseline rows
 - `d5` — Add Discord webhook alerts to the unattended driver (extends deviation d2): every 10% of each provider's calls answered, every whole dollar of total spend, each provider/model stop, and the run's end (complete or stop-and-ask); counts, dollars, names and stop reasons only, never case text; webhook URL read from `NVSH_EVALS_ALERT_WEBHOOK` (grant-injected), sent milestones recorded in the run dir so restarts never repeat them — Operator request 2026-09-26: know the unattended run's progress, spend (so each dollar used is visible) and finish state without watching the terminal
 - `d6` — Extend deviation d5's alerts with a status summary every 30 minutes (per provider: percent answered, calls to go, invalid, spend of cap; plus active stops), posted by a heartbeat thread in the driver so it keeps flowing during long steps — Operator request 2026-09-26: a 30-minute cadence status update
+- `d7` — Close the full run without build.nvidia.com's slow tail: drop z-ai/glm-5.3 from the references (its unfinished missing-candidate slice, 240 calls, and its finished test-set rows leave the report) and drop moonshotai/kimi-k3 and nvidia/nemotron-3-ultra-550b-a55b from the judge panel (both stay references), leaving a three-judge panel (claude-opus-5-5, gpt-6-sol, qwen/qwen3.8-max-0902). Budget caps unchanged: judges run until a cap stops them; the operator adds funds, the cap is raised and the run continues from the ledger — Operator decision 2026-09-28: the free build.nvidia.com tier answered about 110 calls an hour; glm-5.3's 240 calls plus 1,581 judge calls each for kimi-k3 and nemotron-ultra meant about 30 more hours; kimi-k3 answered malformed 257 of 784 times as a subject, a weak judge; paid judges estimated Anthropic $11-19 (cap left $8.25), OpenAI $5-9 ($11.10 left), OpenRouter $7.6-12.5 ($8.70 left)
+- `d8` — Judge panel parameters per judge: a \[\[judge\]\] entry may set its own reasoning effort; qwen/qwen3.8-max-0902 judges at reasoning low (its subject calls stay medium), claude-opus-5-5 and gpt-6-sol judges stay medium; only qwen's judge calls are re-keyed (its 63 judge calls so far, about $0.30, are superseded) — Operator decision 2026-09-29: at medium reasoning qwen3.8-max as a judge truncated 12 of 63 replies (19%) at the 1024-token judge output cap; the cap and effort are shared by all judges and changing them globally would re-key the already-paid OpenAI and Anthropic judge batches (1578 + 684 calls); per the no-spend-on-capped-output rule try lower reasoning first
+- `d9` — Track A reports a second column, 'task done', beside the strict 'right proposal': a read-only-expected case also counts as done when the subject ran the expected read-only operation with the expected arguments as a loop inspection and then ended in explain. The strict metric is unchanged; Track A records carry the inspections they ran — Operator decision 2026-09-29: in the LfmTier loop read-only operations execute as inspections, and frontier references answered by running the expected read-only command and explaining its result (gpt-6-sol 53/53, claude-opus-5-5 61/61, qwen3.8-max 17/17 such cases), which the strict proposal metric scores as misses (opus 5/83 strict vs about 66/83 task done); a3-heal was trained to propose instead
 
 ## Drift From Plan
 
@@ -93,45 +97,50 @@ Quoted verbatim from the `devague summary` skeleton:
 | `t20` (`d4`) | Operator decision 2026-09-26: neither baseline had saved issue-53 test predictions (scorer-b1's are on the issue-46 test, whose ids are in issue-53's training split), so the gate would have no baseline rows | `acceptable` |
 | `t17` (`d5`) | Operator request 2026-09-26: know the unattended run's progress, spend (so each dollar used is visible) and finish state without watching the terminal | `acceptable` |
 | `t17` (`d6`) | Operator request 2026-09-26: a 30-minute cadence status update | `acceptable` |
-| `t24` | not complete at the time of writing; the run is resumable and continues unattended | `needs-follow-up` |
-| `t24` | build.nvidia.com timed out repeatedly at the default 60 s, idling four NVIDIA models; the private manifest's `[budget.nvidia]` gained `timeout_seconds = 180` mid-run (config only, recorded in the run's manifest history; no call re-keyed, free provider) | `acceptable` |
+| `t24` (`d7`) | Operator decision 2026-09-28: the free build.nvidia.com tier answered about 110 calls an hour; glm-5.3's 240 calls plus 1,581 judge calls each for kimi-k3 and nemotron-ultra meant about 30 more hours; kimi-k3 answered malformed 257 of 784 times as a subject, a weak judge; paid judges estimated Anthropic $11-19 (cap left $8.25), OpenAI $5-9 ($11.10 left), OpenRouter $7.6-12.5 ($8.70 left) | `acceptable` |
+| `t16` (`d8`) | Operator decision 2026-09-29: at medium reasoning qwen3.8-max as a judge truncated 12 of 63 replies (19%) at the 1024-token judge output cap; the cap and effort are shared by all judges and changing them globally would re-key the already-paid OpenAI and Anthropic judge batches (1578 + 684 calls); per the no-spend-on-capped-output rule try lower reasoning first | `acceptable` |
+| `t18` (`d9`) | Operator decision 2026-09-29: in the LfmTier loop read-only operations execute as inspections, and frontier references answered by running the expected read-only command and explaining its result (gpt-6-sol 53/53, claude-opus-5-5 61/61, qwen3.8-max 17/17 such cases), which the strict proposal metric scores as misses (opus 5/83 strict vs about 66/83 task done); a3-heal was trained to propose instead | `acceptable` |
 
 ## Evidence
 
-- tests: `uv run pytest -c evals/pytest.ini --rootdir=. -q` at `f71c765` — pass (784)
-- tests: `uv run pytest -n auto -q` at `f71c765` — pass (4710, 55 skipped)
-- tests: `evals/tool_jev/tests/test_scaffold.py::test_wheel_contains_no_evals_files`, `::test_root_suite_collects_zero_evals_tests`, `test_run.py::test_interrupt_then_continue_gives_identical_outputs_and_sends_nothing_twice`, `test_readme.py::test_fixture_run_commands_reach_a_real_run_outside_the_repo` — pass
-- replay: the candidates' and baselines' saved outputs scored through the gate's own path (`deepeval_layer.evaluate_traces`, raw policy) on a copy of the live run dir reproduce the recorded figures exactly (a3-heal test 77/83 right, 71/79 escalated, 4 wrong mutating; scorer-r3b 79/83, 75/79, 0; scorer-b1 68/83, 1; stock 6/83, 86 invalid) — pass
-- validate-delivery records: obligations `o1`-`o6`, evidence `e1`-`e5` (all proposed; `o6`, the full run's output, has no evidence yet)
-- commits: `d8416bc..f71c765` (88 commits on `spec/deepeval-release-gate-issue-64`)
-- PRs / issues: #64 (this work), #66 (redaction, separate PR)
+- tests: `uv run pytest -c evals/pytest.ini --rootdir=. -q` (temporary files outside `/tmp`) at `458d911` — pass (799)
+- tests: `uv run pytest -n auto -q` — pass (4710, 55 skipped, at `f71c765`; nothing under `nvsh/` changed since)
+- tests: `evals/tool_jev/tests/test_task_done.py`, `test_judge_reasoning.py`, `test_run_fairness.py` — pass
+- live run: `8b59d0afa150` status complete; `result.json`, `report.md`, `judge_results.json` written; report copied to `docs/benchmarks/2026-09-29-deepeval-gate-run-8b59d0afa150.md`
+- replay: the candidates' and baselines' saved outputs reproduce their recorded figures through the gate (a3-heal 77/83, 4 wrong mutating; scorer-r3b 79/83, 0; scorer-b1 68/83, 1; stock 6/83)
+- validate-delivery records: obligations `o1`-`o6`, evidence `e1`-`e6`, deltas `b1`-`b3` (all approved by the operator, 2026-09-29)
+- commits: `d8416bc..458d911` on `spec/deepeval-release-gate-issue-64`
+- PRs / issues: #64, PR #68 (merged), the 0.22.0 follow-up PR, follow-ups #69 #70 #71; #66 separate
 
 ## Delivery Claims
 
 | Claim | Confidence | Evidence |
 |-------|------------|----------|
 | the gate never ships in or is imported by the nvsh runtime | high | test `test_scaffold.py::test_wheel_contains_no_evals_files` · `e1` |
-| the eval suite is isolated from the root suite and green | high | 784 / 4710 passed at `f71c765` · `e2` |
-| runs resume without re-sending or re-billing a call | high | test `test_run.py::test_interrupt_then_continue_gives_identical_outputs_and_sends_nothing_twice` · live redeploys of run `8b59d0afa150` · `e3` |
-| one command produces result.json and the comparison page | medium | fixture only: `test_readme.py::test_fixture_run_commands_reach_a_real_run_outside_the_repo` · `e4`; not yet on the full run |
-| the gate reproduces the candidates' recorded figures | medium | scratch replay on a run-dir copy (`e5`, observation, not a committed test) |
-| the full gate result (all 16 references, judge panel, benchmark page) | unverified | t24 in flight — not claimed done |
-| release verdict for a3-heal.`q4_k_m` and scorer-r3b.`q4_k_m` | unverified | depends on t24 — not claimed |
+| the eval suite is isolated from the root suite and green | high | 799 evals / 4710 root passed · `e2` |
+| runs resume without re-sending or re-billing a call | high | test `test_run.py::test_interrupt_then_continue_gives_identical_outputs_and_sends_nothing_twice` · many live redeploys of `8b59d0afa150` · `e3` |
+| one command produces result.json and the comparison page | high | fixture test `test_readme.py::test_fixture_run_commands_reach_a_real_run_outside_the_repo` (`e4`) and the live run (`e6`) |
+| the gate reproduces the candidates' recorded figures | medium | scratch replay on a run-dir copy (`e5`, observation) and the committed report's candidate rows |
+| first gate result: `scorer-r3b.q4_k_m` 79/83 right, 0 wrong mutating on test and slice, best escalation recall of any subject | high | report `docs/benchmarks/2026-09-29-deepeval-gate-run-8b59d0afa150.md` · `e6` |
+| `a3-heal.q4_k_m` Track A task done | low | its saved predictions record no inspections, so task done equals strict (a lower bound; issue #71) |
+| candidates' explanations judged | unverified | saved predictions carry no explanation text; judge rows not_applicable (`b3`, issue #71) |
+| release / publication verdict | unverified | not this work (non-goal c16); wiring is issue #69 |
 
 Lapse ledger evidence:
 
 | Lapse | Code | What |
 |-------|------|------|
 | `l1` | `provenance-missing` | Scope claim c4 said a3-heal has saved held-out and missing-candidate predictions, relying on an explorer's inventory; the challenge probe found only final (test) predictions for a3-heal and a3-heal.`q4_k_m` |
+| `l2` | `provenance-missing` | Scope finding and t1 brief named deepeval's pytest plugin 'plugins' (from an explorer's research report); its registered pytest11 name is 'deepeval' (t1 verified with --trace-config); I never checked the entry point myself |
+| `l3` | `grader-unverified` | t10 task agent reported scan-secrets clean, but it ran the scan before committing; scan-secrets only scans git-tracked files, so its own new test file with five sk-... literals was never scanned; my t10 merge gate also skipped scan-secrets after merge (the root suite caught it) |
+| `l4` | `grader-unverified` | Main agent committed the deepeval-destination fix (368ce53) in a command chain where the commit did not depend on the evals run passing; the run had 1 failure (a stale directory left by the pre-fix red run), so the commit landed without a green gate. Re-run after removing the artifact: 408 passed; the committed code was correct |
 | `l5` | `control-absent` | commit 4a55743 landed with one evals test red: the gate command piped pytest into tail, so the commit ran on tail's exit status, not pytest's; fixed in a146ab6, and the gate now checks pytest's own exit code |
-
-pending approval (not yet evidence): `l2`, `l3`, `l4`
 
 ## Remaining Work / Follow-up
 
-- `t24` — let the unattended run finish (Discord `COMPLETE` or `result.json`), then re-validate `o6` and update this file — main agent
-- `t24` — copy the aggregate report page (no case text) into `docs/benchmarks/` — main agent
-- `t25` — follow-up issues (wire the released model into the tier stack, issue-54 style; an execution eval), then the PR "part of #64" via `cicd` — main agent
-- adjudicate proposed lapses `l2`-`l4` and proposed records `o1`-`o6`, `e1`-`e5` — operator
-- rotate the OpenAI and build.nvidia.com keys after the run — operator
-- interim observation to check on the full result: through the Track A loop (`d1`) the frontier references mostly answer `explain` (e.g. 131 of 198 for claude-opus-5-5) and score 5-13/83 right, while on Track B (choice) they score 78-82/83 right; decide whether that is model behaviour or a Track A contract effect before reading Track A rows as a verdict — main agent + operator
+- wire `scorer-r3b.q4_k_m` into the tier stack (issue-54 style) — issue #69
+- execution-based evaluation layer (non-goal c15) — issue #70
+- record candidates' Track A inspections and explanations; fix the worktree guard's empty-`.git` false positive; NVIDIA hosting; Track A contract wording — issue #71
+- lapses `l1`-`l5`, obligations `o1`-`o6`, evidence `e1`-`e6` and deltas `b1`-`b3` approved by the operator (2026-09-29) — done
+- the OpenAI and build.nvidia.com keys pasted during the run were rotated by the operator (2026-09-29) — done
+- stop the compose projects `nvsh-evals-gate` and `nvsh-evals-rehearsal` — main agent, after this summary is committed
