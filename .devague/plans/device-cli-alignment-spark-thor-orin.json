@@ -5,7 +5,7 @@
   "schema_version": 5,
   "status": "exported",
   "created": "2026-09-29T05:50:12Z",
-  "updated": "2026-09-29T05:54:27Z",
+  "updated": "2026-09-29T06:24:57Z",
   "targets": [
     {
       "id": "c1",
@@ -555,6 +555,14 @@
       "text": "orin and thor tasks run on remote hosts, outside local git worktree isolation; the workforce must drive them over ssh, one agent per box",
       "kind": "unknown_nonblocking",
       "task_id": "t2",
+      "resolved": false,
+      "resolution": ""
+    },
+    {
+      "id": "r4",
+      "text": "Inherited swap/monitor bugs present in all three CLIs (wave-2 codex review, verified in dgx-spark-cli): swap grow targets /swap.img when the host uses /swapfile (cli/_commands/swap.py:371); monitor config scaffold written 0644 under umask 022 so a later webhook URL is world-readable (monitor/config.py:152-154); monitor install keeps a relative --config path (monitor/systemd.py:65). Fix once across spark/thor/orin in a follow-up, not orin-only (would break alignment)",
+      "kind": "follow_up",
+      "task_id": null,
       "resolved": false,
       "resolution": ""
     }
