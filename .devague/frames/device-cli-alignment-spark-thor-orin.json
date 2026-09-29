@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-09-29T05:33:34Z",
-  "updated": "2026-09-29T05:48:55Z",
+  "updated": "2026-09-29T06:01:12Z",
   "claims": [
     {
       "id": "c1",
@@ -693,6 +693,18 @@
       "seeds": []
     }
   ],
-  "lapses": [],
+  "lapses": [
+    {
+      "id": "l1",
+      "code": "assumption-for-measurement",
+      "what": "t2: orin gpu text/docs say 'Ampere' from general knowledge (GA10B), not measured on the box",
+      "skipped_check": "",
+      "refs": [
+        "t2 jetson_orin/probe/gpu.py wording"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    }
+  ],
   "obligations": []
 }
