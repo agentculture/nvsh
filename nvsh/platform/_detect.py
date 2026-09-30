@@ -136,28 +136,25 @@ def _file_values(root: str) -> list[Value]:
     )
 
     dt_compatible = files.read_device_tree_list(root, _DEVICE_TREE_COMPATIBLE)
-    values.append(
-        _maybe(
-            "device_tree_compatible",
-            ",".join(dt_compatible) if dt_compatible else None,
-            _DEVICE_TREE_COMPATIBLE,
-            FILE,
-        )
-    )
-
-    values.append(
-        _value_from_file("dmi_product_name", root, _DMI_PRODUCT_NAME, files.parse_dmi_product_name)
-    )
-    values.append(
-        _value_from_file("cuda_version", root, _CUDA_VERSION_JSON, files.parse_cuda_version)
-    )
-    values.append(
-        _value_from_file(
-            "nvidia_driver_version",
-            root,
-            _NVIDIA_DRIVER_VERSION,
-            files.parse_nvidia_driver_version,
-        )
+    values.extend(
+        [
+            _maybe(
+                "device_tree_compatible",
+                ",".join(dt_compatible) if dt_compatible else None,
+                _DEVICE_TREE_COMPATIBLE,
+                FILE,
+            ),
+            _value_from_file(
+                "dmi_product_name", root, _DMI_PRODUCT_NAME, files.parse_dmi_product_name
+            ),
+            _value_from_file("cuda_version", root, _CUDA_VERSION_JSON, files.parse_cuda_version),
+            _value_from_file(
+                "nvidia_driver_version",
+                root,
+                _NVIDIA_DRIVER_VERSION,
+                files.parse_nvidia_driver_version,
+            ),
+        ]
     )
 
     meminfo_text = files.read_text(root, _MEMINFO)
@@ -169,14 +166,16 @@ def _file_values(root: str) -> list[Value]:
         ]
     )
 
-    values.append(_value_from_file("cudnn_version", root, _CUDNN_HEADER, files.parse_cudnn_version))
-    values.append(
-        _value_from_file(
-            "docker_default_runtime",
-            root,
-            _DOCKER_DAEMON_JSON,
-            files.parse_docker_default_runtime,
-        )
+    values.extend(
+        [
+            _value_from_file("cudnn_version", root, _CUDNN_HEADER, files.parse_cudnn_version),
+            _value_from_file(
+                "docker_default_runtime",
+                root,
+                _DOCKER_DAEMON_JSON,
+                files.parse_docker_default_runtime,
+            ),
+        ]
     )
     return values
 

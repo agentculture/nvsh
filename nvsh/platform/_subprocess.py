@@ -115,7 +115,7 @@ def parse_spark_status(stdout: str) -> bool | None:
 # A version is the last whitespace token of the banner (`dgx-spark-cli 0.7.1`,
 # `thor 0.5.0`, `orin 0.5.0`), optionally prefixed with `v`, starting with
 # N.N and carrying any PEP 440-ish suffix (`rc1`, `.dev4`, `+local`).
-_CLI_VERSION_RE = re.compile(r"v?(\d+\.\d+[0-9A-Za-z.+-]*)")
+_CLI_VERSION_RE = re.compile(r"v?(\d+\.\d[0-9A-Za-z.+-]*)")
 
 
 def parse_cli_version(stdout: str) -> str | None:

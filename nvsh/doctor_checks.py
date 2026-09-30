@@ -1889,22 +1889,20 @@ def collect_checks(
                 "fix or remove $XDG_CONFIG_HOME/nvsh/config.toml",
             )
         )
-    checks.append(check_default_target_not_demo(config))
-    checks.append(check_agent_allowlist(home=home))
-    checks.extend(collect_tier_checks(config))
     checks.extend(
         [
+            check_default_target_not_demo(config),
+            check_agent_allowlist(home=home),
+            *collect_tier_checks(config),
             check_hook_sourced(env, current_version),
             check_hook_first_in_prompt_command(prompt_command_text),
             check_bindings_present(bind_p_text, keymap),
             check_capture_active(env),
+            check_daemon_status(env, is_running=probes.is_running, socket_path=probes.socket_path),
+            check_agent_turn_not_hung(
+                probes.active_turn(env), threshold=daemon_mod.turn_timeout(env)
+            ),
+            check_terminfo_present(env, run=run),
         ]
     )
-    checks.append(
-        check_daemon_status(env, is_running=probes.is_running, socket_path=probes.socket_path)
-    )
-    checks.append(
-        check_agent_turn_not_hung(probes.active_turn(env), threshold=daemon_mod.turn_timeout(env))
-    )
-    checks.append(check_terminfo_present(env, run=run))
     return checks
