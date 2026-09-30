@@ -99,6 +99,20 @@ its parent is the tool env's `bin/`. The value's `source` records which
 place won (`<cli> (nvsh env)` or `<cli> (PATH)`), and its text is the
 resolved path.
 
+Install a device CLI with nvsh's per-platform extra, which puts it in
+nvsh's own env:
+
+| Extra | Package | Command | Minimum version |
+| --- | --- | --- | --- |
+| `uv tool install 'nvsh[spark]'` | `dgx-spark-cli` | `spark` | 0.8.0 |
+| `uv tool install 'nvsh[thor]'` | `jetson-thor-cli` | `thor` | 0.5.0 (the extra pins 0.5.1) |
+| `uv tool install 'nvsh[orin]'` | `jetson-orin-cli` | `orin` | 0.6.0 |
+
+Adding `--with-executables-from <package>` also puts the CLI on your
+`PATH`; nvsh does not need that. A CLI below its minimum version, or whose
+version cannot be read, is treated as absent (nvsh uses system commands),
+and `nvsh doctor`'s `device_cli` check says so.
+
 For each CLI found, `detect()` runs `<cli> --version` once and records the
 last whitespace token of the output as `<cli>_cli_version` (a leading `v`
 is dropped; anything that does not start with `N.N` is absent). Detection

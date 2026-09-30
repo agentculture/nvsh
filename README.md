@@ -27,6 +27,21 @@ nvsh setup
 timestamped backup) that appends a function to bash's `PROMPT_COMMAND`.
 It never wraps bash and never becomes your login shell.
 
+To add your box's device CLI, install the matching extra instead:
+
+```bash
+uv tool install 'nvsh[spark]'   # DGX Spark:     dgx-spark-cli (spark)
+uv tool install 'nvsh[thor]'    # AGX Thor:      jetson-thor-cli (thor)
+uv tool install 'nvsh[orin]'    # AGX Orin:      jetson-orin-cli (orin)
+```
+
+All three answer the same read-only verbs (`status`, `memory`, `gpu`, `disk`,
+`thermal`, `containers`, `network`, `processes`, `swap status`, `power`) with
+the same `--json` envelope, so nvsh runs them the same way on every box. nvsh
+finds the CLI inside its own tool environment first, then on `PATH`; add
+`--with-executables-from <cli-package>` if you also want the CLI on your
+`PATH`. `nvsh doctor` reports which device CLI it found and its version.
+
 ## Set up
 
 | Command | What it does |
@@ -81,7 +96,8 @@ protocol-level policy, and reports what it finds.
 - Run an agent-suggested command without your confirmation.
 - Add latency or a network call to a successful command.
 - Wrap or replace bash — it hooks into the bash you already run.
-- Replace `jetson-cli` / `dgx-spark-cli`; it calls them when installed.
+- Replace `dgx-spark-cli` / `jetson-thor-cli` / `jetson-orin-cli`; it calls
+  them when installed.
 
 Not yet: macOS and zsh are untested —
 [#11](https://github.com/agentculture/nvsh/issues/11).

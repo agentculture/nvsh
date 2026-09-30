@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/). This project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.23.0] - 2026-09-30
+
+### Added
+
+- One device-CLI UI across DGX Spark, AGX Thor and AGX Orin (part of #48): `nvsh/ops/render.py` maps the same 10 read-only operations (`machine_status`, `memory_stats`, `gpu_stats`, `disk_stats`, `thermal_stats`, `container_list`, `network_info`, `process_list`, `swap_status`, `power_get`) to `spark`, `thor` and `orin` verbs, run as `<cli> <verb> --json` by resolved path.
+- Optional extras `nvsh[spark]` (dgx-spark-cli>=0.8.0), `nvsh[thor]` (jetson-thor-cli>=0.5.1) and `nvsh[orin]` (jetson-orin-cli>=0.6.0); the base install keeps zero dependencies.
+- Detection splits Jetson boards by `/proc/device-tree/model` (`jetson_board` = thor or orin), looks up each device CLI in nvsh's own env before `PATH`, and records its `--version` once.
+- Per-CLI minimum versions (`DEVICE_CLI_MIN_VERSIONS`): a CLI below its floor, or with an unreadable version, is treated as absent and nvsh uses system commands.
+- `nvsh doctor` gains a `device_cli` check: the expected CLI for the board, its version, path and origin; absent is info, below floor or wrong board is a warning naming the extra.
+
+### Changed
+
+- `render.py` names operations only as table keys: system fallbacks live in one `_SYSTEM_FALLBACKS` table (tests enforce it).
+- The tiers bench world records the device CLI at its floor version, so bench and eval replays render as before.
+- Spec, challenge pass, plan and split for `device-cli-alignment-spark-thor-orin` under `docs/specs/` and `docs/plans/`; deviation d1 (all nine review findings fixed across the three CLIs before release).
+
 ## [0.22.0] - 2026-09-29
 
 ### Added
