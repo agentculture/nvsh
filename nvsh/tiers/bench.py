@@ -33,7 +33,8 @@ from typing import Callable, Mapping, Sequence
 from ..agent.base import AgentContext, AgentRequest, RequestKind
 from ..ops import ground as ops_ground
 from ..ops import table as ops_table
-from ..platform._model import PATH, Platform, Value
+from ..ops.render import DEVICE_CLI_MIN_VERSIONS
+from ..platform._model import PATH, SUBPROCESS, Platform, Value
 from .base import Decline, DeclineReason, Tier
 from .records import TierRecords
 from .router import TierOutcome, TierRouter, Verifier
@@ -279,7 +280,19 @@ def world_platform(world: Mapping[str, object]) -> Platform:
     if not isinstance(cli, str) or not cli:
         return Platform(kind=kind)
     value = Value(name=f"{cli}_cli", text=cli, source=cli, method=PATH, present=True)
-    return Platform(kind=kind, values=(value,))
+    floor = DEVICE_CLI_MIN_VERSIONS.get(cli)
+    if floor is None:
+        return Platform(kind=kind, values=(value,))
+    # The world names a CLI that is installed with its verbs: give it the
+    # version at its floor, or render() would treat it as too old.
+    version = Value(
+        name=f"{cli}_cli_version",
+        text=".".join(str(part) for part in floor),
+        source=f"{cli} --version",
+        method=SUBPROCESS,
+        present=True,
+    )
+    return Platform(kind=kind, values=(value, version))
 
 
 def item_rows(items: Sequence[ItemResult]) -> list[dict]:

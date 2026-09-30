@@ -21,18 +21,24 @@ print(platform.render_block())
 print(platform.to_dict())    # JSON-serializable
 ```
 
-`detect(root="/", run=default_run, which=default_which)` takes the
-filesystem root and injectable subprocess/PATH lookups so tests can replay
-captured output without a real subprocess or real hardware. `Platform.kind`
+`detect(root="/", run=default_run, which=default_which, own_bin=None)`
+takes the filesystem root, injectable subprocess/PATH lookups and nvsh's own
+env bin directory (`None` means `Path(sys.executable).parent`) so tests can
+replay captured output without a real subprocess or real hardware. `Platform.kind`
 is one of `dgx-spark`, `jetson`, `rtx`, `generic` — `dgx-spark` when
 `/etc/dgx-release` exists, `jetson` when `/etc/nv_tegra_release` exists,
-`rtx` when the DMI product name mentions "RTX", `generic` otherwise.
+`rtx` when the DMI product name mentions "RTX", `generic` otherwise. `kind`
+does not split the two Jetson boards; the separate `jetson_board` value does
+(see [Jetson board and device CLIs](#jetson-board-and-device-clis)).
 
 ## Values, sources and methods
 
-`method` is `file` (read under `root`), `subprocess` (one of the four
-allow-listed commands below, each called with a 2-second timeout), or
-`path` (a `shutil.which` lookup, no execution). Every value in this table is
+`method` is `file` (read under `root`), `subprocess` (one of the
+allow-listed commands below — `nvidia-smi`, `nvpmodel -q`, `dpkg-query -W`,
+`spark status --json` and one `<cli> --version` per device CLI found — each
+called with a 2-second timeout), or `path` (a lookup, no execution: an
+executable file in nvsh's own env bin directory for the device CLIs, a
+`shutil.which` otherwise). Every value in this table is
 always present in `Platform.values`, whether found or not.
 
 | Value | Method | Source | Notes |
@@ -42,6 +48,7 @@ always present in `Platform.values`, whether found or not.
 | `l4t_release` | file | `/etc/nv_tegra_release` | first line, Jetson only |
 | `device_tree_model` | file | `/proc/device-tree/model` | NUL-terminated string |
 | `device_tree_compatible` | file | `/proc/device-tree/compatible` | NUL-terminated list, joined with `,` |
+| `jetson_board` | file | `/proc/device-tree/model` | `thor` or `orin` when the model string contains the whole word `Thor` or `Orin` (exactly one of them); absent otherwise, including on the DGX Spark, which has no `/proc/device-tree/model` |
 | `dmi_product_name` | file | `/sys/class/dmi/id/product_name` | e.g. `NVIDIA_DGX_Spark` |
 | `cuda_version` | file | `/usr/local/cuda/version.json` (`.cuda.version`) | CUDA toolkit, absent when the toolkit isn't installed |
 | `nvidia_driver_version` | file | `/proc/driver/nvidia/version` (`NVRM version:` line) | absent when the line doesn't carry a parseable `N.N[.N]` |
@@ -56,10 +63,63 @@ always present in `Platform.values`, whether found or not.
 | `tensorrt_version` | subprocess | `dpkg-query -W` (`libnvinfer10`, falling back to `tensorrt`) | |
 | `tmux` | path | `tmux` on `PATH` | |
 | `pi` | path | `pi` on `PATH` | the Pi/associate agent harness |
-| `spark_cli` | path | `spark` on `PATH` | `dgx-spark-cli` |
+| `spark_cli` | path | `spark (nvsh env)`, `spark (PATH)`, or `spark (nvsh env, PATH)` when absent | `dgx-spark-cli`; value is the resolved path; nvsh's own env bin directory is checked before `PATH` — see below |
+| `thor_cli` | path | same form as `spark_cli`, for `thor` | `jetson-thor-cli`; no `--help` probe |
+| `orin_cli` | path | same form as `spark_cli`, for `orin` | `jetson-orin-cli`; no `--help` probe |
+| `spark_cli_version` | subprocess | `spark --version` | last whitespace token of the banner (`dgx-spark-cli 0.7.0` → `0.7.0`); only called when `spark_cli` is present; absent on a non-zero exit, timeout or unparseable output |
+| `thor_cli_version` | subprocess | `thor --version` | same, for `thor` (`thor 0.5.0` → `0.5.0`) |
+| `orin_cli_version` | subprocess | `orin --version` | same, for `orin` (`orin 0.5.0` → `0.5.0`) |
 | `spark_status_available` | subprocess | `spark status --json` (`.available`) | only called when `spark_cli` is present; merged in, never required |
-| `thor_cli` | path | `thor` on `PATH` | `jetson-thor-cli`; reported the same way as `spark_cli` — a plain PATH check, no subprocess call, no `--help` probe |
-| `orin_cli` | path | `orin` on `PATH` | `jetson-orin-cli`; reported the same way as `spark_cli` — a plain PATH check, no subprocess call, no `--help` probe |
+
+## Jetson board and device CLIs
+
+`Platform.kind` is `jetson` on both Thor and Orin. The board comes from
+`/proc/device-tree/model` (NUL-terminated; read the same way as
+`device_tree_model`), measured on 2026-09-29 with
+`tr -d '\0' </proc/device-tree/model`:
+
+| Host | Model string | `jetson_board` |
+| --- | --- | --- |
+| `ssh thor` | `NVIDIA Jetson AGX Thor Developer Kit` | `thor` |
+| `ssh orin` | `NVIDIA Jetson AGX Orin Developer Kit` | `orin` |
+| DGX Spark | *(no `/proc/device-tree/model`)* | absent |
+
+A model string that names neither board (or both) leaves `jetson_board`
+absent, and callers fall back to trying `thor` then `orin`, as before the
+split. `Platform.board()` returns the value's text or `None`.
+
+Each device CLI (`spark`, `thor`, `orin`) is looked up in **nvsh's own env
+bin directory first** — `Path(sys.executable).parent`, an existing
+executable file there — **then `PATH`** (plan decision c27). nvsh is
+installed as a uv tool on every fleet box, and `uv tool install
+'nvsh[orin]'` installs `orin` inside nvsh's tool env without exposing it on
+`PATH`; the own-env check finds it there. For a uv tool, `sys.executable`
+is the tool env's own `bin/python` (not resolved through its symlink), so
+its parent is the tool env's `bin/`. The value's `source` records which
+place won (`<cli> (nvsh env)` or `<cli> (PATH)`), and its text is the
+resolved path.
+
+Install a device CLI with nvsh's per-platform extra, which puts it in
+nvsh's own env:
+
+| Extra | Package | Command | Minimum version |
+| --- | --- | --- | --- |
+| `uv tool install 'nvsh[spark]'` | `dgx-spark-cli` | `spark` | 0.8.0 |
+| `uv tool install 'nvsh[thor]'` | `jetson-thor-cli` | `thor` | 0.5.0 (the extra pins 0.5.1) |
+| `uv tool install 'nvsh[orin]'` | `jetson-orin-cli` | `orin` | 0.6.0 |
+
+Adding `--with-executables-from <package>` also puts the CLI on your
+`PATH`; nvsh does not need that. A CLI below its minimum version, or whose
+version cannot be read, is treated as absent (nvsh uses system commands),
+and `nvsh doctor`'s `device_cli` check says so.
+
+For each CLI found, `detect()` runs `<cli> --version` once and records the
+last whitespace token of the output as `<cli>_cli_version` (a leading `v`
+is dropped; anything that does not start with `N.N` is absent). Detection
+never runs on the hook's success path — only once a failure qualifies, and
+from `doctor`, the tiers and slash routing — so these calls add no latency
+to a successful command. `Platform.device_cli(<cli>)` returns a `DeviceCli`
+(`name`, `path`, `origin` = `nvsh-env` or `path`, `version`) or `None`.
 
 Both `thor` and `orin` install to each board's per-user `.local/bin`
 directory (under the operator's home), same as `spark` does on the DGX
@@ -118,8 +178,10 @@ the verifying command below produced.
 | `tmux` | present | `which tmux` |
 | `pi` | present | `which pi` |
 | `spark_cli` | present | `which spark` |
+| `spark_cli_version` | `0.7.0` (`dgx-spark-cli 0.7.0`, 2026-09-29) | `spark --version` |
 | `spark_status_available` | `true` | `spark status --json` |
 | `thor_cli`, `orin_cli` | absent (neither installed) | `which thor`; `which orin` |
+| `jetson_board` | absent (no `/proc/device-tree/model`, 2026-09-29) | `cat /proc/device-tree/model` |
 
 ### Jetson AGX Thor (`ssh thor`, L4T R38.2)
 
@@ -129,6 +191,7 @@ the verifying command below produced.
 | --- | --- | --- |
 | `l4t_release` | `R38 (release), REVISION: 2.2, ...` | `cat /etc/nv_tegra_release` |
 | `device_tree_model` | `NVIDIA Jetson AGX Thor Developer Kit` | `cat /proc/device-tree/model` |
+| `jetson_board` | `thor` (model re-measured 2026-09-29) | `tr -d '\0' </proc/device-tree/model` |
 | `device_tree_compatible` | includes `nvidia,tegra264` | `cat /proc/device-tree/compatible` |
 | `cuda_version` | `13.0.0` | `cat /usr/local/cuda/version.json` |
 | `cudnn_version` | `9.12.0` | `cat /usr/include/aarch64-linux-gnu/cudnn_version.h` |
@@ -140,6 +203,7 @@ the verifying command below produced.
 | `tmux` | present | `which tmux` |
 | `pi`, `spark_cli` | absent (neither installed) | `which pi`; `which spark` |
 | `thor_cli` | present (`thor 0.5.0`, verbs `status/memory/gpu/disk/thermal/containers/network/processes/power/monitor/swap`, each accepting `--json`; `swap status --json` is the read-only swap subcommand) | `which thor && thor --version && thor --help` |
+| `thor_cli_version` | `0.5.0` (`thor 0.5.0`, 2026-09-29) | `thor --version` |
 | `orin_cli` | absent | `which orin` |
 
 ### Jetson AGX Orin (`ssh orin`, L4T R39.2)
@@ -150,6 +214,7 @@ the verifying command below produced.
 | --- | --- | --- |
 | `l4t_release` | `R39 (release), REVISION: 2.0, ...` | `cat /etc/nv_tegra_release` |
 | `device_tree_model` | `NVIDIA Jetson AGX Orin Developer Kit` | `cat /proc/device-tree/model` |
+| `jetson_board` | `orin` (model re-measured 2026-09-29) | `tr -d '\0' </proc/device-tree/model` |
 | `device_tree_compatible` | includes `nvidia,tegra234` | `cat /proc/device-tree/compatible` |
 | `cuda_version` | **absent** — no `/usr/local/cuda/version.json` on this board | `cat /usr/local/cuda/version.json` |
 | `cudnn_version` | **absent** — no cuDNN header on this board | `cat /usr/include/aarch64-linux-gnu/cudnn_version.h` |
@@ -158,7 +223,8 @@ the verifying command below produced.
 | `nvpmodel_power_mode` | `MAXN` | `nvpmodel -q` |
 | `unified_memory` | `true` (`memory.total`/`memory.used` = `[N/A]`) | `nvidia-smi --query-gpu=name,memory.total,memory.used,driver_version --format=csv` |
 | `tmux`, `pi`, `spark_cli` | absent (none installed) | `which tmux`; `which pi`; `which spark` |
-| `orin_cli` | present (`orin 0.5.0`; `{whoami,learn,explain,overview,doctor,cli}` only — no machine verbs yet, confirming `nvsh/ops/render.py`'s empty `DEVICE_CLI_VERBS["orin"]`) | `which orin && orin --version && orin --help` |
+| `orin_cli` | present (measured 2026-09-29 at `orin 0.5.0`, which had only `{whoami,learn,explain,overview,doctor,cli}`; nvsh's `DEVICE_CLI_VERBS["orin"]` now maps the same ten read-only verbs as spark/thor, gated by the `DEVICE_CLI_MIN_VERSIONS` floors spark 0.8.0, thor 0.5.0, orin 0.6.0, so a 0.5.0 orin CLI is treated as absent) | `which orin && orin --version && orin --help` |
+| `orin_cli_version` | `0.5.0` (`orin 0.5.0`, 2026-09-29) | `orin --version` |
 | `thor_cli` | absent | `which thor` |
 
 ## Docker GPU path

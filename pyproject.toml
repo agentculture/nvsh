@@ -1,6 +1,6 @@
 [project]
 name = "nvsh"
-version = "0.22.0"
+version = "0.23.0"
 description = "nvsh: an agent-first shell for NVIDIA Jetson, DGX Spark and RTX Spark. Runs your commands like a normal shell; when a command fails, it hands the error and context to an agent (shell -> agent) to diagnose and propose a fix."
 readme = "README.md"
 license = "Apache-2.0"
@@ -29,6 +29,12 @@ nvsh = "nvsh.cli:main"
 needle = ["cactus-needle>=3.0.1,<3.1"]
 lfm = []
 tiers = ["cactus-needle>=3.0.1,<3.1"]
+# Optional device CLIs, one per platform. nvsh looks for them in its own
+# environment first, then on PATH, and falls back to system commands
+# without them. Floors match DEVICE_CLI_MIN_VERSIONS in nvsh/ops/render.py.
+spark = ["dgx-spark-cli>=0.8.0"]
+thor = ["jetson-thor-cli>=0.5.1"]
+orin = ["jetson-orin-cli>=0.6.0"]
 
 [build-system]
 requires = ["hatchling"]

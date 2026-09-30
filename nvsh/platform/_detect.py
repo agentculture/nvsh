@@ -4,7 +4,15 @@ File-first, as required by the spec's platform-detection claim: every fact
 is read from a file when a file exposes it, and subprocesses are used only
 for ``nvidia-smi``, ``nvpmodel -q`` and ``dpkg-query -W`` (each with a
 timeout), plus an optional ``spark status --json`` merge when the
-``dgx-spark-cli`` ``spark`` binary is on PATH. Nothing is ever required to
+``dgx-spark-cli`` ``spark`` binary is found, and one ``<cli> --version``
+per device CLI (``spark``/``thor``/``orin``) found. Device CLIs are looked up
+in nvsh's own env bin directory first, then PATH (plan decision c27). The
+Jetson board (thor/orin) comes from ``/proc/device-tree/model``.
+
+Detection never runs on the hook's success path: it is called only once a
+failure qualifies, and by ``doctor``, the tiers and slash routing.
+
+Nothing is ever required to
 be present: a missing file, absent binary or unparseable value comes back as
 an absent :class:`Value` carrying the source that was checked, not a
 silently dropped fact.
@@ -12,9 +20,23 @@ silently dropped fact.
 
 from __future__ import annotations
 
+import os
+import re
+import sys
+from pathlib import Path
+
 from . import _files as files
 from . import _subprocess as subp
-from ._model import FILE, PATH, SUBPROCESS, Platform, Value
+from ._model import (
+    FILE,
+    NVSH_ENV,
+    ON_PATH,
+    PATH,
+    SUBPROCESS,
+    Platform,
+    Value,
+    device_cli_source,
+)
 
 _DGX_RELEASE = "/etc/dgx-release"
 _NV_TEGRA_RELEASE = "/etc/nv_tegra_release"
@@ -26,6 +48,14 @@ _NVIDIA_DRIVER_VERSION = "/proc/driver/nvidia/version"
 _MEMINFO = "/proc/meminfo"
 _CUDNN_HEADER = "/usr/include/aarch64-linux-gnu/cudnn_version.h"
 _DOCKER_DAEMON_JSON = "/etc/docker/daemon.json"
+
+#: Device-tree model word -> Jetson board. Measured 2026-09-29:
+#: "NVIDIA Jetson AGX Thor Developer Kit", "NVIDIA Jetson AGX Orin Developer
+#: Kit". Matched as whole words so e.g. "Thorough" is not a Thor.
+_BOARD_WORDS = (("thor", re.compile(r"\bThor\b")), ("orin", re.compile(r"\bOrin\b")))
+
+#: The device CLIs nvsh knows, in report order: value name prefix == binary.
+_DEVICE_CLIS = ("spark", "thor", "orin")
 
 
 def _absent(name: str, source: str, method: str) -> Value:
@@ -98,46 +128,54 @@ def _file_values(root: str) -> list[Value]:
     values.append(_maybe("l4t_release", l4t_release, _NV_TEGRA_RELEASE, FILE))
 
     dt_model = files.read_device_tree_string(root, _DEVICE_TREE_MODEL)
-    values.append(_maybe("device_tree_model", dt_model, _DEVICE_TREE_MODEL, FILE))
+    values.extend(
+        [
+            _maybe("device_tree_model", dt_model, _DEVICE_TREE_MODEL, FILE),
+            _maybe("jetson_board", parse_board(dt_model), _DEVICE_TREE_MODEL, FILE),
+        ]
+    )
 
     dt_compatible = files.read_device_tree_list(root, _DEVICE_TREE_COMPATIBLE)
-    values.append(
-        _maybe(
-            "device_tree_compatible",
-            ",".join(dt_compatible) if dt_compatible else None,
-            _DEVICE_TREE_COMPATIBLE,
-            FILE,
-        )
-    )
-
-    values.append(
-        _value_from_file("dmi_product_name", root, _DMI_PRODUCT_NAME, files.parse_dmi_product_name)
-    )
-    values.append(
-        _value_from_file("cuda_version", root, _CUDA_VERSION_JSON, files.parse_cuda_version)
-    )
-    values.append(
-        _value_from_file(
-            "nvidia_driver_version",
-            root,
-            _NVIDIA_DRIVER_VERSION,
-            files.parse_nvidia_driver_version,
-        )
+    values.extend(
+        [
+            _maybe(
+                "device_tree_compatible",
+                ",".join(dt_compatible) if dt_compatible else None,
+                _DEVICE_TREE_COMPATIBLE,
+                FILE,
+            ),
+            _value_from_file(
+                "dmi_product_name", root, _DMI_PRODUCT_NAME, files.parse_dmi_product_name
+            ),
+            _value_from_file("cuda_version", root, _CUDA_VERSION_JSON, files.parse_cuda_version),
+            _value_from_file(
+                "nvidia_driver_version",
+                root,
+                _NVIDIA_DRIVER_VERSION,
+                files.parse_nvidia_driver_version,
+            ),
+        ]
     )
 
     meminfo_text = files.read_text(root, _MEMINFO)
     meminfo = files.parse_meminfo(meminfo_text) if meminfo_text is not None else {}
-    values.append(_maybe("mem_total", meminfo.get("MemTotal"), _MEMINFO, FILE))
-    values.append(_maybe("mem_available", meminfo.get("MemAvailable"), _MEMINFO, FILE))
+    values.extend(
+        [
+            _maybe("mem_total", meminfo.get("MemTotal"), _MEMINFO, FILE),
+            _maybe("mem_available", meminfo.get("MemAvailable"), _MEMINFO, FILE),
+        ]
+    )
 
-    values.append(_value_from_file("cudnn_version", root, _CUDNN_HEADER, files.parse_cudnn_version))
-    values.append(
-        _value_from_file(
-            "docker_default_runtime",
-            root,
-            _DOCKER_DAEMON_JSON,
-            files.parse_docker_default_runtime,
-        )
+    values.extend(
+        [
+            _value_from_file("cudnn_version", root, _CUDNN_HEADER, files.parse_cudnn_version),
+            _value_from_file(
+                "docker_default_runtime",
+                root,
+                _DOCKER_DAEMON_JSON,
+                files.parse_docker_default_runtime,
+            ),
+        ]
     )
     return values
 
@@ -185,20 +223,60 @@ def _subprocess_values(run: subp.Runner, which: subp.Which) -> list[Value]:
     return values
 
 
-def _path_values(run: subp.Runner, which: subp.Which) -> list[Value]:
-    """PATH presence checks, plus the ``spark status --json`` merge they gate."""
+def parse_board(model: str | None) -> str | None:
+    """``thor``/``orin`` when the device-tree model names exactly one of them."""
+    if not model:
+        return None
+    boards = [board for board, word in _BOARD_WORDS if word.search(model)]
+    return boards[0] if len(boards) == 1 else None
+
+
+def _own_env_executable(own_bin: str, tool: str) -> str | None:
+    candidate = os.path.join(own_bin, tool)
+    if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+        return candidate
+    return None
+
+
+def _device_cli_values(
+    run: subp.Runner, which: subp.Which, own_bin: str, cli: str
+) -> tuple[Value, Value]:
+    """``<cli>_cli`` (own env first, then PATH) and ``<cli>_cli_version``.
+
+    ``<cli> --version`` runs once, only when the CLI was found; a failed or
+    unparseable call is an absent version, never an exception.
+    """
+    name = f"{cli}_cli"
+    version_name = f"{cli}_cli_version"
+    version_source = f"{cli} --version"
+    found, origin = _own_env_executable(own_bin, cli), NVSH_ENV
+    if not found:
+        found, origin = which(cli), ON_PATH
+    if not found:
+        return (
+            _absent(name, device_cli_source(cli, None), PATH),
+            _absent(version_name, version_source, SUBPROCESS),
+        )
+    cli_value = _present(name, found, device_cli_source(cli, origin), PATH)
+    code, out, _err = run([found, "--version"], subp.DEFAULT_TIMEOUT)
+    version = subp.parse_cli_version(out) if code == 0 else None
+    return cli_value, _maybe(version_name, version, version_source, SUBPROCESS)
+
+
+def _path_values(run: subp.Runner, which: subp.Which, own_bin: str) -> list[Value]:
+    """PATH presence checks, the device CLIs, and the ``spark status --json``
+    merge the spark CLI gates."""
     values = [
         _value_from_which("tmux", which, "tmux"),
         _value_from_which("pi", which, "pi"),
     ]
-    spark_value = _value_from_which("spark_cli", which, "spark")
-    values.append(spark_value)
-    # thor_cli / orin_cli are reported the same way spark_cli is: a plain
-    # PATH presence check, no subprocess call, no --help probe at request
-    # time. nvsh/ops/render.py's static DEVICE_CLI_VERBS table decides what
-    # each CLI supports; detection here only answers "is it on PATH".
-    values.append(_value_from_which("thor_cli", which, "thor"))
-    values.append(_value_from_which("orin_cli", which, "orin"))
+    # nvsh/ops/render.py's static DEVICE_CLI_VERBS table decides what each
+    # CLI supports; detection here answers "where is it, which version" --
+    # no --help probe, and nothing at request time.
+    device = {cli: _device_cli_values(run, which, own_bin, cli) for cli in _DEVICE_CLIS}
+    spark_value = device["spark"][0]
+    values.extend([spark_value, device["thor"][0], device["orin"][0]])
+    values.extend(version for _cli, version in device.values())
 
     spark_status_cmd = "spark status --json"
     spark_available = None
@@ -224,6 +302,7 @@ def detect(
     root: str = "/",
     run: subp.Runner = subp.default_run,
     which: subp.Which = subp.default_which,
+    own_bin: str | None = None,
 ) -> Platform:
     """Detect the machine nvsh is running on.
 
@@ -233,10 +312,15 @@ def detect(
         run: ``(argv, timeout) -> (returncode, stdout, stderr)``, injectable
             so tests replay captured subprocess output.
         which: ``name -> path or None``, injectable for the same reason.
+        own_bin: nvsh's own env bin directory, searched for device CLIs
+            before PATH; ``None`` means ``Path(sys.executable).parent`` (the
+            uv tool env an extra such as ``nvsh[orin]`` installs into).
     """
+    if own_bin is None:
+        own_bin = str(Path(sys.executable).parent)
     values = _file_values(root)
     values.extend(_subprocess_values(run, which))
-    values.extend(_path_values(run, which))
+    values.extend(_path_values(run, which, own_bin))
     return Platform(kind=_classify(values), values=tuple(values))
 
 

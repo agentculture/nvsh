@@ -14,24 +14,33 @@ already grounded and well-typed.
 
 from __future__ import annotations
 
-from nvsh.platform._model import Platform
+import re
+from collections.abc import Callable
+
+from nvsh.platform._model import DeviceCli, Platform
 
 # ---------------------------------------------------------------------------
 # Static per-CLI verb table
 # ---------------------------------------------------------------------------
 #
-# Measured against dgx-spark-cli 0.7.0 (`spark`) and jetson-thor-cli 0.5.0
-# (`thor`) on 2026-09-19: both accept `<verb> --json` for every read-only
-# machine-state operation below. `power` exists only on thor (thor is a
-# Jetson board with `nvpmodel`; the Spark's `spark` CLI has no power verb).
-# `swap_status` is `swap status --json`, not bare `swap --json`: `swap` has
-# other (non-read-only) subcommands on both CLIs, and `status` is the one
-# that is read-only.
+# Measured 2026-09-29 (plan device-cli-alignment-spark-thor-orin): all three
+# device CLIs accept `<verb> --json` for the same ten read-only machine-state
+# operations below, at or above the version in DEVICE_CLI_MIN_VERSIONS:
 #
-# jetson-orin-cli 0.5.0 (`orin`) has NO machine verbs yet -- it is listed
-# with an empty verb map so every operation falls through to the system
-# fallback even when `orin` is on PATH, and so a future orin-cli release
-# that adds verbs has one table to extend, not a special-cased absence.
+# - dgx-spark-cli 0.8.0 (`spark`; branch build, unreleased at the time of
+#   measuring) adds `power`; 0.7.0 (measured 2026-09-19) had the other nine.
+# - jetson-thor-cli 0.5.0 (`thor`) has all ten, `power` included.
+# - jetson-orin-cli 0.6.0 (`orin`; branch build, unreleased) has all ten;
+#   0.5.0 had no machine verbs at all.
+#
+# `swap_status` is `swap status --json`, not bare `swap --json`: `swap` has
+# other (non-read-only) subcommands on every CLI, and `status` is the one
+# that is read-only. No device CLI verb backs a mutating operation: those
+# keep their system fallbacks below.
+#
+# A CLI older than its floor (or whose `--version` could not be parsed) is
+# treated exactly as if it were absent: every operation uses its system
+# fallback. The floors are data, next to the verbs they guard.
 
 _SPARK_VERBS: dict[str, list[str]] = {
     "machine_status": ["status"],
@@ -43,14 +52,12 @@ _SPARK_VERBS: dict[str, list[str]] = {
     "network_info": ["network"],
     "process_list": ["processes"],
     "swap_status": ["swap", "status"],
-}
-
-_THOR_VERBS: dict[str, list[str]] = {
-    **_SPARK_VERBS,
     "power_get": ["power"],
 }
 
-_ORIN_VERBS: dict[str, list[str]] = {}
+_THOR_VERBS: dict[str, list[str]] = dict(_SPARK_VERBS)
+
+_ORIN_VERBS: dict[str, list[str]] = dict(_SPARK_VERBS)
 
 DEVICE_CLI_VERBS: dict[str, dict[str, list[str]]] = {
     "spark": _SPARK_VERBS,
@@ -58,15 +65,71 @@ DEVICE_CLI_VERBS: dict[str, dict[str, list[str]]] = {
     "orin": _ORIN_VERBS,
 }
 
+#: The oldest release of each device CLI whose verbs match its table above.
+DEVICE_CLI_MIN_VERSIONS: dict[str, tuple[int, ...]] = {
+    "spark": (0, 8, 0),
+    "thor": (0, 5, 0),
+    "orin": (0, 6, 0),
+}
+
 # Which device CLI binaries are candidates for a given Platform.kind, in
-# lookup order. `Platform.kind` can't distinguish thor from orin (both
-# report "jetson" -- see nvsh/platform/_detect.py's _classify()), so both
-# are tried and whichever CLI is actually on PATH (platform.get("<x>_cli"))
-# wins.
+# lookup order. On "jetson" the board (Platform.board(), from the device
+# tree) narrows this to that board's own CLI; when the board is unknown both
+# are tried, thor first.
 _CLI_CANDIDATES: dict[str, tuple[str, ...]] = {
     "dgx-spark": ("spark",),
     "jetson": ("thor", "orin"),
 }
+
+#: Platform.board() -> the only device CLI that board uses.
+_BOARD_CANDIDATES: dict[str, tuple[str, ...]] = {
+    "thor": ("thor",),
+    "orin": ("orin",),
+}
+
+_LEADING_VERSION = re.compile(r"v?(\d+(?:\.\d+)*)")
+
+
+def _version_tuple(text: str | None) -> tuple[int, ...] | None:
+    """``"0.8.0"`` -> ``(0, 8, 0)``; the leading numeric release only, so a
+    branch build's suffix (``0.8.0.dev1``) counts as that release. ``None``
+    when *text* is ``None`` or does not start with a number."""
+    if text is None:
+        return None
+    match = _LEADING_VERSION.match(text.strip())
+    if match is None:
+        return None
+    return tuple(int(part) for part in match.group(1).split("."))
+
+
+def usable_device_cli(platform: Platform, cli: str) -> DeviceCli | None:
+    """The detected device CLI *cli* when it is at or above its floor.
+
+    Fails closed: absent, no floor on record, or a version that is missing,
+    unparseable or older than :data:`DEVICE_CLI_MIN_VERSIONS` -> ``None``.
+    """
+    floor = DEVICE_CLI_MIN_VERSIONS.get(cli)
+    found = platform.device_cli(cli)
+    if floor is None or found is None:
+        return None
+    version = _version_tuple(found.version)
+    if version is None or version < floor:
+        return None
+    return found
+
+
+def cli_meets_floor(platform: Platform, cli: str) -> bool:
+    """True when *cli* is detected on *platform* at or above its floor."""
+    return usable_device_cli(platform, cli) is not None
+
+
+def _candidates(platform: Platform) -> tuple[str, ...]:
+    candidates = _CLI_CANDIDATES.get(platform.kind, ())
+    if platform.kind != "jetson":
+        return candidates
+    board = platform.board()
+    return _BOARD_CANDIDATES.get(board, candidates) if board else candidates
+
 
 # nvpmodel's numeric mode IDs are per-board and were not measured for every
 # mode on every board. `max_performance` -> `0` is the one mapping that is
@@ -79,49 +142,35 @@ _CLI_CANDIDATES: dict[str, tuple[str, ...]] = {
 _NVPMODEL_MAX_PERFORMANCE_MODE_ID = "0"
 
 
-# Argument-free operations that always fall back to the same static argv,
-# regardless of args or platform.
-_STATIC_FALLBACK_ARGV: dict[str, list[str]] = {
-    "memory_stats": ["free", "-m"],
-    "disk_stats": ["df", "-h"],
-    "container_list": ["docker", "ps"],
-    "network_info": ["ip", "-brief", "addr"],
-    "process_list": ["ps", "-eo", "pid,rss,comm", "--sort=-rss"],
-    "swap_status": ["swapon", "--show"],
-    # nvidia-smi with no flags is a single call that exits; it is present
-    # on dgx-spark, rtx and (per the thor/orin fixtures in
-    # tests/fixtures/platform) both Jetson boards nvsh targets.
-    "gpu_stats": ["nvidia-smi"],
-}
+_Fallback = Callable[[dict[str, str], Platform], "list[str] | None"]
 
 
-def _fallback_service_status(args: dict[str, str]) -> list[str]:
+def _static(argv: list[str]) -> _Fallback:
+    """An argument-free fallback: the same argv on every platform."""
+    return lambda _args, _platform: list(argv)
+
+
+def _none(_args: dict[str, str], _platform: Platform) -> list[str] | None:
+    return None
+
+
+def _fallback_service_status(args: dict[str, str], _platform: Platform) -> list[str]:
     return ["systemctl", "status", "--no-pager", args["service"]]
 
 
-def _fallback_service_logs(args: dict[str, str]) -> list[str]:
+def _fallback_service_logs(args: dict[str, str], _platform: Platform) -> list[str]:
     return ["journalctl", "-u", args["service"], "-n", "50", "--no-pager"]
 
 
-def _fallback_service_restart(args: dict[str, str]) -> list[str]:
+def _fallback_service_restart(args: dict[str, str], _platform: Platform) -> list[str]:
     return ["sudo", "systemctl", "restart", args["service"]]
 
 
-def _fallback_container_restart(args: dict[str, str]) -> list[str]:
+def _fallback_container_restart(args: dict[str, str], _platform: Platform) -> list[str]:
     return ["docker", "restart", args["container"]]
 
 
-# Operations whose fallback argv is static in shape but needs one arg value
-# substituted in.
-_ARG_FALLBACKS = {
-    "service_status": _fallback_service_status,
-    "service_logs": _fallback_service_logs,
-    "service_restart": _fallback_service_restart,
-    "container_restart": _fallback_container_restart,
-}
-
-
-def _fallback_power_get(platform: Platform) -> list[str] | None:
+def _fallback_power_get(_args: dict[str, str], platform: Platform) -> list[str] | None:
     if platform.kind == "jetson":
         return ["nvpmodel", "-q"]
     # dgx-spark/rtx/generic: no nvpmodel, no other widely-present way to
@@ -139,46 +188,44 @@ def _fallback_power_set(args: dict[str, str], platform: Platform) -> list[str] |
     return None
 
 
-def _system_fallback(
-    operation_name: str, args: dict[str, str], platform: Platform
-) -> list[str] | None:
-    """The system (non-device-CLI) argv for *operation_name*, or ``None``.
+#: Operations that never go to a device CLI: the same argv everywhere.
+_FIXED_ARGV: dict[str, list[str]] = {
+    # nvsh's own doctor verb: never platform- or device-CLI-dependent.
+    "nvsh_doctor": ["nvsh", "doctor", "--json"],
+}
 
-    ``None`` means: no single, non-shell, exiting argv exists for this
-    operation on this platform. Each ``None`` case below says why.
-    """
-    if operation_name in _STATIC_FALLBACK_ARGV:
-        return list(_STATIC_FALLBACK_ARGV[operation_name])
-
-    if operation_name in _ARG_FALLBACKS:
-        return _ARG_FALLBACKS[operation_name](args)
-
-    if operation_name == "thermal_stats":
-        # CPU/GPU/board temperatures live in several separate files under
-        # /sys/class/thermal/thermal_zone*/temp; reading and labelling all
-        # of them in one shot needs a loop, which needs a shell -- and this
-        # module never builds a shell string. There is no single sensors-
-        # style binary guaranteed present across dgx-spark/jetson/rtx
-        # either (lm-sensors is not installed by default on any of them).
-        # So there is no single exiting argv for this operation anywhere
-        # nvsh runs without a device CLI: return None rather than invent
-        # one.
-        return None
-
-    if operation_name == "machine_status":
-        # "the current state of this machine" is exactly the composite
-        # view a device CLI's `status` verb assembles; no single system
-        # command produces the same summary, so there is nothing honest to
-        # fall back to.
-        return None
-
-    if operation_name == "power_get":
-        return _fallback_power_get(platform)
-
-    if operation_name == "power_set":
-        return _fallback_power_set(args, platform)
-
-    return None
+#: The system (non-device-CLI) argv for each operation. A fallback that
+#: returns ``None`` means no single, non-shell, exiting argv exists for that
+#: operation on that platform; each such entry says why.
+_SYSTEM_FALLBACKS: dict[str, _Fallback] = {
+    "memory_stats": _static(["free", "-m"]),
+    "disk_stats": _static(["df", "-h"]),
+    "container_list": _static(["docker", "ps"]),
+    "network_info": _static(["ip", "-brief", "addr"]),
+    "process_list": _static(["ps", "-eo", "pid,rss,comm", "--sort=-rss"]),
+    "swap_status": _static(["swapon", "--show"]),
+    # nvidia-smi with no flags is a single call that exits; it is present
+    # on dgx-spark, rtx and (per the thor/orin fixtures in
+    # tests/fixtures/platform) both Jetson boards nvsh targets.
+    "gpu_stats": _static(["nvidia-smi"]),
+    "service_status": _fallback_service_status,
+    "service_logs": _fallback_service_logs,
+    "service_restart": _fallback_service_restart,
+    "container_restart": _fallback_container_restart,
+    # CPU/GPU/board temperatures live in several separate files under
+    # /sys/class/thermal/thermal_zone*/temp; reading and labelling all of
+    # them in one shot needs a loop, which needs a shell -- and this module
+    # never builds a shell string. There is no single sensors-style binary
+    # guaranteed present across dgx-spark/jetson/rtx either (lm-sensors is
+    # not installed by default on any of them).
+    "thermal_stats": _none,
+    # "the current state of this machine" is exactly the composite view a
+    # device CLI's `status` verb assembles; no single system command
+    # produces the same summary, so there is nothing honest to fall back to.
+    "machine_status": _none,
+    "power_get": _fallback_power_get,
+    "power_set": _fallback_power_set,
+}
 
 
 def _safe_argument(value: object) -> bool:
@@ -204,16 +251,15 @@ def render(operation_name: str, args: dict[str, str], platform: Platform) -> lis
         # though it is a single argv element.
         return None
 
-    if operation_name == "nvsh_doctor":
-        # nvsh's own doctor verb: always available, never platform- or
-        # device-CLI-dependent.
-        return ["nvsh", "doctor", "--json"]
+    if operation_name in _FIXED_ARGV:
+        return list(_FIXED_ARGV[operation_name])
 
-    for cli in _CLI_CANDIDATES.get(platform.kind, ()):
-        cli_value = platform.get(f"{cli}_cli")
-        if cli_value is not None and cli_value.present:
-            verb = DEVICE_CLI_VERBS.get(cli, {}).get(operation_name)
-            if verb is not None:
-                return [cli, *verb, "--json"]
+    for cli in _candidates(platform):
+        found = usable_device_cli(platform, cli)
+        verb = DEVICE_CLI_VERBS[cli].get(operation_name) if found else None
+        if found is not None and verb is not None:
+            # The resolved path, not the bare name: a CLI installed through
+            # nvsh's own extra lives in nvsh's env bin, which is not on PATH.
+            return [found.path, *verb, "--json"]
 
-    return _system_fallback(operation_name, args, platform)
+    return _SYSTEM_FALLBACKS.get(operation_name, _none)(args, platform)

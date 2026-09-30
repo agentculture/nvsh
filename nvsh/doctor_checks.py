@@ -70,6 +70,8 @@ from nvsh.config import (
     ConfigError,
     resolve_bearer,
 )
+from nvsh.ops import DEVICE_CLI_MIN_VERSIONS, usable_device_cli
+from nvsh.ops.render import _version_tuple
 from nvsh.platform import Platform
 from nvsh.platform._subprocess import Runner, Which, default_run, default_which
 
@@ -116,6 +118,96 @@ def check_platform_detected(platform: Platform) -> dict:
         f"platform not detected (generic); sources checked: {sources}",
         "run on a supported NVIDIA platform (Jetson/DGX Spark/RTX Spark); "
         "see docs/platforms.md for the full source list",
+    )
+
+
+# ---------------------------------------------------------------------------
+# device_cli
+# ---------------------------------------------------------------------------
+
+#: cli -> (nvsh extra, PyPI package) that installs it.
+_DEVICE_CLI_EXTRAS = {
+    "spark": ("nvsh[spark]", "dgx-spark-cli"),
+    "thor": ("nvsh[thor]", "jetson-thor-cli"),
+    "orin": ("nvsh[orin]", "jetson-orin-cli"),
+}
+
+_ORIGIN_LABEL = {"nvsh-env": "nvsh env", "path": "PATH"}
+
+
+def _install_hint(cli: str) -> str:
+    extra, package = _DEVICE_CLI_EXTRAS[cli]
+    return f"install the {package} extra: uv tool install '{extra}' (or upgrade it)"
+
+
+def _expected_device_clis(platform: Platform) -> list[str]:
+    if platform.kind == "dgx-spark":
+        return ["spark"]
+    if platform.kind == "jetson":
+        board = platform.board()
+        return [board] if board in ("thor", "orin") else ["thor", "orin"]
+    return []
+
+
+def check_device_cli(platform: Platform) -> dict:
+    """The platform's device CLI: name, version, path, origin and board match.
+
+    Absent is ``info`` (nvsh falls back to system commands); a CLI that is
+    below its version floor, unreadable, or for the wrong board is a
+    ``warning``.
+    """
+    expected = _expected_device_clis(platform)
+    if not expected:
+        return _check(
+            "device_cli",
+            True,
+            "info",
+            f"no device CLI applies to platform {platform.kind}",
+            "",
+        )
+    label = expected[0] if len(expected) == 1 else "thor/orin"
+    # Prefer a usable expected CLI, then any present expected one.
+    found = next((c for c in expected if usable_device_cli(platform, c)), None)
+    if found is None:
+        found = next((c for c in expected if platform.device_cli(c)), None)
+    if found is not None:
+        cli = platform.device_cli(found)
+        floor = ".".join(str(n) for n in DEVICE_CLI_MIN_VERSIONS[found])
+        if usable_device_cli(platform, found) is not None:
+            return _check(
+                "device_cli",
+                True,
+                "info",
+                f"{found} {cli.version} at {cli.path} ({_ORIGIN_LABEL[cli.origin]})",
+                "",
+            )
+        shown = cli.version if _version_tuple(cli.version) else "unreadable version"
+        return _check(
+            "device_cli",
+            False,
+            "warning",
+            f"{found} at {cli.path} ({_ORIGIN_LABEL[cli.origin]}) is {shown}, "
+            f"below the {floor} floor; nvsh uses system commands instead",
+            _install_hint(found),
+        )
+    # None of the expected CLIs is present; is another board's CLI?
+    wrong = [c for c in _DEVICE_CLI_EXTRAS if c not in expected and platform.device_cli(c)]
+    if wrong:
+        other = platform.device_cli(wrong[0])
+        return _check(
+            "device_cli",
+            False,
+            "warning",
+            f"{wrong[0]} CLI at {other.path} does not match this board ({label}); "
+            "it is ignored and nvsh uses system commands instead",
+            _install_hint(expected[0]),
+        )
+    return _check(
+        "device_cli",
+        False,
+        "info",
+        f"{label} device CLI not found (nvsh env, PATH); nvsh uses system commands",
+        _install_hint(expected[0]),
     )
 
 
@@ -1783,7 +1875,7 @@ def collect_checks(
     ``run`` stays a keyword of its own; the remaining injectables live on
     :class:`Probes`, which documents why its ``cli_run`` is not this ``run``.
     """
-    checks = [check_platform_detected(platform)]
+    checks = [check_platform_detected(platform), check_device_cli(platform)]
     checks.append(check_agent_configured(config, config_error))
     if config is not None:
         checks.append(check_agent_reachable(config, which=which, home=home, run=probes.cli_run))
@@ -1797,18 +1889,20 @@ def collect_checks(
                 "fix or remove $XDG_CONFIG_HOME/nvsh/config.toml",
             )
         )
-    checks.append(check_default_target_not_demo(config))
-    checks.append(check_agent_allowlist(home=home))
-    checks.extend(collect_tier_checks(config))
-    checks.append(check_hook_sourced(env, current_version))
-    checks.append(check_hook_first_in_prompt_command(prompt_command_text))
-    checks.append(check_bindings_present(bind_p_text, keymap))
-    checks.append(check_capture_active(env))
-    checks.append(
-        check_daemon_status(env, is_running=probes.is_running, socket_path=probes.socket_path)
+    checks.extend(
+        [
+            check_default_target_not_demo(config),
+            check_agent_allowlist(home=home),
+            *collect_tier_checks(config),
+            check_hook_sourced(env, current_version),
+            check_hook_first_in_prompt_command(prompt_command_text),
+            check_bindings_present(bind_p_text, keymap),
+            check_capture_active(env),
+            check_daemon_status(env, is_running=probes.is_running, socket_path=probes.socket_path),
+            check_agent_turn_not_hung(
+                probes.active_turn(env), threshold=daemon_mod.turn_timeout(env)
+            ),
+            check_terminfo_present(env, run=run),
+        ]
     )
-    checks.append(
-        check_agent_turn_not_hung(probes.active_turn(env), threshold=daemon_mod.turn_timeout(env))
-    )
-    checks.append(check_terminfo_present(env, run=run))
     return checks

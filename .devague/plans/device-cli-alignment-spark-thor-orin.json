@@ -1,0 +1,579 @@
+{
+  "slug": "device-cli-alignment-spark-thor-orin",
+  "title": "device-CLI alignment spark thor orin",
+  "frame_slug": "device-cli-alignment-spark-thor-orin",
+  "schema_version": 5,
+  "status": "exported",
+  "created": "2026-09-29T05:50:12Z",
+  "updated": "2026-09-29T07:06:08Z",
+  "targets": [
+    {
+      "id": "c1",
+      "kind": "announcement",
+      "text": "nvsh drives Spark, Thor and Orin through one device-CLI UI: spark, thor and orin answer the same read-only verbs with the same --json envelope, so nvsh's operation table renders uniformly on all three; the only per-platform difference is which extra you install (nvsh[spark], nvsh[thor], nvsh[orin])",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h1",
+      "kind": "honesty",
+      "text": "The three device CLIs are released to PyPI at versions that include the aligned verbs before nvsh's extras pin them (orin >= 0.6.0, spark >= 0.8.0)",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c2",
+      "kind": "requirement",
+      "text": "jetson-orin-cli (ssh orin, ~/git/jetson-orin-cli, main d55eb39, 0.5.0) gains the dgx-spark-cli machine surface: status, memory, gpu, disk, thermal, containers, network, processes (probe envelope {subject,available,source,warnings,sections,data}), swap {overview,status,history,sample,grow}, monitor group, plus power \u2014 ported from jetson-thor-cli 0.5.0, which already ported it from dgx-spark-cli (thor CLAUDE.md:124)",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h2",
+      "kind": "honesty",
+      "text": "orin's ported collectors run on the Orin itself (not only on x86 test fixtures) and degrade to available:false rather than raising when a sysfs path differs from Thor's",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c3",
+      "kind": "requirement",
+      "text": "The shared UI contract is dgx-spark-cli 0.7.1's: every verb takes --json after the verb; results on stdout, CliError {code,message,remediation} on stderr with a hint: line; exit 0/1/2; argparse errors exit 1; probe verbs never raise and degrade to available:false and exit 0 (spark/cli/_errors.py, _output.py, probe/_report.py)",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h3",
+      "kind": "honesty",
+      "text": "A diff of the error/output modules (cli/_errors.py, cli/_output.py, probe/_report.py) across the three CLIs shows only name differences",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c4",
+      "kind": "requirement",
+      "text": "nvsh fills _ORIN_VERBS in nvsh/ops/render.py:57 (currently {} because orin 0.5.0 has no machine verbs, docs/platforms.md:161) and bumps the measured-version comment at render.py:23-33",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h4",
+      "kind": "honesty",
+      "text": "_ORIN_VERBS lists only verbs orin actually exposes at the pinned version, measured on the box and recorded in docs/platforms.md",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c5",
+      "kind": "requirement",
+      "text": "nvsh gains optional extras spark, thor and orin in pyproject.toml [project.optional-dependencies], each pulling one PyPI device CLI (dgx-spark-cli 0.7.1, jetson-thor-cli 0.5.0, jetson-orin-cli 0.5.0 are all published); base dependencies stay []",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h5",
+      "kind": "honesty",
+      "text": "pip install nvsh with no extra still installs zero third-party packages, and each extra resolves to exactly one device CLI",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c6",
+      "kind": "requirement",
+      "text": "nvsh tells Thor from Orin by the detected board model/L4T, not only by which binary is first on PATH: _classify (nvsh/platform/_detect.py:244-254) returns jetson for both, and _CLI_CANDIDATES (render.py:65-69) tries thor before orin",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h6",
+      "kind": "honesty",
+      "text": "The Thor/Orin split reads a source recorded in docs/platforms.md (e.g. /proc/device-tree/model or nv_tegra_release) and falls back to PATH order when the model is unreadable",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c8",
+      "kind": "boundary",
+      "text": "thor's in-flight uncommitted work on ssh thor (.devague frame 'thor usb: port power visibility + keep-powered-through-sleep', vendored skills, docs/skill-sources.md diff) is left untouched; alignment branches off main f2248e7",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h7",
+      "kind": "honesty",
+      "text": "git status on thor before and after the work shows the usb frame, vendored skills and skill-sources diff unchanged",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c9",
+      "kind": "boundary",
+      "text": "Work happens in the remote checkouts (ssh thor ~/git/jetson-thor-cli, ssh orin ~/git/jetson-orin-cli); the local /home/spark/git copies are stale (thor local 9b53573 predates 0.5.0; orin local is on an old rename branch f965cd7) and are not the source of truth",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h8",
+      "kind": "honesty",
+      "text": "Each PR is opened from the remote checkout's branch off current origin/main, not from the /home/spark/git copies",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c12",
+      "kind": "requirement",
+      "text": "dgx-spark-cli (/home/spark/git/dgx-spark-cli, 0.7.1) gains a power verb using the probe envelope; nvsh adds power_get -> power to _SPARK_VERBS in render.py",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h9",
+      "kind": "honesty",
+      "text": "spark power reports only values the GB10 actually exposes (nvidia-smi power/clock fields, measured on spark) and says available:false for fields it cannot read, never guessed",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c15",
+      "kind": "audience",
+      "text": "Operators running nvsh on DGX Spark, AGX Thor and AGX Orin (the fleet: spark, ssh thor, ssh orin), and nvsh's agents/Tier 1-2 which call the device CLI through render.py",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h10",
+      "kind": "honesty",
+      "text": "The three platforms are exactly the fleet boxes reachable today: spark (local), ssh thor, ssh orin",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c16",
+      "kind": "before_state",
+      "text": "Only spark and thor answer machine verbs; orin 0.5.0 has only template verbs, so _ORIN_VERBS = {} and every read-only op on an Orin falls back to system commands (thermal_stats and machine_status render to nothing); power_get works only on thor; installing a device CLI is manual and undocumented in nvsh",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h11",
+      "kind": "honesty",
+      "text": "The before-state is reproduced on current main: render.py _ORIN_VERBS == {} and orin 0.5.0 --help lists only whoami/learn/explain/overview/doctor/cli",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c17",
+      "kind": "why_it_matters",
+      "text": "Tier 1/2 and the agents pick operations from one table (nvsh/ops/table.py); an op that renders on one box and not another makes the same request succeed on Spark and fail on Orin, and the no-op-name-switching rule means the fix must be in the CLIs, not in nvsh",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h12",
+      "kind": "honesty",
+      "text": "No change in this work adds an operation-name switch in nvsh code; all per-platform differences live in render.py's verb tables",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c18",
+      "kind": "after_state",
+      "text": "pip install 'nvsh[orin]' (or [thor], [spark]) on each box installs nvsh plus its device CLI; every read-only op in nvsh/ops/table.py that has a device-CLI form renders to '<cli> <verb> --json' on all three boxes, with the same envelope keys",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h13",
+      "kind": "honesty",
+      "text": "The after-state is observed on the boxes themselves, installed from PyPI/TestPyPI, not only in tests",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c19",
+      "kind": "success_signal",
+      "text": "On each of spark, thor and orin, all 10 read-only device verbs (status, memory, gpu, disk, thermal, containers, network, processes, 'swap status', power) exit 0 with --json and emit an object with keys subject, available, source, warnings, sections, data (swap status keeps its own documented shape)",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h14",
+      "kind": "honesty",
+      "text": "The key check runs over ssh on thor and orin and locally on spark, with its output kept in the PR descriptions",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c20",
+      "kind": "success_signal",
+      "text": "render.py maps 10 of 10 read-only device ops for each of spark, thor and orin (0 None renders when the CLI is present), covered by a table test in tests/test_ops_render.py per platform kind x CLI present/absent",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h15",
+      "kind": "honesty",
+      "text": "The table test fails if a verb is added to or removed from any _*_VERBS table without updating its expected rows",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c21",
+      "kind": "success_signal",
+      "text": "Detection picks thor on a Thor and orin on an Orin even when both binaries are on PATH: 2 of 2 fleet boxes report the right device CLI in nvsh doctor --json / --show-context",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h16",
+      "kind": "honesty",
+      "text": "The detection test covers a fixture with both binaries on PATH for each board model",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c22",
+      "kind": "requirement",
+      "text": "nvsh finds a device CLI installed through its own extra even when nvsh is a uv tool: detection also checks the bin directory of sys.executable (the tool env) before PATH, because 'uv tool install nvsh[orin]' does not expose orin on PATH without --with-executables-from (measured: nvsh is a uv tool on spark, thor and orin; each device CLI is a separate uv tool today)",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h17",
+      "kind": "honesty",
+      "text": "On a box with no standalone device-CLI tool, after 'uv tool install nvsh[<platform>]' nvsh renders machine_status to the device CLI",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c23",
+      "kind": "requirement",
+      "text": "render.py gates each device CLI on a minimum version (a per-CLI floor in the verb tables, read once from '<cli> --version' at detection); below the floor nvsh uses the system fallback instead of rendering a verb the installed CLI lacks (today orin 0.5.0 is installed on orin and would answer 'orin status --json' with exit 1 invalid choice)",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h18",
+      "kind": "honesty",
+      "text": "With jetson-orin-cli 0.5.0 installed, no operation renders to an orin verb; with the aligned release installed, all 10 do",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c24",
+      "kind": "requirement",
+      "text": "nvsh doctor gains a device_cli check (severity warning) reporting the detected CLI, its version and path, and whether it matches the board model; absent CLI is info, not failure",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h19",
+      "kind": "honesty",
+      "text": "nvsh doctor --json on each of the 3 boxes shows the device_cli check with the right CLI name and version",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c26",
+      "kind": "boundary",
+      "text": "The Tool-Jev/DeepEval gate artifacts (evals/, run 8b59d0afa150, manifest platform dgx-spark with no spark power) and nvsh/tiers/corpus/dev.json (world device_cli thor) are not rescored or rewritten; the new spark power_get render and orin renders are recorded as a known delta for the eval follow-ups (#69-#71)",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h20",
+      "kind": "honesty",
+      "text": "git diff of this work touches nothing under evals/ or nvsh/tiers/corpus/",
+      "deferred": false,
+      "deferred_reason": ""
+    }
+  ],
+  "tasks": [
+    {
+      "id": "t1",
+      "summary": "Record the before-state on current main: orin 0.5.0 --help verb list (ssh orin), render.py _ORIN_VERBS == {}, render of machine_status/thermal_stats on an Orin fixture -> None",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "evidence file under the scratchpad lists orin 0.5.0's six verbs and the None renders, quoted verbatim into the nvsh PR description"
+      ],
+      "deps": [],
+      "covers": [
+        "c16",
+        "h11"
+      ],
+      "instruction": "read-only; no repo edits; ssh -o BatchMode=yes orin 'export PATH=$HOME/.local/bin:$PATH; orin --help'; uv run --frozen python -c 'from nvsh.ops.render import DEVICE_CLI_VERBS; print(DEVICE_CLI_VERBS)'"
+    },
+    {
+      "id": "t2",
+      "summary": "jetson-orin-cli: port the 8 probe verbs (status memory gpu disk thermal containers network processes) + probe envelope from jetson-thor-cli 0.5.0",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "on ssh orin, branch off fetched origin/main: `orin <verb> --json` exits 0 for all 8 verbs with keys subject, available, source, warnings, sections, data",
+        "collectors never raise: a missing sysfs/binary yields available:false + remediation, covered by x86 fixture tests",
+        "explain catalog has an entry per new verb; teken cli doctor . --strict and uv run pytest -n auto pass"
+      ],
+      "deps": [],
+      "covers": [
+        "c2",
+        "h2",
+        "c3"
+      ],
+      "instruction": "work in ssh orin ~/git/jetson-orin-cli on a new branch from origin/main (d55eb39); copy jetson_thor/probe/{_run,_report,host,l4t,memory,gpu,disk,thermal,network,containers,processes,contention,status}.py and cli/_commands/{_probe,machine}.py from ssh thor ~/git/jetson-thor-cli@f2248e7, rename jetson_thor->jetson_orin and thor->orin; measure on the Orin, fix any Thor-only sysfs path"
+    },
+    {
+      "id": "t3",
+      "summary": "jetson-orin-cli: port swap {overview,status,history,sample,grow} and the monitor group from jetson-thor-cli",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "orin swap status --json emits subject, state, trend, trend_summary; swap grow is dry-run unless --apply and refuses without root",
+        "orin monitor check --json emits subject, host, alerts, thresholds, sections; config path ~/.config/jetson-orin/monitor.json, unit jetson-orin-monitor.service, env JETSON_ORIN_WEBHOOK_URL",
+        "no monitor unit is installed or started during the work; tests + teken strict pass"
+      ],
+      "deps": [
+        "t2"
+      ],
+      "covers": [
+        "c2",
+        "h2"
+      ],
+      "instruction": "same branch as the probe port; copy jetson_thor/swap/ and jetson_thor/monitor/ plus their _commands and catalog entries; rename paths/unit/env names to jetson-orin"
+    },
+    {
+      "id": "t4",
+      "summary": "jetson-orin-cli: add power verb (nvpmodel mode, jetson_clocks, hwmon rails) measured on the AGX Orin, then version-bump to 0.6.0",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "orin power --json exits 0 with data.nvpmodel {mode, mode_id, raw}, data.jetson_clocks, data.rails [{label, power_mw}] read on the Orin (L4T R39.2.0); unreadable fields -> available:false with remediation, never guessed",
+        "root --help no longer says 'clonable template'; learn/overview list every verb; version 0.6.0 with CHANGELOG entry"
+      ],
+      "deps": [
+        "t3"
+      ],
+      "covers": [
+        "c2",
+        "h2"
+      ],
+      "instruction": "port jetson_thor/probe/power.py; verify rail labels on ssh orin /sys/class/hwmon/hwmon5/in*_label; record the measured values in the PR description"
+    },
+    {
+      "id": "t5",
+      "summary": "dgx-spark-cli: add a power verb for GB10 (power.draw, clocks.sm, clocks.max.sm, pstate via nvidia-smi) and bump to 0.8.0",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "spark power --json exits 0 with the probe envelope; data carries only fields nvidia-smi reports on the GB10 (measured: power.draw, clocks, pstate); power.limit [N/A] is reported as unavailable, never guessed",
+        "explain catalog + learn list power; teken strict + pytest pass; version 0.8.0 with CHANGELOG"
+      ],
+      "deps": [],
+      "covers": [
+        "c12",
+        "h9"
+      ],
+      "instruction": "work in /home/spark/git/dgx-spark-cli on a branch from fetched origin/main; model the collector on spark/probe/gpu.py and the Runner injection pattern so tests run without a GPU"
+    },
+    {
+      "id": "t6",
+      "summary": "jetson-thor-cli: replace template root description, add a parity check of cli/_errors.py, cli/_output.py, probe/_report.py against dgx-spark-cli, bump to 0.5.1",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "thor --help root description names Jetson Thor, not 'clonable template'",
+        "a diff of the three modules vs dgx-spark-cli 0.7.1 shows only name differences (recorded in the PR)",
+        "git status of the in-flight usb frame, vendored skills and docs/skill-sources.md diff is byte-identical before and after (git stash is NOT used; work in a git worktree off origin/main)"
+      ],
+      "deps": [],
+      "covers": [
+        "c3",
+        "h3",
+        "c8",
+        "h7"
+      ],
+      "instruction": "on ssh thor use 'git worktree add ~/git/worktrees/thor-cli-align origin/main' so the main checkout's uncommitted usb work is never touched"
+    },
+    {
+      "id": "t7",
+      "summary": "nvsh detection: split Thor/Orin by /proc/device-tree/model, look up device CLIs in nvsh's own env bin before PATH, read each CLI's --version once",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "nvsh/platform/_detect.py reports the board (thor|orin) from /proc/device-tree/model with source recorded; unreadable model falls back to PATH order",
+        "device CLI lookup order is Path(sys.executable).parent then PATH (decision c27); each found CLI records path and version",
+        "tests/test_platform.py covers: both binaries on PATH for each board model; CLI only in own env; model unreadable",
+        "docs/platforms.md records the model-string source and the measured strings"
+      ],
+      "deps": [],
+      "covers": [
+        "c6",
+        "h6",
+        "c22",
+        "h17",
+        "c21",
+        "h16"
+      ],
+      "instruction": "keep detection off the hook's success path; one --version subprocess per present CLI at detection time only"
+    },
+    {
+      "id": "t8",
+      "summary": "nvsh render.py: fill _ORIN_VERBS, add power to _SPARK_VERBS, add per-CLI minimum versions, select CLI by detected board",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "10 of 10 read-only device ops render to `<cli> <verb> --json` on spark, thor and orin with the CLI present at or above its floor (spark>=0.8.0, thor>=0.5.0, orin>=0.6.0)",
+        "below the floor (e.g. orin 0.5.0) every op uses its system fallback",
+        "tests/test_ops_render.py table covers kind x board x present/absent/below-floor and fails if any _*_VERBS table changes without its expected rows",
+        "no operation name appears outside nvsh/ops/table.py and the verb tables (grep check)"
+      ],
+      "deps": [
+        "t7"
+      ],
+      "covers": [
+        "c4",
+        "h4",
+        "c23",
+        "h18",
+        "c20",
+        "h15",
+        "c17",
+        "h12"
+      ],
+      "instruction": "update the measured-version comment at render.py:23-33"
+    },
+    {
+      "id": "t9",
+      "summary": "nvsh doctor: device_cli check (warning) reporting CLI name, version, path and board match",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "nvsh doctor --json includes check id device_cli with the {id, passed, severity, message, remediation} shape; absent CLI -> info; wrong-board or below-floor CLI -> warning with a hint naming the extra to install",
+        "tests/test_doctor_checks.py covers present/absent/below-floor/wrong-board"
+      ],
+      "deps": [
+        "t7"
+      ],
+      "covers": [
+        "c24",
+        "h19"
+      ],
+      "instruction": "add to nvsh/doctor_checks.py; the explain catalog entry for doctor mentions the new check"
+    },
+    {
+      "id": "t10",
+      "summary": "Release the three device CLIs: open, review and merge the orin, spark and thor PRs via the cicd skill in each repo and confirm the versions on PyPI",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "PyPI shows jetson-orin-cli 0.6.0, dgx-spark-cli 0.8.0, jetson-thor-cli 0.5.1",
+        "each PR was opened from a branch off the box's fetched origin/main (orin and thor remote checkouts, spark local)"
+      ],
+      "deps": [
+        "t4",
+        "t5",
+        "t6"
+      ],
+      "covers": [
+        "c1",
+        "h1",
+        "c9",
+        "h8"
+      ],
+      "instruction": "operator approves each merge; nothing merges without the gate (tests before/after, lint, scan-secrets)"
+    },
+    {
+      "id": "t11",
+      "summary": "nvsh extras + docs: add spark/thor/orin optional-dependencies pinned to the released versions, install docs, version bump + CHANGELOG",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "pyproject.toml: spark = [dgx-spark-cli>=0.8.0], thor = [jetson-thor-cli>=0.5.1], orin = [jetson-orin-cli>=0.6.0]; dependencies stays []",
+        "a fresh venv 'pip install nvsh' installs zero third-party packages; each extra installs exactly one device CLI",
+        "README and docs/platforms.md show `uv tool install nvsh[<platform>]` and note --with-executables-from as optional"
+      ],
+      "deps": [
+        "t8",
+        "t9",
+        "t10"
+      ],
+      "covers": [
+        "c5",
+        "h5",
+        "c1",
+        "h1"
+      ],
+      "instruction": "use /version-bump minor"
+    },
+    {
+      "id": "t12",
+      "summary": "Fleet validation: install the nvsh TestPyPI build with its extra on spark, thor and orin and run the key check, render check and doctor",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "on each of the 3 boxes: all 10 read-only verbs exit 0 with the envelope keys (swap status its own shape); output pasted into the nvsh PR",
+        "nvsh doctor --json on each box shows device_cli passed with the right CLI and version",
+        "git diff main... touches nothing under evals/ or nvsh/tiers/corpus/; thor's main checkout git status unchanged from the t6 baseline"
+      ],
+      "deps": [
+        "t11"
+      ],
+      "covers": [
+        "c18",
+        "h13",
+        "c19",
+        "h14",
+        "c15",
+        "h10",
+        "c26",
+        "h20",
+        "c8",
+        "h7"
+      ],
+      "instruction": "install into a scratch uv tool env (`uv tool install --force nvsh[<p>]` from TestPyPI) and restore the operator previous install afterwards"
+    }
+  ],
+  "risks": [
+    {
+      "id": "r1",
+      "text": "PyPI releases are irreversible: nvsh's extras must not merge to main (auto-publish) before t10's versions exist on PyPI",
+      "kind": "unknown_nonblocking",
+      "task_id": "t11",
+      "resolved": false,
+      "resolution": ""
+    },
+    {
+      "id": "r2",
+      "text": "Orin power rail labels/nvpmodel modes are unknown until measured on the box (frame v1); t4 may discover fields Thor lacks",
+      "kind": "unknown_nonblocking",
+      "task_id": "t4",
+      "resolved": false,
+      "resolution": ""
+    },
+    {
+      "id": "r3",
+      "text": "orin and thor tasks run on remote hosts, outside local git worktree isolation; the workforce must drive them over ssh, one agent per box",
+      "kind": "unknown_nonblocking",
+      "task_id": "t2",
+      "resolved": false,
+      "resolution": ""
+    },
+    {
+      "id": "r4",
+      "text": "Inherited swap/monitor bugs present in all three CLIs (wave-2 codex review, verified in dgx-spark-cli): swap grow targets /swap.img when the host uses /swapfile (cli/_commands/swap.py:371); monitor config scaffold written 0644 under umask 022 so a later webhook URL is world-readable (monitor/config.py:152-154); monitor install keeps a relative --config path (monitor/systemd.py:65). Fix once across spark/thor/orin in a follow-up, not orin-only (would break alignment)",
+      "kind": "follow_up",
+      "task_id": null,
+      "resolved": false,
+      "resolution": ""
+    },
+    {
+      "id": "r5",
+      "text": "dgx-spark-cli lacks two hardenings jetson-thor-cli added when porting in July (0.5.0) and orin now inherits: monitor engine tolerates OSError when persisting state (state_persisted/state_error), and notify.sanitize_webhook_url. Pre-existing divergence, outside d1; port thor->spark in a follow-up",
+      "kind": "follow_up",
+      "task_id": null,
+      "resolved": false,
+      "resolution": ""
+    }
+  ],
+  "obligations": []
+}

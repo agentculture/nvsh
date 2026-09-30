@@ -838,6 +838,7 @@ def test_collect_checks_returns_every_new_check_id(tmp_path):
     ids = {c["id"] for c in checks}
     assert ids == {
         "platform_detected",
+        "device_cli",
         "agent_configured",
         "agent_reachable",
         "default_target_not_demo",
@@ -1466,3 +1467,101 @@ def test_damaged_tier_pins_fail_the_check_instead_of_crashing_doctor(check, pins
 def test_tier_files_present_says_so_when_nothing_is_pinned(tmp_path):
     result = doctor_checks.check_tier_files_present(pins={}, cache_dir=tmp_path)
     assert "no tier files are pinned" in result["message"]
+
+
+# --- device_cli --------------------------------------------------------------
+
+
+def _cli_platform(kind, *, board=None, clis=()):
+    """A Platform with the given device CLIs: ``clis`` is (name, version, origin)."""
+    from nvsh.platform._model import NVSH_ENV, device_cli_source
+
+    values = []
+    if board:
+        values.append(Value("jetson_board", board, "/proc/device-tree/model", "file", True))
+    for name, version, origin in clis:
+        values.append(
+            Value(
+                f"{name}_cli",
+                f"/opt/bin/{name}",
+                device_cli_source(name, origin or NVSH_ENV),
+                "path",
+                True,
+            )
+        )
+        if version is not None:
+            values.append(
+                Value(f"{name}_cli_version", version, f"{name} --version", "subprocess", True)
+            )
+    return Platform(kind=kind, values=tuple(values))
+
+
+def test_device_cli_present_and_current_passes_info():
+    plat = _cli_platform("dgx-spark", clis=[("spark", "0.8.0", "nvsh-env")])
+    check = doctor_checks.check_device_cli(plat)
+    assert check["id"] == "device_cli"
+    assert (check["passed"], check["severity"]) == (True, "info")
+    for word in ("spark", "0.8.0", "/opt/bin/spark", "nvsh env"):
+        assert word in check["message"]
+    assert set(check) == {"id", "passed", "severity", "message", "remediation"}
+
+
+def test_device_cli_on_path_origin_is_named():
+    plat = _cli_platform("jetson", board="thor", clis=[("thor", "0.5.0", "path")])
+    check = doctor_checks.check_device_cli(plat)
+    assert check["passed"] is True
+    assert "PATH" in check["message"]
+
+
+def test_device_cli_absent_is_info_and_names_the_extra():
+    plat = _cli_platform("jetson", board="orin")
+    check = doctor_checks.check_device_cli(plat)
+    assert check["severity"] == "info"
+    assert "nvsh[orin]" in check["remediation"]
+    assert "jetson-orin-cli" in check["remediation"]
+
+
+def test_device_cli_below_floor_warns_with_extra():
+    plat = _cli_platform("dgx-spark", clis=[("spark", "0.7.0", "path")])
+    check = doctor_checks.check_device_cli(plat)
+    assert (check["passed"], check["severity"]) == (False, "warning")
+    assert "0.7.0" in check["message"]
+    assert "0.8.0" in check["message"]
+    assert "nvsh[spark]" in check["remediation"]
+
+
+def test_device_cli_unreadable_version_warns():
+    plat = _cli_platform("dgx-spark", clis=[("spark", None, "path")])
+    check = doctor_checks.check_device_cli(plat)
+    assert (check["passed"], check["severity"]) == (False, "warning")
+    assert "nvsh[spark]" in check["remediation"]
+
+
+def test_device_cli_wrong_board_warns_naming_right_extra():
+    plat = _cli_platform("jetson", board="orin", clis=[("thor", "0.5.0", "path")])
+    check = doctor_checks.check_device_cli(plat)
+    assert (check["passed"], check["severity"]) == (False, "warning")
+    assert "thor" in check["message"]
+    assert "orin" in check["message"]
+    assert "nvsh[orin]" in check["remediation"]
+
+
+def test_device_cli_unknown_board_accepts_either_present_cli():
+    plat = _cli_platform("jetson", clis=[("orin", "0.6.0", "path")])
+    check = doctor_checks.check_device_cli(plat)
+    assert check["passed"] is True
+    assert "orin" in check["message"]
+
+
+@pytest.mark.parametrize("kind", ["rtx", "generic"])
+def test_device_cli_not_applicable_is_info_pass(kind):
+    check = doctor_checks.check_device_cli(_cli_platform(kind))
+    assert (check["passed"], check["severity"]) == (True, "info")
+
+
+def test_collect_checks_includes_device_cli():
+    plat = _cli_platform("rtx")
+    checks = doctor_checks.collect_checks(
+        env={}, current_version="0", config=None, config_error="x", platform=plat
+    )
+    assert any(c["id"] == "device_cli" for c in checks)

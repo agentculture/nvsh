@@ -517,6 +517,15 @@ wheels = [
 ]
 
 [[package]]
+name = "dgx-spark-cli"
+version = "0.8.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/5d/e4/10437169fae22571996d5b24082c6df37ede69b182517b122c735a6153e8/dgx_spark_cli-0.8.0.tar.gz", hash = "sha256:87d1373160be6d3f8f25b6a83cd8f35de8400f9e842c2d7d4405731eb1bf1ac8", size = 246093, upload-time = "2026-09-30T17:25:39.011Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/8d/8f/2ba2db04058eb7cf60ad61dea53b793b2ce6ee6d8648a25344ec093bbd85/dgx_spark_cli-0.8.0-py3-none-any.whl", hash = "sha256:54fafcecb115d362eb019f97ceb89e3686f27c39dc9902470fc4a898504a7787", size = 96455, upload-time = "2026-09-30T17:25:37.621Z" },
+]
+
+[[package]]
 name = "distro"
 version = "1.9.0"
 source = { registry = "https://pypi.org/simple" }
@@ -851,6 +860,24 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/ef/7c/ec4ab396d31b3b395e2e999c8f46dec78c5e29209fac49d1f4dace04041d/isort-8.0.1.tar.gz", hash = "sha256:171ac4ff559cdc060bcfff550bc8404a486fee0caab245679c2abe7cb253c78d", size = 769592, upload-time = "2026-02-28T10:08:20.685Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/3e/95/c7c34aa53c16353c56d0b802fba48d5f5caa2cdee7958acbcb795c830416/isort-8.0.1-py3-none-any.whl", hash = "sha256:28b89bc70f751b559aeca209e6120393d43fbe2490de0559662be7a9787e3d75", size = 89733, upload-time = "2026-02-28T10:08:19.466Z" },
+]
+
+[[package]]
+name = "jetson-orin-cli"
+version = "0.6.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/87/4b/178cab8ae139e6399a681baae86692df0a66ebc10a5d0561135c96649974/jetson_orin_cli-0.6.0.tar.gz", hash = "sha256:b4a6fd2b189c7098d53134fb02454a92d291f0a88e88408b016bcd4ab78958cd", size = 254496, upload-time = "2026-09-30T17:25:57.622Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/3e/28/8ba2aca20f46ffc9e8ffb51fdeeb686a3aa2164e6203393dedf7862a59c3/jetson_orin_cli-0.6.0-py3-none-any.whl", hash = "sha256:1d2494353af68d0c160851aeeb1660228a78dfbccbaef364cb0fd374f72aa516", size = 105418, upload-time = "2026-09-30T17:25:56.44Z" },
+]
+
+[[package]]
+name = "jetson-thor-cli"
+version = "0.5.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/8f/95/d1f9ea6c3ea88147c4b6363fe08b3d50c0f25d23f273f27f87712763a93f/jetson_thor_cli-0.5.1.tar.gz", hash = "sha256:ad0bd44681aaf9eac90185ec6cd350bd07dc9e6cb71f75094a0c38acf008d361", size = 265279, upload-time = "2026-09-30T17:25:52.055Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a3/9a/f39027de98231306c28a3ffd13b713e39f5b63973f6a4df79ededf238562/jetson_thor_cli-0.5.1-py3-none-any.whl", hash = "sha256:1d53618f2b4cfd51f9e30e2eac9696db092f05bfab1a37407db1f2fae02121ea", size = 108228, upload-time = "2026-09-30T17:25:50.713Z" },
 ]
 
 [[package]]
@@ -1211,12 +1238,21 @@ wheels = [
 
 [[package]]
 name = "nvsh"
-version = "0.22.0"
+version = "0.23.0"
 source = { editable = "." }
 
 [package.optional-dependencies]
 needle = [
     { name = "cactus-needle" },
+]
+orin = [
+    { name = "jetson-orin-cli" },
+]
+spark = [
+    { name = "dgx-spark-cli" },
+]
+thor = [
+    { name = "jetson-thor-cli" },
 ]
 tiers = [
     { name = "cactus-needle" },
@@ -1242,8 +1278,11 @@ evals = [
 requires-dist = [
     { name = "cactus-needle", marker = "extra == 'needle'", specifier = ">=3.0.1,<3.1" },
     { name = "cactus-needle", marker = "extra == 'tiers'", specifier = ">=3.0.1,<3.1" },
+    { name = "dgx-spark-cli", marker = "extra == 'spark'", specifier = ">=0.8.0" },
+    { name = "jetson-orin-cli", marker = "extra == 'orin'", specifier = ">=0.6.0" },
+    { name = "jetson-thor-cli", marker = "extra == 'thor'", specifier = ">=0.5.1" },
 ]
-provides-extras = ["needle", "lfm", "tiers"]
+provides-extras = ["needle", "lfm", "tiers", "spark", "thor", "orin"]
 
 [package.metadata.requires-dev]
 dev = [

@@ -7,7 +7,13 @@ Re-exports the frozen dataclasses and the public API so callers can use
 from __future__ import annotations
 
 from nvsh.ops._model import ArgSpec, Operation, ValidationError
-from nvsh.ops.render import DEVICE_CLI_VERBS, render
+from nvsh.ops.render import (
+    DEVICE_CLI_MIN_VERSIONS,
+    DEVICE_CLI_VERBS,
+    cli_meets_floor,
+    render,
+    usable_device_cli,
+)
 from nvsh.ops.table import OPERATIONS, get, names, validate
 
 __all__ = [
@@ -15,9 +21,12 @@ __all__ = [
     "Operation",
     "OPERATIONS",
     "ValidationError",
+    "DEVICE_CLI_MIN_VERSIONS",
     "DEVICE_CLI_VERBS",
+    "cli_meets_floor",
     "get",
     "names",
     "render",
+    "usable_device_cli",
     "validate",
 ]
