@@ -128,8 +128,12 @@ def _file_values(root: str) -> list[Value]:
     values.append(_maybe("l4t_release", l4t_release, _NV_TEGRA_RELEASE, FILE))
 
     dt_model = files.read_device_tree_string(root, _DEVICE_TREE_MODEL)
-    values.append(_maybe("device_tree_model", dt_model, _DEVICE_TREE_MODEL, FILE))
-    values.append(_maybe("jetson_board", parse_board(dt_model), _DEVICE_TREE_MODEL, FILE))
+    values.extend(
+        [
+            _maybe("device_tree_model", dt_model, _DEVICE_TREE_MODEL, FILE),
+            _maybe("jetson_board", parse_board(dt_model), _DEVICE_TREE_MODEL, FILE),
+        ]
+    )
 
     dt_compatible = files.read_device_tree_list(root, _DEVICE_TREE_COMPATIBLE)
     values.append(
@@ -158,8 +162,12 @@ def _file_values(root: str) -> list[Value]:
 
     meminfo_text = files.read_text(root, _MEMINFO)
     meminfo = files.parse_meminfo(meminfo_text) if meminfo_text is not None else {}
-    values.append(_maybe("mem_total", meminfo.get("MemTotal"), _MEMINFO, FILE))
-    values.append(_maybe("mem_available", meminfo.get("MemAvailable"), _MEMINFO, FILE))
+    values.extend(
+        [
+            _maybe("mem_total", meminfo.get("MemTotal"), _MEMINFO, FILE),
+            _maybe("mem_available", meminfo.get("MemAvailable"), _MEMINFO, FILE),
+        ]
+    )
 
     values.append(_value_from_file("cudnn_version", root, _CUDNN_HEADER, files.parse_cudnn_version))
     values.append(
@@ -268,9 +276,7 @@ def _path_values(run: subp.Runner, which: subp.Which, own_bin: str) -> list[Valu
     # no --help probe, and nothing at request time.
     device = {cli: _device_cli_values(run, which, own_bin, cli) for cli in _DEVICE_CLIS}
     spark_value = device["spark"][0]
-    values.append(spark_value)
-    values.append(device["thor"][0])
-    values.append(device["orin"][0])
+    values.extend([spark_value, device["thor"][0], device["orin"][0]])
     values.extend(version for _cli, version in device.values())
 
     spark_status_cmd = "spark status --json"

@@ -140,13 +140,13 @@ def _install_hint(cli: str) -> str:
     return f"install the {package} extra: uv tool install '{extra}' (or upgrade it)"
 
 
-def _expected_device_clis(platform: Platform) -> tuple[str, ...]:
+def _expected_device_clis(platform: Platform) -> list[str]:
     if platform.kind == "dgx-spark":
-        return ("spark",)
+        return ["spark"]
     if platform.kind == "jetson":
         board = platform.board()
-        return (board,) if board in ("thor", "orin") else ("thor", "orin")
-    return ()
+        return [board] if board in ("thor", "orin") else ["thor", "orin"]
+    return []
 
 
 def check_device_cli(platform: Platform) -> dict:
@@ -1892,10 +1892,14 @@ def collect_checks(
     checks.append(check_default_target_not_demo(config))
     checks.append(check_agent_allowlist(home=home))
     checks.extend(collect_tier_checks(config))
-    checks.append(check_hook_sourced(env, current_version))
-    checks.append(check_hook_first_in_prompt_command(prompt_command_text))
-    checks.append(check_bindings_present(bind_p_text, keymap))
-    checks.append(check_capture_active(env))
+    checks.extend(
+        [
+            check_hook_sourced(env, current_version),
+            check_hook_first_in_prompt_command(prompt_command_text),
+            check_bindings_present(bind_p_text, keymap),
+            check_capture_active(env),
+        ]
+    )
     checks.append(
         check_daemon_status(env, is_running=probes.is_running, socket_path=probes.socket_path)
     )

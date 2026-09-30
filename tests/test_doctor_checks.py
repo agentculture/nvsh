@@ -1525,7 +1525,8 @@ def test_device_cli_below_floor_warns_with_extra():
     plat = _cli_platform("dgx-spark", clis=[("spark", "0.7.0", "path")])
     check = doctor_checks.check_device_cli(plat)
     assert (check["passed"], check["severity"]) == (False, "warning")
-    assert "0.7.0" in check["message"] and "0.8.0" in check["message"]
+    assert "0.7.0" in check["message"]
+    assert "0.8.0" in check["message"]
     assert "nvsh[spark]" in check["remediation"]
 
 
@@ -1540,14 +1541,16 @@ def test_device_cli_wrong_board_warns_naming_right_extra():
     plat = _cli_platform("jetson", board="orin", clis=[("thor", "0.5.0", "path")])
     check = doctor_checks.check_device_cli(plat)
     assert (check["passed"], check["severity"]) == (False, "warning")
-    assert "thor" in check["message"] and "orin" in check["message"]
+    assert "thor" in check["message"]
+    assert "orin" in check["message"]
     assert "nvsh[orin]" in check["remediation"]
 
 
 def test_device_cli_unknown_board_accepts_either_present_cli():
     plat = _cli_platform("jetson", clis=[("orin", "0.6.0", "path")])
     check = doctor_checks.check_device_cli(plat)
-    assert check["passed"] is True and "orin" in check["message"]
+    assert check["passed"] is True
+    assert "orin" in check["message"]
 
 
 @pytest.mark.parametrize("kind", ["rtx", "generic"])
